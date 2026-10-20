@@ -57,6 +57,26 @@ fn rectangle_corner_handles_round_the_corners() {
 }
 
 #[test]
+fn over_cap_radius_handle_does_not_snap_to_cap() {
+    let mut s = Session::new();
+    let id = create(&mut s, "shape.rectangle", json!({"x": 100, "y": 100, "width": 200, "height": 120}));
+    // Half the short side is 60; set a radius far past it. The engine stores it (the shape just
+    // renders at the cap, which is the expected Figma-like behaviour) and the panel keeps the value.
+    s.execute("node.set", &json!({"ids": [id], "props": {"cornerRadius": 200}})).unwrap();
+    assert_eq!(radii(&s, id), [200.0; 4]);
+    // The handle sits at the cap (radius 60, the centre of the corner's arc).
+    let h = handles(s.doc().unwrap(), &[id], 1.0)[0].1;
+    // Grab it and let go without moving: the value must stay 200, not snap down to 60.
+    drag(&mut s, (h[0], h[1]), (h[0], h[1]), false);
+    let r = radii(&s, id);
+    assert!(r.iter().all(|x| (x - 200.0).abs() < 1e-6), "grabbing the over-cap handle keeps its value: {r:?}");
+    // A small inward drag changes it only by the drag amount, not to the cap.
+    drag(&mut s, (h[0], h[1]), (h[0] - 5.0, h[1] - 5.0), false);
+    let r = radii(&s, id);
+    assert!(r.iter().all(|x| (190.0..200.0).contains(x)), "a small inward drag stays near the over-cap value: {r:?}");
+}
+
+#[test]
 fn polygon_and_star_handles() {
     let mut s = Session::new();
     let star = create(&mut s, "shape.star", json!({"x": 0, "y": 0, "width": 200, "height": 200}));

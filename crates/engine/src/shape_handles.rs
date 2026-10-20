@@ -143,8 +143,10 @@ pub fn hit(doc: &Document, sel: &[NodeId], p: Point, zoom: f64) -> Option<(NodeI
 }
 
 /// The `node.set` props for handle `h` of layer `id` dragged to page point `p` (`alt`: only that
-/// corner of a rectangle or frame).
-pub fn drag(doc: &Document, id: NodeId, h: ShapeHandle, p: Point, alt: bool) -> Option<Map<String, Value>> {
+/// corner of a rectangle or frame). `start` is the radius already stored for the dragged corner, so
+/// the drag is *relative*: grabbing the handle without moving it (or with a value past the cap, where
+/// the handle sits at the cap) keeps the stored value instead of snapping back to the cap.
+pub fn drag(doc: &Document, id: NodeId, h: ShapeHandle, p: Point, alt: bool, start: f64) -> Option<Map<String, Value>> {
     let n = doc.node(id)?;
     let q = doc.world_transform(id).inverse() * p;
     if !(q.x.is_finite() && q.y.is_finite()) {
@@ -152,7 +154,12 @@ pub fn drag(doc: &Document, id: NodeId, h: ShapeHandle, p: Point, alt: bool) -> 
     }
     match h {
         ShapeHandle::Radius { corner } => {
-            let r = corners(n).get(corner)?.0.radius(q);
+            let cs = corners(n);
+            let c = &cs.get(corner)?.0;
+            // The handle is drawn at the clamped radius, so the drag must be relative to the stored
+            // value: a grab with no movement (or a value past the cap) must not snap back to the cap.
+            let start_clamped = start.clamp(0.0, c.max_r);
+            let r = (start + (c.radius(q) - start_clamped)).max(0.0);
             let key = if alt && n.kind.has_independent_corners() {
                 ["topLeftRadius", "topRightRadius", "bottomRightRadius", "bottomLeftRadius"].get(corner).copied()?
             } else {
@@ -177,7 +184,7 @@ pub fn value(doc: &Document, id: NodeId, h: ShapeHandle) -> Option<f64> {
     let n = doc.node(id)?;
     let v = match (h, &n.kind) {
         (ShapeHandle::Ratio, NodeKind::Star { inner_ratio, .. }) => inner_ratio * 100.0,
-        (ShapeHandle::Radius { corner }, _) => corners(n).into_iter().nth(corner).map(|(c, r)| r.clamp(0.0, c.max_r))?,
+        (ShapeHandle::Radius { corner }, _) => corners(n).into_iter().nth(corner).map(|(_, r)| r)?,
         _ => return None,
     };
     Some((v * 10.0).round() / 10.0)

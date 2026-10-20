@@ -401,6 +401,9 @@ pub(crate) enum Gesture {
     Shape {
         id: NodeId,
         handle: ShapeHandle,
+        /// The radius stored for the dragged corner at the press, so the drag is relative (a value
+        /// past the cap keeps the handle from snapping back to it).
+        start: f64,
     },
     /// Dragging the rotation origin handle (see [`crate::rotation_origin`]).
     Origin,
@@ -1153,7 +1156,13 @@ impl Session {
             && let Some((id, handle)) = crate::shape_handles::hit(&doc, &sel, ev.p(), ev.zoom)
         {
             self.begin_interaction("Corner radius")?;
-            self.tool.gesture = Gesture::Shape { id, handle };
+            // Remember the radius already stored for the dragged corner so the drag is relative to it
+            // (a value past the cap would otherwise snap back the moment the handle is grabbed).
+            let start = match handle {
+                ShapeHandle::Radius { corner } => doc.node(id).and_then(|n| n.corners.radii.get(corner).copied()).unwrap_or(0.0),
+                ShapeHandle::Ratio => 0.0,
+            };
+            self.tool.gesture = Gesture::Shape { id, handle, start };
             self.tool.overlay.shape = shape_hint(&doc, id, handle, ev.zoom);
             return Ok(());
         }
@@ -1428,10 +1437,10 @@ impl Session {
                 self.tool.gesture = g;
                 return self.arc_drag(ev, id, handle, arc);
             }
-            Gesture::Shape { id, handle } => {
-                let (id, handle) = (*id, *handle);
+            Gesture::Shape { id, handle, start } => {
+                let (id, handle, start) = (*id, *handle, *start);
                 let doc = self.doc()?.clone();
-                if let Some(props) = crate::shape_handles::drag(&doc, id, handle, ev.p(), ev.alt) {
+                if let Some(props) = crate::shape_handles::drag(&doc, id, handle, ev.p(), ev.alt, start) {
                     self.preview(|doc, _| crate::cmd::props::apply("node.set", doc, id, &props))?;
                 }
                 self.tool.overlay.shape = shape_hint(self.doc()?, id, handle, ev.zoom);
