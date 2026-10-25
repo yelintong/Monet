@@ -45,6 +45,12 @@ pub struct ListDrag {
     rows: Vec<(usize, Rect)>,
     /// What the pointer carries.
     label: Option<String>,
+    /// Where a drop is taken, when the caller knows better than half a row around the rows: a
+    /// list whose groups open with a caption (the Local styles list) takes a drop anywhere in the
+    /// group, so its first and last rows are as easy to reach as the ones between.
+    bounds: Option<Rect>,
+    /// How far the insertion line stays inside the rows' sides.
+    line_inset: f32,
 }
 
 impl ListDrag {
@@ -69,7 +75,20 @@ impl ListDrag {
             ui.data_mut(|d| d.remove::<usize>(id));
             dragging = None;
         }
-        Self { list, reversed, dragging, rows: Vec::new(), label: None }
+        Self { list, reversed, dragging, rows: Vec::new(), label: None, bounds: None, line_inset: PAD }
+    }
+
+    /// Take drops anywhere in `bounds` (elsewhere: half a row around the rows). A list whose
+    /// groups open with a caption passes the whole group, so its head and tail are full targets.
+    pub fn bounds(mut self, bounds: Rect) -> Self {
+        self.bounds = Some(bounds);
+        self
+    }
+
+    /// Keep the insertion line `inset` inside the rows' sides (the rows may sit inset themselves).
+    pub fn line_inset(mut self, inset: f32) -> Self {
+        self.line_inset = inset;
+        self
     }
 
     /// Item `index` (model order) was laid out with its main row at `header`, covering `extent`
@@ -113,11 +132,12 @@ impl ListDrag {
     pub fn finish(self, ui: &mut Ui) -> Option<(usize, usize)> {
         let from = self.dragging?;
         let (pos, released) = ui.input(|i| (i.pointer.latest_pos(), i.pointer.any_released()));
-        let target = pos.and_then(|p| drop_slot(&self.rows, from, p, self.reversed));
+        let target = pos.and_then(|p| drop_slot(&self.rows, from, p, self.reversed, self.bounds));
         if let Some((_, y)) = target
             && let Some(span) = self.span()
         {
-            widgets::insertion_line(ui.painter(), span.min.x + PAD, span.max.x - PAD, y);
+            let (x0, x1) = (span.min.x + self.line_inset, span.max.x - self.line_inset);
+            widgets::insertion_line(ui.painter(), x0, x1.max(x0 + 1.0), y);
         }
         if let (Some(p), Some(label)) = (pos, self.label) {
             let t = Tokens::get(ui.ctx());
@@ -139,11 +159,13 @@ impl ListDrag {
 
 /// Where item `from` lands when dropped at `p` over `rows` (top to bottom; the model's last item
 /// first when `reversed`): its new model index and the insertion line's y. None outside the list
-/// (half a row of slack above and below) or where it would stay put.
-fn drop_slot(rows: &[(usize, Rect)], from: usize, p: egui::Pos2, reversed: bool) -> Option<(usize, f32)> {
+/// (`bounds`, or half a row of slack above and below the rows) or where it would stay put.
+fn drop_slot(rows: &[(usize, Rect)], from: usize, p: egui::Pos2, reversed: bool, bounds: Option<Rect>) -> Option<(usize, f32)> {
     let (first, last) = (rows.first()?.1, rows.last()?.1);
     let slack = first.height().min(last.height()) / 2.0;
-    let area = Rect::from_min_max(pos2(first.min.x.min(last.min.x), first.min.y - slack), pos2(first.max.x.max(last.max.x), last.max.y + slack));
+    let area = bounds.unwrap_or_else(|| {
+        Rect::from_min_max(pos2(first.min.x.min(last.min.x), first.min.y - slack), pos2(first.max.x.max(last.max.x), last.max.y + slack))
+    });
     if !area.contains(p) {
         return None;
     }
@@ -210,19 +232,35 @@ mod tests {
     fn drop_slots_map_to_model_indices() {
         let r = rows(3);
         // Drag the bottom item (model 0, shown last) above the top one: it becomes the top (2).
-        assert_eq!(drop_slot(&r, 0, pos2(100.0, 4.0), true), Some((2, 0.0)));
+        assert_eq!(drop_slot(&r, 0, pos2(100.0, 4.0), true, None), Some((2, 0.0)));
         // Between the first and second rows: model 1.
-        assert_eq!(drop_slot(&r, 0, pos2(100.0, 40.0), true), Some((1, 32.0)));
+        assert_eq!(drop_slot(&r, 0, pos2(100.0, 40.0), true, None), Some((1, 32.0)));
         // Around itself: no move.
-        assert_eq!(drop_slot(&r, 0, pos2(100.0, 70.0), true), None);
-        assert_eq!(drop_slot(&r, 0, pos2(100.0, 95.0), true), None);
+        assert_eq!(drop_slot(&r, 0, pos2(100.0, 70.0), true, None), None);
+        assert_eq!(drop_slot(&r, 0, pos2(100.0, 95.0), true, None), None);
         // The top item to the bottom: model 0.
-        assert_eq!(drop_slot(&r, 2, pos2(100.0, 95.0), true), Some((0, 96.0)));
+        assert_eq!(drop_slot(&r, 2, pos2(100.0, 95.0), true, None), Some((0, 96.0)));
         // Outside the list, or an item it doesn't show.
-        assert_eq!(drop_slot(&r, 2, pos2(100.0, 200.0), true), None);
-        assert_eq!(drop_slot(&r, 2, pos2(400.0, 95.0), true), None);
-        assert_eq!(drop_slot(&r, 7, pos2(100.0, 4.0), true), None);
-        assert_eq!(drop_slot(&[], 0, pos2(0.0, 0.0), true), None);
+        assert_eq!(drop_slot(&r, 2, pos2(100.0, 200.0), true, None), None);
+        assert_eq!(drop_slot(&r, 2, pos2(400.0, 95.0), true, None), None);
+        assert_eq!(drop_slot(&r, 7, pos2(100.0, 4.0), true, None), None);
+        assert_eq!(drop_slot(&[], 0, pos2(0.0, 0.0), true, None), None);
+    }
+
+    #[test]
+    fn a_given_area_takes_drops_over_the_whole_group() {
+        // Rows 0..96 with a caption above them (the group's header) and room below.
+        let r = rows(3);
+        let area = Rect::from_min_max(pos2(0.0, -32.0), pos2(240.0, 128.0));
+        // Over the caption, far above the first row: the head of the list.
+        assert_eq!(drop_slot(&r, 0, pos2(100.0, -20.0), false, Some(area)), Some((0, 0.0)));
+        // Well below the last row: the tail.
+        assert_eq!(drop_slot(&r, 2, pos2(100.0, 120.0), false, Some(area)), Some((2, 96.0)));
+        // The area still bounds the drop: just outside it nothing happens.
+        assert_eq!(drop_slot(&r, 2, pos2(100.0, 140.0), false, Some(area)), None);
+        // Dropping a row where it already is stays put, however wide the area.
+        assert_eq!(drop_slot(&r, 2, pos2(100.0, -20.0), false, Some(area)), None);
+        assert_eq!(drop_slot(&r, 0, pos2(100.0, 120.0), false, Some(area)), None);
     }
 
     #[test]
@@ -230,11 +268,11 @@ mod tests {
         // Shown in model order: model index k at row k.
         let r: Vec<(usize, Rect)> = (0..3).map(|k| (k, Rect::from_min_size(pos2(0.0, k as f32 * 32.0), vec2(240.0, 32.0)))).collect();
         // The first item below the last: model 2.
-        assert_eq!(drop_slot(&r, 0, pos2(100.0, 95.0), false), Some((2, 96.0)));
+        assert_eq!(drop_slot(&r, 0, pos2(100.0, 95.0), false, None), Some((2, 96.0)));
         // The last item above the first: model 0.
-        assert_eq!(drop_slot(&r, 2, pos2(100.0, 4.0), false), Some((0, 0.0)));
+        assert_eq!(drop_slot(&r, 2, pos2(100.0, 4.0), false, None), Some((0, 0.0)));
         // The first between the second and third: model 1.
-        assert_eq!(drop_slot(&r, 0, pos2(100.0, 70.0), false), Some((1, 64.0)));
-        assert_eq!(drop_slot(&r, 1, pos2(100.0, 40.0), false), None);
+        assert_eq!(drop_slot(&r, 0, pos2(100.0, 70.0), false, None), Some((1, 64.0)));
+        assert_eq!(drop_slot(&r, 1, pos2(100.0, 40.0), false, None), None);
     }
 }

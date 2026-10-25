@@ -1116,17 +1116,39 @@ fn edit_local(app: &mut FigApp, ui: &Ui, slot: StyleSlot, id: &str) {
     app.ui.style_picker = Some(Picker { slot, ids: app.session.selection(), y, query: String::new(), edit });
 }
 
+/// The name `moved` takes in `folder`: its last part there, numbered when that name is taken
+/// ("Sunset/600 2") so a drop never leaves two styles sharing one.
+fn moved_name(doc: &Document, moved: &Style, folder: &str) -> String {
+    let leaf = leaf(&moved.name);
+    let named = |l: &str| if folder.is_empty() { l.to_string() } else { format!("{folder}/{l}") };
+    let taken = |n: &str| doc.styles.iter().any(|s| s.id != moved.id && s.name == n);
+    let first = named(leaf);
+    if !taken(&first) {
+        return first;
+    }
+    (2..).map(|k| named(&format!("{leaf} {k}"))).find(|n| !taken(n)).unwrap_or(first)
+}
+
 /// `style.move` for the shown style `from` dropped at shown position `to` (`shown` in display
-/// order): before the style that ends up under it, into the folder of its new neighbour above
-/// (below at the top).
-fn drop_move(shown: &[&Style], from: usize, to: usize) -> Option<Value> {
+/// order): before the style that ends up under it (at the end when nothing follows).
+///
+/// It joins the folder of the style it lands above — the folder whose rows the insertion line is
+/// in — so it stays where the line showed. A folder is part of a style's name, so joining one
+/// renames the style; a name the folder already has is numbered ("Sunset/600 2") rather than
+/// repeated.
+fn drop_move(doc: &Document, shown: &[&Style], from: usize, to: usize) -> Option<Value> {
     let moved = shown.get(from)?;
     let rest: Vec<&Style> = shown.iter().enumerate().filter(|(i, _)| *i != from).map(|(_, s)| *s).collect();
-    let below = rest.get(to);
-    let near = to.checked_sub(1).and_then(|i| rest.get(i)).or(below)?;
-    let mut q = json!({"styles": [moved.id], "folder": folder(&near.name)});
+    let below = rest.get(to).copied();
+    // At the end of the list the row above gives the folder.
+    let target = below.or_else(|| to.checked_sub(1).and_then(|i| rest.get(i)).copied())?;
+    let name = moved_name(doc, moved, folder(&target.name));
+    let mut q = json!({"styles": [moved.id]});
     if let Some(b) = below {
         q["before"] = json!(b.id);
+    }
+    if name != moved.name {
+        q["name"] = json!(name);
     }
     Some(q)
 }
@@ -1197,8 +1219,9 @@ fn paint_dot(ui: &Ui, c: egui::Pos2, r: f32, paint: &Paint) {
 /// The Design panel's Local styles (shown with nothing selected): this file's styles by type
 /// (text, colour, effect, grid), then by folder. Rows sit inset from the panel's edges with the
 /// hover band rounded; a folder folds from its chevron. A click edits a style; right-click offers
-/// edit, duplicate and delete; a row dragged by itself moves (into the folder it lands in, renamed
-/// to match); right-click on a folder renames it (and the styles in it).
+/// edit, duplicate and delete; a row dragged by itself moves where the line shows, into the folder
+/// of the row it lands above (renamed, numbered if that name is taken: see [`drop_move`]);
+/// right-click on a folder renames it (and the styles in it).
 pub fn local_styles(app: &mut FigApp, ui: &mut Ui, doc: &Document) {
     let t = Tokens::get(ui.ctx());
     let renaming: Option<String> = ui.data(|d| d.get_temp(folder_rename_id()));
@@ -1217,16 +1240,19 @@ pub fn local_styles(app: &mut FigApp, ui: &mut Ui, doc: &Document) {
         let w = ui.available_width();
         let (caption, _) = ui.allocate_exact_size(vec2(w, LS_CAPTION_H), Sense::hover());
         ui.painter().text(pos2(caption.min.x + LS_PAD, caption.center().y), Align2::LEFT_CENTER, slot.title(), regular(11.0), t.text_secondary);
+        // One drag for the whole type: a style can be dropped in another folder (it then takes
+        // that folder's name), so the groups aren't separate lists.
         let mut drag = crate::list_drag::ListDrag::in_order(ui, ("local_styles", slot.key()));
         let mut shown: Vec<&Style> = Vec::new();
+        let mut last = Rect::NOTHING;
         for (f, list) in &by_group {
             let level = if f.is_empty() { 0.0 } else { 1.0 };
             let key = format!("{}/{}", slot.key(), f);
             let open = !folded.contains(&key);
             if !f.is_empty() {
                 let w = ui.available_width();
-                let (band, resp) = ui.allocate_exact_size(vec2(w, LS_ROW_H), Sense::click());
-                let r = inset_row(band);
+                let (row, resp) = ui.allocate_exact_size(vec2(w, LS_ROW_H), Sense::click());
+                let r = inset_row(row);
                 let x = icon_x(r, 0.0);
                 let text_r = Rect::from_min_max(pos2(x + LS_STEP, r.min.y + 2.0), pos2(r.max.x - LS_TRAIL, r.max.y - 2.0));
                 if renaming.as_deref() == Some(*f) {
@@ -1271,8 +1297,9 @@ pub fn local_styles(app: &mut FigApp, ui: &mut Ui, doc: &Document) {
                 let index = shown.len();
                 shown.push(s);
                 let w = ui.available_width();
-                let (band, resp) = ui.allocate_exact_size(vec2(w, LS_ROW_H), Sense::click_and_drag());
-                let r = inset_row(band);
+                let (row, resp) = ui.allocate_exact_size(vec2(w, LS_ROW_H), Sense::click_and_drag());
+                last = row;
+                let r = inset_row(row);
                 if resp.hovered() {
                     ui.painter().rect_filled(r, CornerRadius::same(5), t.hover);
                 }
@@ -1324,8 +1351,13 @@ pub fn local_styles(app: &mut FigApp, ui: &mut Ui, doc: &Document) {
                 });
             }
         }
-        if let Some(q) = drag.finish(ui).and_then(|(from, to)| drop_move(&shown, from, to)) {
-            run = Some(("style.move", q));
+        // The whole type group is a target — its caption and its folders' headers included — so
+        // its first and last rows are as easy to reach as the ones between.
+        if !shown.is_empty() {
+            let area = Rect::from_min_max(pos2(last.min.x, caption.min.y), pos2(last.max.x, last.max.y + LS_ROW_H / 2.0));
+            if let Some(q) = drag.bounds(area).line_inset(0.0).finish(ui).and_then(|(from, to)| drop_move(doc, &shown, from, to)) {
+                run = Some(("style.move", q));
+            }
         }
     }
     if groups > 0 {

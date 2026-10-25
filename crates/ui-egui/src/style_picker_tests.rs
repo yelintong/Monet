@@ -193,7 +193,7 @@ fn a_click_in_the_colour_picker_keeps_the_style_editor_open() {
 }
 
 #[test]
-fn local_style_drops_move_into_the_folder_above() {
+fn local_style_drops_land_in_the_folder_below() {
     let st = |id: &str, name: &str| Style {
         id: id.into(),
         name: name.into(),
@@ -202,14 +202,21 @@ fn local_style_drops_move_into_the_folder_above() {
         bound: Default::default(),
     };
     let (a, b, c) = (st("a", "Top"), st("b", "Brand/One"), st("c", "Brand/Two"));
+    let mut doc = Document::new("d");
+    doc.styles = vec![a.clone(), b.clone(), c.clone()];
     let shown = [&a, &b, &c];
-    // `Top` dropped between One and Two: into Brand, before Two.
-    assert_eq!(drop_move(&shown, 0, 1), Some(json!({"styles": ["a"], "folder": "Brand", "before": "c"})));
-    // Two dropped at the top: the folder of the style below it (none), before Top.
-    assert_eq!(drop_move(&shown, 2, 0), Some(json!({"styles": ["c"], "folder": "", "before": "a"})));
-    // One dropped last: Brand, at the end.
-    assert_eq!(drop_move(&shown, 1, 2), Some(json!({"styles": ["b"], "folder": "Brand"})));
-    assert_eq!(drop_move(&shown, 5, 0), None);
+    // `Top` dropped between One and Two: the line is in Brand's rows, so it joins Brand.
+    assert_eq!(drop_move(&doc, &shown, 0, 1), Some(json!({"styles": ["a"], "before": "c", "name": "Brand/Top"})));
+    // Two dropped above Top: out of Brand, before Top.
+    assert_eq!(drop_move(&doc, &shown, 2, 0), Some(json!({"styles": ["c"], "before": "a", "name": "Two"})));
+    // One dropped last: the row above gives the folder, so it stays in Brand, at the end.
+    assert_eq!(drop_move(&doc, &shown, 1, 2), Some(json!({"styles": ["b"]})));
+    // A folder that already has that last part numbers it instead of repeating the name.
+    let (d, e) = (st("d", "Other/One"), st("e", "Brand/Three"));
+    doc.styles = vec![b.clone(), e.clone(), d.clone()];
+    let shown = [&b, &e, &d];
+    assert_eq!(drop_move(&doc, &shown, 2, 1), Some(json!({"styles": ["d"], "before": "e", "name": "Brand/One 2"})));
+    assert_eq!(drop_move(&doc, &shown, 5, 0), None);
 }
 
 #[test]
