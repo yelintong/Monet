@@ -324,7 +324,7 @@ fn pages(app: &mut FigApp, ui: &mut Ui) {
                 }
             });
         }
-        reorder.finish(ui)
+        reorder.finish(ui).map(crate::list_drag::Dropped::pair)
     });
     if current_row_rendered {
         app.ui.pages_seen_page = Some(page_key);

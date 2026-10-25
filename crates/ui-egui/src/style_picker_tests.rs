@@ -193,7 +193,7 @@ fn a_click_in_the_colour_picker_keeps_the_style_editor_open() {
 }
 
 #[test]
-fn local_style_drops_land_in_the_folder_below() {
+fn local_style_drops_join_the_folder_the_line_is_in() {
     let st = |id: &str, name: &str| Style {
         id: id.into(),
         name: name.into(),
@@ -206,17 +206,23 @@ fn local_style_drops_land_in_the_folder_below() {
     doc.styles = vec![a.clone(), b.clone(), c.clone()];
     let shown = [&a, &b, &c];
     // `Top` dropped between One and Two: the line is in Brand's rows, so it joins Brand.
-    assert_eq!(drop_move(&doc, &shown, 0, 1), Some(json!({"styles": ["a"], "before": "c", "name": "Brand/Top"})));
+    assert_eq!(drop_move(&doc, &shown, 0, 1, false), Some(json!({"styles": ["a"], "before": "c", "name": "Brand/Top"})));
     // Two dropped above Top: out of Brand, before Top.
-    assert_eq!(drop_move(&doc, &shown, 2, 0), Some(json!({"styles": ["c"], "before": "a", "name": "Two"})));
+    assert_eq!(drop_move(&doc, &shown, 2, 0, false), Some(json!({"styles": ["c"], "before": "a", "name": "Two"})));
     // One dropped last: the row above gives the folder, so it stays in Brand, at the end.
-    assert_eq!(drop_move(&doc, &shown, 1, 2), Some(json!({"styles": ["b"]})));
+    assert_eq!(drop_move(&doc, &shown, 1, 2, false), Some(json!({"styles": ["b"]})));
+    // Two dropped on the top half of Brand's header: that ends Top's rows, so it joins Top (and
+    // loses the folder from its name) without moving.
+    assert_eq!(drop_move(&doc, &shown, 2, 1, true), Some(json!({"styles": ["c"], "before": "b", "name": "Two"})));
     // A folder that already has that last part numbers it instead of repeating the name.
     let (d, e) = (st("d", "Other/One"), st("e", "Brand/Three"));
     doc.styles = vec![b.clone(), e.clone(), d.clone()];
     let shown = [&b, &e, &d];
-    assert_eq!(drop_move(&doc, &shown, 2, 1), Some(json!({"styles": ["d"], "before": "e", "name": "Brand/One 2"})));
-    assert_eq!(drop_move(&doc, &shown, 5, 0), None);
+    assert_eq!(drop_move(&doc, &shown, 2, 1, false), Some(json!({"styles": ["d"], "before": "e", "name": "Brand/One 2"})));
+    // The last row of a group dropped on the end of the group above joins it in place: nothing
+    // follows, so only its name changes.
+    assert_eq!(drop_move(&doc, &shown, 2, 2, true), Some(json!({"styles": ["d"], "name": "Brand/One 2"})));
+    assert_eq!(drop_move(&doc, &shown, 5, 0, false), None);
 }
 
 #[test]

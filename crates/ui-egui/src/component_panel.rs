@@ -307,7 +307,7 @@ fn properties_ui(app: &mut FigApp, ui: &mut Ui, doc: &Document, owner: NodeId) {
         }
         drag.row(ui, i, header, header.with_max_y(ui.cursor().min.y.max(header.max.y)), || k.clone());
     }
-    if let Some((from, to)) = drag.finish(ui)
+    if let Some((from, to)) = drag.finish(ui).map(crate::list_drag::Dropped::pair)
         && let Some((k, _)) = variants.get(from)
     {
         app.run("component.editProperty", json!({"id": owner, "name": k, "index": to}));

@@ -1132,16 +1132,19 @@ fn moved_name(doc: &Document, moved: &Style, folder: &str) -> String {
 /// `style.move` for the shown style `from` dropped at shown position `to` (`shown` in display
 /// order): before the style that ends up under it (at the end when nothing follows).
 ///
-/// It joins the folder of the style it lands above — the folder whose rows the insertion line is
-/// in — so it stays where the line showed. A folder is part of a style's name, so joining one
+/// It joins the folder of the row it lands next to — the folder whose rows the insertion line is
+/// in — so it stays where the line showed. On a folder's header the side of the line says which
+/// folder that is: over the group above's last row (`above`), the style joins the group above,
+/// even though it keeps its place in the list. A folder is part of a style's name, so joining one
 /// renames the style; a name the folder already has is numbered ("Sunset/600 2") rather than
 /// repeated.
-fn drop_move(doc: &Document, shown: &[&Style], from: usize, to: usize) -> Option<Value> {
+fn drop_move(doc: &Document, shown: &[&Style], from: usize, to: usize, above: bool) -> Option<Value> {
     let moved = shown.get(from)?;
     let rest: Vec<&Style> = shown.iter().enumerate().filter(|(i, _)| *i != from).map(|(_, s)| *s).collect();
     let below = rest.get(to).copied();
-    // At the end of the list the row above gives the folder.
-    let target = below.or_else(|| to.checked_sub(1).and_then(|i| rest.get(i)).copied())?;
+    // At the end of the list, or above a header, the row above gives the folder.
+    let up = to.checked_sub(1).and_then(|i| rest.get(i)).copied();
+    let target = if above { up } else { below.or(up) }?;
     let name = moved_name(doc, moved, folder(&target.name));
     let mut q = json!({"styles": [moved.id]});
     if let Some(b) = below {
@@ -1293,6 +1296,11 @@ pub fn local_styles(app: &mut FigApp, ui: &mut Ui, doc: &Document) {
             if !open {
                 continue;
             }
+            // The folder's header sits between the rows above and this folder's first row: a drop
+            // there has to say which side it belongs to (see `ListDrag::break_at`).
+            if !f.is_empty() && !shown.is_empty() {
+                drag.break_at(shown.len());
+            }
             for s in list {
                 let index = shown.len();
                 shown.push(s);
@@ -1355,7 +1363,7 @@ pub fn local_styles(app: &mut FigApp, ui: &mut Ui, doc: &Document) {
         // its first and last rows are as easy to reach as the ones between.
         if !shown.is_empty() {
             let area = Rect::from_min_max(pos2(last.min.x, caption.min.y), pos2(last.max.x, last.max.y + LS_ROW_H / 2.0));
-            if let Some(q) = drag.bounds(area).line_inset(0.0).finish(ui).and_then(|(from, to)| drop_move(doc, &shown, from, to)) {
+            if let Some(q) = drag.bounds(area).line_inset(0.0).finish(ui).and_then(|d| drop_move(doc, &shown, d.from, d.to, d.above)) {
                 run = Some(("style.move", q));
             }
         }
