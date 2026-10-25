@@ -245,6 +245,7 @@ mod variables_rename_tests;
 #[cfg(test)]
 mod variants_discovery_tests;
 #[cfg(test)]
+#[cfg(test)]
 mod vector_panel_tests;
 #[cfg(test)]
 mod vector_tail_ui_tests;
@@ -896,6 +897,12 @@ pub struct FigApp {
 pub type Done = Box<dyn FnOnce(&mut FigApp, &egui::Context, Value)>;
 
 impl FigApp {
+    /// Open the colour/value picker for `target`; `top` anchors it under the control that opened it.
+    pub fn open_picker(&mut self, target: crate::colorpicker::PickerTarget, top: Option<f32>) {
+        self.ui.picker = Some(target);
+        self.ui.picker_y = top;
+    }
+
     pub fn new(session: Session, services: Box<dyn Services>) -> Self {
         // The main window's panels open as wide as they were left.
         let (left_width, right_width) = session.prefs.panel_widths;
@@ -1779,17 +1786,17 @@ impl FigApp {
                 });
         }
         egui::CentralPanel::default().frame(egui::Frame::NONE.fill(t.canvas)).show(ui, |ui| {
-            let worker = self.worker.take();
-            let mut worker = worker.unwrap_or_else(|| render_worker::Worker::new(ctx.clone()));
-            canvas::show(self, ui, &mut worker);
-            self.worker = Some(worker);
-            if !hidden {
-                ui.scope_builder(egui::UiBuilder::new().id_salt("toolbar"), |ui| {
-                    a11y::container(ui, egui::accesskit::Role::Toolbar, i18n::tr("Tools"));
-                    toolbar::show(self, ui);
-                });
-            }
-        });
+                let worker = self.worker.take();
+                let mut worker = worker.unwrap_or_else(|| render_worker::Worker::new(ctx.clone()));
+                canvas::show(self, ui, &mut worker);
+                self.worker = Some(worker);
+                if !hidden {
+                    ui.scope_builder(egui::UiBuilder::new().id_salt("toolbar"), |ui| {
+                        a11y::container(ui, egui::accesskit::Role::Toolbar, i18n::tr("Tools"));
+                        toolbar::show(self, ui);
+                    });
+                }
+            });
         // The panels' edges, over the canvas and the panels (drawn after them: they take the press).
         for (name, x, shown, grows) in edges {
             if let Some(w) = Self::panel_edge(ui, name, x, rows, shown, grows) {
@@ -1834,13 +1841,6 @@ impl FigApp {
         // changed), from the window with its file.
         let windows = &self.windows;
         self.session.live_sync_in(|uid| uid.map_or(0, |u| windows.of(u)) == windows.current);
-    }
-
-    /// Opens the colour picker for `target`, its top on the control that opened it (`top`, screen
-    /// points) — a None keeps the picker at its usual height.
-    pub fn open_picker(&mut self, target: crate::colorpicker::PickerTarget, top: Option<f32>) {
-        self.ui.picker = Some(target);
-        self.ui.picker_y = top;
     }
 
     /// Clicking the control that opened the colour picker closes it again; clicking another opens
