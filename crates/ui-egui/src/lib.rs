@@ -245,6 +245,7 @@ mod variables_rename_tests;
 #[cfg(test)]
 mod variants_discovery_tests;
 #[cfg(test)]
+mod variables_view_tests;
 #[cfg(test)]
 mod vector_panel_tests;
 #[cfg(test)]
@@ -1729,6 +1730,10 @@ impl FigApp {
             self.ui.shortcuts_panel = false;
             dialogs::keys(self, &ctx);
             dialogs::show(self, &ctx);
+            // Its full view needs the editor behind it; the floating panel shows here too.
+            if !self.ui.variables.as_ref().is_some_and(|e| e.presentation == variables_panel::Presentation::Full) {
+                variables_panel::show(self, &ctx);
+            }
             self.toast_ui(&ctx);
             windows::requests(self, &ctx);
             return;
@@ -1746,7 +1751,9 @@ impl FigApp {
                 });
         }
         // The panels are as wide as asked, less in a window too small for them and the canvas.
-        let left_open = !hidden && !self.ui.left_collapsed;
+        // The Variables editor's full view takes their place (and the canvas's): the rail stays.
+        let variables_full = !hidden && self.ui.variables.as_ref().is_some_and(|e| e.presentation == variables_panel::Presentation::Full);
+        let left_open = !hidden && !self.ui.left_collapsed && !variables_full;
         let (left_w, right_w) = fit_panels(ui.available_width(), left_open.then_some(self.ui.left_width), right_open.then_some(self.ui.right_width));
         let rows = ui.available_rect_before_wrap().y_range();
         let mut edges: Vec<(&str, f32, f32, f32)> = Vec::new();
@@ -1767,7 +1774,7 @@ impl FigApp {
                     layers::left_panel(self, ui)
                 });
         }
-        if right_open {
+        if right_open && !variables_full {
             edges.push(("right", ui.available_rect_before_wrap().max.x - right_w, right_w, -1.0));
             egui::Panel::right("right_panel")
                 .resizable(false)
@@ -1785,7 +1792,11 @@ impl FigApp {
                     right::right_panel(self, ui)
                 });
         }
-        egui::CentralPanel::default().frame(egui::Frame::NONE.fill(t.canvas)).show(ui, |ui| {
+        if variables_full {
+            // The Variables editor, full: it takes the panels' and the canvas's area.
+            variables_panel::full(self, &ctx, ui.available_rect_before_wrap());
+        } else {
+            egui::CentralPanel::default().frame(egui::Frame::NONE.fill(t.canvas)).show(ui, |ui| {
                 let worker = self.worker.take();
                 let mut worker = worker.unwrap_or_else(|| render_worker::Worker::new(ctx.clone()));
                 canvas::show(self, ui, &mut worker);
@@ -1797,6 +1808,7 @@ impl FigApp {
                     });
                 }
             });
+        }
         // The panels' edges, over the canvas and the panels (drawn after them: they take the press).
         for (name, x, shown, grows) in edges {
             if let Some(w) = Self::panel_edge(ui, name, x, rows, shown, grows) {
@@ -1828,6 +1840,12 @@ impl FigApp {
         self.end_unwanted_text_preview(&ctx);
         self.end_pen_outside_design();
         dialogs::show(self, &ctx);
+        // The Variables editor, drawn once per frame: its full view above (where the panels were),
+        // its floating panel here (its form as this frame began; the header's arrow switches it
+        // for the next one).
+        if !variables_full {
+            variables_panel::show(self, &ctx);
+        }
         self.toast_ui(&ctx);
         // A rename started after the layers panel drew (Cmd/Ctrl+R, a double-click) opens its field
         // next frame.

@@ -1115,7 +1115,6 @@ fn paints(app: &mut FigApp, ui: &mut Ui, doc: &Document, sel: &[NodeId], fills: 
     let header_x = ui.cursor().min.x;
     let header_w = ui.available_width();
     let (add_at, header_y) = (buttons.len() - 1, ui.cursor().min.y);
-    let header_top = header_y;
     if let Some(i) = widgets::section_header(ui, title, &buttons, empty) {
         if i == add_at {
             // The new paint goes on top; open its picker. A mixed selection has no one index to edit.
