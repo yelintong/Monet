@@ -35,37 +35,34 @@ const TILE: egui::Vec2 = egui::vec2(54.0, 44.0);
 /// Largest size a text style's name previews at in the list (the grid's "Ag" goes to 24).
 const LIST_PREVIEW_MAX: f64 = 16.0;
 
-// The Design panel's Local styles list. Its rows sit inset from the panel's edges with the hover
-// band rounded, a style row is 32 pt tall, a folder folds from its chevron, and each type's group
-// is a 11 pt caption with fixed gaps around it.
+// The Design panel's Local styles list: rows sit inset from the panel's edges with the hover band
+// rounded, a folder folds from its chevron, and each type's group opens with a caption row. The
+// icon of a row (a colour swatch, a text style's "Ag", a folder's chevron) takes a 16 pt box and
+// the name follows 8 pt after it; a nesting level steps in by that same 24 pt, so a folder's
+// styles line their icons up under its name.
 /// Side inset of a row: the hover band starts and ends here, not at the panel's edges.
 const LS_INSET: f32 = 8.0;
-/// Height of a style row.
-const LS_ROW_H: f32 = 32.0;
-/// Height of a folder row.
-const LS_FOLDER_H: f32 = 24.0;
-/// A folder's chevron: its centre from the row's left edge and its box.
-const LS_CHEVRON_CX: f32 = 14.0;
+/// Where a row's content (and a caption's text) starts from the panel's edge.
+const LS_PAD: f32 = 16.0;
+/// Height of a group's caption row ("Text styles").
+const LS_CAPTION_H: f32 = 32.0;
+/// Height of a folder or style row.
+const LS_ROW_H: f32 = 24.0;
+/// A row's icon box, and the gap between it and the name.
+const LS_ICON: f32 = 16.0;
+const LS_ICON_GAP: f32 = 8.0;
+/// How far a nesting level steps in: an icon box and its gap, so a child's icon sits under the
+/// folder's name.
+const LS_STEP: f32 = LS_ICON + LS_ICON_GAP;
+/// A folder's chevron, inside its 16 pt box.
 const LS_CHEVRON: f32 = 12.0;
-/// A folder's name, and the indent its styles take, from the row's left edge.
-const LS_FOLDER_X: f32 = 28.0;
-const LS_INDENT: f32 = 12.0;
-/// Gap above the first group's caption and above every later one; between a caption and its rows.
+/// Gap above the first group's caption, and above every later one.
 const LS_FIRST_GAP: f32 = 8.0;
-const LS_GROUP_GAP: f32 = 14.0;
-const LS_CAPTION_GAP: f32 = 9.0;
+const LS_GROUP_GAP: f32 = 16.0;
 /// Gap under the whole list.
-const LS_BOTTOM_PAD: f32 = 13.0;
-/// A colour style's swatch: its centre from the row's left edge and its radius.
-const LS_SWATCH_CX: f32 = 16.0;
-const LS_SWATCH_R: f32 = 8.0;
-/// Where a colour style's name starts.
-const LS_LABEL_X: f32 = 33.0;
-/// A text style's "Ag" sample, and where its name starts.
-const LS_AG_X: f32 = 10.0;
-const LS_NAME_X: f32 = 36.0;
-/// A row's trailing text (a text style's size and line height) ends this far from its right edge.
-const LS_TRAIL: f32 = 10.0;
+const LS_BOTTOM_PAD: f32 = 16.0;
+/// A row's trailing text (a text style's size and line height) ends this far from the band's edge.
+const LS_TRAIL: f32 = 8.0;
 
 /// A style slot on a layer: what a style picker lists and what a style chip shows.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1149,6 +1146,11 @@ fn inset_row(row: Rect) -> Rect {
     Rect::from_min_max(pos2(row.min.x + LS_INSET, row.min.y), pos2(row.max.x - LS_INSET, row.max.y))
 }
 
+/// Where a row's icon box starts: the list's padding plus one step per nesting level.
+fn icon_x(row: Rect, level: f32) -> f32 {
+    row.min.x + (LS_PAD - LS_INSET) + level * LS_STEP
+}
+
 /// A style's colour as a round swatch centred at `c`: solid, or a gradient spread around the rim.
 fn paint_dot(ui: &Ui, c: egui::Pos2, r: f32, paint: &Paint) {
     let t = Tokens::get(ui.ctx());
@@ -1213,20 +1215,20 @@ pub fn local_styles(app: &mut FigApp, ui: &mut Ui, doc: &Document) {
         ui.add_space(if groups == 0 { LS_FIRST_GAP } else { LS_GROUP_GAP });
         groups += 1;
         let w = ui.available_width();
-        let (caption, _) = ui.allocate_exact_size(vec2(w, 16.0), Sense::hover());
-        ui.painter().text(pos2(caption.min.x + widgets::PAD, caption.center().y), Align2::LEFT_CENTER, slot.title(), regular(11.0), t.text_secondary);
-        ui.add_space(LS_CAPTION_GAP);
+        let (caption, _) = ui.allocate_exact_size(vec2(w, LS_CAPTION_H), Sense::hover());
+        ui.painter().text(pos2(caption.min.x + LS_PAD, caption.center().y), Align2::LEFT_CENTER, slot.title(), regular(11.0), t.text_secondary);
         let mut drag = crate::list_drag::ListDrag::in_order(ui, ("local_styles", slot.key()));
         let mut shown: Vec<&Style> = Vec::new();
         for (f, list) in &by_group {
-            let indent = if f.is_empty() { 0.0 } else { LS_INDENT };
+            let level = if f.is_empty() { 0.0 } else { 1.0 };
             let key = format!("{}/{}", slot.key(), f);
             let open = !folded.contains(&key);
             if !f.is_empty() {
                 let w = ui.available_width();
-                let (band, resp) = ui.allocate_exact_size(vec2(w, LS_FOLDER_H), Sense::click());
+                let (band, resp) = ui.allocate_exact_size(vec2(w, LS_ROW_H), Sense::click());
                 let r = inset_row(band);
-                let text_r = Rect::from_min_max(pos2(r.min.x + LS_FOLDER_X, r.min.y + 2.0), pos2(r.max.x - LS_TRAIL, r.max.y - 2.0));
+                let x = icon_x(r, 0.0);
+                let text_r = Rect::from_min_max(pos2(x + LS_STEP, r.min.y + 2.0), pos2(r.max.x - LS_TRAIL, r.max.y - 2.0));
                 if renaming.as_deref() == Some(*f) {
                     // Focused as it is first drawn: a focus asked for before its field is drawn
                     // isn't in the screen reader tree (UI Automation aborts the app, #224).
@@ -1242,17 +1244,10 @@ pub fn local_styles(app: &mut FigApp, ui: &mut Ui, doc: &Document) {
                     if resp.hovered() {
                         ui.painter().rect_filled(r, CornerRadius::same(5), t.hover);
                     }
-                    let chevron = Rect::from_center_size(pos2(r.min.x + LS_CHEVRON_CX, r.center().y), vec2(LS_CHEVRON, LS_CHEVRON));
+                    let chevron = Rect::from_center_size(pos2(x + LS_ICON / 2.0, r.center().y), vec2(LS_CHEVRON, LS_CHEVRON));
                     icons::paint(ui.painter(), chevron, if open { Icon::Chevron } else { Icon::ChevronRight }, t.icon_secondary);
                     let resp = resp.tip(*f);
-                    crate::bidi::paint_name(
-                        ui.painter(),
-                        pos2(r.min.x + LS_FOLDER_X, r.center().y),
-                        f,
-                        regular(11.0),
-                        t.text_secondary,
-                        text_r.width(),
-                    );
+                    crate::bidi::paint_name(ui.painter(), pos2(x + LS_STEP, r.center().y), f, regular(11.0), t.text_secondary, text_r.width());
                     crate::right::context_popup(&resp).show(|ui| {
                         if crate::right::menu_item(ui, tr("Rename folder"), "") {
                             ui.data_mut(|d| d.insert_temp(folder_rename_id(), f.to_string()));
@@ -1281,18 +1276,18 @@ pub fn local_styles(app: &mut FigApp, ui: &mut Ui, doc: &Document) {
                 if resp.hovered() {
                     ui.painter().rect_filled(r, CornerRadius::same(5), t.hover);
                 }
-                let mut name_x = r.min.x + LS_NAME_X + indent;
+                let x = icon_x(r, level);
+                let icon_r = Rect::from_min_size(pos2(x, r.center().y - LS_ICON / 2.0), vec2(LS_ICON, LS_ICON));
+                let name_x = x + LS_STEP;
                 let mut name_w = r.max.x - LS_TRAIL - name_x;
                 match &s.kind {
                     StyleKind::Paint { paints } => {
                         let p = paints.last().cloned().unwrap_or_else(|| Paint::solid(figcraft_color::Color::TRANSPARENT));
-                        paint_dot(ui, pos2(r.min.x + LS_SWATCH_CX + indent, r.center().y), LS_SWATCH_R, &p);
-                        name_x = r.min.x + LS_LABEL_X + indent;
-                        name_w = r.max.x - LS_TRAIL - name_x;
+                        paint_dot(ui, icon_r.center(), LS_ICON / 2.0, &p);
                     }
                     _ => match text_def(s) {
                         Some(def) => {
-                            ui.painter().text(pos2(r.min.x + LS_AG_X + indent, r.center().y), Align2::LEFT_CENTER, "Ag", semibold(11.0), t.text);
+                            ui.painter().text(pos2(x, r.center().y), Align2::LEFT_CENTER, "Ag", semibold(11.0), t.text);
                             let meta = ui.painter().text(
                                 pos2(r.max.x - LS_TRAIL, r.center().y),
                                 Align2::RIGHT_CENTER,
@@ -1302,12 +1297,7 @@ pub fn local_styles(app: &mut FigApp, ui: &mut Ui, doc: &Document) {
                             );
                             name_w -= meta.width() + 8.0;
                         }
-                        None => icons::paint(
-                            ui.painter(),
-                            Rect::from_center_size(pos2(r.min.x + LS_SWATCH_CX + indent, r.center().y), vec2(16.0, 16.0)),
-                            slot.icon(),
-                            t.icon_secondary,
-                        ),
+                        None => icons::paint(ui.painter(), icon_r, slot.icon(), t.icon_secondary),
                     },
                 }
                 crate::bidi::paint_name(ui.painter(), pos2(name_x, r.center().y), leaf(&s.name), regular(11.0), t.text, name_w.max(0.0));
