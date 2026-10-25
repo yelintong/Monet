@@ -90,7 +90,7 @@ const GROUPS: &[Group] = &[
         tools: &[(ToolId::Pen, Icon::Pen), (ToolId::Pencil, Icon::Pencil), (ToolId::ShapeBuilder, Icon::ShapeBuilder)],
         options: Options::None,
     },
-    Group { key: "text", name: tr_noop("Text"), tools: &[(ToolId::Text, Icon::Text)], options: Options::None },
+    Group { key: "text", name: tr_noop("Text"), tools: &[(ToolId::Text, Icon::Text), (ToolId::TextOnPath, Icon::TextOnPath)], options: Options::None },
     Group { key: "comment", name: tr_noop("Comment"), tools: &[(ToolId::Comment, Icon::Comment)], options: Options::None },
 ];
 

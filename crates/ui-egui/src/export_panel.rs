@@ -40,8 +40,9 @@ pub fn section(app: &mut FigApp, ui: &mut Ui, doc: &Document, sel: &[NodeId]) {
     if mixed {
         widgets::note(ui, tr("Click + to replace mixed content"), t.text_secondary);
     }
+    let text = sel.iter().all(|i| matches!(doc.node(*i).map(|n| &n.kind), Some(NodeKind::Text(_))));
     for (i, e) in list.iter().enumerate() {
-        setting_row(app, ui, &ids, i, e);
+        setting_row(app, ui, &ids, i, e, text);
     }
     let jobs = export_jobs(doc, sel);
     if jobs.is_empty() {
@@ -61,8 +62,9 @@ pub fn section(app: &mut FigApp, ui: &mut Ui, doc: &Document, sel: &[NodeId]) {
 }
 
 /// One export setting: size (typed or picked; images only, SVG and PDF are vector), suffix,
-/// format, advanced options and remove; a PDF's print settings under it.
-fn setting_row(app: &mut FigApp, ui: &mut Ui, ids: &[NodeId], i: usize, e: &ExportSetting) {
+/// format, advanced options and remove; a PDF's print settings under it. `text`: every layer in
+/// `ids` is a text layer.
+fn setting_row(app: &mut FigApp, ui: &mut Ui, ids: &[NodeId], i: usize, e: &ExportSetting, text: bool) {
     row(ui, 32.0, |ui| {
         // Tighter spacing so the advanced options and remove buttons fit beside the fields.
         ui.spacing_mut().item_spacing.x = 4.0;
@@ -98,7 +100,7 @@ fn setting_row(app: &mut FigApp, ui: &mut Ui, ids: &[NodeId], i: usize, e: &Expo
             .width(216.0)
             .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
             .show(|ui| {
-                if let Some(mut params) = advanced_options(ui, e) {
+                if let Some(mut params) = advanced_options(ui, e, text) {
                     params["ids"] = json!(ids);
                     params["index"] = json!(i);
                     app.run("export.update", params);
@@ -113,17 +115,21 @@ fn setting_row(app: &mut FigApp, ui: &mut Ui, ids: &[NodeId], i: usize, e: &Expo
     }
 }
 
-/// A setting's advanced options: contents only and include bounding box, and for SVG outline
-/// text, the id attribute and simplified strokes. Returns the changed option as command params.
-fn advanced_options(ui: &mut Ui, e: &ExportSetting) -> Option<Value> {
+/// A setting's advanced options: ignore overlapping layers (`contentsOnly`), include bounding box
+/// for text layers (and for any setting that has it on, so it can be turned off), and for SVG
+/// outline text, the id attribute and simplified strokes. Returns the changed option as command
+/// params.
+fn advanced_options(ui: &mut Ui, e: &ExportSetting, text: bool) -> Option<Value> {
     let mut out = None;
     let mut option = |ui: &mut Ui, key: &str, on: bool, label: &str| {
         if widgets::checkbox(ui, on, label) {
             out = Some(json!({ key: !on }));
         }
     };
-    option(ui, "contentsOnly", e.contents_only, tr("Contents only"));
-    option(ui, "includeBoundingBox", e.include_bounding_box, tr("Include bounding box"));
+    option(ui, "contentsOnly", e.contents_only, tr("Ignore overlapping layers"));
+    if text || e.include_bounding_box {
+        option(ui, "includeBoundingBox", e.include_bounding_box, tr("Include bounding box"));
+    }
     if e.format == ExportFormat::Svg {
         option(ui, "svgOutlineText", e.svg_outline_text, tr("Outline text"));
         option(ui, "svgIdAttribute", e.svg_id_attribute, tr("Include id attribute"));

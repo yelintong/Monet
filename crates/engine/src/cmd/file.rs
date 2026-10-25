@@ -941,14 +941,37 @@ pub fn export_area(doc: &Document, ids: &[NodeId], setting: &ExportSetting) -> O
         .reduce(|a, b| a.union(b))
 }
 
-/// What an export of `ids` draws, bottom to top: the layers themselves, or (contents only off,
-/// and always for slices) every top-level layer of their page, so whatever shows in the area is in.
-fn drawn_layers(doc: &Document, ids: &[NodeId], setting: &ExportSetting) -> Vec<NodeId> {
-    let slice = ids.iter().any(|i| doc.node(*i).is_some_and(|n| matches!(n.kind, NodeKind::Slice)));
-    match ids.first().and_then(|i| doc.page_of(*i)).and_then(|p| doc.node(p)) {
-        Some(page) if slice || !setting.contents_only => page.children.clone(),
-        _ => super::edit::z_sorted(doc, ids),
+/// What an export of `ids` draws, bottom to top: the layers themselves, or (contents only off)
+/// every top-level layer of their page, so whatever shows in the area is in. A slice paints nothing
+/// itself: with contents only on, a slice inside a frame or group draws that frame or group, and a
+/// slice anywhere else draws every top-level layer of its page.
+pub fn drawn_layers(doc: &Document, ids: &[NodeId], setting: &ExportSetting) -> Vec<NodeId> {
+    let Some(page) = ids.first().and_then(|i| doc.page_of(*i)).and_then(|p| doc.node(p)) else {
+        return super::edit::z_sorted(doc, ids);
+    };
+    if !setting.contents_only {
+        return page.children.clone();
     }
+    let mut own = Vec::with_capacity(ids.len());
+    for &i in ids {
+        if !doc.node(i).is_some_and(|n| matches!(n.kind, NodeKind::Slice)) {
+            own.push(i);
+            continue;
+        }
+        match slice_container(doc, i) {
+            Some(c) => own.push(c),
+            None => return page.children.clone(),
+        }
+    }
+    own.sort_unstable();
+    own.dedup();
+    super::edit::z_sorted(doc, &super::edit::roots(doc, &own))
+}
+
+/// The frame or group a slice sits in: None on the page or in a section.
+fn slice_container(doc: &Document, slice: NodeId) -> Option<NodeId> {
+    let parent = doc.node(slice)?.parent?;
+    doc.node(parent).is_some_and(|p| p.kind.is_frame_like() || matches!(p.kind, NodeKind::Group)).then_some(parent)
 }
 
 /// [`export_bytes`] with an export setting's format and options (its size is `scale`: see

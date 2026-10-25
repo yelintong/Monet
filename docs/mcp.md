@@ -315,7 +315,7 @@ Or in a project's `.mcp.json`:
 | `inspect_document {depth, allPages}` | The document as JSON (layer tree, styles, selection, history). |
 | `get_node {id, depth}` | One layer as JSON; `pluginData` (`{key: value}`, values as strings) when the layer or page has layer data written with `set_properties {props: {pluginData}}`. |
 | `select {ids}` | Replace the selection (`[]` deselects). |
-| `export {ids, format, scale \| size, path?, bleed?, cropMarks?, bleedMarks?, cmyk?, contentsOnly?, includeBoundingBox?, svgOutlineText?, svgIdAttribute?, svgSimplifyStroke?}` | png, jpg, svg, webp, pdf, or `fig`: the whole file as `.fig`, experimental (see Exporting `.fig` files below); `size` is `2x`, `512w` or `512h`. The image covers what the layers paint (shadows towards their offset, strokes, unclipped children, a mask group's mask; hidden layers take no room; a slice is its area with everything under it); `contentsOnly: false` also draws every other layer showing in that area, `includeBoundingBox` exports the layers' own boxes; SVG: `svgOutlineText: false` keeps `<text>`, `svgIdAttribute` writes unique ids from layer names, `svgSimplifyStroke: false` writes every stroke as an outline. The same options go in export settings (`export.add` / `export.update`). PDF: frames one page each (sized in points), anything else together on one page; print options: `bleed` (points or a length like `"3mm"`, `"0.125in"`), crop and bleed marks, CMYK colour (see Exports below), also taken by `file.export`, `file.exportLayers`, `file.exportFramesPdf` and stored per export setting by `export.add` / `export.update`; `run_command` `file.exportFramesPdf {page?, path?}` writes every top-level frame of a page. Without `path`, images come back as MCP image content, SVG as text. Layers' own export settings: `run_command` with `export.add` / `export.update {index, size?, suffix?, format?}` / `export.remove` and `file.exportLayers {ids?, dir?, assets?}` (every layer once per setting, named `<layer><suffix>.<format>`, a slash in a layer name making a folder; `assets: true` exports the Inspect tab's assets instead: icons as SVG, images as PNG). |
+| `export {ids, format, scale \| size, path?, bleed?, cropMarks?, bleedMarks?, cmyk?, contentsOnly?, includeBoundingBox?, svgOutlineText?, svgIdAttribute?, svgSimplifyStroke?}` | png, jpg, svg, webp, pdf, or `fig`: the whole file as `.fig`, experimental (see Exporting `.fig` files below); `size` is `2x`, `512w` or `512h`. The image covers what the layers paint (shadows towards their offset, strokes, unclipped children, a mask group's mask; hidden layers take no room; a slice is its area with everything under it, or only the frame or group it sits in while `contentsOnly` is on); `contentsOnly: false` also draws every other layer showing in that area, `includeBoundingBox` exports the layers' own boxes; SVG: `svgOutlineText: false` keeps `<text>`, `svgIdAttribute` writes unique ids from layer names, `svgSimplifyStroke: false` writes every stroke as an outline. The same options go in export settings (`export.add` / `export.update`). PDF: frames one page each (sized in points), anything else together on one page; print options: `bleed` (points or a length like `"3mm"`, `"0.125in"`), crop and bleed marks, CMYK colour (see Exports below), also taken by `file.export`, `file.exportLayers`, `file.exportFramesPdf` and stored per export setting by `export.add` / `export.update`; `run_command` `file.exportFramesPdf {page?, path?}` writes every top-level frame of a page. Without `path`, images come back as MCP image content, SVG as text. Layers' own export settings: `run_command` with `export.add` / `export.update {index, size?, suffix?, format?}` / `export.remove` and `file.exportLayers {ids?, dir?, assets?}` (every layer once per setting, named `<layer><suffix>.<format>`, a slash in a layer name making a folder; `assets: true` exports the Inspect tab's assets instead: icons as SVG, images as PNG). |
 | `screenshot {ids?, scale?, maxSize?, window?}` | PNG of the page (with background) or of layers, scaled to fit `maxSize` (default 1600). `window: true` captures the app window in front when attached, a window id (see Windows below) that window. |
 | `open_file {path, variables?}` / `save_file {path?}` | Open `.figcraft`, `.json` (FigCraft JSON or REST API file JSON with its variables, see below), `.fig` (best effort, see below), `.svg` (see Importing SVG below) or an image; save as `.figcraft`. `open_file` returns `opened` (for a file opened anew, a `summary` of `name`, `pages`, `layers` and `images`, and `warnings` or `repairs`; a file that was already open just gives its `index`) and the document's `document` outline. |
 | `undo` / `redo` | Step through history. |
@@ -708,7 +708,10 @@ device, whether a click where nothing reacts briefly flashes the screen's hotspo
 interactions, on by default; also in the presenter's Options menu) and whether its Inspect panel
 shows the size, colours and typography of the layer under the pointer (also the Inspect button in
 its bar); the options are kept for later presentations (in the presenter Z cycles them and R
-restarts). The player's state is
+restarts). An Open link to an `http` or `https` address first shows a notice that the link leaves
+the prototype, with Open link, Cancel and "Don't show this again"; `proto.linkNotice {show?}`
+turns the notice on (the default) or off, kept with the desktop app's preferences (the web build
+keeps it until the page reloads). The player's state is
 in `inspect_ui` (`presenter`, `preview`: screen, scroll, `scale`, `zoom`, `pan`, the screen's
 `hotspots` and whether they are flashing, the `inspected` layer) when attached, and
 `ui.set {presentScroll: [x, y]}` scrolls its screen (see [control-protocol.md](control-protocol.md)).
@@ -919,6 +922,8 @@ click or drag across regions with `pointer` to merge, add `alt` to remove; `shap
 - **Text on a path**: `text.onPath {text?, path?, start?, flip?}` (default: the selected text layer
   and the other selected layer) puts a text layer on a vector's or shape's path: the text takes the
   path layer's place, transform and box, and the path layer is removed (`edit.undo` brings it back).
+  The text also takes the path layer's effects when it has any, and its fills when one of them
+  shows, each with its style and variable bindings; otherwise the text keeps its own.
   The baseline follows the path from `start` (0..1 of its length); the text's horizontal alignment
   places it there (left starts, centre centres, right ends at it); `flip` runs it on the other side
   the other way. Glyphs past an open path's end are hidden; a closed path (ellipse, rectangle) wraps
@@ -926,7 +931,12 @@ click or drag across regions with `pointer` to merge, add `alt` to remove; `shap
   them, `text.removeFromPath {ids?}` makes it plain auto-width text again. Resizing the layer
   scales the path. The text stays editable (`text.edit.*`, `type_text`); `get_node` shows
   `textPath {d (SVG path data in the layer's space), start, flip}`. Exports draw it as outlines
-  (PDF too: not selectable); underline and strikethrough aren't drawn on a path.
+  (PDF too: not selectable); underline and strikethrough aren't drawn on a path. With the tool
+  `tool.textOnPath`, a `pointer` press within 6 screen pixels of a shape's or vector's first
+  subpath puts a new, empty text layer on it, starting at the press, and starts typing: the text
+  also takes the path layer's constraints and effects, and its fills when one of them shows. Ending
+  the edit with nothing typed puts the path layer back with no undo step. Locked layers and layers
+  inside instances are skipped.
 - **Pattern fills**: `fill.pattern {source (layer id), ids?, index?, tile? (grid|horizontalHex|
   verticalHex), scale?, spacing? [x, y], align? (start|center|end), opacity?}` makes the fill at
   `index` (default the top one) the source layer repeated, at `scale` × its own size with `spacing`
@@ -1615,6 +1625,14 @@ Pass the returned target list to:
 - `selection.applyColorStyle {targets, style}` to apply a document paint style. As with `style.apply`,
   this replaces the matching node's entire fill/stroke list and links the style. Text ranges copy
   resolved paints and keep their typography, without a paint-style link.
+- `selection.bindColorVariable {targets, variable}` to bind a document color variable (id or name)
+  to those solid fill and stroke slots, as `variable.bind` does with `fills/<i>/color` or
+  `strokes/<i>/color`. A color style on the list and an earlier binding of the slot are removed.
+  Text ranges with fills of their own take the variable's value in the layer's modes, without a
+  binding. Gradients and other variable types are refused; scopes only filter what the Selection
+  colors menu offers, as for `variable.bind`.
+- `selection.detachColor {targets}` to unlink the color style and the color variable of those
+  slots, keeping their values.
 
 Keep the targets fixed throughout a live interaction. A color becoming equal to another color
 must not add slots to the gesture. Invalid or missing targets fail atomically. Direct paint edits

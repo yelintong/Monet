@@ -15,7 +15,7 @@ mod layout;
 mod onpath;
 pub mod woff;
 
-pub use breaks::grapheme_step;
+pub use breaks::{backspace_step, grapheme_step};
 pub use color::{ColorBitmap, ColorInk, ColorLayer};
 pub use fontdb::{
     Axis, CRAFT_FONTS, Coords, Face, FontDb, NamedInstance, Rescan, axis_label, db, face_with_char, family_names, family_styles, find_face,

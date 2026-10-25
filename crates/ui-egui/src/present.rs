@@ -288,6 +288,9 @@ pub struct Presenter {
     /// The layer the Inspect panel shows (the last one under the pointer).
     inspected: Option<NodeId>,
     urls: Vec<String>,
+    /// A link to a website waiting for the viewer to open it ([`link_notice`]), and whether "Don't
+    /// show this again" is ticked.
+    link_notice: Option<(String, bool)>,
     /// The editor's document as last copied (the player copies it again when it changes).
     source: Option<Arc<Document>>,
     /// Scrolling by dragging: what it scrolls and its offset when the drag began.
@@ -368,6 +371,7 @@ impl Presenter {
             clock: 0.0,
             inspected: None,
             urls: Vec::new(),
+            link_notice: None,
             source: None,
             drag_scroll: None,
             view: PresentView::default(),
@@ -630,6 +634,7 @@ impl Presenter {
             "zoom": self.zoom,
             "flinging": self.fling.is_some(),
             "gamepad": self.uses_pads,
+            "linkNotice": self.link_notice.as_ref().map(|(url, _)| url),
         })
     }
 
@@ -1693,8 +1698,9 @@ pub fn show(app: &mut FigApp, ui: &mut Ui) {
     }
     poll_pads(app, &mut pres, &ctx);
     let mut action = None;
-    // Typing a reply to a comment keeps the keys from the prototype; Shift+C shows the comments.
-    let typing = ctx.egui_wants_keyboard_input();
+    // Typing a reply to a comment keeps the keys from the prototype, and so does the link notice
+    // while it shows; Shift+C shows the comments.
+    let typing = ctx.egui_wants_keyboard_input() || pres.link_notice.is_some();
     if !typing && ctx.input_mut(|i| i.consume_key(egui::Modifiers::SHIFT, egui::Key::C)) {
         action = Some(BarAction::Comments);
     }
@@ -1734,6 +1740,7 @@ pub fn show(app: &mut FigApp, ui: &mut Ui) {
         app.ui.comments.close();
     }
     finish(app, &mut pres);
+    link_notice(app, &mut pres, &ctx, Id::new("present_link_notice"));
     // The options carry over to the next presentation.
     app.ui.present_view = pres.view;
     if live && let Some(BarAction::Responsive(on)) = action {
@@ -1879,13 +1886,58 @@ fn poll_pads(app: &mut FigApp, p: &mut Presenter, ctx: &egui::Context) {
     crate::repaint_in(ctx, PAD_POLL_SECS);
 }
 
-/// After a player's frame: the links it opens and the widget clicks it took.
+/// After a player's frame: the links it opens and the widget clicks it took. A link to a website
+/// waits in [`link_notice`] unless the viewer chose to skip the notice; a second link to a website
+/// that fires while the notice shows is dropped.
 fn finish(app: &mut FigApp, p: &mut Presenter) {
     for u in p.urls.drain(..) {
-        app.services.open_url(&u);
+        if app.session.prefs.link_notice_skipped || !goes_to_a_website(&u) {
+            app.services.open_url(&u);
+        } else if p.link_notice.is_none() {
+            p.link_notice = Some((u, false));
+        }
     }
     if let Some(e) = p.click_widgets(&app.session) {
         app.toast(e);
+    }
+}
+
+/// Whether `url` is an `http` or `https` link (a `mailto:` link opens the mail app instead).
+fn goes_to_a_website(url: &str) -> bool {
+    url.trim().split_once(':').is_some_and(|(scheme, _)| scheme.eq_ignore_ascii_case("http") || scheme.eq_ignore_ascii_case("https"))
+}
+
+/// The notice before a link leaves the prototype for a website: the link, "Don't show this
+/// again" (saved with the preferences when Open link is pressed), Open link and Cancel. Escape or
+/// the close button cancels.
+fn link_notice(app: &mut FigApp, p: &mut Presenter, ctx: &egui::Context, id: Id) {
+    let Some((url, skip)) = p.link_notice.as_mut() else { return };
+    let t = Tokens::get(ctx);
+    let (mut open, mut go, mut cancel) = (true, false, false);
+    crate::dialogs::window(tr("Leaving the prototype"), ctx).id(id).open(&mut open).show(ctx, |ui| {
+        ui.set_width(340.0);
+        widgets::label(ui, tr("This link opens a website outside the prototype:"), t.text);
+        ui.add(egui::Label::new(egui::RichText::new(url.as_str()).font(regular(11.0)).color(t.text_secondary)).wrap());
+        ui.add_space(8.0);
+        if widgets::checkbox(ui, *skip, tr("Don't show this again")) {
+            *skip = !*skip;
+        }
+        ui.add_space(12.0);
+        ui.horizontal(|ui| {
+            go = widgets::button(ui, tr("Open link"), true, true).clicked();
+            cancel = widgets::button(ui, tr("Cancel"), false, true).clicked();
+        });
+    });
+    cancel |= !open || ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
+    if go {
+        let Some((url, skip)) = p.link_notice.take() else { return };
+        if skip {
+            app.run("proto.linkNotice", json!({"show": false}));
+            app.services.save_prefs(&app.session.prefs);
+        }
+        app.services.open_url(&url);
+    } else if cancel {
+        p.link_notice = None;
     }
 }
 
@@ -1993,6 +2045,7 @@ pub fn show_pane(app: &mut FigApp, ctx: &egui::Context) {
             action = player(&mut pane.player, ui, rect, now, chrome);
         });
     finish(app, &mut pane.player);
+    link_notice(app, &mut pane.player, ctx, pane_id().with("link_notice"));
     match action {
         Some(BarAction::Close) => {}
         Some(BarAction::Present) => {
@@ -2167,8 +2220,10 @@ fn player(p: &mut Presenter, ui: &mut Ui, rect: Rect, now: f64, chrome: Chrome) 
     let resp = ui.interact(area, ui.id().with("present_area"), Sense::click_and_drag());
     let over = resp.contains_pointer();
     if let Some(l) = layout(p, area, chrome) {
-        // The pane only takes the keyboard while the pointer is over it.
-        input(p, &ctx, &l, over, chrome.keys && (!chrome.pane || over), chrome.pane, now);
+        // The pane only takes the keyboard while the pointer is over it. While a link notice shows
+        // the prototype takes neither keys nor the pointer (Escape there cancels the notice).
+        let keys = chrome.keys && p.link_notice.is_none() && (!chrome.pane || over);
+        input(p, &ctx, &l, over && p.link_notice.is_none(), keys, chrome.pane, now);
     }
     let Some(l) = layout(p, area, chrome) else { return action };
     p.shown = Some((p.current, l.place, l.clip.intersect(area)));

@@ -152,7 +152,9 @@ No alpha blockers: the alpha gate in [`roadmap.md`](roadmap.md#alpha-gate) passe
 
 ### 4. Interaction fidelity not compared tool by tool
 - **Missing:** a side-by-side pass of every tool and panel: cursors, modifier keys while dragging,
-  hover states, popovers, menus, snapping thresholds.
+  hover states, popovers, menus, snapping thresholds. Known: the Assets panel's export preview
+  follows a slice's first export setting, so a second setting with the other Ignore overlapping
+  layers value previews differently from what it exports.
 - **Landed (2026-10-11):** behaviour suites written from the public documentation for auto layout,
   selection and transform, text, and canvas navigation with rulers, guides, layout grids, outline
   mode and measuring, then (2026-10-12) comments and version history, and the layers and Assets
@@ -315,8 +317,9 @@ No alpha blockers: the alpha gate in [`roadmap.md`](roadmap.md#alpha-gate) passe
 - **Landed (2026-10-12):** several Bezier handles selected with Shift-click and dragged together,
   sharp points beside curved segments rounded, a stroke cap and join per point (canvas, PNG, SVG,
   PDF, outline stroke), the Pen outside edit mode connecting to its own points and continuing a
-  selected open path. Left: corner smoothing beyond rectangles and frames, per-point caps and joins
-  on dashed, variable-width and brush strokes.
+  selected open path. Left: corner smoothing on vectors, corner radius and smoothing on boolean
+  groups that contain rectangles, per-point caps and joins on dashed, variable-width and brush
+  strokes.
 - **Landed (2026-10-11):** boolean groups are clicked where their result is (a click in a
   subtracted hole reaches what's behind; with the group or an operand selected its operands are
   hit, so each can still be picked; "Select layer" lists the group only where its result is), live
@@ -341,7 +344,8 @@ No alpha blockers: the alpha gate in [`roadmap.md`](roadmap.md#alpha-gate) passe
   collection (a brand theme extending a core one) can be extended again, its values flowing down
   the chain as each file accepts updates, every level's overrides kept.
 - **Missing:** checked with synthetic files only; extending a collection of the same file isn't
-  offered (extending takes library collections).
+  offered (extending takes library collections). A paint style's color offers variables scoped to
+  any fill or stroke: FigCraft's own rule, since the help center doesn't say which scopes it takes.
 - **Estimate:** 0–1 h.
 
 ### 15. Prototyping: media triggers and actions, controllers off Windows
@@ -356,6 +360,9 @@ No alpha blockers: the alpha gate in [`roadmap.md`](roadmap.md#alpha-gate) passe
   importer warns and skips them, `crates/format/src/rest/proto.rs`); controllers on macOS, Linux
   and FreeBSD (the usual Rust controller library links libudev on Linux; a pure-Rust reader per
   platform, or an owner decision on that dependency); PlayStation and Switch button labels.
+  `proto.linkNotice` from the Actions palette or the control channel changes the preference in
+  memory only; it reaches the preferences file with the next preferences save (the notice's own
+  "Don't show this again" saves at once).
 - **Estimate:** 2–5 h, the media part after video fills (gap 12).
 
 ### 16. Dev Mode: the tail after dev resources
@@ -392,9 +399,13 @@ No alpha blockers: the alpha gate in [`roadmap.md`](roadmap.md#alpha-gate) passe
   without them), drawn in Dev Mode as labelled redlines that follow the layers, and listed, placed
   and removed in the Inspect tab. The layers panel is read-only in Dev Mode (rows select and
   expand; no renaming, reordering, hiding or locking).
-- **Missing:** files dropped on the canvas still edit in Dev Mode; publishing mappings from the
-  code repository with a CLI. An editor extension is out of scope: the MCP server already serves
-  design data, code and the connected snippets to agents and editors.
+- **Landed (2026-10-24):** files dropped on the canvas, the Pages list and the Assets panel no
+  longer edit the design in Dev Mode (a dropped document still opens as a file of its own, and
+  the Pages list only opens pages).
+- **Missing:** publishing mappings from the code repository with a CLI. An editor extension is out
+  of scope: the MCP server already serves design data, code and the connected snippets to agents
+  and editors. The file name field in the left panel still renames the file in Dev Mode
+  (`file.rename`); whether Figma allows that in Dev Mode needs checking before it changes.
 - **Estimate:** 1–2 h.
 
 ### 17. Branching and merging
@@ -476,6 +487,7 @@ No alpha blockers: the alpha gate in [`roadmap.md`](roadmap.md#alpha-gate) passe
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-25 | minor | Known gaps from the #1311 review: gap 4, the export preview follows a slice's first export setting; gap 14, the scopes a paint style's color takes are FigCraft's own rule; gap 15, `proto.linkNotice` from the palette or control channel isn't saved until the next preferences save; gap 16, the file name field still renames in Dev Mode (to check against Figma first). Ranking and hours unchanged |
 | 2026-10-24 | minor | Gap 16: Measurements kept on the canvas (gap 16): `devMode.addMeasurement {from?, to?, side?}` places one between two layers, along one side of a layer or (neither) to the layer around it, stored on the layer it starts from (saved in `.figcraft`, synced, undoable; old files open without them); Dev Mode draws them as labelled redlines that follow the layers, the Inspect tab lists them (those of the selected layer, or every one on the page), places and removes them; `devMode.removeMeasurement` and `devMode.measurements` remove and list them; a copy keeps those to layers copied with it. The layers panel is read-only in Dev Mode: rows select and expand, but don't rename, reorder, hide or lock. Left: publishing mappings with a CLI; 2–4 h → 1–2 h |
 | 2026-10-24 | minor | Boards (M12): a file kind of its own (`file.newBoard`, saved in `.figcraft`, carried to live-session joiners) with sticky notes, shapes with text, connectors that re-route when what they join moves (an engine recompute, the same for local edits, undo and others' edits), marker, highlighter and eraser, stamps with the placer's name, a board toolbar and a contextual bar; prototyping and Dev Mode refuse on boards; design files and boards have their own marks on tabs and file rows. New gap 24 (the board tail, 30–60 h); the ranking above it is unchanged |
 | 2026-10-15 | minor | Gap 5: Turkish reviewed by a native speaker (#263), Czech (#469) and Indonesian (#477) drafts, the Japanese draft caught up (#288); Indonesian is no longer missing; counts re-measured (2,177 entries) and corrected: only Spanish is held to completeness, Russian included. Estimate unchanged at this rounding |

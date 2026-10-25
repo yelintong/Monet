@@ -697,6 +697,9 @@ pub struct Prefs {
     /// The Getting started tips on the home screen were closed (Help ▸ Getting started shows them
     /// again).
     pub getting_started_dismissed: bool,
+    /// A prototype's Open link goes to a website without first telling the viewer that it leaves
+    /// the prototype (the notice's "Don't show this again"; `proto.linkNotice` shows it again).
+    pub link_notice_skipped: bool,
     /// How each home screen section shows its files, by section id (`"recents"`): `"grid"` (cards
     /// with the picture each file carries) or `"list"` (a table). Missing: the grid.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
@@ -747,6 +750,7 @@ impl Default for Prefs {
             recent_files: Vec::new(),
             online_files: Vec::new(),
             getting_started_dismissed: false,
+            link_notice_skipped: false,
             home_views: BTreeMap::new(),
             home_sort: "modified".into(),
             home_order: "desc".into(),

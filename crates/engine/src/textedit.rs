@@ -17,6 +17,8 @@ pub fn begin(s: &mut Session, id: NodeId, caret: Option<usize>, created: bool) -
     let n = t.char_count();
     s.begin_interaction("Edit text")?;
     let ds = s.ds_mut()?;
+    // Editing the same layer again (a double-click into a text just made) keeps it new.
+    let created = created || ds.text_edit.as_ref().is_some_and(|te| te.id == id && te.created);
     let (caret, anchor) = match caret {
         Some(c) => (c.min(n), c.min(n)),
         None => (n, 0),
@@ -44,9 +46,13 @@ pub fn end(s: &mut Session) -> Result<()> {
         // Nothing to undo for a text box that was never filled. The gesture snapshot was taken
         // after the layer was added, so it still holds it: re-base it on the document without the
         // layer, and committing then records no step (and leaves the redo stack alone).
+        // A snapshot taken before the layer was added (the Text on a path tool, which also took
+        // the path layer away) is put back whole instead.
         let ds = s.ds_mut()?;
         let doc = ds.doc.clone();
-        if let Some(it) = ds.interaction.as_mut() {
+        if ds.interaction.as_ref().is_some_and(|it| it.doc.node(te.id).is_none()) {
+            s.cancel_interaction()?;
+        } else if let Some(it) = ds.interaction.as_mut() {
             it.doc = doc;
         }
     }
@@ -243,7 +249,7 @@ pub fn key(s: &mut Session, key: &str, shift: bool, word: bool, line: bool) -> R
                     } else if word {
                         word_left(&chars, a)
                     } else {
-                        figcraft_text::grapheme_step(&t.characters, a, false)
+                        figcraft_text::backspace_step(&t.characters, a)
                     };
                     (from, a)
                 } else {
@@ -572,6 +578,16 @@ mod tests {
         key(&mut s, "SelectAll", false, false, false).unwrap();
         assert_eq!(sel(&s), (0, 10));
         end(&mut s).unwrap();
+    }
+
+    #[test]
+    fn backspace_removes_only_the_final_thai_mark() {
+        let (mut s, id) = setup("น้ำ");
+        begin(&mut s, id, Some(3), false).unwrap();
+
+        key(&mut s, "Backspace", false, false, false).unwrap();
+
+        assert_eq!(data(&s, id).characters, "น้");
     }
 
     fn ev(kind: PointerKind, x: f64, y: f64, shift: bool) -> PointerEvent {

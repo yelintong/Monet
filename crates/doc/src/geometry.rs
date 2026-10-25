@@ -18,8 +18,10 @@ pub fn shape_path(n: &Node) -> Option<BezPath> {
         | NodeKind::Section { .. } => figcraft_geom::rounded_rect(w, h, c.radii, c.smoothing),
         NodeKind::Slice => figcraft_geom::rounded_rect(w, h, [0.0; 4], 0.0),
         NodeKind::Ellipse { start, sweep, inner } => figcraft_geom::ellipse(w, h, *start, *sweep, *inner),
-        NodeKind::Polygon { count } => figcraft_geom::rounded_polygon(&figcraft_geom::polygon_points(w, h, *count), c.radii[0]),
-        NodeKind::Star { count, inner_ratio } => figcraft_geom::rounded_polygon(&figcraft_geom::star_points(w, h, *count, *inner_ratio), c.radii[0]),
+        NodeKind::Polygon { count } => figcraft_geom::smoothed_polygon(&figcraft_geom::polygon_points(w, h, *count), c.radii[0], c.smoothing),
+        NodeKind::Star { count, inner_ratio } => {
+            figcraft_geom::smoothed_polygon(&figcraft_geom::star_points(w, h, *count, *inner_ratio), c.radii[0], c.smoothing)
+        }
         NodeKind::Line => {
             let mut p = BezPath::new();
             p.move_to((0.0, 0.0));
@@ -130,7 +132,7 @@ pub fn hit_leaf(doc: &Document, page: NodeId, pt: Point, tol: f64, result: BoolR
 
 /// Whether child `c` of `parent` is masked at `pt`: a visible mask below it (the nearest mask
 /// below it, a hidden one masks nothing) doesn't cover the point, so nothing of `c` shows there.
-fn masked_out(doc: &Document, parent: &Node, c: NodeId, pt: Point) -> bool {
+pub fn masked_out(doc: &Document, parent: &Node, c: NodeId, pt: Point) -> bool {
     if !doc.has_masks() {
         return false;
     }
