@@ -8,7 +8,7 @@ use serde_json::json;
 
 use crate::layers_drag_tests::Ui;
 use crate::live_tests::{flat, text_center, texts};
-use crate::variables_panel::{Geom, Presentation, Rename};
+use crate::variables_panel::{Columns, Geom, Presentation, Rename};
 
 /// The test window's screen.
 fn screen() -> Rect {
@@ -541,4 +541,108 @@ fn colour_of(u: &Ui, name: &str) -> figcraft_color::Color {
         Some(figcraft_doc::VariableValue::Color(c)) => *c,
         other => panic!("{name:?} is not a colour: {other:?}"),
     }
+}
+
+/// A vertical line (constant x) in `shapes` whose x is within `tol` of `x` and spans at least `h`.
+fn vline_near(shapes: &[Shape], x: f32, tol: f32, h: f32) -> bool {
+    shapes.iter().any(|s| match s {
+        Shape::LineSegment { points, .. } => {
+            let (a, b) = (points[0], points[1]);
+            (a.x - b.x).abs() < 0.5 && (a.x - x).abs() <= tol && (b.y - a.y).abs() >= h
+        }
+        _ => false,
+    })
+}
+
+/// A 1 px-wide vertical rect in `shapes` at screen x ≈ `x`, whose vertical span meets `[y_min, y_max]`.
+fn vrect_at(shapes: &[Shape], x: f32, tol: f32, y_min: f32, y_max: f32) -> bool {
+    shapes.iter().any(|s| match s {
+        Shape::Rect(rs) => {
+            let r = rs.rect;
+            (r.width() - 1.0).abs() < 0.5 && (r.min.x - x).abs() <= tol && r.max.y > y_min && r.min.y < y_max
+        }
+        _ => false,
+    })
+}
+
+#[test]
+fn the_left_and_top_edges_resize_the_panel_without_sliding_away() {
+    let mut u = editor();
+    let now = |u: &Ui| {
+        let st = u.app.ui.variables.as_ref().expect("open");
+        Geom::floating(u.ctx.content_rect(), st.pos, st.sidebar).with_sidebar_width(st.sidebar_w).with_size(st.size)
+    };
+    // The left edge: dragging it left grows the width and pulls the panel's left edge left with it,
+    // instead of leaving the panel where it was and only shrinking the right.
+    let g = now(&u);
+    let from = Pos2::new(g.panel.min.x, g.panel.min.y + 120.0);
+    drag_from(&mut u, from, from + vec2(-60.0, 0.0));
+    let st = u.app.ui.variables.as_ref().expect("open");
+    let size = st.size.expect("resized");
+    let pos = st.pos.expect("moved");
+    assert!((size.x - (g.panel.width() + 60.0)).abs() < 1.0, "{size:?}");
+    assert!((pos.x - (g.panel.min.x - 60.0)).abs() < 1.0, "{pos:?}");
+    assert!((pos.y - g.panel.min.y).abs() < 1.0, "the top stays put: {pos:?}");
+    // The top edge: dragging it up grows the height and pulls the panel's top edge up with it.
+    let g = now(&u);
+    let from = Pos2::new(g.panel.min.x + 200.0, g.panel.min.y - 2.0);
+    drag_from(&mut u, from, from + vec2(0.0, -50.0));
+    let st = u.app.ui.variables.as_ref().expect("open");
+    let size = st.size.expect("resized");
+    let pos = st.pos.expect("moved");
+    assert!((size.y - (g.panel.height() + 52.0)).abs() < 1.0, "{size:?}");
+    assert!((pos.y - (g.panel.min.y - 52.0)).abs() < 1.0, "{pos:?}");
+    assert!((pos.x - g.panel.min.x).abs() < 1.0, "the left stays put: {pos:?}");
+    // The top edge stays on screen and never below the smallest height.
+    assert!(pos.y >= 0.0, "{pos:?}");
+    assert!(size.y >= Geom::MIN_H, "{size:?}");
+}
+
+#[test]
+fn the_columns_fit_their_width_even_when_the_panel_is_narrow() {
+    let st = Default::default();
+    let r = Rect::from_min_size(Pos2::ZERO, vec2(1000.0, 36.0));
+    // A roomy table: the name and fixed columns keep the room left for the mode columns.
+    let cols = Columns::of(1000.0, 3, &st);
+    assert!(cols.modes_rect(r).max.x <= cols.add_rect(r).min.x, "modes clear the add column");
+    assert!(cols.add_rect(r).max.x <= r.max.x, "the add column stays inside the row");
+    // A panel too narrow for the minimums: the columns still add up to no more than the width, so
+    // nothing is drawn past the table's right edge (a vertical scroll area clips only its axis).
+    let cols = Columns::of(150.0, 5, &st);
+    let name = cols.name_rect(r);
+    let modes = cols.modes_rect(r);
+    let add = cols.add_rect(r);
+    assert!(name.min.x >= r.min.x, "name starts at the row");
+    assert!(modes.min.x >= name.max.x, "modes follow the name");
+    assert!(add.min.x >= modes.max.x, "the add column follows the modes");
+    assert!(add.max.x <= r.max.x, "nothing runs past the row's right edge");
+}
+
+#[test]
+fn the_sidebars_divider_runs_straight_through_the_header() {
+    let mut u = editor();
+    let st = u.app.ui.variables.as_ref().expect("open");
+    let g = Geom::floating(u.ctx.content_rect(), st.pos, st.sidebar).with_sidebar_width(st.sidebar_w);
+    let x = g.panel.min.x + g.sidebar_width() - 1.0;
+    let shapes = flat(&u.frame_output(vec![]).shapes);
+    // The sidebar's 1 px line is a rect in both the header and the body, so the two line up exactly
+    // (a centred stroke in the header would sit half a pixel to the left of the body's rect).
+    assert!(vrect_at(&shapes, x, 1.0, g.panel.min.y, g.panel.min.y + Geom::HEADER_H), "the line in the header at {x}");
+    assert!(vrect_at(&shapes, x, 1.0, g.panel.min.y + Geom::HEADER_H, g.panel.min.y + Geom::HEADER_H + 200.0), "the line in the body");
+}
+
+#[test]
+fn the_modes_have_a_divider_between_them() {
+    let mut u = with_variables();
+    let st = u.app.ui.variables.as_ref().expect("open");
+    let g = Geom::floating(u.ctx.content_rect(), st.pos, st.sidebar).with_sidebar_width(st.sidebar_w).with_size(st.size);
+    let table_left = g.panel.min.x + g.sidebar_width();
+    let table_w = g.table_width();
+    let cols = Columns::of(table_w, 1, st);
+    let r = Rect::from_min_size(Pos2::ZERO, vec2(table_w, 36.0));
+    // The divider to the right of the (single) mode column: the header and rows draw a line there,
+    // so the columns read as a grid. Before the fix this line was never drawn.
+    let want = table_left + cols.mode_rect(r, 0).max.x;
+    let shapes = flat(&u.frame_output(vec![]).shapes);
+    assert!(vline_near(&shapes, want, 2.0, 20.0), "a vertical divider at {want} between the mode and the add column");
 }

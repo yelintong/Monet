@@ -437,18 +437,33 @@ fn editor(app: &mut FigApp, ui: &mut Ui, st: &mut Editor, g: Geom, open: &mut bo
             st.sidebar_w = (p.x - g.panel.min.x).clamp(SIDEBAR_MIN, SIDEBAR_MAX);
         }
     }
-    // The floating panel's right and bottom edges, and their corner, drag its size.
+    // The floating panel's four edges and four corners drag its size. The left and top edges move the
+    // panel's top-left (st.pos) as well as its size, so the panel grows from the corner the pointer
+    // pulls instead of sliding out from under it.
     if g.floating {
         let p = g.panel;
-        let corner = Rect::from_min_max(pos2(p.max.x - 16.0, p.max.y - 16.0), p.max);
+        let scr = g.screen;
+        let se = Rect::from_min_max(pos2(p.max.x - 16.0, p.max.y - 16.0), p.max);
+        let nw = Rect::from_min_max(p.min, pos2(p.min.x + 16.0, p.min.y + 16.0));
+        let ne = Rect::from_min_max(pos2(p.max.x - 16.0, p.min.y), pos2(p.max.x, p.min.y + 16.0));
+        let sw = Rect::from_min_max(pos2(p.min.x, p.max.y - 16.0), pos2(p.min.x + 16.0, p.max.y));
         let right = Rect::from_min_max(pos2(p.max.x - 3.0, p.min.y + Geom::HEADER_H), pos2(p.max.x + 3.0, p.max.y - 16.0));
         let bottom = Rect::from_min_max(pos2(p.min.x + 40.0, p.max.y - 3.0), pos2(p.max.x - 16.0, p.max.y + 3.0));
-        let (w_id, h_id, c_id) = (Id::new("vars_size_w"), Id::new("vars_size_h"), Id::new("vars_size"));
-        for (rect, id, cursor) in [
-            (corner, c_id, egui::CursorIcon::ResizeNwSe),
-            (right, w_id, egui::CursorIcon::ResizeHorizontal),
-            (bottom, h_id, egui::CursorIcon::ResizeVertical),
-        ] {
+        let left = Rect::from_min_max(pos2(p.min.x - 3.0, p.min.y + Geom::HEADER_H), pos2(p.min.x + 3.0, p.max.y - 16.0));
+        let top = Rect::from_min_max(pos2(p.min.x + 40.0, p.min.y - 3.0), pos2(p.max.x - 16.0, p.min.y + 3.0));
+        // (rect, id, cursor, move_x, move_y): move_x/move_y are -1 for a left/top edge (moves the
+        // panel's top-left), +1 for a right/bottom edge (grows from the top-left), 0 for none.
+        let handles: [(Rect, Id, egui::CursorIcon, i8, i8); 8] = [
+            (se, Id::new("vars_size"), egui::CursorIcon::ResizeNwSe, 1, 1),
+            (nw, Id::new("vars_size_nw"), egui::CursorIcon::ResizeNwSe, -1, -1),
+            (ne, Id::new("vars_size_ne"), egui::CursorIcon::ResizeNeSw, 1, -1),
+            (sw, Id::new("vars_size_sw"), egui::CursorIcon::ResizeNeSw, -1, 1),
+            (right, Id::new("vars_size_w"), egui::CursorIcon::ResizeHorizontal, 1, 0),
+            (left, Id::new("vars_size_w2"), egui::CursorIcon::ResizeHorizontal, -1, 0),
+            (bottom, Id::new("vars_size_h"), egui::CursorIcon::ResizeVertical, 0, 1),
+            (top, Id::new("vars_size_h2"), egui::CursorIcon::ResizeVertical, 0, -1),
+        ];
+        for (rect, id, cursor, mx, my) in handles {
             let resp = ui.interact(rect, id, Sense::drag());
             if resp.hovered() || resp.dragged() {
                 ui.ctx().set_cursor_icon(cursor);
@@ -457,18 +472,28 @@ fn editor(app: &mut FigApp, ui: &mut Ui, st: &mut Editor, g: Geom, open: &mut bo
                 && let Some(ptr) = ui.input(|i| i.pointer.interact_pos())
             {
                 // Recomputed from the pointer every frame, so it never drifts or sticks.
+                let mut pos = st.pos.unwrap_or(p.min);
                 let mut size = st.size.unwrap_or_else(|| p.size());
-                if id == w_id || id == c_id {
+                if mx == 1 {
                     size.x = (ptr.x - p.min.x).max(Geom::MIN_W);
+                } else if mx == -1 {
+                    let new_min_x = ptr.x.clamp(scr.min.x, p.max.x - Geom::MIN_W);
+                    size.x = (p.max.x - new_min_x).max(Geom::MIN_W);
+                    pos.x = new_min_x;
                 }
-                if id == h_id || id == c_id {
+                if my == 1 {
                     size.y = (ptr.y - p.min.y).max(Geom::MIN_H);
+                } else if my == -1 {
+                    let new_min_y = ptr.y.clamp(scr.min.y, p.max.y - Geom::MIN_H);
+                    size.y = (p.max.y - new_min_y).max(Geom::MIN_H);
+                    pos.y = new_min_y;
                 }
+                st.pos = Some(pos);
                 st.size = Some(size);
             }
         }
-        // The corner's grip shows while the pointer is on it.
-        if ui.rect_contains_pointer(corner) {
+        // The corner's grip shows while the pointer is on the bottom-right corner.
+        if ui.rect_contains_pointer(se) {
             let grip = ui.painter();
             for i in 0..3 {
                 let x = p.max.x - 5.0 - i as f32 * 4.5;
@@ -558,9 +583,11 @@ fn header(app: &mut FigApp, ui: &mut Ui, st: &mut Editor, g: Geom, open: &mut bo
         ) {
             st.sidebar = false;
         }
-        // The sidebar's edge runs on as the line between it and the table.
+        // The sidebar's edge runs on as the line between it and the table. Drawn as a 1 px rect so it
+        // lines up exactly with the body's sidebar line; a centred stroke would sit half a pixel to
+        // the left of it and read as a double edge.
         let x = r.min.x + side - 1.0;
-        ui.painter().line_segment([pos2(x, r.min.y), pos2(x, r.max.y)], Stroke::new(1.0, t.border));
+        ui.painter().rect_filled(Rect::from_min_max(pos2(x, r.min.y), pos2(x + 1.0, r.max.y)), CornerRadius::ZERO, t.border);
     } else {
         if widgets::icon_button_at(
             ui,
@@ -988,7 +1015,9 @@ fn table(app: &mut FigApp, ui: &mut Ui, view: &View, st: &mut Editor, slots: &mu
     // The rows keep clear of the vertical scrollbar, so the header and they line up whether it
     // shows or not; the header stays put while they scroll under it.
     let bar = ui.spacing().scroll.bar_width + ui.spacing().scroll.bar_inner_margin;
-    let width = (ui.available_width() - bar).max(240.0);
+    // Never wider than the table area: a vertical ScrollArea clips only its scroll axis, so a wider
+    // row would spill past the panel's right edge. The columns below shrink to fit `width`.
+    let width = (ui.available_width() - bar).max(0.0);
     let (head, _) = ui.allocate_exact_size(vec2(ui.available_width(), HEAD_ROW_H), Sense::hover());
     let head = Rect::from_min_size(head.min, vec2(width, head.height()));
     // Sideways: only the mode columns, under the pointer over them (Shift + wheel too).
@@ -1030,7 +1059,7 @@ fn table(app: &mut FigApp, ui: &mut Ui, view: &View, st: &mut Editor, slots: &mu
 /// The table's columns as laid out this frame: the names on the left and the add-mode column on the
 /// right stay put, and only the mode columns between them scroll sideways.
 #[derive(Clone, Copy, Debug, PartialEq)]
-struct Columns {
+pub(crate) struct Columns {
     /// A row's width.
     width: f32,
     name: f32,
@@ -1045,12 +1074,14 @@ struct Columns {
 }
 
 impl Columns {
-    fn of(width: f32, count: usize, st: &Editor) -> Columns {
-        let name = st.name_w.clamp(NAME_MIN, NAME_MAX).min((width * 0.5).max(NAME_MIN));
+    pub(crate) fn of(width: f32, count: usize, st: &Editor) -> Columns {
+        // The name column yields to the room left after the add column, so name + add + modes always
+        // fit `width` and nothing is drawn outside the table area.
+        let name = st.name_w.clamp(NAME_MIN, NAME_MAX).min((width - ADD_W - 2.0).max(0.0));
         Columns {
             width,
             name,
-            modes: (width - name - ADD_W - 2.0).max(60.0),
+            modes: (width - name - ADD_W - 2.0).max(0.0),
             add: ADD_W,
             mode: st.mode_w.clamp(MODE_MIN, MODE_MAX),
             count: count.max(1),
@@ -1059,24 +1090,24 @@ impl Columns {
     }
 
     /// How far the mode columns can scroll: their full width less the room they have.
-    fn max_sx(&self) -> f32 {
+    pub(crate) fn max_sx(&self) -> f32 {
         (self.count as f32 * (self.mode + 1.0) - (self.modes + 1.0)).max(0.0)
     }
 
-    fn name_rect(&self, r: Rect) -> Rect {
+    pub(crate) fn name_rect(&self, r: Rect) -> Rect {
         Rect::from_min_max(r.min, pos2(r.min.x + self.name, r.max.y))
     }
 
-    fn modes_rect(&self, r: Rect) -> Rect {
+    pub(crate) fn modes_rect(&self, r: Rect) -> Rect {
         Rect::from_min_max(pos2(r.min.x + self.name + 1.0, r.min.y), pos2(r.max.x - self.add - 1.0, r.max.y))
     }
 
-    fn add_rect(&self, r: Rect) -> Rect {
+    pub(crate) fn add_rect(&self, r: Rect) -> Rect {
         Rect::from_min_max(pos2(r.max.x - self.add, r.min.y), r.max)
     }
 
     /// Mode column `i` of `count`, scrolled by `sx`.
-    fn mode_rect(&self, r: Rect, i: usize) -> Rect {
+    pub(crate) fn mode_rect(&self, r: Rect, i: usize) -> Rect {
         let x = r.min.x + self.name + 1.0 + i as f32 * (self.mode + 1.0) - self.sx;
         Rect::from_min_size(pos2(x, r.min.y), vec2(self.mode, r.height()))
     }
@@ -1220,6 +1251,13 @@ fn header_row(app: &mut FigApp, ui: &mut Ui, view: &View, coll: &Collection, st:
             }
         });
     }
+    // The 1 px line to the right of each mode column (its layout already leaves a 1 px gap), so the
+    // modes read as a grid that lines up with the rows below. Clipped to the modes strip, like the
+    // cells.
+    for i in 0..cols.count {
+        let cell = cols.mode_rect(r, i);
+        wide.painter().line_segment([pos2(cell.max.x, r.min.y), pos2(cell.max.x, r.max.y)], Stroke::new(1.0, t.border));
+    }
     // The button that adds a mode, at the table's right end where nothing scrolls.
     let add = cols.add_rect(r);
     if editable
@@ -1294,6 +1332,15 @@ fn var_row(app: &mut FigApp, ui: &mut Ui, view: &View, coll: &Collection, v: &Va
         }
         let cell = Rect::from_min_max(pos2(cell.min.x + 4.0, r.center().y - 12.0), pos2(cell.max.x - 8.0, r.center().y + 12.0));
         value_cell(app, &mut wide, view, v, coll, &m.id, cell);
+    }
+    // The column grid, matching the header: a line after the name column, one after each mode column
+    // (clipped to the modes strip), and one before the add column.
+    let add_r = cols.add_rect(r);
+    ui.painter().line_segment([pos2(name_r.max.x, r.min.y), pos2(name_r.max.x, r.max.y)], Stroke::new(1.0, t.border));
+    ui.painter().line_segment([pos2(add_r.min.x, r.min.y), pos2(add_r.min.x, r.max.y)], Stroke::new(1.0, t.border));
+    for i in 0..cols.count {
+        let cell = cols.mode_rect(r, i);
+        wide.painter().line_segment([pos2(cell.max.x, r.min.y), pos2(cell.max.x, r.max.y)], Stroke::new(1.0, t.border));
     }
     if editable {
         if !inherited && resp.double_clicked() && ui.input(|i| i.pointer.interact_pos()).is_some_and(|p| p.x < text_r.max.x) {
