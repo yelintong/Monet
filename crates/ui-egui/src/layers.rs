@@ -99,7 +99,6 @@ pub fn rail(app: &mut FigApp, ui: &mut Ui) {
     let items = [
         (Icon::Page, tr("File"), Some(LeftTab::File)),
         (Icon::Assets, tr("Assets"), Some(LeftTab::Assets)),
-        (Icon::Icons, tr("Icons"), Some(LeftTab::Icons)),
         (Icon::Styles, tr("Variables"), None),
     ];
     for (icon, label, tab) in items {
