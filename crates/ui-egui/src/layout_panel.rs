@@ -120,6 +120,9 @@ struct Axis {
     add_min: &'static str,
     add_max: &'static str,
     remove: &'static str,
+    /// The remove item when only one limit is set (it names whichever is actually there).
+    remove_min: &'static str,
+    remove_max: &'static str,
     /// The hint in a limit field with no value yet ("Min W").
     min_empty: &'static str,
     max_empty: &'static str,
@@ -136,6 +139,8 @@ const AXES: [Axis; 2] = [
         add_min: tr_noop("Add min width"),
         add_max: tr_noop("Add max width"),
         remove: tr_noop("Remove min and max width"),
+        remove_min: tr_noop("Remove min width"),
+        remove_max: tr_noop("Remove max width"),
         min_empty: tr_noop("Min W"),
         max_empty: tr_noop("Max W"),
         min_label: tr_noop("Min width"),
@@ -148,6 +153,8 @@ const AXES: [Axis; 2] = [
         add_min: tr_noop("Add min height"),
         add_max: tr_noop("Add max height"),
         remove: tr_noop("Remove min and max height"),
+        remove_min: tr_noop("Remove min height"),
+        remove_max: tr_noop("Remove max height"),
         min_empty: tr_noop("Min H"),
         max_empty: tr_noop("Max H"),
         min_label: tr_noop("Min height"),
@@ -307,33 +314,61 @@ fn dim_field(
                 }
             }
             if can_limit {
-                ui.separator();
+                widgets::separator(ui);
                 if !has_min && menu_item(ui, tr(axis.add_min), "") {
-                    // The row opens with no value: the field's hint names it until a number is typed.
+                    // The row opens with no value, focused and ready to type: the field's hint names
+                    // it until a number is typed.
                     for id in &ids2 {
-                        ui.ctx().data_mut(|d| d.insert_temp(limit_open_id(*id, horizontal, true), true));
+                        ui.ctx().data_mut(|d| {
+                            d.insert_temp(limit_open_id(*id, horizontal, true), true);
+                            d.insert_temp(limit_focus_id(*id, horizontal, true), true);
+                        });
                     }
                     ui.close();
                 }
                 if !has_max && menu_item(ui, tr(axis.add_max), "") {
                     for id in &ids2 {
-                        ui.ctx().data_mut(|d| d.insert_temp(limit_open_id(*id, horizontal, false), true));
-                    }
-                    ui.close();
-                }
-                if (has_min || has_max) && menu_item(ui, tr(axis.remove), "") {
-                    app.set_props(&ids2, json!({axis.min: null, axis.max: null}));
-                    for id in &ids2 {
                         ui.ctx().data_mut(|d| {
-                            d.remove::<bool>(limit_open_id(*id, horizontal, true));
-                            d.remove::<bool>(limit_open_id(*id, horizontal, false));
+                            d.insert_temp(limit_open_id(*id, horizontal, false), true);
+                            d.insert_temp(limit_focus_id(*id, horizontal, false), true);
                         });
                     }
                     ui.close();
                 }
+                if has_min || has_max {
+                    // Name — and clear — only the limit that is actually there.
+                    let label = if has_min && has_max {
+                        axis.remove
+                    } else if has_min {
+                        axis.remove_min
+                    } else {
+                        axis.remove_max
+                    };
+                    if menu_item(ui, tr(label), "") {
+                        let mut props = serde_json::Map::new();
+                        if has_min {
+                            props.insert(axis.min.to_owned(), serde_json::Value::Null);
+                        }
+                        if has_max {
+                            props.insert(axis.max.to_owned(), serde_json::Value::Null);
+                        }
+                        app.set_props(&ids2, serde_json::Value::Object(props));
+                        for id in &ids2 {
+                            ui.ctx().data_mut(|d| {
+                                if has_min {
+                                    d.remove::<bool>(limit_open_id(*id, horizontal, true));
+                                }
+                                if has_max {
+                                    d.remove::<bool>(limit_open_id(*id, horizontal, false));
+                                }
+                            });
+                        }
+                        ui.close();
+                    }
+                }
             }
             // The last item is the same variable picker the field's own button opens.
-            ui.separator();
+            widgets::separator(ui);
             if menu_item(ui, tr("Apply variable"), "") {
                 crate::variable_ui::open_at_pointer(ui, &ids2, field, VariableType::Number);
                 ui.close();
@@ -352,6 +387,16 @@ fn limit_open(ctx: &egui::Context, id: NodeId, horizontal: bool, is_min: bool) -
     ctx.data(|d| d.get_temp::<bool>(limit_open_id(id, horizontal, is_min))).unwrap_or(false)
 }
 
+/// The id of the UI's "focus this limit's field once it opens" flag, so a just-added (empty) limit
+/// opens ready to type instead of waiting for a click.
+fn limit_focus_id(id: NodeId, horizontal: bool, is_min: bool) -> Id {
+    Id::new(("limit_focus", id, horizontal, is_min))
+}
+
+fn limit_focus(ctx: &egui::Context, id: NodeId, horizontal: bool, is_min: bool) -> bool {
+    ctx.data(|d| d.get_temp::<bool>(limit_focus_id(id, horizontal, is_min))).unwrap_or(false)
+}
+
 /// One min or max row for both axes (shown once either is set or opened): each shown limit's field
 /// sits in its own column, under its W/H, with a caption above saying which limit it holds; an
 /// unshown one leaves its column empty (added from the dropdown).
@@ -362,9 +407,10 @@ fn limit_row_v(app: &mut FigApp, ui: &mut Ui, doc: &Document, sel: &[NodeId], is
     if !has(true) && !has(false) {
         return;
     }
-    // The caption names the limit under it, over that axis' column.
+    // The caption names the limit under it, over that axis' column — only for the axis that holds
+    // one; the other column stays bare until its limit is added from the dropdown.
     let (a, b) = if is_min { (AXES[0].min_label, AXES[1].min_label) } else { (AXES[0].max_label, AXES[1].max_label) };
-    widgets::sublabels(ui, tr(a), Some(tr(b)));
+    widgets::sublabels(ui, if has(true) { tr(a) } else { "" }, if has(false) { Some(tr(b)) } else { None });
     let ids = sel.to_vec();
     // "m" for a minimum, "M" for a maximum, in front of the number.
     let lead = if is_min { "m" } else { "M" };
@@ -374,8 +420,20 @@ fn limit_row_v(app: &mut FigApp, ui: &mut Ui, doc: &Document, sel: &[NodeId], is
             let (key, empty) = if is_min { (axis.min, axis.min_empty) } else { (axis.max, axis.max_empty) };
             if has(horizontal) {
                 let v = common(doc, sel, |n| limit(n, horizontal, is_min).map(|v| (v * 100.0).round() / 100.0)).flatten();
-                let e =
-                    crate::variable_ui::number_field_or(app, ui, &ids, key, Id::new(("lay_limit_v", key)), v, col, tr(empty), Lead::Text(lead), "");
+                let field = Id::new(("lay_limit_v", key));
+                // A just-added, still-empty limit opens focused and ready to type (once): seed its
+                // editor so it is a live field, then hand it focus and clear the one-shot flag.
+                let focus_now = nodes.iter().any(|n| limit_focus(&ctx, n.id, horizontal, is_min));
+                if focus_now {
+                    ui.ctx().data_mut(|d| d.insert_temp(field.with("editing"), String::new()));
+                }
+                let e = crate::variable_ui::number_field_or(app, ui, &ids, key, field, v, col, tr(empty), Lead::Text(lead), "");
+                if focus_now {
+                    ui.ctx().memory_mut(|m| m.request_focus(field.with("te")));
+                    for n in &nodes {
+                        ui.ctx().data_mut(|d| d.remove::<bool>(limit_focus_id(n.id, horizontal, is_min)));
+                    }
+                }
                 app.field(&ids, key, e, |v| json!(v.max(0.0)));
             } else {
                 let _ = ui.allocate_exact_size(vec2(col, FIELD_H), Sense::hover());
@@ -414,13 +472,12 @@ fn alignment(app: &mut FigApp, ui: &mut Ui, ids: &[NodeId], l: &AutoLayout) {
     });
 }
 
-/// The alignment picker: nine dots on the field colour, the chosen cell its glyph in the accent
-/// blue with no well behind it, and the hovered cell the same glyph in the dots' grey — a preview
-/// of what a click there picks. The glyph is three horizontal bars for a horizontal flow (the main
-/// axis along the columns) and three vertical bars for a vertical one (the main axis along the
-/// rows): the bars pack along the main axis to read the main alignment, and the two outer bars'
-/// lengths read the cross one. An auto gap lights the whole main axis: the middle cell keeps the
-/// glyph and the ends keep a blue dot.
+/// The alignment picker: nine dots on the field colour, the chosen state's bars in the accent
+/// blue with no well behind them, and the hovered cell the mark a click there would draw in the
+/// dots' grey. A packed flow puts one glyph in one cell: three bars for a no-wrap flow (their
+/// lengths read the main alignment, their slide the cross one) or the line grid for a wrapped
+/// one. An auto gap spreads the main axis instead: a bar in each of its three cells, the middle
+/// one half length.
 fn picker(app: &mut FigApp, ui: &mut Ui, ids: &[NodeId], l: &AutoLayout, pill: Rect) {
     let t = Tokens::get(ui.ctx());
     ui.painter().rect_filled(pill, CornerRadius::same(5), t.field);
@@ -435,23 +492,9 @@ fn picker(app: &mut FigApp, ui: &mut Ui, ids: &[NodeId], l: &AutoLayout, pill: R
     let inset = pill.height() / 12.0;
     let grid = Rect::from_min_max(pos2(pill.min.x, pill.min.y + inset), pos2(pill.max.x, pill.max.y - inset));
     let cell = vec2(grid.width() / 3.0, grid.height() / 3.0);
-    let grid_mode = l.mode == LayoutMode::Grid;
     let horizontal = l.mode != LayoutMode::Vertical;
-    let cur_main = match l.main_align {
-        MainAlign::Min => 0,
-        MainAlign::Center => 1,
-        MainAlign::Max => 2,
-        MainAlign::SpaceBetween | MainAlign::SpaceAround | MainAlign::SpaceEvenly => 9,
-    };
-    // Wrapped lines spread across the flow light the whole cross axis, like an auto gap does the
-    // main one.
-    let spread = !grid_mode && l.wrap && l.content_align == ContentAlign::SpaceBetween;
-    let cur_cross = match l.cross_align {
-        _ if spread => 9,
-        CrossAlign::Min | CrossAlign::Baseline => 0,
-        CrossAlign::Center => 1,
-        CrossAlign::Max => 2,
-    };
+    let shape = FlowShape::of(l);
+    let state = State::of(l);
     // The dimmed grey: pure black at 50 % on the light theme's field, pure white at 50 % on the
     // dark one's, where black would disappear into the well.
     let grey = if t.dark { Color32::from_white_alpha(128) } else { Color32::from_black_alpha(128) };
@@ -461,23 +504,25 @@ fn picker(app: &mut FigApp, ui: &mut Ui, ids: &[NodeId], l: &AutoLayout, pill: R
             let c = r.center();
             let resp = ui.interact(r, Id::new(("al_grid", xi, yi)), Sense::click());
             let (main_i, cross_i) = axes(xi, yi, horizontal);
-            let on = lit(main_i, cross_i, cur_main, cur_cross);
-            // A spread axis keeps one glyph, in its middle cell, and marks the ends in blue.
-            if on && (cur_main != 9 || main_i == 1) {
-                glyph(ui.painter(), c, horizontal, cur_main, cur_cross, t.accent_text);
-            } else if on {
-                ui.painter().circle_filled(c, 1.0, t.accent_text);
+            if let Some(bars) = state.bars(shape, main_i, cross_i) {
+                draw_bars(ui.painter(), c, bars, t.accent_text);
             } else if resp.hovered() {
-                glyph(ui.painter(), c, horizontal, main_i, cross_i, grey);
+                // The hover previews the state a click here picks: an auto gap keeps its main
+                // axis and takes only the cross alignment.
+                match state.pick(main_i, cross_i).bars(shape, main_i, cross_i) {
+                    Some(bars) => draw_bars(ui.painter(), c, bars, grey),
+                    None => {
+                        ui.painter().circle_filled(c, 1.0, grey);
+                    }
+                }
             } else {
                 ui.painter().circle_filled(c, 1.0, grey);
             }
             if resp.clicked() {
-                let m = ["min", "center", "max"][main_i];
-                let cr = ["min", "center", "max"][cross_i];
                 // An auto gap keeps its mode: the cells pick the cross alignment.
-                let main = if l.main_align.is_auto_gap() && !grid_mode { json!(l.main_align) } else { json!(m) };
-                app.set_props(ids, json!({"mainAlign": main, "crossAlign": cr}));
+                let main = if state.main == SPREAD { json!(l.main_align) } else { json!(["min", "center", "max"][main_i]) };
+                let cross = ["min", "center", "max"][cross_i];
+                app.set_props(ids, json!({"mainAlign": main, "crossAlign": cross}));
             }
         }
     }
@@ -511,44 +556,153 @@ fn axes(xi: usize, yi: usize, horizontal: bool) -> (usize, usize) {
     if horizontal { (xi, yi) } else { (yi, xi) }
 }
 
-/// Whether the cell at (`main_i`, `cross_i`) is lit: the chosen alignment, or every cell of an
-/// axis that spreads — an auto gap along the main one, wrapped lines across the other.
-fn lit(main_i: usize, cross_i: usize, cur_main: usize, cur_cross: usize) -> bool {
-    (cur_main == main_i || cur_main == 9) && (cur_cross == cross_i || cur_cross == 9)
+/// The cell index of a spreading axis: an auto gap spreads the main axis, wrapped lines spaced
+/// between spread the cross one. Both keep the other axis's alignment.
+const SPREAD: usize = 9;
+
+/// The glyph's box, the thickness of a bar, and the length of one item along a wrapped flow's
+/// line. A no-wrap line's three bars are 7, 10 and 5 long instead ([`NOWRAP_LEN`]).
+const GLYPH_BOX: f32 = 10.0;
+const THICK: f32 = 2.0;
+const ITEM: f32 = 4.0;
+
+/// A bar of a glyph, in the 10 pt box: `(x, y, width, height)`. A zero width or height is a hole,
+/// so a glyph fits a fixed five-bar array.
+type Bar = (f32, f32, f32, f32);
+const HOLE: Bar = (0.0, 0.0, 0.0, 0.0);
+
+/// A no-wrap line's three bar lengths, by main alignment: packing to the start leaves the outer
+/// pair 7 and 5, centring 5 and 5, packing to the end 5 and 7; the middle bar is always 10. The
+/// design's nine variants of each no-wrap direction read exactly these.
+const NOWRAP_LEN: [[f32; 3]; 3] = [[7.0, 10.0, 5.0], [5.0, 10.0, 5.0], [5.0, 10.0, 7.0]];
+
+/// The shape a flow's items make, which its glyph draws. The direction turns the bars: a vertical
+/// flow draws horizontal ones, a horizontal flow vertical ones.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum FlowShape {
+    NowrapV,
+    NowrapH,
+    WrapV,
+    WrapH,
 }
 
-/// The glyph's box: 10 pt square.
-const GLYPH_BOX: f32 = 10.0;
+impl FlowShape {
+    fn of(l: &AutoLayout) -> Self {
+        match (l.mode == LayoutMode::Vertical, l.wrap) {
+            (true, false) => Self::NowrapV,
+            (true, true) => Self::WrapV,
+            (false, false) => Self::NowrapH,
+            (false, true) => Self::WrapH,
+        }
+    }
 
-/// The glyph's three bars as `(x, y, w, h)` in the 10 pt box. `horizontal` picks three horizontal
-/// bars (a quarter of the box apart), otherwise three vertical ones; the
-/// middle bar is always full length, the two outer ones are shorter and the longer of the two
-/// sits on the chosen cross side (min → the first is longer, max → the second). Where each bar
-/// packs along the main axis reads the main alignment — flush at the start, sharing the slack, or
-/// flush at the end. `main`/`cross` are 0/1/2 (or 9 for a spreading axis, which centres).
-fn bars(horizontal: bool, main: usize, cross: usize) -> [(f32, f32, f32, f32); 3] {
-    let (first, last) = match cross {
-        0 => (7.0, 5.0),
-        2 => (5.0, 7.0),
-        _ => (5.0, 5.0),
-    };
-    let at = |len: f32| match main {
-        0 => 0.0,
-        2 => GLYPH_BOX - len,
-        _ => (GLYPH_BOX - len) / 2.0,
-    };
-    if horizontal {
-        [(at(first), 0.0, first, 2.0), (0.0, 4.0, GLYPH_BOX, 2.0), (at(last), 8.0, last, 2.0)]
-    } else {
-        [(0.0, at(first), 2.0, first), (4.0, 0.0, 2.0, GLYPH_BOX), (8.0, at(last), 2.0, last)]
+    fn vertical(self) -> bool {
+        matches!(self, Self::NowrapV | Self::WrapV)
     }
 }
 
-/// The glyph centred on `centre` in `col`: the accent blue on the chosen cell, the dots' grey on
-/// a hover preview.
-fn glyph(painter: &egui::Painter, centre: Pos2, horizontal: bool, main: usize, cross: usize, col: Color32) {
+/// What the picker shows: each axis's chosen cell (0..3, or [`SPREAD`]), and whether the cross
+/// axis spreads — wrapped lines spaced between — instead of one alignment.
+#[derive(Clone, Copy, Debug)]
+struct State {
+    main: usize,
+    cross: usize,
+    spread_cross: bool,
+}
+
+impl State {
+    fn of(l: &AutoLayout) -> Self {
+        let main = match l.main_align {
+            MainAlign::Min => 0,
+            MainAlign::Center => 1,
+            MainAlign::Max => 2,
+            MainAlign::SpaceBetween | MainAlign::SpaceAround | MainAlign::SpaceEvenly => SPREAD,
+        };
+        let cross = match l.cross_align {
+            CrossAlign::Min | CrossAlign::Baseline => 0,
+            CrossAlign::Center => 1,
+            CrossAlign::Max => 2,
+        };
+        Self { main, cross, spread_cross: l.wrap && l.content_align == ContentAlign::SpaceBetween }
+    }
+
+    /// The state a click on the cell at (`main`, `cross`) picks: an auto gap keeps spreading its
+    /// main axis and takes only the cross alignment.
+    fn pick(self, main: usize, cross: usize) -> Self {
+        let main = if self.main == SPREAD { SPREAD } else { main };
+        Self { main, cross, spread_cross: self.spread_cross }
+    }
+
+    /// What the cell at (`main`, `cross`) draws for this state, or `None` where it keeps its dot.
+    fn bars(self, shape: FlowShape, main: usize, cross: usize) -> Option<[Bar; 5]> {
+        if !self.spread_cross && cross != self.cross {
+            return None;
+        }
+        // A spread axis carries no alignment of its own: its marks read the other axis, centred.
+        let cross = if self.spread_cross { 1 } else { self.cross };
+        if self.main == SPREAD {
+            // An auto gap: a bar in each cell along the main axis, the middle one half length.
+            let len = if main == 1 { GLYPH_BOX * 0.5 } else { GLYPH_BOX };
+            return Some(spread_bar(shape, cross, len));
+        }
+        (main == self.main).then(|| packed_bars(shape, main, cross))
+    }
+}
+
+/// A packed flow's glyph in the 10 pt box. A no-wrap flow is three bars — the outer pair sliding
+/// along the cross axis by the alignment, their lengths as [`NOWRAP_LEN`]. A wrapped flow is two
+/// items a line with the last line short: a vertical flow fills a line left to right and slides
+/// its last item along the cross axis, a horizontal one fills three a line and slides the last
+/// line's pair along the main axis.
+fn packed_bars(shape: FlowShape, main: usize, cross: usize) -> [Bar; 5] {
+    let c = cross as f32;
+    let mut bars = [HOLE; 5];
+    match shape {
+        FlowShape::NowrapV => {
+            for (i, len) in NOWRAP_LEN[main].into_iter().enumerate() {
+                bars[i] = ((GLYPH_BOX - len) * 0.5 * c, i as f32 * ITEM, len, THICK);
+            }
+        }
+        FlowShape::NowrapH => {
+            for (i, len) in NOWRAP_LEN[main].into_iter().enumerate() {
+                bars[i] = (i as f32 * ITEM, (GLYPH_BOX - len) * 0.5 * c, THICK, len);
+            }
+        }
+        FlowShape::WrapV => {
+            bars[0] = (0.0, 0.0, ITEM, THICK);
+            bars[1] = (6.0, 0.0, ITEM, THICK);
+            bars[2] = (0.0, 4.0, ITEM, THICK);
+            bars[3] = (6.0, 4.0, ITEM, THICK);
+            bars[4] = (c * 3.0, 8.0, ITEM, THICK);
+        }
+        FlowShape::WrapH => {
+            bars[0] = (0.0, 0.0, THICK, ITEM);
+            bars[1] = (4.0, 0.0, THICK, ITEM);
+            bars[2] = (8.0, 0.0, THICK, ITEM);
+            bars[3] = (main as f32 * 2.0, 6.0, THICK, ITEM);
+            bars[4] = (main as f32 * 2.0 + 4.0, 6.0, THICK, ITEM);
+        }
+    }
+    bars
+}
+
+/// An auto gap's mark: one bar across the cell, `len` long along the axis the items run on and
+/// slid along the other by the alignment.
+fn spread_bar(shape: FlowShape, cross: usize, len: f32) -> [Bar; 5] {
+    let mut bars = [HOLE; 5];
+    let off = (GLYPH_BOX - len) * 0.5 * cross as f32;
+    let mid = (GLYPH_BOX - THICK) * 0.5;
+    bars[0] = if shape.vertical() { (off, mid, len, THICK) } else { (mid, off, THICK, len) };
+    bars
+}
+
+/// Draw a state's bars in the 10 pt box centred on `centre`.
+fn draw_bars(painter: &egui::Painter, centre: Pos2, bars: [Bar; 5], col: Color32) {
     let g = Rect::from_center_size(centre, vec2(GLYPH_BOX, GLYPH_BOX));
-    for (x, y, w, h) in bars(horizontal, main, cross) {
+    for (x, y, w, h) in bars {
+        if w <= 0.0 || h <= 0.0 {
+            continue;
+        }
         painter.rect_filled(Rect::from_min_size(pos2(g.min.x + x, g.min.y + y), vec2(w, h)), CornerRadius::same(1), col);
     }
 }
@@ -556,7 +710,7 @@ fn glyph(painter: &egui::Painter, centre: Pos2, horizontal: bool, main: usize, c
 /// The two gaps beside the picker, the vertical one above the horizontal one. They are named by
 /// the axis rather than by main and cross, so a vertical flow's own gap is the vertical one.
 fn gap_fields(app: &mut FigApp, ui: &mut Ui, ids: &[NodeId], l: &AutoLayout, col: f32) {
-    let (v_tip, h_tip) = (tr("Gap between rows"), tr("Gap between columns"));
+    let v_tip = tr("Gap between rows");
     if l.mode == LayoutMode::Grid {
         let e = crate::variable_ui::number_field(
             app,
@@ -570,58 +724,69 @@ fn gap_fields(app: &mut FigApp, ui: &mut Ui, ids: &[NodeId], l: &AutoLayout, col
             col,
         );
         app.field(ids, "rowGap", e, |v| json!(v.max(0.0)));
-        let e = crate::variable_ui::number_field(app, ui, ids, "columnGap", Id::new("al_gap"), Lead::Icon(Icon::Gap, h_tip), Some(l.gap), "", col);
+        let e = crate::variable_ui::number_field(
+            app,
+            ui,
+            ids,
+            "columnGap",
+            Id::new("al_gap"),
+            Lead::Icon(Icon::Gap, tr("Gap between columns")),
+            Some(l.gap),
+            "",
+            col,
+        );
         app.field(ids, "columnGap", e, |v| json!(v.max(0.0)));
         return;
     }
+    // A wrapping flow spaces two axes, like the grid: the gap between items in a line (main axis)
+    // and the gap between lines (cross axis). Both show inline — neither folds into the popover —
+    // so a wrapped frame reads the same two gaps a grid does.
     let vertical = l.mode == LayoutMode::Vertical;
-    // An automatic gap and a spread between lines have no number to show.
+    // An automatic main gap, or a spread between lines, has no number to show.
     let auto_main = l.main_align.is_auto_gap();
     let spread = l.content_align == ContentAlign::SpaceBetween;
-    let (v_key, v_id, v_val) =
-        if vertical { ("gap", "al_gap", (!auto_main).then_some(l.gap)) } else { ("crossGap", "al_rowgap", (!spread).then_some(l.cross_gap)) };
-    let (h_key, h_id, h_val) =
-        if vertical { ("crossGap", "al_rowgap", (!spread).then_some(l.cross_gap)) } else { ("gap", "al_gap", (!auto_main).then_some(l.gap)) };
-    for (key, id, value, icon, tip) in [(v_key, v_id, v_val, Icon::DistributeV, v_tip), (h_key, h_id, h_val, Icon::Gap, h_tip)] {
-        let e = crate::variable_ui::number_field_or(app, ui, ids, key, Id::new(id), value, col, tr("Auto"), Lead::Icon(icon, tip), "");
-        if key == "crossGap" {
-            // A typed gap between the lines is a fixed one.
-            app.field_run(e, "node.set", |v| json!({"ids": ids, "props": {"crossGap": v.max(0.0), "contentAlign": "auto"}}));
-        } else {
-            app.field(ids, key, e, |v| json!(v));
-        }
-    }
+    // Main-axis gap: between items in a line.
+    let main_icon = if vertical { Icon::DistributeV } else { Icon::Gap };
+    let e = crate::variable_ui::number_field_or(
+        app,
+        ui,
+        ids,
+        "gap",
+        Id::new("al_gap"),
+        (!auto_main).then_some(l.gap),
+        col,
+        tr("Auto"),
+        Lead::Icon(main_icon, tr("Gap between items")),
+        "",
+    );
+    app.field(ids, "gap", e, |v| json!(v));
+    // Cross-axis gap: between lines. Its mode (Fixed / Space between) rides with `contentAlign`.
+    let cross_icon = if vertical { Icon::Gap } else { Icon::DistributeV };
+    let cross_label = if vertical { tr("Gap between columns") } else { tr("Gap between rows") };
+    let e = crate::variable_ui::number_field_or(
+        app,
+        ui,
+        ids,
+        "crossGap",
+        Id::new("al_rowgap"),
+        (!spread).then_some(l.cross_gap),
+        col,
+        tr("Auto"),
+        Lead::Icon(cross_icon, cross_label),
+        "",
+    );
+    // A typed gap between the lines is a fixed one.
+    app.field_run(e, "node.set", |v| json!({"ids": ids, "props": {"crossGap": v.max(0.0), "contentAlign": "auto"}}));
 }
 
-/// A plain flow's single gap and its mode (fixed, or an automatic spread).
+/// A plain flow's single gap. Its mode (fixed, or an automatic spread) folds into the advanced
+/// layout popover at the bottom — see `settings`.
 fn gap_and_mode(app: &mut FigApp, ui: &mut Ui, ids: &[NodeId], l: &AutoLayout, col: f32) {
     let auto = l.main_align.is_auto_gap();
     let gap_icon = if l.mode == LayoutMode::Vertical { Icon::DistributeV } else { Icon::Gap };
     let (shown, lead) = ((!auto).then_some(l.gap), Lead::Icon(gap_icon, tr("Gap between items")));
     let e = crate::variable_ui::number_field_or(app, ui, ids, "gap", Id::new("al_gap"), shown, col, tr("Auto"), lead, "");
     app.field(ids, "gap", e, |v| json!(v));
-    let label = match l.main_align {
-        MainAlign::SpaceBetween => tr("Space between"),
-        MainAlign::SpaceAround => tr("Space around"),
-        MainAlign::SpaceEvenly => tr("Space evenly"),
-        _ => tr("Fixed gap"),
-    };
-    let resp = widgets::dropdown(ui, label, col, None);
-    crate::a11y::combo(&resp, tr("Auto gap"), label, crate::a11y::menu_open(&resp));
-    menu_popup(&resp).show(|ui| {
-        let modes = [
-            (tr("Fixed"), "min"),
-            (tr("Auto (space between)"), "spaceBetween"),
-            (tr("Auto (space evenly)"), "spaceEvenly"),
-            (tr("Auto (space around)"), "spaceAround"),
-        ];
-        for (l, v) in modes {
-            if menu_item(ui, l, "") {
-                app.set_props(ids, json!({"mainAlign": v}));
-                ui.close();
-            }
-        }
-    });
 }
 
 /// The layout settings' dots button: toggles the popover, holding the button's place while it is
@@ -712,27 +877,6 @@ fn spacing(app: &mut FigApp, ui: &mut Ui, ids: &[NodeId], l: &AutoLayout) {
             toggle(ui);
         });
     }
-    if l.mode != LayoutMode::Grid && l.wrap {
-        // The gap between the wrapped rows (horizontal) or columns (vertical) is the alignment
-        // block's vertical field, so this row carries only its mode.
-        let vertical = l.mode == LayoutMode::Vertical;
-        let name = if vertical { tr("Column gap") } else { tr("Row gap") };
-        widgets::sublabels(ui, name, None);
-        row(ui, 32.0, |ui| {
-            let spread = l.content_align == ContentAlign::SpaceBetween;
-            let label = if spread { tr("Space between") } else { tr("Fixed gap") };
-            let resp = widgets::dropdown(ui, label, col, None);
-            crate::a11y::combo(&resp, name, label, crate::a11y::menu_open(&resp));
-            menu_popup(&resp).show(|ui| {
-                for (l, v) in [(tr("Fixed"), "auto"), (tr("Auto (space between)"), "spaceBetween")] {
-                    if menu_item(ui, l, "") {
-                        app.set_props(ids, json!({"contentAlign": v}));
-                        ui.close();
-                    }
-                }
-            });
-        });
-    }
     if l.mode == LayoutMode::Grid {
         widgets::sublabels(ui, tr("Columns"), Some(tr("Rows")));
         row(ui, 32.0, |ui| {
@@ -791,6 +935,44 @@ fn settings(app: &mut FigApp, ui: &mut Ui, ids: &[NodeId], l: &AutoLayout, in_in
             }
         });
     }
+    // The gap mode (fixed, or an automatic spread) folds into the advanced layout at the bottom: a
+    // plain flow sets its main-axis alignment, a wrap sets how its lines spread.
+    let gap_mode = if l.wrap {
+        if l.content_align == ContentAlign::SpaceBetween { tr("Space between") } else { tr("Fixed gap") }
+    } else {
+        match l.main_align {
+            MainAlign::SpaceBetween => tr("Space between"),
+            MainAlign::SpaceAround => tr("Space around"),
+            MainAlign::SpaceEvenly => tr("Space evenly"),
+            _ => tr("Fixed gap"),
+        }
+    };
+    widgets::setting_row(ui, tr("Gap mode"), |ui| {
+        let resp = widgets::dropdown(ui, gap_mode, widgets::SETTING_CONTROL, None);
+        crate::a11y::combo(&resp, tr("Gap mode"), gap_mode, crate::a11y::menu_open(&resp));
+        menu_popup(&resp).show(|ui| {
+            if l.wrap {
+                for (l, v) in [(tr("Fixed"), "auto"), (tr("Auto (space between)"), "spaceBetween")] {
+                    if menu_item(ui, l, "") {
+                        app.set_props(ids, json!({ "contentAlign": v }));
+                        ui.close();
+                    }
+                }
+            } else {
+                for (l, v) in [
+                    (tr("Fixed"), "min"),
+                    (tr("Auto (space between)"), "spaceBetween"),
+                    (tr("Auto (space evenly)"), "spaceEvenly"),
+                    (tr("Auto (space around)"), "spaceAround"),
+                ] {
+                    if menu_item(ui, l, "") {
+                        app.set_props(ids, json!({ "mainAlign": v }));
+                        ui.close();
+                    }
+                }
+            }
+        });
+    });
 }
 
 /// The settings popover, drawn once a frame while it is open (it closes on its X, Escape and a
@@ -942,58 +1124,157 @@ mod tests {
         assert_eq!(axes(1, 2, false), (2, 1));
     }
 
-    #[test]
-    fn one_cell_is_lit_for_a_plain_alignment() {
-        assert!(lit(1, 2, 1, 2));
-        assert!(!lit(0, 2, 1, 2));
-        assert!(!lit(1, 1, 1, 2));
+    fn state(main: usize, cross: usize) -> State {
+        State { main, cross, spread_cross: false }
+    }
+
+    fn clean(bars: [Bar; 5]) -> Vec<Bar> {
+        bars.into_iter().filter(|&(_, _, w, h)| w > 0.0 && h > 0.0).collect()
     }
 
     #[test]
-    fn a_spreading_axis_lights_all_of_it() {
-        // An auto gap along the main axis: every column of the chosen row, whatever the cross
-        // alignment is (the ends keep a dot beside the middle glyph).
-        for main_i in 0..3 {
-            assert!(lit(main_i, 1, 9, 1), "main {main_i} of a spread main axis");
+    fn a_packed_state_draws_one_cell_and_an_auto_gap_the_whole_main_axis() {
+        let packed = state(1, 2);
+        assert!(packed.bars(FlowShape::NowrapV, 1, 2).is_some(), "the chosen cell draws");
+        assert!(packed.bars(FlowShape::NowrapV, 0, 2).is_none(), "the rest of its line keeps dots");
+        assert!(packed.bars(FlowShape::NowrapV, 1, 1).is_none(), "the rest of its column keeps dots");
+        // An auto gap: a bar in every cell of the chosen cross line, and only there.
+        let spread = State { main: SPREAD, cross: 2, spread_cross: false };
+        for main in 0..3 {
+            assert!(spread.bars(FlowShape::NowrapV, main, 2).is_some(), "main {main} of the spread axis");
         }
-        assert!(!lit(1, 0, 9, 1) && !lit(1, 2, 9, 1), "only the chosen row");
-        // Wrapped lines spread across the flow: the whole main column, every row.
-        for cross_i in 0..3 {
-            assert!(lit(2, cross_i, 2, 9), "row {cross_i} of the spread cross axis");
+        assert!(spread.bars(FlowShape::NowrapV, 1, 0).is_none(), "only the chosen cross line");
+        // Wrapped lines spaced between spread the other axis: every line of the chosen main cell.
+        let both = State { main: 1, cross: 1, spread_cross: true };
+        for cross in 0..3 {
+            assert!(both.bars(FlowShape::NowrapV, 1, cross).is_some(), "line {cross} of the spread cross axis");
         }
-        assert!(!lit(1, 0, 2, 9) && !lit(0, 2, 2, 9), "only the chosen column");
+        assert!(both.bars(FlowShape::NowrapV, 0, 1).is_none(), "only the chosen main cell");
     }
 
     #[test]
-    fn the_bars_read_both_alignments_in_their_place_and_length() {
-        // Horizontal flow, top-left (main packed left, cross at the top): the first outer bar is the
-        // longer one (7) and both short bars are flush left; the middle line is full width.
-        assert_eq!(bars(true, 0, 0), [(0.0, 0.0, 7.0, 2.0), (0.0, 4.0, 10.0, 2.0), (0.0, 8.0, 5.0, 2.0)]);
-        // Centred main, centred cross: the outer bars are 5 and 5, sharing the slack either side.
-        assert_eq!(bars(true, 1, 1), [(2.5, 0.0, 5.0, 2.0), (0.0, 4.0, 10.0, 2.0), (2.5, 8.0, 5.0, 2.0)]);
-        // Packed right, cross at the bottom: the last outer bar is the longer one (7), flush right.
-        assert_eq!(bars(true, 2, 2), [(5.0, 0.0, 5.0, 2.0), (0.0, 4.0, 10.0, 2.0), (3.0, 8.0, 7.0, 2.0)]);
-        // A vertical flow is the horizontal one turned on its side: vertical bars, the longer one on the
-        // chosen cross side (left here, so the first is 7), packed along the vertical main axis.
-        assert_eq!(bars(false, 1, 0), [(0.0, 1.5, 2.0, 7.0), (4.0, 0.0, 2.0, 10.0), (8.0, 2.5, 2.0, 5.0)]);
-        // A spreading axis (9) centres like a centred alignment.
-        assert_eq!(bars(true, 9, 1), bars(true, 1, 1));
-        assert_eq!(bars(false, 9, 2), bars(false, 1, 2));
+    fn a_click_keeps_a_spreading_main_axis() {
+        let picked = State { main: SPREAD, cross: 0, spread_cross: false }.pick(2, 1);
+        assert_eq!((picked.main, picked.cross), (SPREAD, 1), "an auto gap takes only the cross alignment");
+        let picked = state(0, 0).pick(2, 1);
+        assert_eq!((picked.main, picked.cross), (2, 1), "a packed flow takes both");
+    }
+
+    fn bar_in_box(x: f32, y: f32, w: f32, h: f32) {
+        assert!(x >= 0.0 && y >= 0.0 && x + w <= GLYPH_BOX && y + h <= GLYPH_BOX, "the {w}x{h} bar at ({x},{y}) leaves the {GLYPH_BOX} pt box");
+    }
+
+    /// The nine vertical no-wrap states as the design file draws its `vertical, no wrap` component
+    /// set, in the 10 pt box: the main alignment sets the three bar lengths, the cross one slides
+    /// them.
+    const DESIGN_NOWRAP_V: [[[Bar; 3]; 3]; 3] = [
+        [
+            [(0.0, 0.0, 7.0, 2.0), (0.0, 4.0, 10.0, 2.0), (0.0, 8.0, 5.0, 2.0)],
+            [(1.5, 0.0, 7.0, 2.0), (0.0, 4.0, 10.0, 2.0), (2.5, 8.0, 5.0, 2.0)],
+            [(3.0, 0.0, 7.0, 2.0), (0.0, 4.0, 10.0, 2.0), (5.0, 8.0, 5.0, 2.0)],
+        ],
+        [
+            [(0.0, 0.0, 5.0, 2.0), (0.0, 4.0, 10.0, 2.0), (0.0, 8.0, 5.0, 2.0)],
+            [(2.5, 0.0, 5.0, 2.0), (0.0, 4.0, 10.0, 2.0), (2.5, 8.0, 5.0, 2.0)],
+            [(5.0, 0.0, 5.0, 2.0), (0.0, 4.0, 10.0, 2.0), (5.0, 8.0, 5.0, 2.0)],
+        ],
+        [
+            [(0.0, 0.0, 5.0, 2.0), (0.0, 4.0, 10.0, 2.0), (0.0, 8.0, 7.0, 2.0)],
+            [(2.5, 0.0, 5.0, 2.0), (0.0, 4.0, 10.0, 2.0), (1.5, 8.0, 7.0, 2.0)],
+            [(5.0, 0.0, 5.0, 2.0), (0.0, 4.0, 10.0, 2.0), (3.0, 8.0, 7.0, 2.0)],
+        ],
+    ];
+
+    #[test]
+    fn the_nine_vertical_no_wrap_states_are_the_designs() {
+        for (main, states) in DESIGN_NOWRAP_V.into_iter().enumerate() {
+            for (cross, want) in states.into_iter().enumerate() {
+                let got = state(main, cross).bars(FlowShape::NowrapV, main, cross).expect("the chosen cell draws");
+                assert_eq!(&got[..3], &want[..], "main {main}, cross {cross}");
+                assert_eq!((got[3], got[4]), (HOLE, HOLE), "three bars only");
+            }
+        }
     }
 
     #[test]
-    fn every_bar_stays_inside_the_glyph_box() {
-        for horizontal in [true, false] {
-            for main in [0, 1, 2, 9] {
-                for cross in [0, 1, 2] {
-                    for (x, y, w, h) in bars(horizontal, main, cross) {
-                        assert!(
-                            x >= 0.0 && y >= 0.0 && x + w <= GLYPH_BOX && y + h <= GLYPH_BOX,
-                            "the {w}x{h} bar at ({x},{y}) leaves the {GLYPH_BOX} pt box"
-                        );
+    fn a_horizontal_no_wrap_state_is_the_vertical_one_turned_on_its_side() {
+        for main in 0..3 {
+            for cross in 0..3 {
+                let v = state(main, cross).bars(FlowShape::NowrapV, main, cross).expect("a packed cell draws");
+                let h = state(main, cross).bars(FlowShape::NowrapH, main, cross).expect("a packed cell draws");
+                for (i, (x, y, w, hh)) in v.into_iter().enumerate() {
+                    assert_eq!(h[i], (y, x, hh, w), "main {main}, cross {cross}, bar {i}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_vertical_wrap_slides_its_short_line_by_the_cross_alignment() {
+        for cross in 0..3 {
+            let want = [(0.0, 0.0, 4.0, 2.0), (6.0, 0.0, 4.0, 2.0), (0.0, 4.0, 4.0, 2.0), (6.0, 4.0, 4.0, 2.0), (cross as f32 * 3.0, 8.0, 4.0, 2.0)];
+            for main in 0..3 {
+                let got = state(main, cross).bars(FlowShape::WrapV, main, cross).expect("a packed cell draws");
+                assert_eq!(got, want, "main {main}, cross {cross}: two items a line, the last line one short");
+            }
+        }
+    }
+
+    #[test]
+    fn a_horizontal_wrap_fills_three_a_line_and_slides_the_last_pair_by_the_main_alignment() {
+        for main in 0..3 {
+            let x = main as f32 * 2.0;
+            let want = [(0.0, 0.0, 2.0, 4.0), (4.0, 0.0, 2.0, 4.0), (8.0, 0.0, 2.0, 4.0), (x, 6.0, 2.0, 4.0), (x + 4.0, 6.0, 2.0, 4.0)];
+            for cross in 0..3 {
+                let got = state(main, cross).bars(FlowShape::WrapH, main, cross).expect("a packed cell draws");
+                assert_eq!(got, want, "main {main}, cross {cross}: three a line, the last line two short");
+            }
+        }
+    }
+
+    #[test]
+    fn an_auto_gap_draws_a_bar_in_each_main_cell_with_the_middle_one_half_length() {
+        for cross in 0..3 {
+            let spread = State { main: SPREAD, cross, spread_cross: false };
+            for main in 0..3 {
+                let len = if main == 1 { 5.0 } else { 10.0 };
+                let off = (GLYPH_BOX - len) * 0.5 * cross as f32;
+                // A vertical flow's items are horizontal bars, centred in their own cell.
+                let got = clean(spread.bars(FlowShape::NowrapV, main, cross).expect("a spread cell draws"));
+                assert_eq!(got, vec![(off, 4.0, len, 2.0)], "vertical, main {main}, cross {cross}");
+                // A horizontal flow's are vertical ones.
+                let got = clean(spread.bars(FlowShape::NowrapH, main, cross).expect("a spread cell draws"));
+                assert_eq!(got, vec![(4.0, off, 2.0, len)], "horizontal, main {main}, cross {cross}");
+            }
+        }
+    }
+
+    #[test]
+    fn every_bar_of_every_state_stays_inside_the_glyph_box() {
+        // The design's forty-two variants: nine cells for each packed shape, three cross alignments
+        // for each auto gap.
+        let mut states = 0;
+        for shape in [FlowShape::NowrapV, FlowShape::NowrapH, FlowShape::WrapV, FlowShape::WrapH] {
+            for main in 0..3 {
+                for cross in 0..3 {
+                    states += 1;
+                    for (x, y, w, h) in clean(state(main, cross).bars(shape, main, cross).unwrap_or([HOLE; 5])) {
+                        bar_in_box(x, y, w, h);
                     }
                 }
             }
         }
+        for shape in [FlowShape::NowrapV, FlowShape::NowrapH] {
+            for cross in 0..3 {
+                states += 1;
+                for main in 0..3 {
+                    let spread = State { main: SPREAD, cross, spread_cross: false };
+                    for (x, y, w, h) in clean(spread.bars(shape, main, cross).unwrap_or([HOLE; 5])) {
+                        bar_in_box(x, y, w, h);
+                    }
+                }
+            }
+        }
+        assert_eq!(states, 42, "nine per packed shape and three per auto gap");
     }
 }
