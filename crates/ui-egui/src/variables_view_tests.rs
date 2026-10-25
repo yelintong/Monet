@@ -132,6 +132,57 @@ fn with_variables() -> Ui {
     u
 }
 
+/// The editor open on a collection of two modes, Light then Dark, so a column can be told from
+/// its neighbour.
+fn with_two_modes() -> Ui {
+    let mut u = Ui::new(Session::new());
+    for (cmd, p) in [
+        ("variable.createCollection", json!({"name": "Tokens", "modes": ["Light", "Dark"]})),
+        ("variable.create", json!({"collection": "Tokens", "name": "space/sm", "type": "number", "value": 8})),
+        ("variable.create", json!({"collection": "Tokens", "name": "brand", "type": "color", "value": "#0D99FF"})),
+    ] {
+        u.app.session.execute(cmd, &p).unwrap_or_else(|e| panic!("{cmd}: {e:?}"));
+    }
+    u.app.ui.variables = Some(Default::default());
+    for _ in 0..3 {
+        u.frame(vec![]);
+    }
+    u
+}
+
+/// The selected collection's modes, in the order the columns show them.
+fn mode_names(u: &Ui) -> Vec<String> {
+    u.app
+        .session
+        .doc()
+        .ok()
+        .and_then(|d| d.variables.collections.first())
+        .map(|c| c.modes.iter().map(|m| m.name.clone()).collect())
+        .unwrap_or_default()
+}
+
+/// Their ids, in the same order.
+fn mode_ids(u: &Ui) -> Vec<String> {
+    u.app.session.doc().ok().and_then(|d| d.variables.collections.first()).map(|c| c.modes.iter().map(|m| m.id.clone()).collect()).unwrap_or_default()
+}
+
+/// Every text with the rect it was clipped to: a text clipped to a rect outside the rows' viewport
+/// can still be seen, drawn over the header.
+fn text_clips(shapes: &[egui::epaint::ClippedShape]) -> Vec<(String, Pos2, Rect)> {
+    fn walk(s: &Shape, clip: Rect, out: &mut Vec<(String, Pos2, Rect)>) {
+        match s {
+            Shape::Vec(v) => v.iter().for_each(|s| walk(s, clip, out)),
+            Shape::Text(t) => out.push((t.galley.text().to_string(), t.pos, clip)),
+            _ => {}
+        }
+    }
+    let mut out = Vec::new();
+    for c in shapes {
+        walk(&c.shape, c.clip_rect, &mut out);
+    }
+    out
+}
+
 /// A drag from `from` to `to`: the pointer rests on the widget first (a press belongs to the
 /// widget under the pointer, and that takes a frame to know).
 fn drag_from(u: &mut Ui, from: Pos2, to: Pos2) {
@@ -341,12 +392,29 @@ fn the_columns_edges_drag_their_widths() {
     drag_from(&mut u, edge, edge + vec2(30.0, 0.0));
     let st = u.app.ui.variables.as_ref().expect("open");
     assert!(st.name_w > 240.0, "the name column is wider: {}", st.name_w);
-    // A mode column's edge: every mode column is that wide.
+    // A mode column's edge narrows that column, not every one of them.
     let st = u.app.ui.variables.as_ref().expect("open");
+    let id = mode_ids(&u).remove(0);
     let edge = Pos2::new(table_left + st.name_w + 1.0 + 200.0, g.panel.min.y + Geom::HEADER_H + 16.0);
     drag_from(&mut u, edge, edge + vec2(-40.0, 0.0));
     let st = u.app.ui.variables.as_ref().expect("open");
-    assert!(st.mode_w < 200.0, "the mode columns are narrower: {}", st.mode_w);
+    assert!(st.mode_width(&id) < 200.0, "the mode column is narrower: {}", st.mode_width(&id));
+}
+
+#[test]
+fn dragging_one_mode_columns_edge_leaves_the_others_alone() {
+    let mut u = with_two_modes();
+    let g = Geom::floating(u.ctx.content_rect(), None, true);
+    let table_left = g.panel.min.x + 265.0;
+    let st = u.app.ui.variables.as_ref().expect("open");
+    let ids = mode_ids(&u);
+    assert_eq!(ids.len(), 2, "two columns to tell apart");
+    let edge = Pos2::new(table_left + st.name_w + 1.0 + 200.0, g.panel.min.y + Geom::HEADER_H + 16.0);
+    drag_from(&mut u, edge, edge + vec2(-50.0, 0.0));
+    let st = u.app.ui.variables.as_ref().expect("open");
+    assert!(st.mode_width(&ids[0]) < 200.0, "the dragged column narrowed: {}", st.mode_width(&ids[0]));
+    // They used to share one width, so narrowing one squeezed the other with it.
+    assert_eq!(st.mode_width(&ids[1]), 200.0, "the column beside it kept its width");
 }
 
 #[test]
@@ -645,4 +713,64 @@ fn the_modes_have_a_divider_between_them() {
     let want = table_left + cols.mode_rect(r, 0).max.x;
     let shapes = flat(&u.frame_output(vec![]).shapes);
     assert!(vline_near(&shapes, want, 2.0, 20.0), "a vertical divider at {want} between the mode and the add column");
+}
+
+#[test]
+fn dragging_a_mode_heading_moves_that_column() {
+    let mut u = with_two_modes();
+    // Narrow enough that both columns sit inside the strip.
+    u.app.ui.variables.as_mut().expect("open").mode_w = 150.0;
+    u.frame(vec![]);
+    let st = u.app.ui.variables.as_ref().expect("open");
+    let g = Geom::floating(u.ctx.content_rect(), st.pos, st.sidebar).with_sidebar_width(st.sidebar_w).with_size(st.size);
+    let table_left = g.panel.min.x + g.sidebar_width();
+    let table_w = g.table_width();
+    let cols = Columns::of(table_w, 2, st);
+    let head = Rect::from_min_size(Pos2::new(table_left, g.panel.min.y + Geom::HEADER_H), vec2(table_w, 32.0));
+    assert_eq!(mode_names(&u), ["Light", "Dark"]);
+    // Carry "Dark" (the second column) to the left of "Light" by its heading.
+    let from = cols.mode_rect(head, 1).center();
+    let to = cols.mode_rect(head, 0).left_center() + vec2(10.0, 0.0);
+    drag_from(&mut u, from, to);
+    assert_eq!(mode_names(&u), ["Dark", "Light"], "the columns changed places");
+    assert!(u.app.ui.last_error.is_none(), "{:?}", u.app.ui.last_error);
+}
+
+#[test]
+fn a_row_scrolled_out_of_view_is_clipped_away() {
+    let mut u = Ui::new(Session::new());
+    u.app.session.execute("variable.createCollection", &json!({"name": "Tokens", "modes": ["Light", "Dark"]})).unwrap();
+    for i in 0..40 {
+        u.app.session.execute("variable.create", &json!({"collection": "Tokens", "name": format!("v{i}"), "type": "number", "value": i})).unwrap();
+    }
+    u.app.ui.variables = Some(Default::default());
+    for _ in 0..3 {
+        u.frame(vec![]);
+    }
+    let g = Geom::floating(u.ctx.content_rect(), None, true);
+    let table_left = g.panel.min.x + 265.0;
+    let head_bottom = g.panel.min.y + Geom::HEADER_H + 32.0;
+    // Scroll the rows to the bottom.
+    let over = Pos2::new(table_left + 300.0, g.panel.min.y + Geom::HEADER_H + 120.0);
+    u.frame(vec![egui::Event::PointerMoved(over)]);
+    for _ in 0..6 {
+        u.frame(vec![egui::Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Point,
+            delta: vec2(0.0, -120.0),
+            phase: egui::TouchPhase::Move,
+            modifiers: egui::Modifiers::NONE,
+        }]);
+    }
+    u.frame(vec![]);
+    // A row's cells are clipped to the rows' viewport *and* to their own strip. The strip alone was
+    // the clip before, so a row scrolled out of view kept painting — over the header and past the
+    // panel's edges. Every value cell now stops at the viewport's top.
+    let mut seen = 0;
+    for (text, at, clip) in text_clips(&u.frame_output(vec![]).shapes) {
+        if at.x > table_left && text.parse::<u32>().is_ok() {
+            seen += 1;
+            assert!(clip.min.y >= head_bottom - 1.0, "the value {text} at {at:?} can be seen above the header (clip {clip:?})");
+        }
+    }
+    assert!(seen > 0, "the visible rows still draw their values");
 }

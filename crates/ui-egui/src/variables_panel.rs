@@ -8,7 +8,7 @@
 //! undoable and the same over MCP.
 
 use egui::{Align2, Context, CornerRadius, Id, Pos2, Rect, Sense, Stroke, StrokeKind, Ui, UiBuilder, Vec2, pos2, vec2};
-use figcraft_doc::{Collection, Document, PublishedLibrary, Variable, VariableType, VariableValue, Variables, scopes_for};
+use figcraft_doc::{Collection, Document, Mode, PublishedLibrary, Variable, VariableType, VariableValue, Variables, scopes_for};
 use figcraft_engine::library;
 use serde_json::{Value, json};
 
@@ -224,15 +224,21 @@ pub struct Editor {
     /// The floating panel's size (None = the default); its right and bottom edges, and their
     /// corner, drag it.
     pub size: Option<Vec2>,
-    /// The table's name column and one mode column, dragged by their headings' edges.
+    /// The table's name column, dragged by its heading's edge.
     pub name_w: f32,
+    /// A mode column's width when it has never been dragged; the columns are otherwise each their
+    /// own (see `mode_ws`), so dragging one leaves the others as they were.
     pub mode_w: f32,
+    /// The width each mode column was dragged to, by mode id.
+    pub(crate) mode_ws: std::collections::BTreeMap<String, f32>,
     /// How far the mode columns have scrolled sideways; the name and add columns stay put.
     pub scroll_x: f32,
     /// The types the filter button hides (the funnel, right of the search field).
     hidden_kinds: Vec<VariableType>,
     /// The variable whose row is being dragged by its name.
     drag: Option<String>,
+    /// The mode column whose heading is being dragged to another place.
+    mode_drag: Option<String>,
     /// While the floating panel is moved by its header: where the pointer took hold of it, from
     /// the panel's top-left. The frame after puts the panel back under the pointer, so it follows
     /// it without lagging behind — and, recomputed each frame, it doesn't stick at the screen edge
@@ -257,9 +263,11 @@ impl Default for Editor {
             size: None,
             name_w: NAME_W,
             mode_w: MODE_W,
+            mode_ws: std::collections::BTreeMap::new(),
             scroll_x: 0.0,
             hidden_kinds: Vec::new(),
             drag: None,
+            mode_drag: None,
             grab: None,
         }
     }
@@ -274,6 +282,18 @@ impl Editor {
     /// An editor showing a collection of enabled library `library` (id or name).
     pub fn in_library(library: String, collection: Option<String>) -> Self {
         Editor { library: Some(library), collection, ..Default::default() }
+    }
+
+    /// Mode column `id`'s width: what it was dragged to, else the default every column starts at.
+    pub(crate) fn mode_width(&self, id: &str) -> f32 {
+        self.mode_ws.get(id).copied().unwrap_or(self.mode_w).clamp(MODE_MIN, MODE_MAX)
+    }
+
+    /// Give mode column `id` the width `w`, kept within what a column may be.
+    pub(crate) fn set_mode_width(&mut self, id: &str, w: f32) {
+        if w.is_finite() {
+            self.mode_ws.insert(id.to_string(), w.clamp(MODE_MIN, MODE_MAX));
+        }
     }
 }
 
@@ -1021,14 +1041,14 @@ fn table(app: &mut FigApp, ui: &mut Ui, view: &View, st: &mut Editor, slots: &mu
     let (head, _) = ui.allocate_exact_size(vec2(ui.available_width(), HEAD_ROW_H), Sense::hover());
     let head = Rect::from_min_size(head.min, vec2(width, head.height()));
     // Sideways: only the mode columns, under the pointer over them (Shift + wheel too).
-    let cols = Columns::of(width, coll.modes.len(), st);
+    let mut cols = Columns::for_modes(width, &coll.modes, st);
     if ui.rect_contains_pointer(cols.modes_rect(head)) {
         let (dx, shift, dy) = ui.input(|i| (i.smooth_scroll_delta.x, i.modifiers.shift, i.smooth_scroll_delta.y));
         // egui: a positive delta moves the content right, so the columns' offset grows.
         st.scroll_x += dx + if shift { dy } else { 0.0 };
     }
     st.scroll_x = st.scroll_x.clamp(0.0, cols.max_sx());
-    let cols = Columns { sx: st.scroll_x, ..cols };
+    cols.sx = st.scroll_x;
     header_row(app, ui, view, coll, st, &cols, head);
     let rows_h = (ui.available_height() - HSCROLL_H).max(60.0);
     egui::ScrollArea::vertical().id_salt("vars_rows").auto_shrink([false, false]).max_height(rows_h).show(ui, |ui| {
@@ -1058,7 +1078,7 @@ fn table(app: &mut FigApp, ui: &mut Ui, view: &View, st: &mut Editor, slots: &mu
 
 /// The table's columns as laid out this frame: the names on the left and the add-mode column on the
 /// right stay put, and only the mode columns between them scroll sideways.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) struct Columns {
     /// A row's width.
     width: f32,
@@ -1066,32 +1086,70 @@ pub(crate) struct Columns {
     /// The room the mode columns have between the two lines.
     modes: f32,
     add: f32,
-    /// One mode column, and how many there are.
+    /// Each mode column's own width, in order: dragging one edge leaves the rest alone.
+    widths: Vec<f32>,
+    /// The width a column takes where `widths` has no entry.
     mode: f32,
+    /// How many mode columns there are.
     count: usize,
     /// How far they have scrolled.
     sx: f32,
 }
 
 impl Columns {
-    pub(crate) fn of(width: f32, count: usize, st: &Editor) -> Columns {
-        // The name column yields to the room left after the add column, so name + add + modes always
-        // fit `width` and nothing is drawn outside the table area.
-        let name = st.name_w.clamp(NAME_MIN, NAME_MAX).min((width - ADD_W - 2.0).max(0.0));
+    /// Columns for `modes`, each at the width it was dragged to (the default until it is dragged).
+    pub(crate) fn for_modes(width: f32, modes: &[Mode], st: &Editor) -> Columns {
+        let (name, room) = Columns::room(width, st);
+        let widths: Vec<f32> = modes.iter().map(|m| st.mode_width(&m.id)).collect();
         Columns {
             width,
             name,
-            modes: (width - name - ADD_W - 2.0).max(0.0),
+            modes: room,
             add: ADD_W,
+            widths,
+            mode: st.mode_w.clamp(MODE_MIN, MODE_MAX),
+            count: modes.len().max(1),
+            sx: st.scroll_x,
+        }
+    }
+
+    /// Columns for `count` modes all at the default width (the geometry, without a collection).
+    #[cfg(test)]
+    pub(crate) fn of(width: f32, count: usize, st: &Editor) -> Columns {
+        let (name, room) = Columns::room(width, st);
+        Columns {
+            width,
+            name,
+            modes: room,
+            add: ADD_W,
+            widths: Vec::new(),
             mode: st.mode_w.clamp(MODE_MIN, MODE_MAX),
             count: count.max(1),
             sx: st.scroll_x,
         }
     }
 
+    /// The name column and the room left for the mode columns. The name yields to the room left
+    /// after the add column, so name + add + modes always fit `width` and nothing is drawn outside
+    /// the table area.
+    fn room(width: f32, st: &Editor) -> (f32, f32) {
+        let name = st.name_w.clamp(NAME_MIN, NAME_MAX).min((width - ADD_W - 2.0).max(0.0));
+        (name, (width - name - ADD_W - 2.0).max(0.0))
+    }
+
+    /// Mode column `i`'s width.
+    pub(crate) fn width_of(&self, i: usize) -> f32 {
+        self.widths.get(i).copied().unwrap_or(self.mode)
+    }
+
+    /// The width of every mode column and its 1 px line.
+    fn full(&self) -> f32 {
+        (0..self.count).map(|i| self.width_of(i) + 1.0).sum()
+    }
+
     /// How far the mode columns can scroll: their full width less the room they have.
     pub(crate) fn max_sx(&self) -> f32 {
-        (self.count as f32 * (self.mode + 1.0) - (self.modes + 1.0)).max(0.0)
+        (self.full() - (self.modes + 1.0)).max(0.0)
     }
 
     pub(crate) fn name_rect(&self, r: Rect) -> Rect {
@@ -1106,10 +1164,13 @@ impl Columns {
         Rect::from_min_max(pos2(r.max.x - self.add, r.min.y), r.max)
     }
 
-    /// Mode column `i` of `count`, scrolled by `sx`.
+    /// Mode column `i`, scrolled by `sx`.
     pub(crate) fn mode_rect(&self, r: Rect, i: usize) -> Rect {
-        let x = r.min.x + self.name + 1.0 + i as f32 * (self.mode + 1.0) - self.sx;
-        Rect::from_min_size(pos2(x, r.min.y), vec2(self.mode, r.height()))
+        let mut x = r.min.x + self.name + 1.0 - self.sx;
+        for k in 0..i {
+            x += self.width_of(k) + 1.0;
+        }
+        Rect::from_min_size(pos2(x, r.min.y), vec2(self.width_of(i), r.height()))
     }
 }
 
@@ -1122,7 +1183,7 @@ fn hscroll(ui: &mut Ui, width: f32, cols: &Columns, st: &mut Editor) {
         return;
     }
     ui.painter().rect_filled(track, CornerRadius::same(2), t.hover);
-    let full = cols.count as f32 * (cols.mode + 1.0);
+    let full = cols.full();
     let max_sx = cols.max_sx();
     let thumb_w = (track.width() * (cols.modes / full).clamp(0.12, 1.0)).min(track.width());
     let along = if max_sx > 0.0 { (st.scroll_x / max_sx).clamp(0.0, 1.0) } else { 0.0 };
@@ -1190,10 +1251,14 @@ fn header_row(app: &mut FigApp, ui: &mut Ui, view: &View, coll: &Collection, st:
     ui.painter().rect_filled(r, CornerRadius::ZERO, t.panel);
     let name_r = cols.name_rect(r);
     ui.painter().text(pos2(name_r.min.x + 16.0, r.center().y), Align2::LEFT_CENTER, tr("Name"), regular(11.0), t.text_secondary);
-    // The mode columns scroll between the two fixed ones, so they get a ui of their own, clipped.
+    // The mode columns scroll between the two fixed ones, so they get a ui of their own, clipped to
+    // the strip *within* what the caller already clips to: `set_clip_rect` replaces the clip rather
+    // than narrowing it, and `new_child` doesn't clip to `max_rect`, so passing the strip alone
+    // would let the cells paint outside the panel (and, in the rows, outside the scroll viewport).
     let modes = cols.modes_rect(r);
+    let clip = ui.clip_rect().intersect(modes);
     let mut wide = ui.new_child(UiBuilder::new().max_rect(modes));
-    wide.set_clip_rect(modes);
+    wide.set_clip_rect(clip);
     for (i, m) in coll.modes.iter().enumerate() {
         let cell = cols.mode_rect(r, i);
         if cell.max.x < modes.min.x || cell.min.x > modes.max.x {
@@ -1212,11 +1277,22 @@ fn header_row(app: &mut FigApp, ui: &mut Ui, view: &View, coll: &Collection, st:
             wide.painter().with_clip_rect(cell).text(name_pos, Align2::LEFT_CENTER, &m.name, regular(11.0), t.text_secondary);
             continue;
         }
-        let resp = wide.interact(cell, Id::new(("vars_mode", &m.id)), Sense::click());
-        if resp.hovered() {
+        let resp = wide.interact(cell, Id::new(("vars_mode", &m.id)), Sense::click_and_drag());
+        if st.mode_drag.as_deref() == Some(m.id.as_str()) {
+            // The column being carried: held up out of the row it is leaving.
+            wide.painter().rect_filled(cell, CornerRadius::same(4), t.field);
+        } else if resp.hovered() {
             wide.painter().rect_filled(cell, CornerRadius::same(4), t.hover);
         }
         wide.painter().with_clip_rect(cell).text(name_pos, Align2::LEFT_CENTER, &m.name, regular(11.0), t.text_secondary);
+        // A press that moves is a column being carried to another place; one that doesn't is a click
+        // (a double-click renames).
+        if resp.drag_started() {
+            st.mode_drag = Some(m.id.clone());
+        }
+        if resp.hovered() && st.mode_drag.is_none() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
+        }
         if resp.double_clicked() {
             start_rename(st, target.clone());
         }
@@ -1258,6 +1334,31 @@ fn header_row(app: &mut FigApp, ui: &mut Ui, view: &View, coll: &Collection, st:
         let cell = cols.mode_rect(r, i);
         wide.painter().line_segment([pos2(cell.max.x, r.min.y), pos2(cell.max.x, r.max.y)], Stroke::new(1.0, t.border));
     }
+    // A mode column carried by its heading: the gap it would land in is marked while it is held,
+    // and letting go moves it there. `variable.moveMode` takes the index in the list without it, so
+    // a drop to the right of where it came from counts one less.
+    if editable
+        && let Some(carried) = st.mode_drag.clone()
+        && let Some(from) = coll.modes.iter().position(|m| m.id == carried)
+    {
+        let at = ui.input(|i| i.pointer.interact_pos()).map_or(from, |p| mode_gap(cols, r, p.x));
+        let x = gap_x(cols, r, at);
+        if x >= modes.min.x && x <= modes.max.x {
+            let mark = Rect::from_min_size(pos2(x - 1.0, r.min.y + 3.0), vec2(2.0, r.height() - 6.0));
+            wide.painter().rect_filled(mark, CornerRadius::same(1), t.accent);
+        }
+        ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+        if ui.input(|i| i.pointer.any_released()) {
+            st.mode_drag = None;
+            let to = if at > from { at - 1 } else { at };
+            if to != from {
+                app.run("variable.moveMode", json!({"collection": coll.id, "mode": carried, "to": to}));
+            }
+        }
+    } else if st.mode_drag.is_some() {
+        // The column went away under the drag (another window, an undo): drop it.
+        st.mode_drag = None;
+    }
     // The button that adds a mode, at the table's right end where nothing scrolls.
     let add = cols.add_rect(r);
     if editable
@@ -1273,14 +1374,31 @@ fn header_row(app: &mut FigApp, ui: &mut Ui, view: &View, coll: &Collection, st:
     ui.painter().line_segment([pos2(name_r.max.x, r.min.y), pos2(name_r.max.x, r.max.y)], Stroke::new(1.0, t.border));
     ui.painter().line_segment([pos2(add.min.x, r.min.y), pos2(add.min.x, r.max.y)], Stroke::new(1.0, t.border));
     column_edge(ui, Id::new("vars_name_edge"), name_r.max.x, r.min.x, r, &mut st.name_w, NAME_MIN, NAME_MAX);
-    for i in 0..cols.count {
+    for (i, m) in coll.modes.iter().enumerate() {
         let cell = cols.mode_rect(r, i);
         if cell.max.x <= modes.min.x + 3.0 || cell.max.x >= modes.max.x - 3.0 {
             continue;
         }
-        column_edge(ui, Id::new(("vars_mode_edge", i)), cell.max.x, cell.min.x, r, &mut st.mode_w, MODE_MIN, MODE_MAX);
+        // Only the column whose edge this is changes; the others keep the widths they were dragged
+        // to (they used to share one width, so dragging one squeezed all of them).
+        let mut w = cols.width_of(i);
+        if column_edge(ui, Id::new(("vars_mode_edge", &m.id)), cell.max.x, cell.min.x, r, &mut w, MODE_MIN, MODE_MAX)
+            && (w - cols.width_of(i)).abs() > 0.01
+        {
+            st.set_mode_width(&m.id, w);
+        }
     }
     ui.painter().line_segment([r.left_bottom(), r.right_bottom()], Stroke::new(1.0, t.border));
+}
+
+/// The gap a mode carried to `x` would land in: 0 before the first column, `count` after the last.
+fn mode_gap(cols: &Columns, r: Rect, x: f32) -> usize {
+    (0..cols.count).filter(|&i| x > cols.mode_rect(r, i).center().x).count()
+}
+
+/// Where gap `at` falls between the mode columns.
+fn gap_x(cols: &Columns, r: Rect, at: usize) -> f32 {
+    if at == 0 { r.min.x + cols.name + 1.0 - cols.sx } else { cols.mode_rect(r, at - 1).max.x }
 }
 
 fn var_row(app: &mut FigApp, ui: &mut Ui, view: &View, coll: &Collection, v: &Variable, st: &mut Editor, cols: &Columns, slots: &mut Vec<Slot>) {
@@ -1321,10 +1439,12 @@ fn var_row(app: &mut FigApp, ui: &mut Ui, view: &View, coll: &Collection, v: &Va
         let short = v.name.rsplit('/').next().unwrap_or(&v.name);
         ui.painter().with_clip_rect(text_r).text(text_r.left_center(), Align2::LEFT_CENTER, short, regular(11.0), t.text);
     }
-    // The mode cells, clipped to their strip so the ones scrolled out of it can't be hit.
+    // The mode cells, clipped to their strip so the ones scrolled out of it can't be hit — and to
+    // what the vertical scroll area clips to, so a row scrolled out of view paints nothing.
     let modes = cols.modes_rect(r);
+    let clip = ui.clip_rect().intersect(modes);
     let mut wide = ui.new_child(UiBuilder::new().max_rect(modes));
-    wide.set_clip_rect(modes);
+    wide.set_clip_rect(clip);
     for (i, m) in coll.modes.iter().enumerate() {
         let cell = cols.mode_rect(r, i);
         if cell.max.x < modes.min.x || cell.min.x > modes.max.x {
