@@ -11,7 +11,7 @@ use serde_json::json;
 use crate::FigApp;
 use crate::i18n::{tr, tr_noop};
 use crate::icons::{self, Icon};
-use crate::right::{block, common, menu_item, menu_popup, row};
+use crate::right::{common, menu_item, menu_popup, row};
 use crate::theme::{Tokens, regular};
 use crate::widgets::{self, FIELD_H, Lead};
 
@@ -451,8 +451,10 @@ fn alignment(app: &mut FigApp, ui: &mut Ui, ids: &[NodeId], l: &AutoLayout) {
     let h = FIELD_H * 2.0 + widgets::GUTTER;
     // The picker reads "Align" for a flow and "Grid" for a grid; the gaps beside it are "Spacing".
     widgets::sublabels(ui, if l.mode == LayoutMode::Grid { tr("Grid") } else { tr("Align") }, Some(tr("Spacing")));
-    block(ui, h + 12.0, 6.0, |ui| {
-        let col = ((ui.available_width() - 24.0 - widgets::GUTTER * 2.0) / 2.0).max(60.0);
+    // The picker and the gaps take a column each — as wide as the fields above and below them,
+    // and starting at the same edge — and the dots button sits at the row's end.
+    let col = widgets::col_width(ui.available_width());
+    row(ui, h + 12.0, |ui| {
         let pill = ui.allocate_exact_size(vec2(col, h), Sense::hover()).0;
         picker(app, ui, ids, l, pill);
         let gaps = ui.allocate_exact_size(vec2(col, h), Sense::hover()).0;

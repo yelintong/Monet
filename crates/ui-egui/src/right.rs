@@ -12,7 +12,7 @@ use crate::icons::{self, Icon};
 use crate::list_drag::{ListDrag, move_flags, remove_flags};
 use crate::style_picker::{self, StyleSlot};
 use crate::theme::{ACCENT, Tokens, regular, semibold};
-use crate::widgets::{self, Edit, FIELD_H, FieldEdit, Lead, PAD};
+use crate::widgets::{self, Edit, FIELD_H, FieldEdit, Lead, PAD, PAD_RIGHT};
 use crate::{FigApp, RightTab};
 
 /// Common value of `f` across `ids` (None when mixed or empty).
@@ -338,7 +338,7 @@ pub(crate) fn block_inset(ui: &mut Ui, h: f32, inset_x: f32, inset_y: f32, add: 
     let (r, _) = ui.allocate_exact_size(vec2(w, h), Sense::hover());
     // `inset_x` moves the row's left edge only: its buttons end at the same margin as every other
     // row's, so a row that opens with an icon keeps the panel's right edge.
-    let inner = Rect::from_min_max(pos2(r.min.x + inset_x, r.min.y + inset_y), pos2(r.max.x - PAD, r.max.y - inset_y));
+    let inner = Rect::from_min_max(pos2(r.min.x + inset_x, r.min.y + inset_y), pos2(r.max.x - PAD_RIGHT, r.max.y - inset_y));
     let mut child = ui.new_child(egui::UiBuilder::new().max_rect(inner).layout(egui::Layout::left_to_right(egui::Align::Center)));
     child.spacing_mut().item_spacing = vec2(8.0, 0.0);
     add(&mut child);
