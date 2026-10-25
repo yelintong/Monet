@@ -2101,12 +2101,20 @@ fn grids(app: &mut FigApp, ui: &mut Ui, doc: &Document, sel: &[NodeId]) {
             let w = ui.available_width() - 52.0;
             let resp = widgets::dropdown(ui, &grid_label(g), w, None);
             menu_popup(&resp).width(220.0).show(|ui| {
-                for (l, kind) in [(tr("Grid"), GridKind::Grid), (tr("Columns"), GridKind::Columns), (tr("Rows"), GridKind::Rows)] {
+                for (l, kind) in [
+                    (tr("Grid"), GridKind::Grid),
+                    (tr("Columns"), GridKind::Columns),
+                    (tr("Rows"), GridKind::Rows),
+                    (tr("45°"), GridKind::Diagonal),
+                    (tr("Rings"), GridKind::Rings),
+                ] {
                     if menu_item(ui, l, "") {
                         let fresh = match kind {
                             GridKind::Grid => LayoutGrid::default(),
                             GridKind::Columns => LayoutGrid::columns(),
                             GridKind::Rows => LayoutGrid::rows(),
+                            GridKind::Diagonal => LayoutGrid::diagonal(),
+                            GridKind::Rings => LayoutGrid::rings(),
                         };
                         app.set_props(&ids, json!({"grids": grids_with(&list, i, |x| *x = fresh)}));
                         ui.close();
@@ -2148,8 +2156,12 @@ fn grid_label(g: &LayoutGrid) -> String {
         GridKind::Grid => trf("Grid ({size})", &[("size", &g.size)]),
         GridKind::Columns if auto_count(g) => tr("Auto columns").to_string(),
         GridKind::Rows if auto_count(g) => tr("Auto rows").to_string(),
+        GridKind::Diagonal if auto_count(g) => tr("Auto 45° lines").to_string(),
+        GridKind::Rings if auto_count(g) => tr("Auto rings").to_string(),
         GridKind::Columns => trn("{n} columns", g.count.max(1) as usize, &[]),
         GridKind::Rows => trn("{n} rows", g.count.max(1) as usize, &[]),
+        GridKind::Diagonal => trn("{n} lines at 45°", g.count.max(1) as usize, &[]),
+        GridKind::Rings => trn("{n} rings", g.count.max(1) as usize, &[]),
     }
 }
 
