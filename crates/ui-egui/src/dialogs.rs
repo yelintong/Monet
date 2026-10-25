@@ -20,23 +20,34 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 const ISSUES: &str = "https://github.com/storytold/figcraft/issues";
 
 /// What the desktop app says when its window couldn't open with `error` (no frame was drawn: the
-/// language is the one [`i18n::set`] picked from the preferences). `backend_set`: `WGPU_BACKEND`
-/// named the graphics API, so the hint is to unset it rather than to try another one.
-pub fn window_failed(error: &str, backend_set: bool) -> String {
-    let hint = if backend_set {
-        tr("WGPU_BACKEND is set and names the graphics API to use; unsetting it lets FigCraft choose.").to_string()
-    } else if cfg!(windows) {
-        // Direct3D 12 and OpenGL are both offered, but wgpu keeps the Direct3D 12 adapter it picked
-        // even when its device then fails, so naming OpenGL alone can still help.
-        format!(
-            "{}
+/// language is the one [`i18n::set`] picked from the preferences). `named` is what chose the
+/// graphics API — `"WGPU_BACKEND"` or `"preference"` — and `settings` where the preferences live:
+/// one chosen in Preferences is undone there (or, the window being out of reach, in that file).
+pub fn window_failed(error: &str, named: Option<&str>, settings: Option<&std::path::Path>) -> String {
+    let hint = match named {
+        Some("WGPU_BACKEND") => tr("WGPU_BACKEND is set and names the graphics API to use; unsetting it lets FigCraft choose.").to_string(),
+        Some(_) => {
+            let mut text =
+                tr("The Graphics renderer preference names the graphics API to use; setting it back to System in Preferences lets FigCraft choose.")
+                    .to_string();
+            // Preferences is out of reach while the window won't open: the settings file is the way back.
+            if let Some(file) = settings {
+                text.push_str(&format!("\n\n{}", trf("Until then, remove \"graphics_backend\" from {file}.", &[("file", &file.display())])));
+            }
+            text
+        }
+        None if cfg!(windows) => {
+            // Direct3D 12 and OpenGL are both offered, but wgpu keeps the Direct3D 12 adapter it picked
+            // even when its device then fails, so naming OpenGL alone can still help.
+            format!(
+                "{}
 
 set WGPU_BACKEND=gl
 figcraft.exe",
-            tr("Updating the graphics driver often helps. To use OpenGL only, start FigCraft from a Command Prompt with:")
-        )
-    } else {
-        tr("Updating the graphics driver often helps. WGPU_BACKEND (vulkan, gl, metal) names another graphics API to try.").to_string()
+                tr("Updating the graphics driver often helps. To use OpenGL only, start FigCraft from a Command Prompt with:")
+            )
+        }
+        None => tr("Updating the graphics driver often helps. WGPU_BACKEND (vulkan, gl, metal) names another graphics API to try.").to_string(),
     };
     format!(
         "{}
@@ -290,6 +301,8 @@ pub fn show(app: &mut FigApp, ctx: &Context) {
                 }
             });
             ui.add_space(8.0);
+            graphics_renderer(app, ui, &prefs.graphics_backend);
+            ui.add_space(8.0);
             ui.horizontal(|ui| {
                 ui.label(tr("Language"));
                 // Each language by its own name; System follows the OS (the browser on the web).
@@ -365,7 +378,6 @@ pub fn show(app: &mut FigApp, ctx: &Context) {
     }
     batch_rename_dialog(app, ctx);
     menu_input_dialog(app, ctx);
-    crate::variables_panel::show(app, ctx);
     crate::dev_compare::show(app, ctx);
     crate::branch_ui::show(app, ctx);
     if app.ui.export_preview {
@@ -548,6 +560,95 @@ fn interface_size(app: &mut FigApp, ui: &mut egui::Ui, chosen: f64) {
             &[("size", &crate::ui_scale::percent(chosen as f32)), ("drawn", &crate::ui_scale::percent(app.ui.ui_scale.zoom))],
         );
         crate::widgets::label(ui, &note, t.text_secondary);
+    }
+}
+
+/// Preferences ▸ Graphics renderer: which graphics API draws the window, as a drop-down that is
+/// kept for the next start (wgpu opens with the API chosen when the window is made, so a change
+/// can't take effect in the running one). The browser draws through WebGL itself, so there the row
+/// only says so.
+fn graphics_renderer(app: &mut FigApp, ui: &mut egui::Ui, chosen: &str) {
+    let t = Tokens::get(ui.ctx());
+    if cfg!(target_arch = "wasm32") {
+        ui.label(tr("Graphics renderer"));
+        crate::widgets::label(ui, tr("Your browser draws FigCraft through WebGL."), t.text_secondary);
+        return;
+    }
+    let shown = renderers().iter().find(|(value, _)| *value == chosen).map_or(tr("System"), |(_, name)| tr(name));
+    ui.horizontal(|ui| {
+        ui.label(tr("Graphics renderer"));
+        let resp = crate::widgets::dropdown(ui, shown, 150.0, None);
+        crate::a11y::combo(&resp, tr("Graphics renderer"), shown, crate::a11y::menu_open(&resp));
+        crate::right::menu_popup(&resp).show(|ui| {
+            let focused = ui.memory(|memory| memory.focused());
+            let step = ui.input(|input| {
+                if input.key_pressed(egui::Key::ArrowDown) || (input.key_pressed(egui::Key::Tab) && !input.modifiers.shift) {
+                    1
+                } else if input.key_pressed(egui::Key::ArrowUp) || (input.key_pressed(egui::Key::Tab) && input.modifiers.shift) {
+                    -1
+                } else {
+                    0
+                }
+            });
+            let mut rows = Vec::with_capacity(renderers().len());
+            for (value, name) in renderers() {
+                let label = tr(name);
+                let selected = *value == chosen;
+                let row = crate::right::menu_row(ui, &format!("{}{label}", if selected { "✓ " } else { "    " }), "", 0.0, |_, _, _| {});
+                crate::a11y::menu_item(&row, label, "", Some(selected));
+                if row.has_focus() {
+                    ui.memory_mut(|memory| memory.set_focus_lock_filter(row.id, egui::EventFilter { tab: true, ..Default::default() }));
+                }
+                rows.push(row.id);
+                if row.clicked() {
+                    app.run("pref.graphicsBackend", json!({"backend": value}));
+                    ui.close();
+                }
+            }
+            // Spatial focus can jump to a control behind the popup when the menu overlaps the
+            // Preferences window. Once an item is focused, walk the menu's own rows instead.
+            if step != 0
+                && let Some(index) = rows.iter().position(|id| Some(*id) == focused)
+            {
+                let next = index.saturating_add_signed(step).min(rows.len() - 1);
+                ui.memory_mut(|memory| {
+                    memory.request_focus(rows[next]);
+                    memory.move_focus(egui::FocusDirection::None);
+                });
+            }
+        });
+        // The renderer is read when the window opens, so a change waits for a start: while the
+        // preference names another one than this run started with, restart with it now.
+        if app.ui.graphics_started != chosen && crate::widgets::button(ui, tr("Restart FigCraft"), true, true).clicked() {
+            app.ui.restart = true;
+            crate::windows::request_close(app, ui.ctx());
+        }
+    });
+    crate::widgets::label(ui, tr("Takes effect the next time FigCraft starts."), t.text_secondary);
+}
+
+/// The renderers Preferences ▸ Graphics renderer offers on Windows, by the preference's value and
+/// its name: the graphics APIs wgpu can use there. "system" keeps FigCraft's own choice (Direct3D
+/// 12 with OpenGL to fall back on). The names are marked for the catalog here and looked up (`tr`)
+/// where the menu shows them.
+const WINDOWS_RENDERERS: &[(&str, &str)] =
+    &[("system", tr_noop("System")), ("dx12", tr_noop("Direct3D 12")), ("vulkan", tr_noop("Vulkan")), ("gl", tr_noop("OpenGL"))];
+
+/// The renderers on macOS: Metal, and Vulkan through it.
+const MACOS_RENDERERS: &[(&str, &str)] = &[("system", tr_noop("System")), ("metal", tr_noop("Metal")), ("vulkan", tr_noop("Vulkan"))];
+
+/// The renderers elsewhere (Linux, the BSDs): Vulkan, and OpenGL through EGL.
+const OTHER_RENDERERS: &[(&str, &str)] = &[("system", tr_noop("System")), ("vulkan", tr_noop("Vulkan")), ("gl", tr_noop("OpenGL"))];
+
+/// The renderers this system offers ([`WINDOWS_RENDERERS`] on Windows, [`MACOS_RENDERERS`] on
+/// macOS, [`OTHER_RENDERERS`] elsewhere).
+pub(crate) fn renderers() -> &'static [(&'static str, &'static str)] {
+    if cfg!(target_os = "windows") {
+        WINDOWS_RENDERERS
+    } else if cfg!(target_os = "macos") {
+        MACOS_RENDERERS
+    } else {
+        OTHER_RENDERERS
     }
 }
 

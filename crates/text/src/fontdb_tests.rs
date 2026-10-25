@@ -1,4 +1,5 @@
 use super::*;
+use figcraft_geom::Shape;
 
 fn pending(styles: &[&str]) -> FontDb {
     let mut db = FontDb::default();
@@ -218,48 +219,53 @@ fn user_font_dirs_preserve_non_utf8_paths() {
     assert_eq!(dirs[1].as_os_str().as_bytes(), b"/data/\xfe/fonts");
 }
 
-/// A rescan offers new families and the styles installed since, and never a file twice.
-#[test]
-fn a_rescan_offers_fonts_installed_since() {
-    let entry = |s: &str| Pending { path: format!("no-such-dir/{s}.ttf").into(), index: 0, style: s.into() };
-    let mut db = pending(&["Regular"]);
-    let found = |fams: &[(&str, &[&str])]| -> BTreeMap<String, (String, Vec<Pending>)> {
-        fams.iter().map(|(f, styles)| (f.to_lowercase(), ((*f).to_string(), styles.iter().map(|s| entry(s)).collect()))).collect()
-    };
-    // A new family is added; a pending one takes the walk's files (a new style); both changed.
-    let r = db.merge_rescan(found(&[("CJK UI", &["Regular", "Bold"]), ("Brand Sans", &["Regular"])]));
-    assert_eq!(r.added, ["Brand Sans"]);
-    assert_eq!(r.changed, ["Brand Sans", "CJK UI"]);
-    assert!(db.has_family("brand sans"));
-    assert_eq!(left(&db), ["Regular", "Bold"]);
-    // A loaded family keeps its faces and gets only the files it hasn't read, once.
-    db.families.insert("brand sans".into(), ("Brand Sans".into(), Vec::new()));
-    db.pending.remove("brand sans");
-    db.loaded_files.insert(("no-such-dir/Regular.ttf".into(), 0));
-    let same = db.merge_rescan(found(&[("Brand Sans", &["Regular"])]));
-    assert_eq!(same, Rescan::default());
-    assert!(!db.pending.contains_key("brand sans"));
-    let bold = db.merge_rescan(found(&[("Brand Sans", &["Regular", "Black"])]));
-    assert_eq!((bold.added.len(), bold.changed), (0, vec!["Brand Sans".to_string()]));
-    let waiting = |db: &FontDb| db.pending.get("brand sans").map(|(_, v)| v.iter().map(|e| e.style.clone()).collect::<Vec<_>>()).unwrap_or_default();
-    assert_eq!(waiting(&db), ["Black"]);
-    assert_eq!(db.merge_rescan(found(&[("Brand Sans", &["Regular", "Black"])])), Rescan::default());
-    assert_eq!(waiting(&db), ["Black"]);
+/// A square outline in the em square, y down, spanning `x0..x1`.
+fn icon_square(x1: f64) -> BezPath {
+    let mut p = BezPath::new();
+    p.move_to((100.0, 100.0));
+    p.line_to((x1, 100.0));
+    p.line_to((x1, 900.0));
+    p.line_to((100.0, 900.0));
+    p.close_path();
+    p
 }
 
-/// Font file bytes add their faces once; junk adds nothing.
+fn icon_font(family: &str, x1: f64) -> Vec<u8> {
+    crate::iconfont::build_ttf(family, &[(0xE000, icon_square(x1))]).expect("built")
+}
+
+fn glyph_width(face: &Face) -> f64 {
+    face.outline(face.glyph_for('\u{E000}')).bounding_box().width()
+}
+
 #[test]
-fn font_bytes_load_into_the_db() {
-    assert!(load_font_bytes(b"not a font".to_vec()).is_empty());
-    assert!(load_font_bytes(Vec::new()).is_empty());
-    // With the embedded fonts (absent on CI builds without craft-fonts): a file's family is added,
-    // and loading the same file again returns it without adding its faces twice.
-    if let Some(f) = CRAFT_FONTS.first() {
-        let families = load_font_bytes(f.bytes.to_vec());
-        assert_eq!(families.len(), 1);
-        assert!(families.iter().all(|f| has_family(f)));
-        let faces = db().read().unwrap().face_count();
-        assert_eq!(load_font_bytes(f.bytes.to_vec()), families);
-        assert_eq!(db().read().unwrap().face_count(), faces);
-    }
+fn replacing_a_family_takes_effect_rather_than_being_shadowed() {
+    // `best` takes the *first* face matching a style: a re-added family would otherwise keep the
+    // outline it had before (icon fonts are regenerated whenever their icons change).
+    let mut db = FontDb::default();
+    assert_eq!(db.set_family_bytes("Icons", icon_font("Icons", 300.0)), 1);
+    let before = db.find("Icons", "Regular").expect("found");
+    assert!((glyph_width(&before) - 200.0).abs() < 2.0);
+    assert_eq!(db.set_family_bytes("Icons", icon_font("Icons", 900.0)), 1);
+    let after = db.find("Icons", "Regular").expect("found");
+    assert!((glyph_width(&after) - 800.0).abs() < 2.0, "the new outline wins");
+    assert_eq!(db.face_count(), 1, "the replaced face is gone");
+}
+
+#[test]
+fn removing_a_family_leaves_the_others_reachable() {
+    let mut db = FontDb::default();
+    db.set_family_bytes("Icons A", icon_font("Icons A", 300.0));
+    db.set_family_bytes("Icons B", icon_font("Icons B", 500.0));
+    assert_eq!(db.face_count(), 2);
+    assert!(db.remove_family("Icons A"));
+    assert!(!db.remove_family("Icons A"), "already gone");
+    assert!(db.find("Icons A", "Regular").is_none());
+    assert!(!db.has_family("Icons A"));
+    // The faces after the removed one moved down: the other family is still found.
+    assert!(db.has_family("Icons B"));
+    let b = db.find("Icons B", "Regular").expect("found");
+    assert!((glyph_width(&b) - 400.0).abs() < 2.0);
+    assert_eq!(db.face_count(), 1);
+    assert_eq!(db.families(), vec!["Icons B".to_string()]);
 }

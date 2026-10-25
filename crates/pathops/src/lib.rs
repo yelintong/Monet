@@ -68,11 +68,6 @@ fn sweep<T>(f: impl FnOnce() -> Result<T, PathOpsError>) -> Result<T, PathOpsErr
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).unwrap_or(Err(PathOpsError::BadInput))
 }
 
-fn binary(a: &BezPath, b: &BezPath, op: linesweeper::BinaryOp) -> Result<BezPath, PathOpsError> {
-    binary_by(a, b, linesweeper::FillRule::NonZero, op)
-}
-
-/// [`binary`] with both operands read by fill rule `rule`.
 fn binary_by(a: &BezPath, b: &BezPath, rule: linesweeper::FillRule, op: linesweeper::BinaryOp) -> Result<BezPath, PathOpsError> {
     if a.elements().is_empty() && b.elements().is_empty() {
         return Ok(BezPath::new());
@@ -88,9 +83,26 @@ fn binary_by(a: &BezPath, b: &BezPath, rule: linesweeper::FillRule, op: lineswee
     Ok(out)
 }
 
+fn binary(a: &BezPath, b: &BezPath, op: linesweeper::BinaryOp) -> Result<BezPath, PathOpsError> {
+    binary_by(a, b, linesweeper::FillRule::NonZero, op)
+}
+
 /// Normalise a single path's winding (non-zero) into simple even-odd contours.
 pub fn simplify(path: &BezPath) -> Result<BezPath, PathOpsError> {
-    binary(path, &BezPath::new(), linesweeper::BinaryOp::Union)
+    normalized(path, false)
+}
+
+/// The area `path` covers, as simple contours nested and oriented so that either fill rule paints
+/// the same thing.
+///
+/// [`simplify`] reads its input as non-zero; this reads it with the rule it was drawn with
+/// (`even_odd`). The output is unambiguous, which is what a font's `glyf` table needs: it always
+/// fills non-zero, so a hole drawn even-odd in the same direction as its outline would fill in.
+/// (A y flip — the font's y axis points up — mirrors every contour, which reverses all of them and
+/// so keeps them opposed.)
+pub fn normalized(path: &BezPath, even_odd: bool) -> Result<BezPath, PathOpsError> {
+    let rule = if even_odd { linesweeper::FillRule::EvenOdd } else { linesweeper::FillRule::NonZero };
+    binary_by(path, &BezPath::new(), rule, linesweeper::BinaryOp::Union)
 }
 
 /// Combine `acc` (the operands so far) with the next operand `p` by `op`.

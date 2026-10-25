@@ -165,7 +165,7 @@ fn reveal(path: &Path) -> std::io::Result<()> {
 }
 
 /// The preferences' file in the config folder.
-const STATE: &str = "state.json";
+pub(crate) const STATE: &str = "state.json";
 
 /// Everything quitting keeps, all done when it returns (macOS then ends the process): the
 /// preferences in `dir`, this run's recovery copies ([`Recovery::quit`](crate::recovery::Recovery::quit))

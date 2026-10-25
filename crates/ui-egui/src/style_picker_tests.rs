@@ -207,7 +207,7 @@ fn a_click_in_the_colour_picker_keeps_the_style_editor_open() {
     for _ in 0..3 {
         u.frame(vec![]);
     }
-    let cp = u.ctx.memory(|m| m.area_rect(crate::colorpicker::window_id())).expect("colour picker shows");
+    let cp = u.app.ui.picker_popover.as_ref().expect("colour picker shows").rect;
     let p = cp.center();
     u.button(p, true);
     u.button(p, false);

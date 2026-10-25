@@ -3,8 +3,9 @@
 use std::sync::Arc;
 
 use egui::{Align2, Color32, CornerRadius, Pos2, Rect, Sense, Shape, Stroke, StrokeKind, Ui, pos2, vec2};
-use figcraft_doc::{Document, NodeId, NodeKind};
+use figcraft_doc::{Document, HConstraint, NodeId, NodeKind, VConstraint};
 use figcraft_engine::Preedit;
+use figcraft_engine::shape_handles::ShapeHandle;
 use figcraft_engine::tools::{PointerEvent, PointerKind, ToolId, selection_box, selection_frame};
 use figcraft_geom::Point;
 use serde_json::json;
@@ -12,7 +13,7 @@ use serde_json::json;
 use crate::FigApp;
 use crate::i18n::{tr, trf, trn};
 use crate::render_worker::{Done, Job, Worker};
-use crate::theme::{COMPONENT, Tokens, doc_c32, regular, semibold};
+use crate::theme::{COMPONENT, ICON, Tokens, doc_c32, regular, semibold};
 
 pub struct CanvasState {
     pub rect: Rect,
@@ -183,6 +184,7 @@ pub fn show(app: &mut FigApp, ui: &mut Ui, worker: &mut Worker) {
         }
     }
     let own_cursor = input(app, ui, &resp);
+    dropped_icon(app, &ctx, rect);
     // A browser names no dragged file until the drop, so documents there still say "import", or
     // in Dev Mode show the Dev Mode note, though they open when dropped.
     let documents = ctx.input(|i| i.raw.hovered_files.iter().all(|f| f.path.as_deref().is_some_and(crate::is_document)));
@@ -285,6 +287,22 @@ pub fn show(app: &mut FigApp, ui: &mut Ui, worker: &mut Worker) {
         shown.show(&ctx, at);
         app.canvas.cursor = Some(shown);
     }
+}
+
+/// Land an icon dragged out of the icons panel: it is let go over the canvas, so a text layer of
+/// that character appears where the pointer was. The payload is only taken (and the layer only
+/// made) for a release inside the canvas; let go anywhere else and the drag simply ends.
+fn dropped_icon(app: &mut FigApp, ctx: &egui::Context, rect: Rect) {
+    if !ctx.input(|i| i.pointer.any_released()) {
+        return;
+    }
+    let Some(at) = ctx.input(|i| i.pointer.interact_pos()) else { return };
+    if !rect.contains(at) {
+        return;
+    }
+    let Some(drag) = egui::DragAndDrop::take_payload::<crate::icons_panel::IconDrag>(ctx) else { return };
+    let p = app.to_page(at);
+    app.run("icon.insertText", json!({"font": drag.font, "name": drag.icon, "x": p.x, "y": p.y, "size": 64.0}));
 }
 
 /// The image's screen rect; align native-density renders to device pixels to avoid linear filtering
@@ -833,11 +851,17 @@ fn swap_highlight(app: &FigApp, painter: &egui::Painter, doc: &Document, id: Nod
 }
 
 /// The outline colour for a layer: purple for components, sets and instances and every layer in
-/// them, the page's overlay `green` otherwise.
+/// them, orange for icons and every layer inside one, the page's overlay `green` otherwise.
 fn outline_colour(doc: &Document, id: NodeId, green: Color32) -> Color32 {
     use figcraft_engine::components::{owning_component, owning_instance};
     let set = matches!(doc.node(id).map(|n| &n.kind), Some(NodeKind::ComponentSet { .. }));
-    if set || owning_component(doc, id).is_some() || owning_instance(doc, id).is_some() { COMPONENT } else { green }
+    if set || owning_component(doc, id).is_some() || owning_instance(doc, id).is_some() {
+        COMPONENT
+    } else if doc.owning_icon(id).is_some() {
+        ICON
+    } else {
+        green
+    }
 }
 
 /// The outline path of shapes (ellipses, vectors) for hover/selection outlines.
@@ -943,14 +967,68 @@ fn overlays(app: &FigApp, painter: &egui::Painter, t: &Tokens) -> Vec<(NodeId, [
             let w = doc.world_transform(*c);
             for g in n.grids.iter().filter(|g| g.visible) {
                 let col = doc_c32(painter.ctx(), g.color);
-                for r in figcraft_layout::grid_lines(g, n.width, n.height) {
-                    let a = w * Point::new(r.x0, r.y0);
-                    let b = w * Point::new(r.x1, r.y1);
-                    let (sa, sb) = (app.to_screen(a.x, a.y), app.to_screen(b.x, b.y));
-                    if g.kind == figcraft_doc::GridKind::Grid {
-                        painter.line_segment([sa, sb], stroke(col, 1.0));
-                    } else {
-                        painter.rect_filled(Rect::from_two_pos(sa, sb), CornerRadius::ZERO, col);
+                for line in figcraft_layout::grid_lines(g, n.width, n.height) {
+                    match line {
+                        figcraft_layout::GridLine::Line { a, b } => {
+                            let (a, b) = (w * a, w * b);
+                            painter.line_segment([app.to_screen(a.x, a.y), app.to_screen(b.x, b.y)], stroke(col, 1.0));
+                        }
+                        figcraft_layout::GridLine::Band(r) => {
+                            let a = w * Point::new(r.x0, r.y0);
+                            let b = w * Point::new(r.x1, r.y1);
+                            let (sa, sb) = (app.to_screen(a.x, a.y), app.to_screen(b.x, b.y));
+                            painter.rect_filled(Rect::from_two_pos(sa, sb), CornerRadius::ZERO, col);
+                        }
+                        figcraft_layout::GridLine::Slash(poly) => {
+                            // A 45° band, clipped to the frame: a filled convex polygon.
+                            let pts: Vec<Pos2> = poly.iter().map(|p| app.to_screen((w * *p).x, (w * *p).y)).collect();
+                            if pts.len() >= 3 {
+                                painter.add(Shape::convex_polygon(pts, col, Stroke::NONE));
+                            }
+                        }
+                        figcraft_layout::GridLine::SlashLine(poly) => {
+                            // A hairline 45° reference line (Auto width): a one-pixel stroke through
+                            // the band's centre, whatever the zoom.
+                            let pts: Vec<Pos2> = poly.iter().map(|p| app.to_screen((w * *p).x, (w * *p).y)).collect();
+                            for k in 0..pts.len().saturating_sub(1) {
+                                painter.line_segment([pts[k], pts[k + 1]], stroke(col, 1.0));
+                            }
+                        }
+                        figcraft_layout::GridLine::Ring { center, radius, width } => {
+                            // The ring follows the frame's transform: its two radii are measured
+                            // through it, so a frame scaled unevenly shows the ellipse it is
+                            // (`width` 0 is Auto: a one-pixel hairline). `radius` is the ring's
+                            // middle, while egui strokes a circle outwards from the radius it is
+                            // given — so it takes the inner edge, or the ring would sit half a
+                            // width too far out (and poke out of a stretched frame).
+                            let at = |x: f64, y: f64| {
+                                let p = w * Point::new(center.x + x, center.y + y);
+                                app.to_screen(p.x, p.y)
+                            };
+                            let sc = at(0.0, 0.0);
+                            let (rx, ry) = ((at(radius, 0.0) - sc).length(), (at(0.0, radius) - sc).length());
+                            let w_px = if width <= 0.0 { 1.0 } else { (at(width, 0.0) - sc).length() };
+                            if (rx - ry).abs() <= 0.01 {
+                                // A ring whose band starts at the centre is a filled disc; egui
+                                // would stroke a zero-radius circle into a coarse polygon.
+                                if rx - w_px / 2.0 <= 0.5 {
+                                    painter.circle_filled(sc, w_px, col);
+                                } else {
+                                    painter.circle_stroke(sc, (rx - w_px / 2.0).max(0.0), stroke(col, w_px));
+                                }
+                            } else {
+                                // A polyline is stroked on its path, not outwards: these points are
+                                // the ring's middle, as `radius` says.
+                                let steps = (rx.max(ry) / 4.0).clamp(24.0, 96.0);
+                                let pts: Vec<Pos2> = (0..steps as usize)
+                                    .map(|i| {
+                                        let a = i as f32 * std::f32::consts::TAU / steps;
+                                        sc + vec2(rx * a.cos(), ry * a.sin())
+                                    })
+                                    .collect();
+                                painter.add(Shape::closed_line(pts, stroke(col, w_px)));
+                            }
+                        }
                     }
                 }
             }
@@ -971,7 +1049,7 @@ fn overlays(app: &FigApp, painter: &egui::Painter, t: &Tokens) -> Vec<(NodeId, [
         && app.session.prefs.highlight_on_hover
         && app.session.tool.overlay.measure_box.is_none()
     {
-        draw_outline(app, painter, &doc, h, stroke(outline_colour(&doc, h, accent(painter)), 1.5));
+        draw_outline(app, painter, &doc, h, stroke(outline_colour(&doc, h, accent(painter)), 2.0));
     }
     // Inside a boolean group (an operand selected or in vector edit mode): every operand's outline,
     // so the shapes making the live result stay visible while one of them changes.
@@ -1036,15 +1114,22 @@ fn overlays(app: &FigApp, painter: &egui::Painter, t: &Tokens) -> Vec<(NodeId, [
             width_overlay(app, painter, &doc, &ve, zoom);
         } else if let Some(c) = app.session.vector_edit_box() {
             let label = format!("{} × {}", fmt((c[1] - c[0]).hypot()), fmt((c[3] - c[0]).hypot()));
-            size_label = transform_box(app, painter, c.map(|p| app.to_screen(p.x, p.y)), accent(painter), true, 4, Some(label));
+            let dims = app.session.prefs.show_dimensions;
+            size_label = transform_box(painter, c.map(|p| app.to_screen(p.x, p.y)), accent(painter), true, 4, dims.then_some(label));
         }
     }
     // Selection.
     let editing = ds.text_edit.clone();
     if !sel.is_empty() && editing.is_none() && ds.vector_edit.is_none() {
-        let col = if sel.iter().any(|i| outline_colour(&doc, *i, accent(painter)) == COMPONENT) { COMPONENT } else { accent(painter) };
+        let green = accent(painter);
+        let col = sel.iter().map(|i| outline_colour(&doc, *i, green)).find(|c| *c != green).unwrap_or(green);
         for id in &sel {
-            draw_outline(app, painter, &doc, *id, stroke(col, 1.0));
+            draw_outline(app, painter, &doc, *id, stroke(col, 2.0));
+        }
+        // Constraint guides belong to the normal selection overlay: not while the Shape Builder
+        // reshapes by regions, nor while measuring to another layer (Alt), whose lines take over.
+        if app.session.tool.tool != ToolId::ShapeBuilder && app.session.tool.overlay.measure_box.is_none() {
+            constraint_lines(app, painter, &doc, &sel);
         }
         // The shape builder reshapes by regions: no transform box.
         if app.session.tool.tool != ToolId::ShapeBuilder
@@ -1073,7 +1158,9 @@ fn overlays(app: &FigApp, painter: &egui::Painter, t: &Tokens) -> Vec<(NodeId, [
             } else {
                 4
             };
-            size_label = transform_box(app, painter, b.map(|p| app.to_screen(p.x, p.y)), col, sel.len() > 1, handles, (!measuring).then_some(label));
+            // The View menu's "Show dimensions on objects" governs the size label.
+            let dims = app.session.prefs.show_dimensions && !measuring;
+            size_label = transform_box(painter, b.map(|p| app.to_screen(p.x, p.y)), col, sel.len() > 1, handles, dims.then_some(label));
             if !measuring {
                 arc_overlay(app, painter, col);
                 shape_overlay(app, painter, col);
@@ -1215,30 +1302,81 @@ fn overlays(app: &FigApp, painter: &egui::Painter, t: &Tokens) -> Vec<(NodeId, [
 }
 
 /// A transform box (screen corners tl, tr, br, bl): its outline when `outline`, the first `handles`
-/// corner handles and, when dimensions are shown, the size `label` (if any) under it (its box returned).
-fn transform_box(
-    app: &FigApp,
-    painter: &egui::Painter,
-    q: [Pos2; 4],
-    col: Color32,
-    outline: bool,
-    handles: usize,
-    label: Option<String>,
-) -> Option<Rect> {
+/// corner handles and, when there is a size `label`, that label under it (its box returned).
+fn transform_box(painter: &egui::Painter, q: [Pos2; 4], col: Color32, outline: bool, handles: usize, label: Option<String>) -> Option<Rect> {
     if outline {
-        quad(painter, q, stroke(col, 1.0));
+        quad(painter, q, stroke(col, 2.0));
     }
     for c in q.iter().take(handles) {
         let r = Rect::from_center_size(*c, vec2(8.0, 8.0));
         painter.rect_filled(r, CornerRadius::same(1), Color32::WHITE);
         painter.rect_stroke(r, CornerRadius::same(1), stroke(col, 1.0), StrokeKind::Inside);
     }
-    if let Some(label) = label.filter(|_| app.session.prefs.show_dimensions) {
+    if let Some(label) = label {
         let bottom = q.iter().map(|p| p.y).fold(f32::MIN, f32::max);
         let cx = q.iter().map(|p| p.x).sum::<f32>() / 4.0;
         return Some(pill(painter, pos2(cx, bottom + 9.0), Align2::CENTER_TOP, label, col));
     }
     None
+}
+
+/// Blue dashed guides showing how a selected layer is pinned within its parent frame. A left
+/// constraint draws a horizontal line from the layer's left-edge midpoint to the frame's left edge;
+/// right, top and bottom likewise (the line is perpendicular to the edge it leaves); a centre
+/// constraint draws a line to the frame's centre on that axis. Auto-layout frames ignore
+/// constraints, so no guides are drawn there.
+fn constraint_lines(app: &FigApp, painter: &egui::Painter, doc: &Document, sel: &[NodeId]) {
+    let s = stroke(accent(painter), 1.0);
+    let line = |a: Pos2, b: Pos2| {
+        painter.add(Shape::dashed_line(&[a, b], s, 4.0, 3.0));
+    };
+    for &id in sel {
+        let Some(n) = doc.node(id) else { continue };
+        let Some(parent_id) = n.parent else { continue };
+        let Some(parent) = doc.node(parent_id) else { continue };
+        // Constraints bind a layer only to a non-auto-layout frame it sits inside.
+        if !parent.kind.is_frame_like() || parent.layout.is_some() {
+            continue;
+        }
+        let nw = doc.world_transform(id);
+        let pw = doc.world_transform(parent_id);
+        let (nw_w, nw_h) = (n.width, n.height);
+        let (pw_w, pw_h) = (parent.width, parent.height);
+        let sp = |p: Point| app.to_screen(p.x, p.y);
+        // The layer's edge midpoints and centre in page space.
+        let n_left = sp(nw * Point::new(0.0, nw_h / 2.0));
+        let n_right = sp(nw * Point::new(nw_w, nw_h / 2.0));
+        let n_top = sp(nw * Point::new(nw_w / 2.0, 0.0));
+        let n_bottom = sp(nw * Point::new(nw_w / 2.0, nw_h));
+        let n_c = sp(nw * Point::new(nw_w / 2.0, nw_h / 2.0));
+        // The frame's edges and centre in page space (axis-aligned approximation).
+        let p_left = sp(pw * Point::new(0.0, 0.0)).x;
+        let p_right = sp(pw * Point::new(pw_w, 0.0)).x;
+        let p_top = sp(pw * Point::new(0.0, 0.0)).y;
+        let p_bottom = sp(pw * Point::new(0.0, pw_h)).y;
+        let p_cx = sp(pw * Point::new(pw_w / 2.0, pw_h / 2.0)).x;
+        let p_cy = sp(pw * Point::new(pw_w / 2.0, pw_h / 2.0)).y;
+        match n.constraints.horizontal {
+            HConstraint::Left => line(n_left, pos2(p_left, n_left.y)),
+            HConstraint::Right => line(n_right, pos2(p_right, n_right.y)),
+            HConstraint::LeftRight => {
+                line(n_left, pos2(p_left, n_left.y));
+                line(n_right, pos2(p_right, n_right.y));
+            }
+            HConstraint::Center => line(n_c, pos2(p_cx, n_c.y)),
+            HConstraint::Scale => {}
+        }
+        match n.constraints.vertical {
+            VConstraint::Top => line(n_top, pos2(n_top.x, p_top)),
+            VConstraint::Bottom => line(n_bottom, pos2(n_bottom.x, p_bottom)),
+            VConstraint::TopBottom => {
+                line(n_top, pos2(n_top.x, p_top));
+                line(n_bottom, pos2(n_bottom.x, p_bottom));
+            }
+            VConstraint::Center => line(n_c, pos2(n_c.x, p_cy)),
+            VConstraint::Scale => {}
+        }
+    }
 }
 
 /// A canvas readout: white `text` on a `col` pill placed at `at` by `align` (its box returned).
@@ -1272,24 +1410,46 @@ fn arc_overlay(app: &FigApp, painter: &egui::Painter, col: Color32) {
     }
 }
 
-/// The selected shape's corner radius handles and a star's ratio handle (the hovered or dragged
-/// one larger) and, while one is dragged, its value beside it.
+/// The selected shape's corner radius handles and a star's ratio handle: hovering one reads its
+/// value out beside it, and so does dragging it.
 fn shape_overlay(app: &FigApp, painter: &egui::Painter, col: Color32) {
-    use figcraft_engine::shape_handles::ShapeHandle;
     let ov = &app.session.tool.overlay;
+    // Reveal the corner-radius handles only while hovering the selected shape (or while one is
+    // being dragged), so they don't always sit on the canvas.
+    let Ok(ds) = app.session.ds() else { return };
+    let active = ov.shape_hover.is_some() || ov.shape.is_some();
+    let hover_shape = ds.selection.len() == 1 && ds.hover == ds.selection.first().copied();
+    if !active && !hover_shape {
+        return;
+    }
+    let id = ds.selection.first().copied();
     for (h, [x, y]) in app.session.shape_handles() {
-        let r = if ov.shape_hover == Some(h) { 4.5 } else { 3.5 };
         let c = app.to_screen(x, y);
-        painter.circle_filled(c, r, Color32::WHITE);
-        painter.circle_stroke(c, r, stroke(col, 1.0));
+        // Corner-radius handle: diameter 9 including a 1px stroke (centred, so the path sits at
+        // radius 4.0 and the stroke's outer edge reaches 4.5).
+        painter.circle_filled(c, 4.5, Color32::WHITE);
+        painter.circle_stroke(c, 4.0, stroke(col, 1.0));
+        // Hovering a handle reads its value out beside it, the same readout a drag shows, so the
+        // handle itself never has to grow.
+        if ov.shape.is_none()
+            && ov.shape_hover == Some(h)
+            && let Some(id) = id
+            && let Some(v) = figcraft_engine::shape_handles::value(&ds.doc, id, h)
+        {
+            pill(painter, c + vec2(12.0, 12.0), Align2::LEFT_TOP, shape_readout(h, v), col);
+        }
     }
     if let Some(hint) = &ov.shape {
         let c = app.to_screen(hint.at[0], hint.at[1]);
-        let text = match hint.handle {
-            ShapeHandle::Radius { .. } => format!("{} {}", tr("Radius"), hint.value),
-            ShapeHandle::Ratio => format!("{} {}%", tr("Ratio"), hint.value),
-        };
-        pill(painter, c + vec2(12.0, 12.0), Align2::LEFT_TOP, text, col);
+        pill(painter, c + vec2(12.0, 12.0), Align2::LEFT_TOP, shape_readout(hint.handle, hint.value), col);
+    }
+}
+
+/// A shape handle's readout: the corner's radius, or a star's ratio in percent.
+fn shape_readout(h: ShapeHandle, value: f64) -> String {
+    match h {
+        ShapeHandle::Radius { .. } => format!("{} {}", tr("Radius"), value),
+        ShapeHandle::Ratio => format!("{} {}%", tr("Ratio"), value),
     }
 }
 

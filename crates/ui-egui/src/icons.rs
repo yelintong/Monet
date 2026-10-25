@@ -103,6 +103,8 @@ icons! {
     ClipContent,
     Effects,
     Styles,
+    /// Four squares: the Variables editor (a value a name stands for, in each mode).
+    Variables,
     Menu,
     Play,
     Home,
@@ -123,12 +125,16 @@ icons! {
     Assets,
     /// Libraries: an open book.
     Library,
+    /// The Icons tab: the em box with a shape in it, a glyph that draws an icon.
+    Icons,
     Layers,
     Opacity,
     Blend,
     Export,
     StrokeIcon,
     Fill,
+    /// Fill rule: a filled area with a hole in it (the hole is what the rule decides).
+    FillRule,
     /// Gradient kinds: a swatch outline holding a fade of that kind.
     GradientLinear,
     GradientRadial,
@@ -212,6 +218,14 @@ icons! {
     Stamp,
     /// A measurement: a dimension line with arrowheads between two end ticks.
     Measure,
+    /// Collapse the Variables editor to a floating panel.
+    Collapse,
+    /// Expand the Variables editor to the full view.
+    Expand,
+    /// Toggle the Variables editor's sidebar.
+    Sidebar,
+    /// Filter variables by type.
+    Filter,
 }
 
 /// Points along a circular arc from angle `a0` to `a1` (radians, y down: increasing is clockwise).
@@ -807,6 +821,12 @@ fn draw(p: &P, icon: Icon) {
                 p.dot(x, y, 2.2);
             }
         }
+        Variables => {
+            // Four squares rather than dots: the editor's own mark, squared off.
+            for (x, y) in [(5.0, 5.0), (11.0, 5.0), (5.0, 11.0), (11.0, 11.0)] {
+                p.fill_rect(x - 2.0, y - 2.0, x + 2.0, y + 2.0, 1.0);
+            }
+        }
         Menu => {
             for y in [3.5, 7.5, 11.5] {
                 p.line(2.0, y, 14.0, y);
@@ -905,6 +925,11 @@ fn draw(p: &P, icon: Icon) {
             p.line(7.5, 4.5, 7.5, 13.5);
             p.line(8.5, 4.5, 8.5, 13.5);
         }
+        Icons => {
+            // The em box with a shape in it: a glyph whose outline is an icon.
+            p.rect(2.5, 2.5, 13.5, 13.5, 1.5);
+            p.poly(&[(8.0, 5.0), (11.5, 11.5), (4.5, 11.5)], true);
+        }
         Layers => {
             p.poly(&[(8.0, 2.5), (14.0, 5.5), (8.0, 8.5), (2.0, 5.5)], true);
             p.poly(&[(2.0, 8.0), (8.0, 11.0), (14.0, 8.0)], false);
@@ -921,6 +946,13 @@ fn draw(p: &P, icon: Icon) {
         }
         StrokeIcon => p.rect(2.5, 2.5, 13.5, 13.5, 2.0),
         Fill => p.fill_rect(2.0, 2.0, 14.0, 14.0, 2.0),
+        FillRule => {
+            // A filled area with a hole in it: the outer box, the hole, and hatch marks between.
+            p.rect(2.5, 2.5, 13.5, 13.5, 1.0);
+            p.rect(6.5, 6.5, 9.5, 9.5, 0.0);
+            p.line(3.5, 10.5, 5.5, 12.5);
+            p.line(10.5, 3.5, 12.5, 5.5);
+        }
         GradientLinear => {
             p.rect(2.5, 2.5, 13.5, 13.5, 2.0);
             p.shade(&[(4.0, 4.0, 1.0), (12.0, 4.0, 0.0), (12.0, 12.0, 0.0), (4.0, 12.0, 1.0)], &[0, 1, 2, 0, 2, 3]);
@@ -1207,6 +1239,29 @@ fn draw(p: &P, icon: Icon) {
             p.painter.add(Shape::line(v, Stroke::new(1.7 * p.s, p.color)));
             p.dot(13.75, 13.0, 0.85);
             p.dot(7.25, 6.5, 0.85);
+        }
+        Collapse => {
+            // A square folding into a smaller one: an arrow to the lower-left.
+            p.rect(3.5, 3.5, 9.0, 9.0, 0.0);
+            p.line(3.0, 7.0, 7.0, 7.0);
+            p.line(7.0, 7.0, 7.0, 11.0);
+            p.line(3.0, 7.0, 7.0, 11.0);
+        }
+        Expand => {
+            // A square growing outward: an arrow to the upper-right.
+            p.rect(3.5, 3.5, 9.0, 9.0, 0.0);
+            p.line(9.0, 3.0, 13.0, 3.0);
+            p.line(13.0, 3.0, 13.0, 7.0);
+            p.line(9.0, 3.0, 13.0, 7.0);
+        }
+        Sidebar => {
+            // A panel with a divider down its middle.
+            p.rect(3.0, 3.0, 10.0, 10.0, 0.0);
+            p.line(8.0, 3.0, 8.0, 13.0);
+        }
+        Filter => {
+            // A funnel.
+            p.poly(&[(3.0, 4.0), (13.0, 4.0), (9.0, 9.0), (9.0, 13.0), (7.0, 13.0), (7.0, 9.0)], true);
         }
     }
 }

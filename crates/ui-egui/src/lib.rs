@@ -23,6 +23,7 @@ pub mod dev_mode;
 pub mod dialogs;
 pub mod export_panel;
 pub mod field_math;
+pub mod fill_rule;
 pub mod font_preview;
 pub mod frame_labels;
 pub mod frame_presets;
@@ -33,6 +34,7 @@ pub mod home;
 pub mod home_recents;
 pub mod i18n;
 pub mod icons;
+pub mod icons_panel;
 pub mod import_report;
 pub mod layers;
 pub mod layout_panel;
@@ -45,6 +47,7 @@ pub mod missing_fonts;
 pub mod online;
 pub mod pending_open;
 pub mod plugins_ui;
+pub mod popover;
 pub mod present;
 pub mod proto_canvas;
 pub mod proto_editor;
@@ -114,17 +117,23 @@ mod export_preview_tests;
 #[cfg(test)]
 mod field_tests;
 #[cfg(test)]
+mod fill_rule_tests;
+#[cfg(test)]
 mod frame_label_tests;
 #[cfg(test)]
 mod gap_handle_tests;
 #[cfg(test)]
 mod gradient_shorthand_tests;
 #[cfg(test)]
+mod graphics_pref_tests;
+#[cfg(test)]
 mod guide_release_tests;
 #[cfg(test)]
 mod home_recents_tests;
 #[cfg(test)]
 mod home_tests;
+#[cfg(test)]
+mod icon_spacing_tests;
 #[cfg(test)]
 mod idle_tests;
 #[cfg(test)]
@@ -141,6 +150,10 @@ mod layers_keyboard_tests;
 mod layers_keys_tests;
 #[cfg(test)]
 mod layers_rename_tests;
+#[cfg(test)]
+mod layout_scroll_click_tests;
+#[cfg(test)]
+mod layout_settings_tests;
 #[cfg(test)]
 mod live_chat_tests;
 #[cfg(test)]
@@ -190,6 +203,8 @@ mod plugin_panel_tests;
 #[cfg(test)]
 mod plugins_browse_tests;
 #[cfg(test)]
+mod popover_tests;
+#[cfg(test)]
 mod popup_width_tests;
 #[cfg(test)]
 mod present_links_tests;
@@ -216,6 +231,8 @@ mod shortcut_keys_tests;
 #[cfg(test)]
 mod shortcuts_tests;
 #[cfg(test)]
+mod stroke_settings_tests;
+#[cfg(test)]
 mod style_folder_rename_tests;
 #[cfg(test)]
 mod text_enter_tests;
@@ -227,6 +244,8 @@ mod ui_scale_tests;
 mod variables_export_ui_tests;
 #[cfg(test)]
 mod variables_rename_tests;
+#[cfg(test)]
+mod variables_view_tests;
 #[cfg(test)]
 mod variants_discovery_tests;
 #[cfg(test)]
@@ -424,6 +443,7 @@ pub enum RightTab {
 pub enum LeftTab {
     File,
     Assets,
+    Icons,
 }
 
 /// The window's title bar.
@@ -569,6 +589,13 @@ pub struct UiState {
     /// The prototype preview pane floating over the canvas, when open.
     pub preview: Option<present::Pane>,
     pub picker: Option<colorpicker::PickerTarget>,
+    /// The colour picker's popover while it is open (its place survives a drag).
+    pub picker_popover: Option<popover::Popover>,
+    /// The control that opened the picker, refreshed every frame it is drawn (the panel scrolls):
+    /// a press in it is held out of the popover's closing, so its own click toggles the picker.
+    pub picker_button: Option<egui::Rect>,
+    /// The screen y of the swatch that opened the colour picker (its top the picker aligns with).
+    pub picker_y: Option<f32>,
     pub context_menu: Option<(egui::Pos2, Vec<NodeId>)>,
     /// The context menu was asked for from the keyboard (`view.contextMenu`): it opens at the
     /// focused layer row or the canvas selection and takes the keyboard.
@@ -616,6 +643,26 @@ pub struct UiState {
     pub color_profile: Option<figcraft_color::ColorProfile>,
     /// The open style picker.
     pub style_picker: Option<style_picker::Picker>,
+    /// The style picker's popover while it is open (its place survives a drag).
+    pub style_picker_popover: Option<popover::Popover>,
+    /// The Fill section's fill-rule panel, while open.
+    pub fill_rule: Option<fill_rule::Panel>,
+    /// The screen rect of the Fill section's fill-rule button (when a vector is selected), so the
+    /// panel's outside-press-close does not treat a click on it as "outside" and snap the panel
+    /// shut then back open (the button toggles it).
+    pub fill_rule_button: Option<egui::Rect>,
+    /// The auto layout section's settings popover (strokes, stacking, baselines), and the stroke
+    /// section's advanced settings popover and its tab.
+    pub layout_settings: Option<popover::Popover>,
+    pub layout_settings_button: Option<egui::Rect>,
+    pub layout_settings_anchor: Option<f32>,
+    /// The stroke section's advanced settings popover (style, join, brush) and its tab.
+    pub stroke_settings: Option<popover::Popover>,
+    pub stroke_settings_button: Option<egui::Rect>,
+    pub stroke_settings_anchor: Option<f32>,
+    pub stroke_tab: u8,
+    /// The fill-rule panel's popover while it is open.
+    pub fill_rule_popover: Option<popover::Popover>,
     /// The style picker shows colour styles as a grid of swatches.
     pub style_grid: bool,
     /// Style folders closed in the style picker.
@@ -683,6 +730,12 @@ pub struct UiState {
     /// Save was answered: the files save next frame, once a panel field the click took the
     /// keyboard from has committed what was typed (as [`UiState::after_field`]).
     pub save_on_close: bool,
+    /// The renderer this run started with (`pref.graphicsBackend`'s value then): the Preferences'
+    /// Graphics renderer row offers a restart while the preference names another one.
+    pub graphics_started: String,
+    /// A restart was asked for (Preferences' Graphics renderer row): this app starts again as it
+    /// exits, so the renderer now chosen is the one the new window opens with.
+    pub restart: bool,
 }
 
 impl Default for UiState {
@@ -731,6 +784,9 @@ impl Default for UiState {
             present_view: present::PresentView::default(),
             preview: None,
             picker: None,
+            picker_popover: None,
+            picker_button: None,
+            picker_y: None,
             context_menu: None,
             key_menu: false,
             key_box: None,
@@ -758,6 +814,17 @@ impl Default for UiState {
             pdf_print: figcraft_doc::PrintSettings::default(),
             color_profile: None,
             style_picker: None,
+            style_picker_popover: None,
+            fill_rule: None,
+            fill_rule_button: None,
+            layout_settings: None,
+            layout_settings_button: None,
+            layout_settings_anchor: None,
+            stroke_settings: None,
+            stroke_settings_button: None,
+            stroke_settings_anchor: None,
+            stroke_tab: 0,
+            fill_rule_popover: None,
             style_grid: false,
             style_folds: BTreeSet::new(),
             text_preview: None,
@@ -791,6 +858,8 @@ impl Default for UiState {
             confirm_close: false,
             close_after_save_as: None,
             save_on_close: false,
+            graphics_started: "system".into(),
+            restart: false,
         }
     }
 }
@@ -839,6 +908,12 @@ pub struct FigApp {
 pub type Done = Box<dyn FnOnce(&mut FigApp, &egui::Context, Value)>;
 
 impl FigApp {
+    /// Open the colour/value picker for `target`; `top` anchors it under the control that opened it.
+    pub fn open_picker(&mut self, target: crate::colorpicker::PickerTarget, top: Option<f32>) {
+        self.ui.picker = Some(target);
+        self.ui.picker_y = top;
+    }
+
     pub fn new(session: Session, services: Box<dyn Services>) -> Self {
         // The main window's panels open as wide as they were left.
         let (left_width, right_width) = session.prefs.panel_widths;
@@ -1061,6 +1136,10 @@ impl FigApp {
                     self.ui.left_tab = LeftTab::Assets;
                     self.ui.left_collapsed = false;
                     self.ui.versions = Default::default();
+                }
+                "panel.icons" => {
+                    self.ui.left_tab = LeftTab::Icons;
+                    self.ui.left_collapsed = false;
                 }
                 "panel.versionHistory" => versions::open(self),
                 "view.devCompare" => {
@@ -1563,6 +1642,10 @@ impl FigApp {
         let ctx = ui.ctx().clone();
         self.ui_context = Some(ctx.clone());
         self.frame_stats.record(&ctx);
+        // The active document's icon fonts have to be font families by the time text is laid out,
+        // and the active document changes without a command (a tab, the home screen). Cheap when
+        // nothing changed, so this is every frame.
+        self.session.sync_icon_fonts();
         let first = !self.fonts_installed;
         self.logic(&ctx);
         self.autosave_tick(&ctx);
@@ -1657,6 +1740,10 @@ impl FigApp {
             self.ui.shortcuts_panel = false;
             dialogs::keys(self, &ctx);
             dialogs::show(self, &ctx);
+            // Its full view needs the editor behind it; the floating panel shows here too.
+            if !self.ui.variables.as_ref().is_some_and(|e| e.presentation == variables_panel::Presentation::Full) {
+                variables_panel::show(self, &ctx);
+            }
             self.toast_ui(&ctx);
             windows::requests(self, &ctx);
             return;
@@ -1674,7 +1761,9 @@ impl FigApp {
                 });
         }
         // The panels are as wide as asked, less in a window too small for them and the canvas.
-        let left_open = !hidden && !self.ui.left_collapsed;
+        // The Variables editor's full view takes their place (and the canvas's): the rail stays.
+        let variables_full = !hidden && self.ui.variables.as_ref().is_some_and(|e| e.presentation == variables_panel::Presentation::Full);
+        let left_open = !hidden && !self.ui.left_collapsed && !variables_full;
         let (left_w, right_w) = fit_panels(ui.available_width(), left_open.then_some(self.ui.left_width), right_open.then_some(self.ui.right_width));
         let rows = ui.available_rect_before_wrap().y_range();
         let mut edges: Vec<(&str, f32, f32, f32)> = Vec::new();
@@ -1689,17 +1778,20 @@ impl FigApp {
                         _ if self.ui.versions.open => i18n::tr("Version history"),
                         LeftTab::File => i18n::tr("Layers"),
                         LeftTab::Assets => i18n::tr("Assets"),
+                        LeftTab::Icons => i18n::tr("Icons"),
                     };
                     a11y::region(&mut self.ui.nav, ui, a11y::Region::Layers, egui::accesskit::Role::Pane, label);
                     layers::left_panel(self, ui)
                 });
         }
-        if right_open {
+        if right_open && !variables_full {
             edges.push(("right", ui.available_rect_before_wrap().max.x - right_w, right_w, -1.0));
             egui::Panel::right("right_panel")
                 .resizable(false)
                 .exact_size(right_w)
-                .frame(egui::Frame::NONE.fill(t.panel).stroke(egui::Stroke::new(1.0, t.border)))
+                // No stroke: a frame's stroke is part of its margin, which would take 1 pt off
+                // each side of the panel (240 pt by default). The edge is drawn in `right_panel`.
+                .frame(egui::Frame::NONE.fill(t.panel))
                 .show(ui, |ui| {
                     let label = match self.ui.right_tab {
                         RightTab::Design => i18n::tr("Design"),
@@ -1710,18 +1802,23 @@ impl FigApp {
                     right::right_panel(self, ui)
                 });
         }
-        egui::CentralPanel::default().frame(egui::Frame::NONE.fill(t.canvas)).show(ui, |ui| {
-            let worker = self.worker.take();
-            let mut worker = worker.unwrap_or_else(|| render_worker::Worker::new(ctx.clone()));
-            canvas::show(self, ui, &mut worker);
-            self.worker = Some(worker);
-            if !hidden {
-                ui.scope_builder(egui::UiBuilder::new().id_salt("toolbar"), |ui| {
-                    a11y::container(ui, egui::accesskit::Role::Toolbar, i18n::tr("Tools"));
-                    toolbar::show(self, ui);
-                });
-            }
-        });
+        if variables_full {
+            // The Variables editor, full: it takes the panels' and the canvas's area.
+            variables_panel::full(self, &ctx, ui.available_rect_before_wrap());
+        } else {
+            egui::CentralPanel::default().frame(egui::Frame::NONE.fill(t.canvas)).show(ui, |ui| {
+                let worker = self.worker.take();
+                let mut worker = worker.unwrap_or_else(|| render_worker::Worker::new(ctx.clone()));
+                canvas::show(self, ui, &mut worker);
+                self.worker = Some(worker);
+                if !hidden {
+                    ui.scope_builder(egui::UiBuilder::new().id_salt("toolbar"), |ui| {
+                        a11y::container(ui, egui::accesskit::Role::Toolbar, i18n::tr("Tools"));
+                        toolbar::show(self, ui);
+                    });
+                }
+            });
+        }
         // The panels' edges, over the canvas and the panels (drawn after them: they take the press).
         for (name, x, shown, grows) in edges {
             if let Some(w) = Self::panel_edge(ui, name, x, rows, shown, grows) {
@@ -1747,9 +1844,18 @@ impl FigApp {
         menus::popups(self, &ctx);
         variable_ui::picker(self, &ctx);
         style_picker::show(self, &ctx);
+        fill_rule::show(self, &ctx);
+        layout_panel::show(self, &ctx);
+        right::show_stroke_settings(self, &ctx);
         self.end_unwanted_text_preview(&ctx);
         self.end_pen_outside_design();
         dialogs::show(self, &ctx);
+        // The Variables editor, drawn once per frame: its full view above (where the panels were),
+        // its floating panel here (its form as this frame began; the header's arrow switches it
+        // for the next one).
+        if !variables_full {
+            variables_panel::show(self, &ctx);
+        }
         self.toast_ui(&ctx);
         // A rename started after the layers panel drew (Cmd/Ctrl+R, a double-click) opens its field
         // next frame.
@@ -1763,6 +1869,16 @@ impl FigApp {
         // changed), from the window with its file.
         let windows = &self.windows;
         self.session.live_sync_in(|uid| uid.map_or(0, |u| windows.of(u)) == windows.current);
+    }
+
+    /// Clicking the control that opened the colour picker closes it again; clicking another opens
+    /// the picker for that one.
+    pub fn toggle_picker(&mut self, target: crate::colorpicker::PickerTarget, top: Option<f32>) {
+        if self.ui.picker.as_ref() == Some(&target) {
+            crate::colorpicker::close(self);
+        } else {
+            self.open_picker(target, top);
+        }
     }
 
     fn toast_ui(&mut self, ctx: &egui::Context) {
@@ -1880,6 +1996,7 @@ impl FigApp {
         state["pendingOpens"] = json!(self.ui.pending_opens.len());
         state["missingFonts"] = json!(self.ui.missing_fonts.as_ref().map(missing_fonts::Shown::inspect));
         state["presentTabs"] = tabs::present_tabs_inspect(self);
+        state["fillRule"] = json!(self.ui.fill_rule.as_ref().map(|p| p.id.0));
         state
     }
 }

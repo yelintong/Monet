@@ -10,7 +10,7 @@ use serde_json::json;
 use crate::a11y::{self, Region, RowInfo, Tip};
 use crate::i18n::{tr, trf, trn};
 use crate::icons::{self, Icon};
-use crate::theme::{ACCENT, COMPONENT, Tokens, regular, semibold};
+use crate::theme::{ACCENT, COMPONENT, ICON, Tokens, regular, semibold};
 use crate::{FigApp, LeftTab};
 
 pub const ROW: f32 = 32.0;
@@ -70,6 +70,7 @@ pub fn node_icon(doc: &Document, id: NodeId) -> Icon {
         NodeKind::Component { .. } => Icon::Component,
         NodeKind::ComponentSet { .. } => Icon::ComponentSet,
         NodeKind::Instance { .. } => Icon::Instance,
+        NodeKind::Icon { .. } => Icon::Icons,
         NodeKind::Slice => Icon::Slice,
     }
 }
@@ -95,8 +96,11 @@ pub fn rail(app: &mut FigApp, ui: &mut Ui) {
     y += 44.0;
     ui.painter().line_segment([pos2(r.min.x + 18.0, y), pos2(r.max.x - 18.0, y)], Stroke::new(1.0, t.border));
     y += 12.0;
-    let items =
-        [(Icon::Page, tr("File"), Some(LeftTab::File)), (Icon::Assets, tr("Assets"), Some(LeftTab::Assets)), (Icon::Styles, tr("Variables"), None)];
+    let items = [
+        (Icon::Page, tr("File"), Some(LeftTab::File)),
+        (Icon::Assets, tr("Assets"), Some(LeftTab::Assets)),
+        (Icon::Variables, tr("Variables"), None),
+    ];
     for (icon, label, tab) in items {
         let ir = Rect::from_center_size(pos2(r.center().x, y + 14.0), vec2(36.0, 28.0));
         let hit = Rect::from_min_max(pos2(r.min.x, y), pos2(r.max.x, y + 48.0));
@@ -143,8 +147,9 @@ pub fn left_panel(app: &mut FigApp, ui: &mut Ui) {
     let full = ui.max_rect();
     // Header: file name (or "Assets") + drafts + collapse.
     let (head, _) = ui.allocate_exact_size(vec2(full.width(), 64.0), Sense::hover());
-    if app.ui.left_tab == LeftTab::Assets {
-        ui.painter().text(pos2(head.min.x + 16.0, head.min.y + 24.0), Align2::LEFT_CENTER, tr("Assets"), semibold(13.0), t.text);
+    if app.ui.left_tab == LeftTab::Assets || app.ui.left_tab == LeftTab::Icons {
+        let title = if app.ui.left_tab == LeftTab::Icons { tr("Icons") } else { tr("Assets") };
+        ui.painter().text(pos2(head.min.x + 16.0, head.min.y + 24.0), Align2::LEFT_CENTER, title, semibold(13.0), t.text);
     } else {
         let name = app.session.doc().map(|d| d.name.clone()).unwrap_or_default();
         let nr = Rect::from_min_max(pos2(head.min.x + 14.0, head.min.y + 14.0), pos2(head.max.x - 48.0, head.min.y + 34.0));
@@ -170,6 +175,7 @@ pub fn left_panel(app: &mut FigApp, ui: &mut Ui) {
             layers(app, ui);
         }
         LeftTab::Assets => crate::assets_panel::show(app, ui),
+        LeftTab::Icons => crate::icons_panel::show(app, ui),
     }
 }
 
@@ -239,9 +245,13 @@ fn pages(app: &mut FigApp, ui: &mut Ui) {
     let page_key = (uid, cur);
     let scroll_to_cur = app.ui.pages_seen_page != Some(page_key);
     let mut current_row_rendered = false;
-    // A long list scrolls in its own area, so the layers keep their room below it.
-    let max_h = pages_list_height(app.ui.pages_height, ui.available_height());
-    let mut moved = crate::widgets::scroll_area().id_salt("pages_list").max_height(max_h).show(ui, |ui| {
+    // The pages' room: the height the divider under them was dragged to, or their own height
+    // until it is. The list keeps that room (a long one scrolls in it), so the divider is
+    // always there to drag.
+    let shown_rows = pages.iter().filter(|(_, name, divider)| !filtering || (!*divider && name.to_lowercase().contains(&filter))).count();
+    let content_h = shown_rows as f32 * (ROW + ui.spacing().item_spacing.y);
+    let room_h = pages_list_height(app.ui.pages_height, content_h, ui.available_height());
+    let mut moved = crate::widgets::scroll_area().id_salt("pages_list").max_height(room_h).auto_shrink([false, false]).show(ui, |ui| {
         for (k, (id, name, divider)) in pages.iter().cloned().enumerate() {
             if filtering && (divider || !name.to_lowercase().contains(&filter)) {
                 continue;
@@ -358,8 +368,9 @@ fn pages(app: &mut FigApp, ui: &mut Ui) {
     {
         app.run("page.select", json!({"id": p}));
     }
-    // `inner_rect` is the room the list was given; a short list shrinks to its rows.
-    pages_edge(app, ui, moved.inner_rect.height().min(moved.content_size.y));
+    // The room the list took, which is where the line is drawn: a scroll area is never
+    // shorter than its minimum, so a one-page list takes more room than its row.
+    pages_edge(app, ui, moved.inner_rect.height());
 }
 
 /// The Pages list has the keyboard: a page row (or the add-page button) of the open file was
@@ -376,12 +387,18 @@ pub(crate) fn delete_page(app: &mut FigApp, page: NodeId) {
     }
 }
 
-/// The pages list's height in a panel with `avail` below the Pages header: the height asked for
-/// (by default 40% of it), at least three rows, and leaving the layers their header and three rows.
-pub(crate) fn pages_list_height(asked: Option<f32>, avail: f32) -> f32 {
-    let least = 3.0 * ROW;
+/// The pages list's height in a panel with `avail` below the Pages header: the height the
+/// divider under it was dragged to, or the rows' own height (`content`) until it is. Never
+/// shorter than the rows it holds (up to three), and never so tall that the layers lose their
+/// header and three rows.
+pub(crate) fn pages_list_height(asked: Option<f32>, content: f32, avail: f32) -> f32 {
+    let least = content.clamp(ROW, 3.0 * ROW);
     let most = (avail - 40.0 - 3.0 * ROW).max(least);
-    asked.filter(|h| h.is_finite()).unwrap_or(avail * 0.4).clamp(least, most)
+    match asked.filter(|h| h.is_finite()) {
+        Some(h) => h.clamp(least, most),
+        // Until the divider is dragged, the list hugs its rows (a long one still scrolls).
+        None => content.min(avail * 0.4).clamp(least, most),
+    }
 }
 
 /// The line between the pages and the layers: dragging it sizes the pages list (`shown`: its
@@ -453,6 +470,79 @@ fn dragged_layers(dragging: Option<NodeId>, sel: &[NodeId]) -> Vec<NodeId> {
         Some(dg) if sel.contains(&dg) => sel.to_vec(),
         Some(dg) => vec![dg],
         None => Vec::new(),
+    }
+}
+
+/// How a row stands with the selection: it is one of the selected ones, it sits inside one
+/// (drawn in the tint), or neither.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Mark {
+    None,
+    Child,
+    Selected,
+}
+
+/// Each row's mark. The descendants of a selected row are `Child` until the tree comes back
+/// out of it, so a selected row and the rows inside it are one run of marked rows.
+fn marks(rows: &[Row], sel: &[NodeId]) -> Vec<Mark> {
+    let set: std::collections::HashSet<NodeId> = sel.iter().copied().collect();
+    let mut out = Vec::with_capacity(rows.len());
+    // The depths of the selected rows we are inside, innermost last.
+    let mut open: Vec<usize> = Vec::new();
+    for row in rows {
+        while open.last().is_some_and(|d| *d >= row.depth) {
+            open.pop();
+        }
+        if set.contains(&row.id) {
+            open.push(row.depth);
+            out.push(Mark::Selected);
+        } else if open.is_empty() {
+            out.push(Mark::None);
+        } else {
+            out.push(Mark::Child);
+        }
+    }
+    out
+}
+
+/// For every row, the first and the last row of the block it belongs to: a run of neighbouring
+/// marked rows (a row on its own is a run of one). Rows of a run are drawn as one block.
+fn selection_runs(marks: &[Mark]) -> (Vec<usize>, Vec<usize>) {
+    let n = marks.len();
+    let mut first = vec![0usize; n];
+    let mut last = vec![0usize; n];
+    let mut i = 0;
+    while i < n {
+        if marks[i] != Mark::None {
+            let start = i;
+            while i < n && marks[i] != Mark::None {
+                i += 1;
+            }
+            let end = i - 1;
+            for j in start..=end {
+                first[j] = start;
+                last[j] = end;
+            }
+        } else {
+            i += 1;
+        }
+    }
+    (first, last)
+}
+
+/// The block colour of a run of selected rows: an icon's colour when every row of the run is an
+/// icon's, a component's colour when every row is a component's, the selection colour otherwise.
+fn run_color(t: &Tokens, doc: &Document, rows: &[Row], from: usize, to: usize) -> Color32 {
+    let all_icon = rows[from..=to].iter().all(|row| doc.node(row.id).is_some_and(|n| matches!(n.kind, NodeKind::Icon { .. })));
+    let all_comp = rows[from..=to].iter().all(|row| {
+        doc.node(row.id).is_some_and(|n| matches!(n.kind, NodeKind::Component { .. } | NodeKind::ComponentSet { .. } | NodeKind::Instance { .. }))
+    });
+    if all_icon {
+        t.icon_layer_row
+    } else if all_comp {
+        t.component_row
+    } else {
+        t.selected_row
     }
 }
 
@@ -847,7 +937,12 @@ fn layers(app: &mut FigApp, ui: &mut Ui) {
         // Stable widget ids for a row wherever the list is scrolled.
         band_ui.skip_ahead_auto_ids(first);
         let ui = &mut band_ui;
-        for row in rows.iter().take(last).skip(first) {
+        // Neighbouring selected rows share one block, and so do the rows inside a selected one,
+        // so that a group reads as one block instead of a stack of them.
+        let marked = if sel.is_empty() { Vec::new() } else { marks(&rows, &sel) };
+        let runs = if marked.is_empty() { None } else { Some(selection_runs(&marked)) };
+        for (i, row) in rows.iter().take(last).skip(first).enumerate() {
+            let idx = first + i;
             let Some(n) = doc.node(row.id) else { continue };
             let (r, resp) = ui.allocate_exact_size(vec2(w, ROW), Sense::click_and_drag());
             let selected = sel.contains(&row.id);
@@ -864,21 +959,56 @@ fn layers(app: &mut FigApp, ui: &mut Ui) {
                 locked: n.locked,
             };
             a11y::tree_item(&resp, if n.name.is_empty() { tr(n.kind.label()) } else { &n.name }, &info);
-            let in_selected = !selected && doc.ancestors(row.id).iter().any(|a| sel.contains(a));
+            let mark = marked.get(idx).copied().unwrap_or(Mark::None);
+            // Marked layers: a component's row, its icon and its name are drawn in the purple a
+            // component gets; an icon's in the orange an icon gets. Both are marked, each in its own
+            // colour, so the row says at a glance which kind of layer it is.
             let is_comp = matches!(n.kind, NodeKind::Component { .. } | NodeKind::ComponentSet { .. } | NodeKind::Instance { .. });
+            let is_icon = matches!(n.kind, NodeKind::Icon { .. });
+            let is_marked = is_comp || is_icon;
+            let mark_col = if is_icon { ICON } else { COMPONENT };
             let rr = r.shrink2(vec2(8.0, 0.0));
             a11y::ring_around(ui, rr, &resp);
             // Over the row, its eye and padlock included (they sit on top of it).
             let over = resp.contains_pointer();
-            if selected {
-                ui.painter().rect_filled(rr, CornerRadius::same(5), if is_comp { t.component_row } else { t.selected_row });
-            } else if in_selected {
-                ui.painter().rect_filled(rr, CornerRadius::ZERO, t.selected_row_child);
+            if mark != Mark::None {
+                // The block: one for the row, or one for the whole run of neighbouring marked
+                // rows it belongs to, drawn by the run's first visible row.
+                let (from, to) = match &runs {
+                    Some((f, l)) => (f[idx], l[idx]),
+                    None => (idx, idx),
+                };
+                if idx == from.max(first) {
+                    let at = |k: usize| r.min.y + (k as f32 - idx as f32) * pitch;
+                    let x = rr.x_range();
+                    // The whole run takes the tint, as one rounded block, so that a selected row
+                    // and the rows inside it read as one group instead of a stack of them.
+                    let block = Rect::from_x_y_ranges(x, at(from)..=at(to) + ROW);
+                    ui.painter().rect_filled(block, CornerRadius::same(5), t.selected_row_child);
+                    // The selected rows inside it, as bands: only the block's own corners round,
+                    // so the joins between them stay straight.
+                    let mut k = from;
+                    while k <= to {
+                        if marked[k] == Mark::Selected {
+                            let start = k;
+                            while k <= to && marked[k] == Mark::Selected {
+                                k += 1;
+                            }
+                            let end = k - 1;
+                            let band = Rect::from_x_y_ranges(x, at(start)..=at(end) + ROW);
+                            let edge = |on: bool| if on { 5 } else { 0 };
+                            let corners = CornerRadius { nw: edge(start == from), ne: edge(start == from), sw: edge(end == to), se: edge(end == to) };
+                            ui.painter().rect_filled(band, corners, run_color(&t, &doc, &rows, start, end));
+                        } else {
+                            k += 1;
+                        }
+                    }
+                }
             } else if over || hover == Some(row.id) {
                 ui.painter().rect_stroke(
                     rr,
                     CornerRadius::same(5),
-                    Stroke::new(1.0, if is_comp { COMPONENT } else { ACCENT }),
+                    Stroke::new(1.0, if is_marked { mark_col } else { ACCENT }),
                     egui::StrokeKind::Inside,
                 );
             }
@@ -903,8 +1033,8 @@ fn layers(app: &mut FigApp, ui: &mut Ui) {
             }
             let icon = node_icon(&doc, row.id);
             let shown = n.visible && !row.dimmed;
-            let icon_col = if is_comp || icon == Icon::Slot {
-                COMPONENT.gamma_multiply(if shown { 1.0 } else { 0.5 })
+            let icon_col = if is_marked || icon == Icon::Slot {
+                mark_col.gamma_multiply(if shown { 1.0 } else { 0.5 })
             } else if shown {
                 t.icon
             } else {
@@ -917,8 +1047,8 @@ fn layers(app: &mut FigApp, ui: &mut Ui) {
                     rename_done = Some((row.id, new));
                 }
             } else {
-                let col = if is_comp {
-                    COMPONENT.gamma_multiply(if shown { 1.0 } else { 0.5 })
+                let col = if is_marked {
+                    mark_col.gamma_multiply(if shown { 1.0 } else { 0.5 })
                 } else if shown {
                     t.text
                 } else {

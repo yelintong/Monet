@@ -22,8 +22,8 @@ pub static MENU: &[MenuItem] = &[
     // File
     m!("File", "New design file", "file.new"),
     m!("File", "New board", "file.newBoard"),
-    // FigCraft's own: boards and starter templates (not counted by `parity`, like the other items
-    // of its own listed in `OWN`).
+    // FigCraft's own: starter templates (not counted by `parity`, like the other items of its own
+    // listed in `OWN`).
     m!("File", "New from template…", "file.newFromTemplate"),
     m!("File", "New window", "window.new"),
     m!("File", "Open…", "file.open"),
@@ -110,6 +110,8 @@ pub static MENU: &[MenuItem] = &[
     m!("View/Panels", "Reset panel widths", "view.panelWidths"),
     m!("View/Panels", "Layers", "view.layers"),
     m!("View/Panels", "Assets", "view.assets"),
+    // FigCraft's own: the panel that makes icons out of layers (see `cmd/icon.rs`).
+    m!("View/Panels", "Icons", "view.icons"),
     m!("View/Panels", "Design", "view.design"),
     m!("View/Panels", "Prototype", "view.prototype"),
     m!("View", SEP, ""),
@@ -141,6 +143,8 @@ pub static MENU: &[MenuItem] = &[
     m!("Object", SEP, ""),
     m!("Object", "Create component", "component.create"),
     m!("Object", "Create multiple components", "component.createMultiple"),
+    // FigCraft's own: an icon font the file carries with it (see `cmd/icon.rs`).
+    m!("Object", "Create icon", "icon.create"),
     m!("Object", "Combine as variants", "component.combineVariants"),
     m!("Object", "Reset all changes", "component.resetInstance"),
     m!("Object", "Detach instance", "component.detach"),
@@ -238,6 +242,8 @@ pub static MENU: &[MenuItem] = &[
     m!("Vector", "Delete and heal selection", "vector.deleteHeal"),
     m!("Vector", "Simplify vector", "vector.simplify"),
     m!("Vector", "Reverse path direction", "vector.reverse"),
+    m!("Vector", "Set fill rule", "vector.fillRule"),
+    m!("Vector", "Reverse loop", "vector.reverseLoop"),
     m!("Vector", "Offset path", "vector.offset"),
     // Plugins
     m!("Plugins", "Run last plugin", "plugins.runLast"),
@@ -290,7 +296,7 @@ pub fn items() -> impl Iterator<Item = &'static MenuItem> {
 }
 
 /// Items of FigCraft's own that the parity count leaves out (as it does the `collab.` ones).
-const OWN: [&str; 4] = ["file.newFromTemplate", "file.newBoard", "help.gettingStarted", "text.missingFonts"];
+const OWN: [&str; 4] = ["file.newFromTemplate", "help.gettingStarted", "icon.create", "text.missingFonts"];
 
 /// Coverage: (implemented, total, missing ids). `extra` lists ids implemented by the UI layer.
 pub fn parity(extra: &[&str]) -> (usize, usize, Vec<&'static str>) {
