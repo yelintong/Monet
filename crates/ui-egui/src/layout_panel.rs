@@ -11,7 +11,7 @@ use serde_json::json;
 use crate::FigApp;
 use crate::i18n::{tr, tr_noop};
 use crate::icons::{self, Icon};
-use crate::right::{common, menu_item, menu_popup, row};
+use crate::right::{block, common, menu_item, menu_popup, row};
 use crate::theme::{Tokens, regular};
 use crate::widgets::{self, FIELD_H, Lead};
 
@@ -454,7 +454,9 @@ fn alignment(app: &mut FigApp, ui: &mut Ui, ids: &[NodeId], l: &AutoLayout) {
     // The picker and the gaps take a column each — as wide as the fields above and below them,
     // and starting at the same edge — and the dots button sits at the row's end.
     let col = widgets::col_width(ui.available_width());
-    row(ui, h + 12.0, |ui| {
+    // `row` centres a FIELD_H band, which would clip the 2*FIELD_H+GUTTER picker: a block with a
+    // 6 pt inset gives the content its full height and keeps the same 16/8 margins.
+    block(ui, h + 12.0, 6.0, |ui| {
         let pill = ui.allocate_exact_size(vec2(col, h), Sense::hover()).0;
         picker(app, ui, ids, l, pill);
         let gaps = ui.allocate_exact_size(vec2(col, h), Sense::hover()).0;
