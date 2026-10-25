@@ -99,7 +99,7 @@ pub fn rail(app: &mut FigApp, ui: &mut Ui) {
     let items = [
         (Icon::Page, tr("File"), Some(LeftTab::File)),
         (Icon::Assets, tr("Assets"), Some(LeftTab::Assets)),
-        (Icon::Styles, tr("Variables"), None),
+        (Icon::Variables, tr("Variables"), None),
     ];
     for (icon, label, tab) in items {
         let ir = Rect::from_center_size(pos2(r.center().x, y + 14.0), vec2(36.0, 28.0));

@@ -102,6 +102,8 @@ icons! {
     ClipContent,
     Effects,
     Styles,
+    /// Four squares: the Variables editor (a value a name stands for, in each mode).
+    Variables,
     Menu,
     Play,
     Home,
@@ -810,6 +812,12 @@ fn draw(p: &P, icon: Icon) {
         Styles => {
             for (x, y) in [(5.0, 5.0), (11.0, 5.0), (5.0, 11.0), (11.0, 11.0)] {
                 p.dot(x, y, 2.2);
+            }
+        }
+        Variables => {
+            // Four squares rather than dots: the editor's own mark, squared off.
+            for (x, y) in [(5.0, 5.0), (11.0, 5.0), (5.0, 11.0), (11.0, 11.0)] {
+                p.fill_rect(x - 2.0, y - 2.0, x + 2.0, y + 2.0, 1.0);
             }
         }
         Menu => {
