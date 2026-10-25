@@ -629,6 +629,8 @@ pub struct UiState {
     pub color_profile: Option<figcraft_color::ColorProfile>,
     /// The open style picker.
     pub style_picker: Option<style_picker::Picker>,
+    /// The style picker's popover while it is open (its place survives a drag).
+    pub style_picker_popover: Option<popover::Popover>,
     /// The Fill section's fill-rule panel, while open.
     pub fill_rule: Option<fill_rule::Panel>,
     /// The screen rect of the Fill section's fill-rule button (when a vector is selected), so the
@@ -779,6 +781,7 @@ impl Default for UiState {
             pdf_print: figcraft_doc::PrintSettings::default(),
             color_profile: None,
             style_picker: None,
+            style_picker_popover: None,
             fill_rule: None,
             fill_rule_button: None,
             style_grid: false,

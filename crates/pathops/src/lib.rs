@@ -68,14 +68,13 @@ fn sweep<T>(f: impl FnOnce() -> Result<T, PathOpsError>) -> Result<T, PathOpsErr
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).unwrap_or(Err(PathOpsError::BadInput))
 }
 
-fn binary_rule(a: &BezPath, b: &BezPath, even_odd: bool, op: linesweeper::BinaryOp) -> Result<BezPath, PathOpsError> {
+fn binary_by(a: &BezPath, b: &BezPath, rule: linesweeper::FillRule, op: linesweeper::BinaryOp) -> Result<BezPath, PathOpsError> {
     if a.elements().is_empty() && b.elements().is_empty() {
         return Ok(BezPath::new());
     }
     if !finite(a) || !finite(b) {
         return Err(PathOpsError::BadInput);
     }
-    let rule = if even_odd { linesweeper::FillRule::EvenOdd } else { linesweeper::FillRule::NonZero };
     let contours = sweep(|| linesweeper::binary_op(&closed(a), &closed(b), rule, op).map_err(|_| PathOpsError::BadInput))?;
     let mut out = BezPath::new();
     for c in contours.contours() {
@@ -85,7 +84,7 @@ fn binary_rule(a: &BezPath, b: &BezPath, even_odd: bool, op: linesweeper::Binary
 }
 
 fn binary(a: &BezPath, b: &BezPath, op: linesweeper::BinaryOp) -> Result<BezPath, PathOpsError> {
-    binary_rule(a, b, false, op)
+    binary_by(a, b, linesweeper::FillRule::NonZero, op)
 }
 
 /// Normalise a single path's winding (non-zero) into simple even-odd contours.
@@ -102,7 +101,8 @@ pub fn simplify(path: &BezPath) -> Result<BezPath, PathOpsError> {
 /// (A y flip — the font's y axis points up — mirrors every contour, which reverses all of them and
 /// so keeps them opposed.)
 pub fn normalized(path: &BezPath, even_odd: bool) -> Result<BezPath, PathOpsError> {
-    binary_rule(path, &BezPath::new(), even_odd, linesweeper::BinaryOp::Union)
+    let rule = if even_odd { linesweeper::FillRule::EvenOdd } else { linesweeper::FillRule::NonZero };
+    binary_by(path, &BezPath::new(), rule, linesweeper::BinaryOp::Union)
 }
 
 /// Combine `acc` (the operands so far) with the next operand `p` by `op`.

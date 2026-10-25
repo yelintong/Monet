@@ -835,7 +835,7 @@ fn swap_highlight(app: &FigApp, painter: &egui::Painter, doc: &Document, id: Nod
 
 /// The outline colour for a layer: purple for components, sets, instances and every layer in them,
 /// orange for icons and every layer inside one, blue otherwise.
-fn outline_colour(doc: &Document, id: NodeId) -> Color32 {
+fn outline_colour(doc: &Document, id: NodeId, green: Color32) -> Color32 {
     use figcraft_engine::components::{owning_component, owning_instance};
     let set = matches!(doc.node(id).map(|n| &n.kind), Some(NodeKind::ComponentSet { .. }));
     if set || owning_component(doc, id).is_some() || owning_instance(doc, id).is_some() {
@@ -843,7 +843,7 @@ fn outline_colour(doc: &Document, id: NodeId) -> Color32 {
     } else if doc.owning_icon(id).is_some() {
         ICON
     } else {
-        ACCENT
+        green
     }
 }
 
@@ -1049,7 +1049,7 @@ fn overlays(app: &FigApp, painter: &egui::Painter, t: &Tokens) -> Vec<(NodeId, [
     // Selection.
     let editing = ds.text_edit.clone();
     if !sel.is_empty() && editing.is_none() && ds.vector_edit.is_none() {
-        let col = sel.iter().map(|i| outline_colour(&doc, *i)).find(|c| *c != ACCENT).unwrap_or(ACCENT);
+        let col = sel.iter().map(|i| outline_colour(&doc, *i, ACCENT)).find(|c| *c != ACCENT).unwrap_or(ACCENT);
         for id in &sel {
             draw_outline(app, painter, &doc, *id, stroke(col, 1.0));
         }
