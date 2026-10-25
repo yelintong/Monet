@@ -32,6 +32,34 @@ fn names_split_into_folders() {
     assert!(StyleSlot::Text.holds(&StyleKind::Text { style: Default::default() }) && StyleSlot::Text.has_grid());
 }
 
+/// The Local styles list's lines as text: a folder's label, or a style's last part, indented by
+/// the level it sits at.
+fn shape(lines: &[Entry]) -> Vec<String> {
+    lines
+        .iter()
+        .map(|e| match e {
+            Entry::Folder { label, depth, .. } => format!("{}{label}", "  ".repeat(*depth)),
+            Entry::Style(s, depth) => format!("{}·{}", "  ".repeat(*depth), leaf(&s.name)),
+        })
+        .collect()
+}
+
+#[test]
+fn folders_nest_as_deep_as_their_names_go() {
+    let st = |id: &str, name: &str| Style {
+        id: id.into(),
+        name: name.into(),
+        description: String::new(),
+        kind: StyleKind::Paint { paints: vec![] },
+        bound: Default::default(),
+    };
+    let styles = [st("a", "Top"), st("b", "Brand/Primary"), st("c", "Brand/Blue/500"), st("d", "Loose")];
+    // A name's folders are folders even when nothing else names them: "Brand" for "Brand/Blue".
+    assert_eq!(shape(&entries(styles.iter(), |_| false)), ["·Top", "·Loose", "Brand", "  ·Primary", "  Blue", "    ·500"]);
+    // Folding a folder hides its whole branch, not just the styles named directly in it.
+    assert_eq!(shape(&entries(styles.iter(), |p| p == "Brand")), ["·Top", "·Loose", "Brand"]);
+}
+
 fn frame(ctx: &egui::Context, app: &mut FigApp, t: &mut f64) {
     frame_with(ctx, app, t, vec![]);
 }
