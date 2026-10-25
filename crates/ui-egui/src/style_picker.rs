@@ -35,6 +35,38 @@ const TILE: egui::Vec2 = egui::vec2(54.0, 44.0);
 /// Largest size a text style's name previews at in the list (the grid's "Ag" goes to 24).
 const LIST_PREVIEW_MAX: f64 = 16.0;
 
+// The Design panel's Local styles list. Its rows sit inset from the panel's edges with the hover
+// band rounded, a style row is 32 pt tall, a folder folds from its chevron, and each type's group
+// is a 11 pt caption with fixed gaps around it.
+/// Side inset of a row: the hover band starts and ends here, not at the panel's edges.
+const LS_INSET: f32 = 8.0;
+/// Height of a style row.
+const LS_ROW_H: f32 = 32.0;
+/// Height of a folder row.
+const LS_FOLDER_H: f32 = 24.0;
+/// A folder's chevron: its centre from the row's left edge and its box.
+const LS_CHEVRON_CX: f32 = 14.0;
+const LS_CHEVRON: f32 = 12.0;
+/// A folder's name, and the indent its styles take, from the row's left edge.
+const LS_FOLDER_X: f32 = 28.0;
+const LS_INDENT: f32 = 12.0;
+/// Gap above the first group's caption and above every later one; between a caption and its rows.
+const LS_FIRST_GAP: f32 = 8.0;
+const LS_GROUP_GAP: f32 = 14.0;
+const LS_CAPTION_GAP: f32 = 9.0;
+/// Gap under the whole list.
+const LS_BOTTOM_PAD: f32 = 13.0;
+/// A colour style's swatch: its centre from the row's left edge and its radius.
+const LS_SWATCH_CX: f32 = 16.0;
+const LS_SWATCH_R: f32 = 8.0;
+/// Where a colour style's name starts.
+const LS_LABEL_X: f32 = 33.0;
+/// A text style's "Ag" sample, and where its name starts.
+const LS_AG_X: f32 = 10.0;
+const LS_NAME_X: f32 = 36.0;
+/// A row's trailing text (a text style's size and line height) ends this far from its right edge.
+const LS_TRAIL: f32 = 10.0;
+
 /// A style slot on a layer: what a style picker lists and what a style chip shows.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum StyleSlot {
@@ -1107,43 +1139,120 @@ fn folder_rename_id() -> Id {
     Id::new("local_style_folder_rename")
 }
 
+/// The folders folded in the Local styles list (temp data), as `slot/folder`.
+fn folded_id() -> Id {
+    Id::new("local_style_folded")
+}
+
+/// A Local styles row: the allocated full-width band, cut to the list's side insets.
+fn inset_row(row: Rect) -> Rect {
+    Rect::from_min_max(pos2(row.min.x + LS_INSET, row.min.y), pos2(row.max.x - LS_INSET, row.max.y))
+}
+
+/// A style's colour as a round swatch centred at `c`: solid, or a gradient spread around the rim.
+fn paint_dot(ui: &Ui, c: egui::Pos2, r: f32, paint: &Paint) {
+    let t = Tokens::get(ui.ctx());
+    let stops: Vec<Color32> = match &paint.kind {
+        PaintKind::Solid { color } => vec![crate::theme::doc_c32(ui.ctx(), color.with_alpha(color.a * paint.opacity))],
+        PaintKind::Gradient(g) => (0..=4).map(|i| crate::theme::doc_c32(ui.ctx(), g.sample(i as f32 / 4.0))).collect(),
+        PaintKind::Image(_) | PaintKind::Pattern(_) => {
+            let icon = if matches!(paint.kind, PaintKind::Image(_)) { Icon::Image } else { Icon::ViewGrid };
+            ui.painter().circle_filled(c, r, Color32::from_gray(0xB3));
+            icons::paint(ui.painter(), Rect::from_center_size(c, vec2(r, r)), icon, Color32::WHITE);
+            ui.painter().circle_stroke(c, r - 0.5, Stroke::new(1.0, t.border));
+            return;
+        }
+    };
+    match stops.as_slice() {
+        [] => {}
+        [one] => {
+            ui.painter().circle_filled(c, r, *one);
+        }
+        many => {
+            // A fan of rim vertices, each sampling the gradient along its own direction.
+            const N: usize = 32;
+            let at = |v: f32| {
+                let x = v.clamp(0.0, 1.0) * (many.len() - 1) as f32;
+                let i = (x.floor() as usize).min(many.len() - 2);
+                many[i].lerp_to_gamma(many[i + 1], x - i as f32)
+            };
+            let mut mesh = egui::Mesh::default();
+            mesh.colored_vertex(c, at(0.5));
+            for k in 0..=N {
+                let a = k as f32 / N as f32 * std::f32::consts::TAU;
+                let d = vec2(a.cos(), a.sin());
+                mesh.colored_vertex(c + d * r, at(0.5 + (d.x + d.y) * 0.35));
+            }
+            for k in 1..=N as u32 {
+                mesh.add_triangle(0, k, k + 1);
+            }
+            ui.painter().add(egui::Shape::mesh(mesh));
+        }
+    }
+    ui.painter().circle_stroke(c, r - 0.5, Stroke::new(1.0, t.border));
+}
+
 /// The Design panel's Local styles (shown with nothing selected): this file's styles by type
-/// (text, colour, effect, grid), then by folder. A click edits a style; right-click offers edit,
-/// duplicate and delete; a row dragged by its grip moves (into the folder it lands in, renamed to
-/// match); right-click on a folder renames it (and the styles in it).
+/// (text, colour, effect, grid), then by folder. Rows sit inset from the panel's edges with the
+/// hover band rounded; a folder folds from its chevron. A click edits a style; right-click offers
+/// edit, duplicate and delete; a row dragged by itself moves (into the folder it lands in, renamed
+/// to match); right-click on a folder renames it (and the styles in it).
 pub fn local_styles(app: &mut FigApp, ui: &mut Ui, doc: &Document) {
     let t = Tokens::get(ui.ctx());
     let renaming: Option<String> = ui.data(|d| d.get_temp(folder_rename_id()));
+    let mut folded: std::collections::HashSet<String> = ui.data(|d| d.get_temp(folded_id())).unwrap_or_default();
+    let folded_before = folded.clone();
     let mut run: Option<(&'static str, Value)> = None;
     let mut edit: Option<(StyleSlot, String)> = None;
+    let mut groups = 0;
     for slot in [StyleSlot::Text, StyleSlot::Fill, StyleSlot::Effect, StyleSlot::Grid] {
-        let groups = by_folder(library::local_styles(doc).filter(|s| slot.holds(&s.kind)));
-        if groups.is_empty() {
+        let by_group = by_folder(library::local_styles(doc).filter(|s| slot.holds(&s.kind)));
+        if by_group.is_empty() {
             continue;
         }
-        crate::right::row(ui, 24.0, |ui| widgets::label(ui, slot.title(), t.text_secondary));
+        ui.add_space(if groups == 0 { LS_FIRST_GAP } else { LS_GROUP_GAP });
+        groups += 1;
+        let w = ui.available_width();
+        let (caption, _) = ui.allocate_exact_size(vec2(w, 16.0), Sense::hover());
+        ui.painter().text(pos2(caption.min.x + widgets::PAD, caption.center().y), Align2::LEFT_CENTER, slot.title(), regular(11.0), t.text_secondary);
+        ui.add_space(LS_CAPTION_GAP);
         let mut drag = crate::list_drag::ListDrag::in_order(ui, ("local_styles", slot.key()));
         let mut shown: Vec<&Style> = Vec::new();
-        for (f, list) in &groups {
-            let indent = if f.is_empty() { 0.0 } else { 12.0 };
+        for (f, list) in &by_group {
+            let indent = if f.is_empty() { 0.0 } else { LS_INDENT };
+            let key = format!("{}/{}", slot.key(), f);
+            let open = !folded.contains(&key);
             if !f.is_empty() {
                 let w = ui.available_width();
-                let (r, resp) = ui.allocate_exact_size(vec2(w, 24.0), Sense::click());
-                let text_r = Rect::from_min_max(pos2(r.min.x + widgets::PAD, r.min.y + 2.0), pos2(r.max.x - widgets::PAD, r.max.y - 2.0));
+                let (band, resp) = ui.allocate_exact_size(vec2(w, LS_FOLDER_H), Sense::click());
+                let r = inset_row(band);
+                let text_r = Rect::from_min_max(pos2(r.min.x + LS_FOLDER_X, r.min.y + 2.0), pos2(r.max.x - LS_TRAIL, r.max.y - 2.0));
                 if renaming.as_deref() == Some(*f) {
                     // Focused as it is first drawn: a focus asked for before its field is drawn
                     // isn't in the screen reader tree (UI Automation aborts the app, #224).
                     let start = ui.data_mut(|d| d.remove_temp::<bool>(folder_rename_id().with("start"))).unwrap_or(false);
-                    let (out, open) = widgets::rename_field(ui, folder_rename_id().with(*f), f, text_r, regular(11.0), start);
+                    let (out, still_open) = widgets::rename_field(ui, folder_rename_id().with(*f), f, text_r, regular(11.0), start);
                     if let Some(name) = out {
                         run = Some(("style.renameFolder", json!({"folder": f, "name": name})));
                     }
-                    if !open {
+                    if !still_open {
                         ui.data_mut(|d| d.remove::<String>(folder_rename_id()));
                     }
                 } else {
+                    if resp.hovered() {
+                        ui.painter().rect_filled(r, CornerRadius::same(5), t.hover);
+                    }
+                    let chevron = Rect::from_center_size(pos2(r.min.x + LS_CHEVRON_CX, r.center().y), vec2(LS_CHEVRON, LS_CHEVRON));
+                    icons::paint(ui.painter(), chevron, if open { Icon::Chevron } else { Icon::ChevronRight }, t.icon_secondary);
                     let resp = resp.tip(*f);
-                    crate::bidi::paint_name(ui.painter(), text_r.left_center(), f, semibold(11.0), t.text, text_r.width());
+                    crate::bidi::paint_name(
+                        ui.painter(),
+                        pos2(r.min.x + LS_FOLDER_X, r.center().y),
+                        f,
+                        regular(11.0),
+                        t.text_secondary,
+                        text_r.width(),
+                    );
                     crate::right::context_popup(&resp).show(|ui| {
                         if crate::right::menu_item(ui, tr("Rename folder"), "") {
                             ui.data_mut(|d| d.insert_temp(folder_rename_id(), f.to_string()));
@@ -1151,37 +1260,59 @@ pub fn local_styles(app: &mut FigApp, ui: &mut Ui, doc: &Document) {
                             ui.close();
                         }
                     });
+                    if resp.clicked() {
+                        if open {
+                            folded.insert(key.clone());
+                        } else {
+                            folded.remove(&key);
+                        }
+                    }
                 }
+            }
+            if !open {
+                continue;
             }
             for s in list {
                 let index = shown.len();
                 shown.push(s);
                 let w = ui.available_width();
-                let (r, resp) = ui.allocate_exact_size(vec2(w, 28.0), Sense::click());
+                let (band, resp) = ui.allocate_exact_size(vec2(w, LS_ROW_H), Sense::click_and_drag());
+                let r = inset_row(band);
                 if resp.hovered() {
-                    ui.painter().rect_filled(r, CornerRadius::ZERO, t.hover);
+                    ui.painter().rect_filled(r, CornerRadius::same(5), t.hover);
                 }
-                let x = r.min.x + widgets::PAD + indent;
-                let icon_r = Rect::from_center_size(pos2(x + 8.0, r.center().y), vec2(16.0, 16.0));
+                let mut name_x = r.min.x + LS_NAME_X + indent;
+                let mut name_w = r.max.x - LS_TRAIL - name_x;
                 match &s.kind {
                     StyleKind::Paint { paints } => {
                         let p = paints.last().cloned().unwrap_or_else(|| Paint::solid(figcraft_color::Color::TRANSPARENT));
-                        widgets::paint_swatch(ui.painter(), icon_r, &p);
+                        paint_dot(ui, pos2(r.min.x + LS_SWATCH_CX + indent, r.center().y), LS_SWATCH_R, &p);
+                        name_x = r.min.x + LS_LABEL_X + indent;
+                        name_w = r.max.x - LS_TRAIL - name_x;
                     }
-                    _ => icons::paint(ui.painter(), icon_r, slot.icon(), t.icon_secondary),
+                    _ => match text_def(s) {
+                        Some(def) => {
+                            ui.painter().text(pos2(r.min.x + LS_AG_X + indent, r.center().y), Align2::LEFT_CENTER, "Ag", semibold(11.0), t.text);
+                            let meta = ui.painter().text(
+                                pos2(r.max.x - LS_TRAIL, r.center().y),
+                                Align2::RIGHT_CENTER,
+                                text_meta(def),
+                                regular(11.0),
+                                t.text_tertiary,
+                            );
+                            name_w -= meta.width() + 8.0;
+                        }
+                        None => icons::paint(
+                            ui.painter(),
+                            Rect::from_center_size(pos2(r.min.x + LS_SWATCH_CX + indent, r.center().y), vec2(16.0, 16.0)),
+                            slot.icon(),
+                            t.icon_secondary,
+                        ),
+                    },
                 }
-                let mut name_w = r.max.x - widgets::PAD - (x + 24.0);
-                if let Some(def) = text_def(s) {
-                    let meta = ui.painter().text(
-                        pos2(r.max.x - widgets::PAD, r.center().y),
-                        Align2::RIGHT_CENTER,
-                        text_meta(def),
-                        regular(10.0),
-                        t.text_secondary,
-                    );
-                    name_w -= meta.width() + 8.0;
-                }
-                crate::bidi::paint_name(ui.painter(), pos2(x + 24.0, r.center().y), leaf(&s.name), regular(11.0), t.text, name_w);
+                crate::bidi::paint_name(ui.painter(), pos2(name_x, r.center().y), leaf(&s.name), regular(11.0), t.text, name_w.max(0.0));
+                // The whole row drags (a style row is too narrow for a grip beside its swatch).
+                drag.row_by(&resp, index, r, || leaf(&s.name).to_string());
                 let tip = if s.description.is_empty() { s.name.clone() } else { format!("{}\n{}", s.name, s.description) };
                 let resp = resp.tip(tip);
                 if resp.clicked() {
@@ -1201,12 +1332,17 @@ pub fn local_styles(app: &mut FigApp, ui: &mut Ui, doc: &Document) {
                         ui.close();
                     }
                 });
-                drag.row(ui, index, r, r, || leaf(&s.name).to_string());
             }
         }
         if let Some(q) = drag.finish(ui).and_then(|(from, to)| drop_move(&shown, from, to)) {
             run = Some(("style.move", q));
         }
+    }
+    if groups > 0 {
+        ui.add_space(LS_BOTTOM_PAD);
+    }
+    if folded != folded_before {
+        ui.data_mut(|d| d.insert_temp(folded_id(), folded.clone()));
     }
     if let Some((cmd, q)) = run {
         app.run(cmd, q);
