@@ -898,6 +898,15 @@ pub fn canvas_banner<R>(ctx: &egui::Context, id: Id, canvas: Rect, add: impl FnO
         .inner
 }
 
+/// A vertical scroll area that never scrolls by dragging its contents: its rows are dragged
+/// themselves (layers, pages, fills, effects, styles). With drag-to-scroll on (egui's default
+/// where a touch screen is reported) a row drag also scrolls the list, so the rows move under the
+/// pointer and its head and tail can't be reached — the wheel and the scroll bar still scroll.
+pub fn scroll_area() -> egui::ScrollArea {
+    use egui::containers::scroll_area::{DragScroll, ScrollSource};
+    egui::ScrollArea::vertical().scroll_source(ScrollSource { drag: DragScroll::Never, ..Default::default() })
+}
+
 /// Where a dragged row will land: an accent line across `x0..x1` at `y`.
 pub fn insertion_line(painter: &egui::Painter, x0: f32, x1: f32, y: f32) {
     painter.line_segment([pos2(x0, y), pos2(x1, y)], Stroke::new(2.0, crate::theme::ACCENT));

@@ -193,7 +193,7 @@ pub fn right_panel(app: &mut FigApp, ui: &mut Ui) {
         }
     });
     ui.painter().line_segment([tabs.left_bottom(), tabs.right_bottom()], Stroke::new(1.0, t.border));
-    egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+    crate::widgets::scroll_area().auto_shrink([false, false]).show(ui, |ui| {
         ui.spacing_mut().item_spacing = vec2(8.0, 0.0);
         if app.session.tool.tool == figcraft_engine::ToolId::Comment {
             crate::comments::panel(app, ui);

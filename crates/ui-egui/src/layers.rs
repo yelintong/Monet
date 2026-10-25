@@ -241,7 +241,7 @@ fn pages(app: &mut FigApp, ui: &mut Ui) {
     let mut current_row_rendered = false;
     // A long list scrolls in its own area, so the layers keep their room below it.
     let max_h = pages_list_height(app.ui.pages_height, ui.available_height());
-    let mut moved = egui::ScrollArea::vertical().id_salt("pages_list").max_height(max_h).show(ui, |ui| {
+    let mut moved = crate::widgets::scroll_area().id_salt("pages_list").max_height(max_h).show(ui, |ui| {
         for (k, (id, name, divider)) in pages.iter().cloned().enumerate() {
             if filtering && (divider || !name.to_lowercase().contains(&filter)) {
                 continue;
@@ -806,7 +806,7 @@ fn layers(app: &mut FigApp, ui: &mut Ui) {
     // The drag is over a row that takes no drop: the not-allowed cursor shows.
     let mut refused = false;
     // Only the rows in view are laid out and drawn; the rest is empty scroll space.
-    egui::ScrollArea::vertical().auto_shrink([false, false]).show_viewport(ui, |ui, viewport| {
+    crate::widgets::scroll_area().auto_shrink([false, false]).show_viewport(ui, |ui, viewport| {
         let pitch = ROW + ui.spacing().item_spacing.y;
         let top = ui.max_rect().top();
         let total = rows.len() as f32 * pitch;
