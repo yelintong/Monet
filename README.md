@@ -1,7 +1,7 @@
 <p align="center">
   <a href="https://getartcraft.com/">
     <picture>
-      <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/storytold/vectorcraft/main/docs/brand/artcraft-logo-white.png">
+      <source media="(prefers-color-scheme: dark)" srcset="https://img.artifair.com/std/1Q9bI0BA7XtxH1q1TE2O.jpg">
       <img alt="ArtCraft" src="https://raw.githubusercontent.com/storytold/vectorcraft/main/docs/brand/artcraft-logo.png" width="200">
     </picture>
   </a>
