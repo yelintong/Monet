@@ -220,6 +220,23 @@ fn a_click_in_the_colour_picker_keeps_the_style_editor_open() {
     );
 }
 
+/// The Local styles list's rows as `Slot`s, `LS_ROW_H` each from `top` down, in the order the
+/// entries are drawn: the styles' indices counting the styles only.
+fn slots_of<'a>(styles: &[&'a Style], top: f32) -> Vec<Slot<'a>> {
+    let mut out: Vec<Slot<'a>> = Vec::new();
+    for (i, e) in entries(styles.iter().copied(), |_| false).into_iter().enumerate() {
+        let r = Rect::from_min_size(pos2(0.0, top + i as f32 * LS_ROW_H), vec2(100.0, LS_ROW_H));
+        match e {
+            Entry::Folder { path, .. } => out.push(Slot::Header { path, rect: r }),
+            Entry::Style(s, _) => {
+                let index = out.iter().filter(|s| matches!(s, Slot::Style { .. })).count();
+                out.push(Slot::Style { index, style: s, rect: r });
+            }
+        }
+    }
+    out
+}
+
 #[test]
 fn local_style_drops_join_the_folder_the_line_is_in() {
     let st = |id: &str, name: &str| Style {
@@ -232,25 +249,33 @@ fn local_style_drops_join_the_folder_the_line_is_in() {
     let (a, b, c) = (st("a", "Top"), st("b", "Brand/One"), st("c", "Brand/Two"));
     let mut doc = Document::new("d");
     doc.styles = vec![a.clone(), b.clone(), c.clone()];
-    let shown = [&a, &b, &c];
+    // Rows: Top, Brand, One, Two — a pointer in a row's band (`dy` from its center), a caption's
+    // top half at `dy` negative, its bottom half positive.
+    let slots = slots_of(&[&a, &b, &c], 0.0);
+    let at = |i: usize, dy: f32| Pos2::new(50.0, slots[i].rect().center().y + dy);
+    let query = |from: usize, p: Pos2| drop_move(&doc, &slots, from, p).map(|(_, q)| q);
     // `Top` dropped between One and Two: the line is in Brand's rows, so it joins Brand.
-    assert_eq!(drop_move(&doc, &shown, 0, 1, false), Some(json!({"styles": ["a"], "before": "c", "name": "Brand/Top"})));
+    assert_eq!(query(0, at(2, 0.0)), Some(json!({"styles": ["a"], "before": "c", "name": "Brand/Top"})));
     // Two dropped above Top: out of Brand, before Top.
-    assert_eq!(drop_move(&doc, &shown, 2, 0, false), Some(json!({"styles": ["c"], "before": "a", "name": "Two"})));
+    assert_eq!(query(2, Pos2::new(50.0, -5.0)), Some(json!({"styles": ["c"], "before": "a", "name": "Two"})));
     // One dropped last: the row above gives the folder, so it stays in Brand, at the end.
-    assert_eq!(drop_move(&doc, &shown, 1, 2, false), Some(json!({"styles": ["b"]})));
+    assert_eq!(query(1, at(3, 5.0)), Some(json!({"styles": ["b"]})));
     // Two dropped on the top half of Brand's header: that ends Top's rows, so it joins Top (and
     // loses the folder from its name) without moving.
-    assert_eq!(drop_move(&doc, &shown, 2, 1, true), Some(json!({"styles": ["c"], "before": "b", "name": "Two"})));
+    assert_eq!(query(2, at(1, -1.0)), Some(json!({"styles": ["c"], "before": "b", "name": "Two"})));
     // A folder that already has that last part numbers it instead of repeating the name.
     let (d, e) = (st("d", "Other/One"), st("e", "Brand/Three"));
     doc.styles = vec![b.clone(), e.clone(), d.clone()];
-    let shown = [&b, &e, &d];
-    assert_eq!(drop_move(&doc, &shown, 2, 1, false), Some(json!({"styles": ["d"], "before": "e", "name": "Brand/One 2"})));
+    // Rows: Brand, One, Three, Other, One(Other's).
+    let slots = slots_of(&[&b, &e, &d], 0.0);
+    let at = |i: usize, dy: f32| Pos2::new(50.0, slots[i].rect().center().y + dy);
+    let query = |from: usize, p: Pos2| drop_move(&doc, &slots, from, p).map(|(_, q)| q);
+    assert_eq!(query(2, at(1, 0.0)), Some(json!({"styles": ["d"], "before": "e", "name": "Brand/One 2"})));
     // The last row of a group dropped on the end of the group above joins it in place: nothing
-    // follows, so only its name changes.
-    assert_eq!(drop_move(&doc, &shown, 2, 2, true), Some(json!({"styles": ["d"], "name": "Brand/One 2"})));
-    assert_eq!(drop_move(&doc, &shown, 5, 0, false), None);
+    // follows, so only its name changes. The line is the same from either side of the caption.
+    assert_eq!(query(2, at(3, -1.0)), Some(json!({"styles": ["d"], "name": "Brand/One 2"})));
+    assert_eq!(query(2, at(2, 5.0)), Some(json!({"styles": ["d"], "name": "Brand/One 2"})));
+    assert_eq!(query(5, at(0, 0.0)), None);
 }
 
 #[test]
@@ -654,4 +679,93 @@ fn text_style_editor_binds_variables_from_its_fields() {
     let Some(StyleKind::Text { style: def }) = doc.style("Body").map(|s| &s.kind) else { panic!("a text style") };
     assert_eq!((def.font_size, def.font_style.as_str()), (18.0, "Bold"), "the style takes the variables' values");
     assert!(u.app.ui.last_error.is_none(), "{:?}", u.app.ui.last_error);
+}
+
+// ---- Dropping into the Local styles list, driven headless ----
+
+/// A session with paint styles `names`, in that order.
+fn paint_session(names: &[&str]) -> Session {
+    let mut s = Session::new();
+    for name in names {
+        s.execute("style.create", &json!({"type": "paint", "name": name, "value": "#0D99FF"})).unwrap();
+    }
+    s
+}
+
+/// The Local styles list over `names`, with `folded`'s folders folded.
+fn styles_ui(names: &[&str], folded: &[&str]) -> crate::layers_drag_tests::Ui {
+    let mut u = crate::layers_drag_tests::Ui::new(paint_session(names));
+    if !folded.is_empty() {
+        let set: std::collections::HashSet<String> = folded.iter().map(|f| format!("fill/{f}")).collect();
+        u.ctx.data_mut(|d| d.insert_temp(crate::style_picker::folded_id(), set));
+        u.frame(vec![]);
+    }
+    u
+}
+
+/// The styles' names, in document order.
+fn style_names(u: &crate::layers_drag_tests::Ui) -> Vec<String> {
+    u.app.session.doc().unwrap().styles.iter().map(|s| s.name.clone()).collect()
+}
+
+/// Drag the row under `from` to `to`, released there.
+fn drop_row(u: &mut crate::layers_drag_tests::Ui, from: Pos2, to: Pos2) {
+    u.drag_to(from, to);
+    u.button(to, false);
+}
+
+#[test]
+fn a_folded_folder_takes_a_drop_into_it() {
+    // The caption's bottom half opens the folder even when it is folded: only the caption is
+    // drawn, and it used to end the list's rows, so a drop there never reached the folder.
+    let mut u = styles_ui(&["Top", "Brand/One", "Brand/Two"], &["Brand"]);
+    let texts = drawn_texts(&mut u);
+    let (top, brand) = (text_at(&texts, "Top"), text_at(&texts, "Brand"));
+    drop_row(&mut u, top, Pos2::new(top.x, brand.y + 8.0));
+    assert_eq!(style_names(&u), ["Brand/One", "Brand/Two", "Brand/Top"]);
+    // Its top half ends the group above, where `Top` already is: nothing changes.
+    let mut u = styles_ui(&["Top", "Brand/One", "Brand/Two"], &["Brand"]);
+    let texts = drawn_texts(&mut u);
+    let (top, brand) = (text_at(&texts, "Top"), text_at(&texts, "Brand"));
+    drop_row(&mut u, top, Pos2::new(top.x, brand.y - 8.0));
+    assert_eq!(style_names(&u), ["Top", "Brand/One", "Brand/Two"]);
+}
+
+#[test]
+fn a_folder_of_only_deeper_folders_takes_a_drop_at_its_own_level() {
+    // `Brand` holds only `Brand/Blue/500`: its own level is an empty position, which the line
+    // under its caption (or over Blue's) is the only way to reach.
+    let mut u = styles_ui(&["Top", "Brand/Blue/500"], &[]);
+    let texts = drawn_texts(&mut u);
+    let (top, brand) = (text_at(&texts, "Top"), text_at(&texts, "Brand"));
+    drop_row(&mut u, text_at(&texts, "500"), Pos2::new(top.x, brand.y + 8.0));
+    assert_eq!(style_names(&u), ["Top", "Brand/500"]);
+    // The same line from the other side, over Blue's caption.
+    let mut u = styles_ui(&["Top", "Brand/Blue/500"], &[]);
+    let texts = drawn_texts(&mut u);
+    let (top, blue) = (text_at(&texts, "Top"), text_at(&texts, "Blue"));
+    drop_row(&mut u, text_at(&texts, "500"), Pos2::new(top.x, blue.y - 8.0));
+    assert_eq!(style_names(&u), ["Top", "Brand/500"]);
+    // Over Brand's caption ends the group above: out of the folders, at the root.
+    let mut u = styles_ui(&["Top", "Brand/Blue/500"], &[]);
+    let texts = drawn_texts(&mut u);
+    let (top, brand) = (text_at(&texts, "Top"), text_at(&texts, "Brand"));
+    drop_row(&mut u, text_at(&texts, "500"), Pos2::new(top.x, brand.y - 8.0));
+    assert_eq!(style_names(&u), ["Top", "500"]);
+}
+
+#[test]
+fn a_style_leaves_a_folder_for_the_root_above_the_first_one() {
+    // Nothing but folder styles: the line over the first caption is the root's, above the folder.
+    let mut u = styles_ui(&["Brand/One", "Brand/Two"], &[]);
+    let texts = drawn_texts(&mut u);
+    let (one, brand) = (text_at(&texts, "One"), text_at(&texts, "Brand"));
+    drop_row(&mut u, one, Pos2::new(one.x, brand.y - 8.0));
+    assert_eq!(style_names(&u), ["One", "Brand/Two"]);
+    // The same line from the section's caption, above the first row.
+    let mut u = styles_ui(&["Brand/One", "Brand/Two"], &[]);
+    let texts = drawn_texts(&mut u);
+    let (one, brand) = (text_at(&texts, "One"), text_at(&texts, "Brand"));
+    drop_row(&mut u, one, Pos2::new(one.x, brand.y - 20.0));
+    assert_eq!(style_names(&u), ["One", "Brand/Two"]);
 }

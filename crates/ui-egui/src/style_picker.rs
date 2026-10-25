@@ -8,7 +8,7 @@
 //! creates a style from the selection (for text, the selected chars); the detach button unlinks
 //! it. Colour slots also list colour variables to bind (this file's, then each enabled library's).
 
-use egui::{Align2, Color32, CornerRadius, Id, Rect, Response, Sense, Stroke, Ui, pos2, vec2};
+use egui::{Align2, Color32, CornerRadius, Id, Pos2, Rect, Response, Sense, Stroke, Ui, pos2, vec2};
 use figcraft_color::{Paint, PaintKind};
 use figcraft_doc::{Document, GridKind, Node, NodeId, PublishedLibrary, Style, StyleKind, TextStyle, VariableType, trim_num};
 use figcraft_engine::library;
@@ -1219,31 +1219,82 @@ fn moved_name(doc: &Document, moved: &Style, folder: &str) -> String {
     (2..).map(|k| named(&format!("{leaf} {k}"))).find(|n| !taken(n)).unwrap_or(first)
 }
 
-/// `style.move` for the shown style `from` dropped at shown position `to` (`shown` in display
-/// order): before the style that ends up under it (at the end when nothing follows).
+/// One drawn row of the Local styles list: a folder caption or a style. Both take a drop, which is
+/// what lets a style be dropped between two folders — into a folder of its own, or above the first
+/// folder, which sends it back to the root.
+enum Slot<'a> {
+    Header { path: &'a str, rect: Rect },
+    Style { index: usize, style: &'a Style, rect: Rect },
+}
+
+impl Slot<'_> {
+    /// The row's band, used for the drop's side and the pointer's target.
+    fn rect(&self) -> Rect {
+        match self {
+            Slot::Header { rect, .. } | Slot::Style { rect, .. } => *rect,
+        }
+    }
+}
+
+/// Where a drop at `at` lands: the line's y (for the insertion line) and the `style.move` query.
 ///
-/// It joins the folder of the row it lands next to — the folder whose rows the insertion line is
-/// in — so it stays where the line showed. On a folder's header the side of the line says which
-/// folder that is: over the group above's last row (`above`), the style joins the group above,
-/// even though it keeps its place in the list. A folder is part of a style's name, so joining one
-/// renames the style; a name the folder already has is numbered ("Sunset/600 2") rather than
-/// repeated.
-fn drop_move(doc: &Document, shown: &[&Style], from: usize, to: usize, above: bool) -> Option<Value> {
-    let moved = shown.get(from)?;
-    let rest: Vec<&Style> = shown.iter().enumerate().filter(|(i, _)| *i != from).map(|(_, s)| *s).collect();
-    let below = rest.get(to).copied();
-    // At the end of the list, or above a header, the row above gives the folder.
-    let up = to.checked_sub(1).and_then(|i| rest.get(i)).copied();
-    let target = if above { up } else { below.or(up) }?;
-    let name = moved_name(doc, moved, folder(&target.name));
+/// The rows are the entries, captions included, so every folder is a target on both of its sides:
+/// the top half of a caption ends the group above it, its bottom half opens the folder under it —
+/// which is what lets a style be dropped into a folder that holds only deeper folders, or into one
+/// that is folded. A style row's either half ends it (the line sits under it), so a style dropped
+/// next to its own place keeps its order. `before` is the first style under the line, the dragged
+/// one never counting.
+fn drop_move(doc: &Document, slots: &[Slot<'_>], from: usize, at: Pos2) -> Option<(f32, Value)> {
+    let (fp, moved) = slots.iter().enumerate().find_map(|(i, s)| match s {
+        Slot::Style { index, style, .. } if *index == from => Some((i, *style)),
+        _ => None,
+    })?;
+    // The line: under the row the pointer is in, over the top half of a caption (which ends the
+    // group above it), or above the first row.
+    let (line, y) = match slots.iter().filter(|s| s.rect().min.y <= at.y).count().checked_sub(1) {
+        None => (0, slots.first()?.rect().min.y),
+        Some(i) => {
+            let r = slots[i].rect();
+            let over_caption = matches!(slots[i], Slot::Header { .. }) && at.y < r.center().y;
+            match (over_caption, slots.get(i + 1)) {
+                (true, _) => (i, r.min.y),
+                (false, Some(next)) => (i + 1, next.rect().min.y),
+                (false, None) => (i + 1, r.max.y),
+            }
+        }
+    };
+    let before = slots.iter().skip(line).find_map(|s| match s {
+        Slot::Style { style, .. } if style.id != moved.id => Some(style.id.clone()),
+        _ => None,
+    });
+    // The folder the style joins: the row under the line's own; a caption's, the group above it (a
+    // style's folder, a caption's folder, or the root above the first caption); the list's end,
+    // the last row's own.
+    let into = match slots.get(line) {
+        Some(Slot::Style { style, .. }) => folder(&style.name).to_string(),
+        Some(Slot::Header { .. }) => match line.checked_sub(1).map(|i| &slots[i]) {
+            Some(Slot::Style { style, .. }) => folder(&style.name).to_string(),
+            Some(Slot::Header { path, .. }) => path.to_string(),
+            None => String::new(),
+        },
+        None => match slots.last()? {
+            Slot::Style { style, .. } => folder(&style.name).to_string(),
+            Slot::Header { path, .. } => path.to_string(),
+        },
+    };
+    // A style that lands where it already is is no move at all.
+    if (line == fp || line == fp + 1) && folder(&moved.name) == into {
+        return None;
+    }
+    let name = moved_name(doc, moved, &into);
     let mut q = json!({"styles": [moved.id]});
-    if let Some(b) = below {
-        q["before"] = json!(b.id);
+    if let Some(b) = before {
+        q["before"] = json!(b);
     }
     if name != moved.name {
         q["name"] = json!(name);
     }
-    Some(q)
+    Some((y, q))
 }
 
 /// The id of the folder caption being renamed in the Local styles list (temp data).
@@ -1375,11 +1426,8 @@ pub fn local_styles(app: &mut FigApp, ui: &mut Ui, doc: &Document) {
         // One drag for the whole type: a style can be dropped in another folder (it then takes
         // that folder's name), so the groups aren't separate lists.
         let mut drag = crate::list_drag::ListDrag::in_order(ui, ("local_styles", slot.key()));
-        let mut shown: Vec<&Style> = Vec::new();
-        let mut last = Rect::NOTHING;
-        // A folder's header was drawn and its first row is still to come: the gap between them is
-        // where a drop has to say which side it belongs to (see `ListDrag::break_at`).
-        let mut headed = false;
+        let mut slots: Vec<Slot> = Vec::new();
+        let mut styles = 0;
         let lines = entries(list.into_iter(), |path| folded.contains(&format!("{}/{}", slot.key(), path)));
         for line in &lines {
             let depth = line.depth() as f32;
@@ -1439,19 +1487,15 @@ pub fn local_styles(app: &mut FigApp, ui: &mut Ui, doc: &Document) {
                             }
                         }
                     }
-                    headed = true;
+                    // The caption takes no drag of its own, but a drop over it has to say which
+                    // side it belongs to, which is why it is registered as a header.
+                    slots.push(Slot::Header { path, rect: r });
+                    drag.header(r);
                 }
                 Entry::Style(s, _) => {
-                    // The header above this first row: a drop in the gap has to say which side it
-                    // belongs to (see `ListDrag::break_at`).
-                    if headed && !shown.is_empty() {
-                        drag.break_at(shown.len());
-                    }
-                    headed = false;
-                    let index = shown.len();
-                    shown.push(s);
+                    let index = styles;
+                    styles += 1;
                     let (row, resp) = ui.allocate_exact_size(vec2(w, LS_ROW_H), Sense::click_and_drag());
-                    last = row;
                     let r = inset_row(row);
                     if resp.hovered() {
                         ui.painter().rect_filled(r, CornerRadius::same(5), t.hover);
@@ -1483,6 +1527,7 @@ pub fn local_styles(app: &mut FigApp, ui: &mut Ui, doc: &Document) {
                     crate::bidi::paint_name(ui.painter(), pos2(name_x, r.center().y), leaf(&s.name), regular(11.0), t.text, name_w.max(0.0));
                     // The whole row drags (a style row is too narrow for a grip beside its swatch).
                     drag.row_by(&resp, index, r, || leaf(&s.name).to_string());
+                    slots.push(Slot::Style { index, style: s, rect: r });
                     let tip = if s.description.is_empty() { s.name.clone() } else { format!("{}\n{}", s.name, s.description) };
                     let resp = resp.tip(tip);
                     if resp.clicked() {
@@ -1506,10 +1551,11 @@ pub fn local_styles(app: &mut FigApp, ui: &mut Ui, doc: &Document) {
             }
         }
         // The whole type group is a target — its caption and its folders' headers included — so
-        // its first and last rows are as easy to reach as the ones between.
-        if !shown.is_empty() {
-            let area = Rect::from_min_max(pos2(last.min.x, caption.min.y), pos2(last.max.x, last.max.y + LS_ROW_H / 2.0));
-            if let Some(q) = drag.bounds(area).line_inset(0.0).finish(ui).and_then(|d| drop_move(doc, &shown, d.from, d.to, d.above)) {
+        // its first and last rows are as easy to reach as the ones between. The rows decide the
+        // drop (see `drop_move`), so the list ends at the last one of them, style or folder.
+        if let Some(last) = slots.last() {
+            let area = Rect::from_min_max(pos2(last.rect().min.x, caption.min.y), pos2(last.rect().max.x, last.rect().max.y + LS_ROW_H / 2.0));
+            if let Some(q) = drag.bounds(area).line_inset(0.0).finish_in(ui, |from, at| drop_move(doc, &slots, from, at)) {
                 run = Some(("style.move", q));
             }
         }
