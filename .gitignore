@@ -8,3 +8,6 @@ plans/
 /log/
 .DS_Store
 *.profraw
+
+# local build logs
+_build*.log
