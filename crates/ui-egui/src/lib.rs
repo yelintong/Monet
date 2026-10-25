@@ -131,6 +131,8 @@ mod home_recents_tests;
 #[cfg(test)]
 mod home_tests;
 #[cfg(test)]
+mod icon_spacing_tests;
+#[cfg(test)]
 mod idle_tests;
 #[cfg(test)]
 mod ime_tests;
@@ -146,6 +148,10 @@ mod layers_keyboard_tests;
 mod layers_keys_tests;
 #[cfg(test)]
 mod layers_rename_tests;
+#[cfg(test)]
+mod layout_scroll_click_tests;
+#[cfg(test)]
+mod layout_settings_tests;
 #[cfg(test)]
 mod live_chat_tests;
 #[cfg(test)]
@@ -222,6 +228,8 @@ mod select_all_tests;
 mod shortcut_keys_tests;
 #[cfg(test)]
 mod shortcuts_tests;
+#[cfg(test)]
+mod stroke_settings_tests;
 #[cfg(test)]
 mod style_folder_rename_tests;
 #[cfg(test)]
@@ -582,6 +590,8 @@ pub struct UiState {
     /// The control that opened the picker, refreshed every frame it is drawn (the panel scrolls):
     /// a press in it is held out of the popover's closing, so its own click toggles the picker.
     pub picker_button: Option<egui::Rect>,
+    /// The screen y of the swatch that opened the colour picker (its top the picker aligns with).
+    pub picker_y: Option<f32>,
     pub context_menu: Option<(egui::Pos2, Vec<NodeId>)>,
     /// The context menu was asked for from the keyboard (`view.contextMenu`): it opens at the
     /// focused layer row or the canvas selection and takes the keyboard.
@@ -637,6 +647,16 @@ pub struct UiState {
     /// panel's outside-press-close does not treat a click on it as "outside" and snap the panel
     /// shut then back open (the button toggles it).
     pub fill_rule_button: Option<egui::Rect>,
+    /// The auto layout section's settings popover (strokes, stacking, baselines), and the stroke
+    /// section's advanced settings popover and its tab.
+    pub layout_settings: Option<popover::Popover>,
+    pub layout_settings_button: Option<egui::Rect>,
+    pub layout_settings_anchor: Option<f32>,
+    /// The stroke section's advanced settings popover (style, join, brush) and its tab.
+    pub stroke_settings: Option<popover::Popover>,
+    pub stroke_settings_button: Option<egui::Rect>,
+    pub stroke_settings_anchor: Option<f32>,
+    pub stroke_tab: u8,
     /// The style picker shows colour styles as a grid of swatches.
     pub style_grid: bool,
     /// Style folders closed in the style picker.
@@ -754,6 +774,7 @@ impl Default for UiState {
             picker: None,
             picker_popover: None,
             picker_button: None,
+            picker_y: None,
             context_menu: None,
             key_menu: false,
             key_box: None,
@@ -784,6 +805,13 @@ impl Default for UiState {
             style_picker_popover: None,
             fill_rule: None,
             fill_rule_button: None,
+            layout_settings: None,
+            layout_settings_button: None,
+            layout_settings_anchor: None,
+            stroke_settings: None,
+            stroke_settings_button: None,
+            stroke_settings_anchor: None,
+            stroke_tab: 0,
             style_grid: false,
             style_folds: BTreeSet::new(),
             text_preview: None,
@@ -1785,6 +1813,8 @@ impl FigApp {
         variable_ui::picker(self, &ctx);
         style_picker::show(self, &ctx);
         fill_rule::show(self, &ctx);
+        layout_panel::show(self, &ctx);
+        right::show_stroke_settings(self, &ctx);
         self.end_unwanted_text_preview(&ctx);
         self.end_pen_outside_design();
         dialogs::show(self, &ctx);
@@ -1803,15 +1833,23 @@ impl FigApp {
         self.session.live_sync_in(|uid| uid.map_or(0, |u| windows.of(u)) == windows.current);
     }
 
+    /// Opens the colour picker for `target`, its top on the control that opened it (`top`, screen
+    /// points) — a None keeps the picker at its usual height.
+    pub fn open_picker(&mut self, target: crate::colorpicker::PickerTarget, top: Option<f32>) {
+        self.ui.picker = Some(target);
+        self.ui.picker_y = top;
+    }
+
     /// Clicking the control that opened the colour picker closes it again; clicking another opens
     /// the picker for that one.
-    pub fn toggle_picker(&mut self, target: crate::colorpicker::PickerTarget, _top: Option<f32>) {
+    pub fn toggle_picker(&mut self, target: crate::colorpicker::PickerTarget, top: Option<f32>) {
         if self.ui.picker.as_ref() == Some(&target) {
             crate::colorpicker::close(self);
         } else {
-            self.ui.picker = Some(target);
+            self.open_picker(target, top);
         }
     }
+
     fn toast_ui(&mut self, ctx: &egui::Context) {
         let Some((msg, clock)) = &mut self.ui.toast else { return };
         let now = ctx.input(|i| i.time);
