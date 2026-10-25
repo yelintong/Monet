@@ -13,7 +13,7 @@ use serde_json::json;
 use crate::FigApp;
 use crate::i18n::{tr, trf, trn};
 use crate::render_worker::{Done, Job, Worker};
-use crate::theme::{ACCENT, COMPONENT, ICON, Tokens, doc_c32, regular, semibold};
+use crate::theme::{COMPONENT, ICON, Tokens, doc_c32, regular, semibold};
 
 pub struct CanvasState {
     pub rect: Rect,
@@ -836,8 +836,8 @@ fn swap_highlight(app: &FigApp, painter: &egui::Painter, doc: &Document, id: Nod
     painter.galley(pos2(pill.min.x + 20.0, pill.center().y - galley.size().y / 2.0), galley, ink);
 }
 
-/// The outline colour for a layer: purple for components, sets, instances and every layer in them,
-/// orange for icons and every layer inside one, blue otherwise.
+/// The outline colour for a layer: purple for components, sets and instances and every layer in
+/// them, orange for icons and every layer inside one, the page's overlay `green` otherwise.
 fn outline_colour(doc: &Document, id: NodeId, green: Color32) -> Color32 {
     use figcraft_engine::components::{owning_component, owning_instance};
     let set = matches!(doc.node(id).map(|n| &n.kind), Some(NodeKind::ComponentSet { .. }));
@@ -1107,7 +1107,8 @@ fn overlays(app: &FigApp, painter: &egui::Painter, t: &Tokens) -> Vec<(NodeId, [
     // Selection.
     let editing = ds.text_edit.clone();
     if !sel.is_empty() && editing.is_none() && ds.vector_edit.is_none() {
-        let col = sel.iter().map(|i| outline_colour(&doc, *i, ACCENT)).find(|c| *c != ACCENT).unwrap_or(ACCENT);
+        let green = accent(painter);
+        let col = sel.iter().map(|i| outline_colour(&doc, *i, green)).find(|c| *c != green).unwrap_or(green);
         for id in &sel {
             draw_outline(app, painter, &doc, *id, stroke(col, 2.0));
         }

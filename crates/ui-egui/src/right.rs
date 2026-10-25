@@ -1123,7 +1123,7 @@ fn paints(app: &mut FigApp, ui: &mut Ui, doc: &Document, sel: &[NodeId], fills: 
                 && let Some(l) = &list
             {
                 // The + button that added it sits 8 points into the 40-high header row.
-                app.open_picker(crate::colorpicker::PickerTarget::Paint { fills, index: l.len(), ids: ids.clone() }, Some(header_top + 8.0));
+                app.open_picker(crate::colorpicker::PickerTarget::Paint { fills, index: l.len(), ids: ids.clone() }, Some(header_y + 8.0));
             }
         } else if let Some(_v) = vector.filter(|_| i == 1) {
             // The button toggles the panel, which opens at this section's height.
@@ -1525,6 +1525,7 @@ fn stroke_style(app: &mut FigApp, ui: &mut Ui, ids: &[NodeId], st: Option<&Strok
 
 /// The join (corner) and, for a miter join, its angle.
 fn stroke_join(app: &mut FigApp, ui: &mut Ui, ids: &[NodeId], st: Option<&StrokeProps>) {
+    let half = widgets::col_width(ui.available_width());
     let join = st.map(|s| s.join);
     let label = join.map(join_label).unwrap_or(tr("Mixed"));
     widgets::setting_row(ui, tr("Join|stroke"), |ui| {
@@ -1537,14 +1538,12 @@ fn stroke_join(app: &mut FigApp, ui: &mut Ui, ids: &[NodeId], st: Option<&Stroke
                 }
             }
         });
-    });
-    if join == Some(StrokeJoin::Miter) {
-        widgets::setting_row(ui, tr("Miter angle"), |ui| {
+        if join == Some(StrokeJoin::Miter) {
             let angle = st.map(|s| (s.miter_angle() * 100.0).round() / 100.0);
-            let e = widgets::number_field(ui, Id::new("stroke_miter"), Lead::None, angle, "°", widgets::SETTING_CONTROL, 1.0);
+            let e = widgets::number_field(ui, Id::new("stroke_miter"), Lead::None, angle, "°", half, 1.0);
             app.field(ids, "miterAngle", e, |v| json!(v));
-        });
-    }
+        }
+    });
 }
 
 /// The end points, which only mean something on open paths.

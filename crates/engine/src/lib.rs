@@ -1235,6 +1235,13 @@ impl Session {
         if icons_changed {
             iconfont::sync_icon_fonts(&ds.doc);
         }
+        let (uid, doc) = (ds.uid, ds.doc.clone());
+        if self.clipboard.source_doc == uid {
+            self.clipboard.copied_components.retain(|id| {
+                doc.node(*id)
+                    .is_some_and(|n| matches!(n.kind, figcraft_doc::NodeKind::Component { .. } | figcraft_doc::NodeKind::ComponentSet { .. }))
+            });
+        }
         Ok(true)
     }
 
