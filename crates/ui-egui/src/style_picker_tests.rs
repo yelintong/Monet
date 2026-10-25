@@ -281,6 +281,176 @@ fn edit_local_for_test(app: &mut FigApp, ctx: &egui::Context) {
     out.textures_delta.clear();
 }
 
+/// The `+`s the Local styles list draws, as the 16 pt box each one's arms span: the section's, one
+/// on each type's caption, and one on every folder's header. Their right edge sits 8 pt in from the
+/// panel's, and each is centred on the row it belongs to.
+#[test]
+fn local_styles_pluses_reach_the_panels_right_edge() {
+    let mut s = Session::new();
+    // "Base" is a style of its own; "Brand/Blue/500" names two folders, each holding a style.
+    for name in ["Base", "Brand/Blue/500"] {
+        s.execute("style.create", &json!({"type": "paint", "name": name, "value": "#0D99FF"})).unwrap();
+    }
+    let mut app = FigApp::new(s, Box::new(NoServices));
+    let ctx = egui::Context::default();
+    let mut t = 0.0;
+    let mut out = None;
+    for _ in 0..3 {
+        out = Some(frame_shapes(&ctx, &mut app, &mut t));
+    }
+    let shapes = out.expect("frames drawn");
+    let icon = Tokens::get(&ctx).icon_secondary;
+    // One on the section, one on the Color styles caption, one on each of the two folders.
+    let pluses = pluses(&shapes, icon);
+    assert_eq!(pluses.len(), 4, "{pluses:?}");
+    // The panel's content edge: the separators drawn inside it reach it. The toolbar's own rule
+    // runs the whole window, so only the right half's lines count. A separator's stroke is drawn
+    // to the edge and so ends half a point past the rows, which the allowance below covers.
+    let edge = segments(&shapes, Tokens::get(&ctx).border).iter().filter(|s| s.0.x > 720.0).flat_map(|s| [s.0.x, s.1.x]).fold(f32::MIN, f32::max);
+    let text = |s: &str| -> Pos2 {
+        let (_, p, size) = crate::live_tests::texts(&shapes).into_iter().find(|(t, _, _)| t == s).unwrap_or_else(|| panic!("no text {s:?}"));
+        p + size / 2.0
+    };
+    for (at, box_) in &pluses {
+        assert!((box_ - 16.0).abs() < 0.01, "a + is 16 pt: {box_}");
+        let right = at.x + box_ / 2.0;
+        assert!((edge - right - 8.0).abs() < 1.0, "a + ends 8 pt in from the panel's edge: {right} of {edge}");
+    }
+    // The rows that carry a `+`: the section's header, the type's caption, and each folder's. A
+    // style's own row carries none, which the count above pins down.
+    let mut want: Vec<f32> = [tr("Local styles"), StyleSlot::Fill.title()].iter().map(|s| text(s).y).collect();
+    want.extend(["Brand", "Blue"].map(|f| text(f).y));
+    let mut got: Vec<f32> = pluses.iter().map(|(at, _)| at.y).collect();
+    want.sort_by(|a, b| a.total_cmp(b));
+    got.sort_by(|a, b| a.total_cmp(b));
+    assert_eq!(want.len(), got.len(), "one + per row that takes one");
+    for (w, g) in want.iter().zip(&got) {
+        // A galley's box sits a point or so off its glyphs, so "on the row" allows a couple of
+        // points: the rows are 24 pt apart, so a `+` on the wrong one is far outside that.
+        assert!((w - g).abs() < 2.0, "a + sits on its row: {g} vs {w}");
+    }
+}
+
+/// The `+`s drawn in `shapes`, as the centre and the 16 pt box each one's arms span: a `+` is two
+/// segments crossing at their middle, one vertical and one horizontal.
+fn pluses(shapes: &[egui::Shape], icon: egui::Color32) -> Vec<(Pos2, f32)> {
+    let mut out: Vec<(Pos2, f32)> = Vec::new();
+    for a in segments(shapes, icon) {
+        for b in segments(shapes, icon) {
+            let (v, h) = if a.0.x == a.1.x && b.0.y == b.1.y { (a, b) } else { continue };
+            let mid = |s: (Pos2, Pos2)| s.0 + (s.1 - s.0) / 2.0;
+            if (mid(v) - mid(h)).length() < 0.01 {
+                // The arms span 11 of the 16 grid units, so the box is that much wider than they are.
+                let arm = (v.1.y - v.0.y).abs().max((h.1.x - h.0.x).abs());
+                out.push((mid(v), arm * 16.0 / 11.0));
+            }
+        }
+    }
+    out
+}
+
+/// The `+`s ask for a new style: a folder's makes one of the type, in that folder, and the
+/// section's asks which type in a menu. Either way the new style opens in the editor.
+#[test]
+fn local_styles_pluses_make_a_style_and_open_it() {
+    let mut s = Session::new();
+    for name in ["Base", "Brand/Blue/500"] {
+        s.execute("style.create", &json!({"type": "paint", "name": name, "value": "#0D99FF"})).unwrap();
+    }
+    let mut app = FigApp::new(s, Box::new(NoServices));
+    let ctx = egui::Context::default();
+    let mut t = 0.0;
+    let icon = Tokens::get(&ctx).icon_secondary;
+    // The `+`s top to bottom: the section's, the caption's, the Brand folder's, the Blue folder's
+    // (Blue sits inside Brand, as its name says).
+    let rows = |app: &mut FigApp, t: &mut f64| -> Vec<Pos2> {
+        let mut shapes = Vec::new();
+        for _ in 0..3 {
+            shapes = frame_shapes(&ctx, app, t);
+        }
+        let mut at: Vec<Pos2> = pluses(&shapes, icon).into_iter().map(|(c, _)| c).collect();
+        at.sort_by(|a, b| a.y.total_cmp(&b.y));
+        at
+    };
+    let names = |app: &FigApp| -> Vec<(String, &'static str)> {
+        app.session.doc().unwrap().styles.iter().map(|s| (s.name.clone(), s.kind.type_name())).collect()
+    };
+    // A `+` makes `want` of type `t` and opens it in the editor.
+    let made = |app: &mut FigApp, t: &mut f64, which: usize, want: &str, kind: &str| {
+        let at = rows(app, t);
+        assert!(at.len() > 3, "the section, the caption and both folders: {at:?}");
+        click_at(&ctx, app, t, at[which]);
+        let made = names(app);
+        assert!(made.iter().any(|(n, k)| n == want && *k == kind), "{want} of {kind}: {made:?}");
+        assert_eq!(editing(app).as_deref(), Some(want), "{want} opens in the editor");
+    };
+
+    // A folder's `+` makes one of the type, in that folder: no menu to pick from. The deepest
+    // folder first, then the one it sits in, so the list grows under both.
+    made(&mut app, &mut t, 3, "Brand/Blue/Color 1", "paint");
+    made(&mut app, &mut t, 2, "Brand/Color 1", "paint");
+    // A type's caption `+` makes one of that type, at the top level.
+    made(&mut app, &mut t, 1, "Color 1", "paint");
+    // The section's `+` asks which type: its menu lists them all, and one makes that type.
+    let at = rows(&mut app, &mut t);
+    click_at(&ctx, &mut app, &mut t, at[0]);
+    let menu = frame_shapes(&ctx, &mut app, &mut t);
+    let item = crate::live_tests::texts(&menu)
+        .into_iter()
+        .find(|(t, _, _)| t == StyleSlot::Grid.title())
+        .map(|(_, p, size)| p + size / 2.0)
+        .unwrap_or_else(|| panic!("no {} item in the menu", StyleSlot::Grid.title()));
+    click_at(&ctx, &mut app, &mut t, item);
+    let made = names(&app);
+    assert!(made.iter().any(|(n, k)| n == "Grid 1" && *k == StyleSlot::Grid.create_type()), "{made:?}");
+    assert_eq!(editing(&app).as_deref(), Some("Grid 1"), "Grid 1 opens in the editor");
+}
+
+/// The last frame's shapes, with the Design panel showing the document's Local styles.
+fn frame_shapes(ctx: &egui::Context, app: &mut FigApp, t: &mut f64) -> Vec<egui::Shape> {
+    plus_frame(ctx, app, t, Vec::new())
+}
+
+/// One frame carrying `events`, and the shapes it painted (popups included).
+fn plus_frame(ctx: &egui::Context, app: &mut FigApp, t: &mut f64, events: Vec<egui::Event>) -> Vec<egui::Shape> {
+    *t += 1.0 / 60.0;
+    let input = RawInput { screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(1440.0, 900.0))), time: Some(*t), events, ..Default::default() };
+    let mut out = ctx.run_ui(input, |ui| app.ui(ui));
+    out.textures_delta.clear();
+    out.shapes.into_iter().flat_map(|c| crate::live_tests::flat(std::slice::from_ref(&c))).collect()
+}
+
+/// A left click at `p`: the pointer goes there, presses, and lets go.
+fn click_at(ctx: &egui::Context, app: &mut FigApp, t: &mut f64, p: Pos2) {
+    for pressed in [true, false] {
+        plus_frame(
+            ctx,
+            app,
+            t,
+            vec![
+                egui::Event::PointerMoved(p),
+                egui::Event::PointerButton { pos: p, button: egui::PointerButton::Primary, pressed, modifiers: Default::default() },
+            ],
+        );
+    }
+}
+
+/// The style the Local styles editor has open, by name.
+fn editing(app: &FigApp) -> Option<String> {
+    app.ui.style_picker.as_ref().and_then(|p| p.edit.as_ref()).map(|e| e.name.clone())
+}
+
+/// Straight segments in `c`.
+fn segments(shapes: &[egui::Shape], c: egui::Color32) -> Vec<(Pos2, Pos2)> {
+    shapes
+        .iter()
+        .filter_map(|s| match s {
+            egui::Shape::LineSegment { points, stroke } if stroke.color == c => Some((points[0], points[1])),
+            _ => None,
+        })
+        .collect()
+}
+
 /// Commits `typed` in the text style editor's field `field` ("ts_lh" / "ts_ls") with Enter and
 /// returns the redefined style, if any.
 fn commit_text_field(def: &TextStyle, field: &str, typed: &str) -> Option<TextStyle> {
@@ -369,7 +539,8 @@ fn editor_left(u: &mut crate::layers_drag_tests::Ui) -> f32 {
         if let egui::Shape::Text(t) = &c.shape
             && t.galley.text() == "Edit style"
         {
-            left = Some(t.pos.x - 30.0);
+            // The shared popover's title sits 16 in from its edge, its content 8 (its padding).
+            left = Some(t.pos.x - 8.0);
         }
     }
     left.expect("the editor's title")

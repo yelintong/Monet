@@ -21,7 +21,7 @@ use crate::i18n::{tr, trf};
 use crate::icons::{self, Icon};
 use crate::popover::{Hold, Open, Popover, Surface};
 use crate::theme::{Tokens, regular, semibold};
-use crate::widgets;
+use crate::widgets::{self, TEXT_PT};
 
 /// The slot's margin inside the shared popover, and the content width left of it.
 const PAD: f32 = 8.0;
@@ -1266,6 +1266,19 @@ fn icon_x(row: Rect, level: f32) -> f32 {
     row.min.x + (LS_PAD - LS_INSET) + level * LS_STEP
 }
 
+/// A 16 pt `+` at a row's right end, 8 pt in from the panel's edge; true when it is clicked. Drawn
+/// after the row it sits on, so it takes the click where the two overlap.
+fn row_plus(ui: &mut Ui, id: Id, row: Rect, tip: &str) -> Response {
+    let t = Tokens::get(ui.ctx());
+    let r = Rect::from_min_size(pos2(row.max.x - LS_INSET - LS_ICON, row.center().y - LS_ICON / 2.0), vec2(LS_ICON, LS_ICON));
+    let resp = ui.interact(r, id, Sense::click()).tip(tip);
+    if resp.hovered() {
+        ui.painter().rect_filled(r.expand(4.0), CornerRadius::same(5), t.hover);
+    }
+    icons::paint(ui.painter(), r, Icon::Plus, t.icon_secondary);
+    resp
+}
+
 /// A style's colour as a round swatch centred at `c`: solid, or a gradient spread around the rim.
 fn paint_dot(ui: &Ui, c: egui::Pos2, r: f32, paint: &Paint) {
     let t = Tokens::get(ui.ctx());
@@ -1322,7 +1335,29 @@ pub fn local_styles(app: &mut FigApp, ui: &mut Ui, doc: &Document) {
     let folded_before = folded.clone();
     let mut run: Option<(&'static str, Value)> = None;
     let mut edit: Option<(StyleSlot, String)> = None;
+    // A `+` asked for a new style: its slot, and the folder it lands in ("" at the top level).
+    let mut create: Option<(StyleSlot, String)> = None;
     let mut groups = 0;
+    // The section's header, with the `+` that asks which type of style to make.
+    let any = library::local_styles(doc).next().is_some();
+    let (head, _) = ui.allocate_exact_size(vec2(ui.available_width(), 40.0), Sense::hover());
+    ui.painter().text(
+        pos2(head.min.x + LS_PAD, head.center().y),
+        Align2::LEFT_CENTER,
+        tr("Local styles"),
+        regular(TEXT_PT),
+        if any { t.text } else { t.text_secondary },
+    );
+    let add = row_plus(ui, ui.id().with("ls_add"), head, tr("Add style"));
+    // The section's `+` has no type of its own: it asks which one to make.
+    crate::right::menu_popup(&add).show(|ui| {
+        for slot in [StyleSlot::Text, StyleSlot::Fill, StyleSlot::Effect, StyleSlot::Grid] {
+            if crate::right::menu_item(ui, tr(slot.title()), "") {
+                create = Some((slot, String::new()));
+                ui.close();
+            }
+        }
+    });
     for slot in [StyleSlot::Text, StyleSlot::Fill, StyleSlot::Effect, StyleSlot::Grid] {
         let list: Vec<&Style> = library::local_styles(doc).filter(|s| slot.holds(&s.kind)).collect();
         if list.is_empty() {
@@ -1333,6 +1368,10 @@ pub fn local_styles(app: &mut FigApp, ui: &mut Ui, doc: &Document) {
         let w = ui.available_width();
         let (caption, _) = ui.allocate_exact_size(vec2(w, LS_CAPTION_H), Sense::hover());
         ui.painter().text(pos2(caption.min.x + LS_PAD, caption.center().y), Align2::LEFT_CENTER, slot.title(), regular(11.0), t.text_secondary);
+        // This group's `+` makes one of its type: no menu to pick from.
+        if row_plus(ui, ui.id().with(("ls_add_slot", slot.key())), caption, tr("Add style")).clicked() {
+            create = Some((slot, String::new()));
+        }
         // One drag for the whole type: a style can be dropped in another folder (it then takes
         // that folder's name), so the groups aren't separate lists.
         let mut drag = crate::list_drag::ListDrag::in_order(ui, ("local_styles", slot.key()));
@@ -1352,7 +1391,8 @@ pub fn local_styles(app: &mut FigApp, ui: &mut Ui, doc: &Document) {
                     let (row, resp) = ui.allocate_exact_size(vec2(w, LS_ROW_H), Sense::click());
                     let r = inset_row(row);
                     let x = icon_x(r, depth);
-                    let text_r = Rect::from_min_max(pos2(x + LS_STEP, r.min.y + 2.0), pos2(r.max.x - LS_TRAIL, r.max.y - 2.0));
+                    // The `+` at the row's right end keeps the name out of its 16 pt box.
+                    let text_r = Rect::from_min_max(pos2(x + LS_STEP, r.min.y + 2.0), pos2(r.max.x - LS_ICON - LS_ICON_GAP, r.max.y - 2.0));
                     if renaming.as_deref() == Some(*path) {
                         // Focused as it is first drawn: a focus asked for before its field is drawn
                         // isn't in the screen reader tree (UI Automation aborts the app, #224).
@@ -1380,6 +1420,10 @@ pub fn local_styles(app: &mut FigApp, ui: &mut Ui, doc: &Document) {
                             t.text_secondary,
                             text_r.width(),
                         );
+                        // This folder's `+` makes one of the group's type, in this folder.
+                        if row_plus(ui, ui.id().with(("ls_add_in", slot.key(), path)), row, tr("Add style")).clicked() {
+                            create = Some((slot, path.to_string()));
+                        }
                         crate::right::context_popup(&resp).show(|ui| {
                             if crate::right::menu_item(ui, tr("Rename folder"), "") {
                                 ui.data_mut(|d| d.insert_temp(folder_rename_id(), path.to_string()));
@@ -1479,9 +1523,35 @@ pub fn local_styles(app: &mut FigApp, ui: &mut Ui, doc: &Document) {
     if let Some((cmd, q)) = run {
         app.run(cmd, q);
     }
+    if let Some((slot, folder)) = create {
+        let q = new_style_params(doc, &app.session.selection(), slot, &folder);
+        if let Some(id) = app.run("style.create", q).as_ref().and_then(|v| v["id"].as_str()) {
+            // Straight into the editor: a style just made has nothing but its default values.
+            edit_local(app, ui, slot, id);
+        }
+    }
     if let Some((slot, id)) = edit {
         edit_local(app, ui, slot, &id);
     }
+}
+
+/// `style.create` params for a new `slot` style in `folder` ("" at the top level), named after the
+/// slot ("Brand/Color 3"). A style made while a layer is selected takes that layer's values; with
+/// nothing selected it takes the slot's own starting value, so the `+` always works.
+fn new_style_params(doc: &Document, ids: &[NodeId], slot: StyleSlot, folder: &str) -> Value {
+    let base = if folder.is_empty() { slot.default_name().to_string() } else { format!("{folder}/{}", slot.default_name()) };
+    let mut q = json!({"type": slot.create_type(), "name": next_name(doc, &base)});
+    match ids.first() {
+        Some(from) => q["from"] = json!(from),
+        None => {
+            q["value"] = match slot {
+                StyleSlot::Fill | StyleSlot::Stroke => json!("#000000"),
+                StyleSlot::Text => json!({"fontSize": 16.0}),
+                StyleSlot::Effect | StyleSlot::Grid => json!([]),
+            }
+        }
+    }
+    q
 }
 
 #[cfg(test)]

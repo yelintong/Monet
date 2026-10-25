@@ -462,7 +462,7 @@ fn page_section(app: &mut FigApp, ui: &mut Ui, doc: &Document) {
         }
     });
     widgets::separator(ui);
-    widgets::section_header(ui, tr("Local styles"), &[], figcraft_engine::library::local_styles(doc).next().is_none());
+    // The section header (and its `+`) is the list's own: it opens the editor on a new style.
     crate::style_picker::local_styles(app, ui, doc);
     widgets::separator(ui);
     crate::export_panel::page_section(app, ui, doc, page);
