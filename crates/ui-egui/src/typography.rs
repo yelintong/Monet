@@ -548,12 +548,13 @@ fn type_settings(
 }
 
 /// A Type settings row: a label, then `add` with the rest of the width.
-fn field_row<R>(ui: &mut Ui, label: &str, add: impl FnOnce(&mut Ui, f32) -> R) -> R {
+pub(crate) fn field_row<R>(ui: &mut Ui, label: &str, add: impl FnOnce(&mut Ui, f32) -> R) -> R {
     let t = Tokens::get(ui.ctx());
-    let w = ui.available_width();
     ui.horizontal(|ui| {
         ui.add_sized(vec2(110.0, FIELD_H), egui::Label::new(egui::RichText::new(label).font(regular(TEXT_PT)).color(t.text)));
-        add(ui, w - 118.0)
+        // The width left in the row, read after the label: a label wider than its column
+        // (French "Retrait de paragraphe") must not feed back into the popover's width (#1029).
+        add(ui, ui.available_width())
     })
     .inner
 }

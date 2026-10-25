@@ -185,7 +185,9 @@ pub fn show(app: &mut FigApp, ui: &mut Ui, worker: &mut Worker) {
     }
     let own_cursor = input(app, ui, &resp);
     dropped_icon(app, &ctx, rect);
-    crate::drop_overlay(&ctx, ctx.content_rect(), tr("Drop to import"));
+    // A browser names no dragged file until the drop, so documents there still say "import".
+    let documents = ctx.input(|i| i.raw.hovered_files.iter().all(|f| f.path.as_deref().is_some_and(crate::is_document)));
+    crate::drop_overlay(&ctx, ctx.content_rect(), if documents { tr("Drop to open") } else { tr("Drop to import") });
     crate::guides::end_released(&ctx);
     crate::live::track_pointer(app, &ctx);
     app.sync_preedit();

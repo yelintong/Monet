@@ -894,44 +894,32 @@ fn appearance(app: &mut FigApp, ui: &mut Ui, doc: &Document, sel: &[NodeId]) {
     });
     if indep_ok && ui.data(|d| d.get_temp::<bool>(Id::new("indep_corners"))).unwrap_or(false) {
         let radii = common(doc, sel, |n| n.corners.radii);
-        let keys = [
-            ("topLeftRadius", tr("Top left radius")),
-            ("topRightRadius", tr("Top right radius")),
-            ("bottomRightRadius", tr("Bottom right radius")),
-            ("bottomLeftRadius", tr("Bottom left radius")),
+        // `k` indexes `radii` ([top left, top right, bottom right, bottom left]); the fields sit
+        // where their corners are: top left, top right / bottom left, bottom right.
+        let corners = [
+            ("topLeftRadius", tr("Top left radius"), Icon::CornerTopLeft, 0),
+            ("topRightRadius", tr("Top right radius"), Icon::CornerTopRight, 1),
+            ("bottomLeftRadius", tr("Bottom left radius"), Icon::CornerBottomLeft, 3),
+            ("bottomRightRadius", tr("Bottom right radius"), Icon::CornerBottomRight, 2),
         ];
-        row(ui, 32.0, |ui| {
-            for (k, (key, name)) in keys.iter().enumerate().take(2) {
-                let e = crate::variable_ui::number_field(
-                    app,
-                    ui,
-                    &ids,
-                    key,
-                    Id::new(("corner", k)),
-                    Lead::Icon(Icon::CornerRadius, name),
-                    radii.map(|r| r[k]),
-                    "",
-                    col,
-                );
-                app.field(&ids, key, e, |v| json!(v.max(0.0)));
-            }
-        });
-        row(ui, 32.0, |ui| {
-            for (k, (key, name)) in keys.iter().enumerate().skip(2) {
-                let e = crate::variable_ui::number_field(
-                    app,
-                    ui,
-                    &ids,
-                    key,
-                    Id::new(("corner", k)),
-                    Lead::Icon(Icon::CornerRadius, name),
-                    radii.map(|r| r[k]),
-                    "",
-                    col,
-                );
-                app.field(&ids, key, e, |v| json!(v.max(0.0)));
-            }
-        });
+        for pair in corners.chunks(2) {
+            row(ui, 32.0, |ui| {
+                for (key, name, icon, k) in pair {
+                    let e = crate::variable_ui::number_field(
+                        app,
+                        ui,
+                        &ids,
+                        key,
+                        Id::new(("corner", *k)),
+                        Lead::Icon(*icon, name),
+                        radii.map(|r| r[*k]),
+                        "",
+                        col,
+                    );
+                    app.field(&ids, key, e, |v| json!(v.max(0.0)));
+                }
+            });
+        }
         let sm = common(doc, sel, |n| (n.corners.smoothing * 100.0).round());
         widgets::sublabels(ui, tr("Corner smoothing"), None);
         row(ui, 32.0, |ui| {
@@ -1116,14 +1104,20 @@ fn paints(app: &mut FigApp, ui: &mut Ui, doc: &Document, sel: &[NodeId], fills: 
     let title = if fills { tr("Fill") } else { tr("Stroke") };
     let empty = list.as_ref().is_none_or(|l| l.is_empty());
     let slot = if fills { StyleSlot::Fill } else { StyleSlot::Stroke };
-    let header_top = ui.cursor().min.y;
-    if let Some(i) = widgets::section_header(
-        ui,
-        title,
-        &[(Icon::Styles, tr("Styles")), (Icon::Plus, if fills { tr("Add fill") } else { tr("Add stroke") })],
-        empty,
-    ) {
-        if i == 1 {
+    // Only a vector network has filled areas to set a rule on: the fill-rule button sits between
+    // Styles and Add fill.
+    let vector = if fills { crate::fill_rule::first_vector(doc, sel) } else { None };
+    let mut buttons = vec![(Icon::Styles, tr("Styles"))];
+    if vector.is_some() {
+        buttons.push((Icon::FillRule, tr("Fill rule")));
+    }
+    buttons.push((Icon::Plus, if fills { tr("Add fill") } else { tr("Add stroke") }));
+    let header_x = ui.cursor().min.x;
+    let header_w = ui.available_width();
+    let (add_at, header_y) = (buttons.len() - 1, ui.cursor().min.y);
+    let header_top = header_y;
+    if let Some(i) = widgets::section_header(ui, title, &buttons, empty) {
+        if i == add_at {
             // The new paint goes on top; open its picker. A mixed selection has no one index to edit.
             if app.run(if fills { "fill.add" } else { "stroke.add" }, json!({"ids": ids})).is_some()
                 && let Some(l) = &list
@@ -1131,9 +1125,25 @@ fn paints(app: &mut FigApp, ui: &mut Ui, doc: &Document, sel: &[NodeId], fills: 
                 // The + button that added it sits 8 points into the 40-high header row.
                 app.open_picker(crate::colorpicker::PickerTarget::Paint { fills, index: l.len(), ids: ids.clone() }, Some(header_top + 8.0));
             }
+        } else if let Some(_v) = vector.filter(|_| i == 1) {
+            // The button toggles the panel, which opens at this section's height.
+            crate::fill_rule::toggle(app, header_y);
         } else {
             style_picker::open(app, ui, &ids, slot);
         }
+    }
+    // Remember the fill-rule button's rect (when a vector is selected) so the panel's
+    // outside-press-close does not treat a click on it as "outside" and snap shut then reopen.
+    // Only the Fill section sets it — the Stroke section shares this function (fills = false) and
+    // would otherwise clear it. section_header lays the buttons right-to-left at 24px steps from
+    // the header's right edge, so with [Styles, FillRule, Plus] the FillRule button sits 56px in
+    // from the right and 8px down.
+    if fills {
+        app.ui.fill_rule_button = if vector.is_some() {
+            Some(egui::Rect::from_min_size(egui::pos2(header_x + header_w - 56.0, header_y + 8.0), egui::vec2(24.0, 24.0)))
+        } else {
+            None
+        };
     }
     style_picker::chip(app, ui, doc, &ids, slot);
     match &list {
@@ -1846,7 +1856,8 @@ fn fx_field(app: &mut FigApp, ui: &mut Ui, ids: &[NodeId], i: usize, prop: &str,
 }
 
 fn effect_settings(app: &mut FigApp, ui: &mut Ui, ids: &[NodeId], i: usize, e: &Effect) {
-    let half = (ui.available_width() - PAD * 2.0 - 8.0) / 2.0;
+    // The panel's grid: two 88 pt columns, 8 between them (`col_width` reads the same width).
+    let half = widgets::col_width(ui.available_width());
     let set = |app: &mut FigApp, e2: Effect, scrub: Option<bool>| {
         let p = json!({"ids": ids, "index": i, "effect": e2});
         match scrub {
@@ -2204,13 +2215,22 @@ fn grid_settings(app: &mut FigApp, ui: &mut Ui, ids: &[NodeId], list: &[LayoutGr
             // 0 is Auto for fixed-size columns (rows); a stretched grid has at least one.
             let count = (!auto_count(g)).then(|| f64::from(g.count.max(1)));
             let key = format!("layoutGrids/{i}/count");
-            let e =
-                crate::variable_ui::number_field_or(app, ui, ids, &key, Id::new(("grid_field", "count", i)), count, col, tr("Auto"), Lead::None, "");
+            let id = Id::new(("grid_field", "count", i));
+            // A stretched grid has at least one band, so 0 (Auto) isn't a count it can take.
+            let e = if g.align == GridAlign::Stretch {
+                crate::variable_ui::number_field_or(app, ui, ids, &key, id, count, col, "", Lead::None, "")
+            } else {
+                crate::variable_ui::number_field_auto(app, ui, ids, &key, id, count, col, Lead::None, "")
+            };
             app.field_run(e, "node.set", |v| {
                 set(&|x| x.count = if x.align == GridAlign::Stretch { v.round().clamp(1.0, 1000.0) } else { v.round().clamp(0.0, 1000.0) } as u32)
             });
-            let names =
-                if cols { [tr("Stretch"), tr("Left"), tr("Center"), tr("Right")] } else { [tr("Stretch"), tr("Top"), tr("Center"), tr("Bottom")] };
+            // Rings grow from the frame's centre: their alignment reads Inner/Outer.
+            let names = match g.kind {
+                GridKind::Rings => [tr("Stretch"), tr("Inner"), tr("Center"), tr("Outer")],
+                _ if cols => [tr("Stretch"), tr("Left"), tr("Center"), tr("Right")],
+                _ => [tr("Stretch"), tr("Top"), tr("Center"), tr("Bottom")],
+            };
             let aligns = [GridAlign::Stretch, GridAlign::Min, GridAlign::Center, GridAlign::Max];
             let cur = aligns.iter().position(|a| *a == g.align).unwrap_or(0);
             let resp = widgets::dropdown(ui, names.get(cur).copied().unwrap_or_default(), col, None);
@@ -2235,14 +2255,25 @@ fn grid_settings(app: &mut FigApp, ui: &mut Ui, ids: &[NodeId], list: &[LayoutGr
                 }
             });
         });
-        let span = if cols { tr("Width") } else { tr("Height") };
+        // A 45 degree band's or a ring's own thickness is a size, not a width or a height.
+        let span = match g.kind {
+            GridKind::Diagonal | GridKind::Rings => tr("Size"),
+            _ if cols => tr("Width"),
+            _ => tr("Height"),
+        };
         match g.align {
             GridAlign::Stretch => {
-                widgets::sublabels(ui, tr("Margin"), Some(tr("Gutter")));
+                widgets::sublabels(ui, span, Some(tr("Margin")));
                 row(ui, 32.0, |ui| {
+                    // The frame, divided by the count: shown as Auto and not editable.
+                    ui.add_enabled_ui(false, |ui| {
+                        let auto = widgets::Empty::Text(tr("Auto"));
+                        widgets::number_field_bindable(ui, Id::new(("grid_field", "size", i)), Lead::Named(span), None, "", col, 1.0, None, auto)
+                    });
                     field(app, ui, "offset", g.offset, &offset);
-                    field(app, ui, "gutter", g.gutter, &gutter);
                 });
+                widgets::sublabels(ui, tr("Gutter"), None);
+                row(ui, 32.0, |ui| field(app, ui, "gutter", g.gutter, &gutter));
             }
             GridAlign::Center => {
                 widgets::sublabels(ui, span, Some(tr("Gutter")));

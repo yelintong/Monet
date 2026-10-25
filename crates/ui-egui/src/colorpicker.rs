@@ -437,7 +437,14 @@ fn alpha_slider(ui: &mut Ui, rect: Rect, color: Color) -> Option<(f32, bool)> {
 }
 
 pub fn show(app: &mut FigApp, ctx: &egui::Context) {
-    let Some(target) = app.ui.picker.clone() else { return };
+    let Some(target) = app.ui.picker.clone() else {
+        // A colour sampled for a picker that has closed has no paint to go to.
+        app.session.tool.picked = None;
+        if app.session.tool.pick_only {
+            app.run("tool.move", json!({}));
+        }
+        return;
+    };
     // A layer's picker belongs to the selection it was opened for: once that changes, close it
     // rather than keep editing layers that are no longer selected.
     let stale = match &target {
@@ -465,7 +472,7 @@ pub fn show(app: &mut FigApp, ctx: &egui::Context) {
     };
     // The colour picker's own header — title 16 in, the X 8 in from the right — is the shared
     // popover chrome now; the picker keeps its body.
-    let mut pop = app.ui.picker_popover.take().unwrap_or_else(|| Popover::new("color_picker", tr("Custom")).pad(0.0));
+    let mut pop = app.ui.picker_popover.take().unwrap_or_else(|| Popover::new("color_picker", tr("Custom")).pad(0.0).close_on_outside(false));
     // Closing is the shared widget's: the X, Escape and a press outside it. Presses in the panel
     // beside it keep it (swatches and fields there switch the colour it edits); the control that
     // opened it is held too, so pressing it again reaches its own toggle.
@@ -474,6 +481,10 @@ pub fn show(app: &mut FigApp, ctx: &egui::Context) {
     held.extend(app.ui.picker_button);
     let closed = pop.show(ctx, open, Hold { rects: &held, escape: false }, |ui| {
         ui.spacing_mut().item_spacing = vec2(8.0, 8.0);
+        // The eyedropper's colour goes to this picker's paint (a stroke, an effect, a gradient stop...).
+        if let Some(c) = app.session.tool.picked.take() {
+            set_color(app, &target, &mut paint, c, stop_id(), ui);
+        }
         // Paint type.
         if !matches!(
             target,
@@ -766,8 +777,8 @@ pub fn show(app: &mut FigApp, ctx: &egui::Context) {
             )
             .clicked()
             {
-                app.ui.picker = None;
-                app.run("edit.pickColor", json!({}));
+                // Picking keeps the picker open: the colour it samples comes back to this paint.
+                app.run("edit.pickColor", json!({"apply": false}));
                 return;
             }
             let (c2, d2) = hue_slider(ui, hr, &mut hsb);

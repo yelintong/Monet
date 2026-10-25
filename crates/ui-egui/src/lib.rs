@@ -657,6 +657,8 @@ pub struct UiState {
     pub stroke_settings_button: Option<egui::Rect>,
     pub stroke_settings_anchor: Option<f32>,
     pub stroke_tab: u8,
+    /// The fill-rule panel's popover while it is open.
+    pub fill_rule_popover: Option<popover::Popover>,
     /// The style picker shows colour styles as a grid of swatches.
     pub style_grid: bool,
     /// Style folders closed in the style picker.
@@ -812,6 +814,7 @@ impl Default for UiState {
             stroke_settings_button: None,
             stroke_settings_anchor: None,
             stroke_tab: 0,
+            fill_rule_popover: None,
             style_grid: false,
             style_folds: BTreeSet::new(),
             text_preview: None,
@@ -1963,6 +1966,8 @@ impl FigApp {
         // Set apart from the literal above, which is at the macro recursion limit.
         state["uiScale"] = json!({"choice": self.session.prefs.ui_scale, "zoom": self.ui.ui_scale.zoom, "drawn": self.ui.ui_scale.drawn, "limited": self.ui.ui_scale.limited});
         state["pendingOpens"] = json!(self.ui.pending_opens.len());
+        state["missingFonts"] = json!(self.ui.missing_fonts.as_ref().map(missing_fonts::Shown::inspect));
+        state["presentTabs"] = tabs::present_tabs_inspect(self);
         state["fillRule"] = json!(self.ui.fill_rule.as_ref().map(|p| p.id.0));
         state
     }
