@@ -108,7 +108,13 @@ impl eframe::App for App {
     fn on_exit(&mut self) {
         // With the app out of reach (busy), its recovery copies stay for the next start.
         let copies = recovery::lock(&self.recovery).take();
+        let restart = with_app(|fig| fig.ui.restart).unwrap_or(false);
         with_app(|fig| services::shutdown(fig, services::config_dir().as_deref(), copies));
+        // The graphics API of the preference is picked when the window opens: start again, with
+        // the preference saved above, for the choice to take effect.
+        if restart {
+            graphics::relaunch();
+        }
         // Everything is kept: end before the windows' teardown, where AppKit's Touch Bar support
         // throws on the content view AccessKit restores (craft-libs#3, #781).
         #[cfg(target_os = "macos")]
@@ -198,9 +204,17 @@ fn main() -> eframe::Result {
     // The interface language from the first frame on, and for the message when the window can't
     // open (no frame then).
     figcraft_ui_egui::i18n::set(&session.prefs.language, figcraft_ui_egui::Services::system_language(&svc).as_deref());
+    // The graphics API the window opens with, read before the session moves into the app; with it,
+    // what named that API and where the preferences live, for the message when it can't open.
+    let backend = session.prefs.graphics_backend.clone();
+    let named = graphics::named(&backend);
+    let settings = services::config_dir().map(|d| d.join(services::STATE));
     let mut fig = FigApp::new(session, Box::new(svc));
     fig.automation_roots = roots;
     fig.ui.home = false;
+    // The renderer this run starts with: the Preferences' restart button shows while the
+    // preference names another one (the window opens with the API chosen when it is made).
+    fig.ui.graphics_started = backend.clone();
     // Files named on the command line are the user's too: their missing fonts are listed.
     fig.ui.font_checks = opened;
     fig.note_recovered(recovered.copies);
@@ -233,7 +247,7 @@ fn main() -> eframe::Result {
         viewport = viewport.with_icon(icon);
     }
     let mut options = eframe::NativeOptions { viewport, renderer: eframe::Renderer::Wgpu, ..Default::default() };
-    graphics::configure(&mut options.wgpu_options);
+    graphics::configure(&mut options.wgpu_options, &backend);
     figcraft_ui_egui::windows::install(fig);
     // Registered before the event loop starts, so it catches the Finder event that launched the app
     // as well as later ones. Lives until the event loop returns; the app creator only borrows it.
@@ -257,7 +271,7 @@ fn main() -> eframe::Result {
     );
     // Say why instead of quitting silently: release builds on Windows have no console.
     if let Err(e) = &result {
-        startup::failed(e, port.is_some());
+        startup::failed(e, port.is_some(), named, settings.as_deref());
     }
     result
 }

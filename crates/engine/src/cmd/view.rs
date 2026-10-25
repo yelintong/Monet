@@ -390,6 +390,23 @@ pub fn specs() -> Vec<CommandSpec> {
         ),
         spec!("pref.autoSave", "Save files automatically", "{on?}", false, |s, p| pref(s, p, |x| &mut x.auto_save)),
         spec!("pref.startOnHome", "Start on the Home screen", "{on?}", false, |s, p| pref(s, p, |x| &mut x.start_on_home)),
+        spec!(
+            "pref.graphicsBackend",
+            "Graphics renderer",
+            "{backend?: system|dx12|vulkan|gl|metal (omit: just read it)} → {backend}: which graphics API draws the window; read when the window opens, so a change takes effect on the next start (desktop only: the browser has no API to choose)",
+            false,
+            |s, p| {
+                const CMD: &str = "pref.graphicsBackend";
+                if get(p, "backend").is_some() {
+                    let asked = req_string(CMD, p, "backend")?.trim().to_ascii_lowercase();
+                    if !["system", "dx12", "vulkan", "gl", "metal"].contains(&asked.as_str()) {
+                        return Err(bad(CMD, "`backend` is one of system, dx12, vulkan, gl or metal"));
+                    }
+                    s.prefs.graphics_backend = asked;
+                }
+                Ok(json!({"backend": s.prefs.graphics_backend}))
+            }
+        ),
         spec!("pref.nudge", "Nudge amount", "{small?, big?}", false, |s, p| {
             s.prefs.nudge_small = num(p, "small").unwrap_or(s.prefs.nudge_small).clamp(0.01, 1000.0);
             s.prefs.nudge_big = num(p, "big").unwrap_or(s.prefs.nudge_big).clamp(0.01, 10000.0);
@@ -570,5 +587,41 @@ mod start_on_home_tests {
         assert_eq!(s.execute("pref.startOnHome", &json!({"on": false})).unwrap()["on"], false);
         let old: crate::Prefs = serde_json::from_value(json!({"theme": "dark"})).unwrap();
         assert!(!old.start_on_home);
+    }
+}
+
+#[cfg(test)]
+mod graphics_backend_tests {
+    use serde_json::json;
+
+    use crate::Session;
+
+    #[test]
+    fn the_graphics_backend_is_a_preference_that_persists() {
+        let mut s = Session::new();
+        assert_eq!(s.prefs.graphics_backend, "system");
+        // Reading it changes nothing.
+        assert_eq!(s.execute("pref.graphicsBackend", &json!({})).unwrap()["backend"], "system");
+        assert_eq!(s.execute("pref.graphicsBackend", &json!({"backend": "DX12"})).unwrap()["backend"], "dx12");
+        assert_eq!(s.prefs.graphics_backend, "dx12");
+        // Saved with the other preferences and read back; older settings files without it read as "system".
+        let saved: crate::Prefs = serde_json::from_value(serde_json::to_value(&s.prefs).unwrap()).unwrap();
+        assert_eq!(saved.graphics_backend, "dx12");
+        let old: crate::Prefs = serde_json::from_value(json!({"theme": "dark"})).unwrap();
+        assert_eq!(old.graphics_backend, "system");
+    }
+
+    #[test]
+    fn an_unknown_graphics_backend_is_refused() {
+        let mut s = Session::new();
+        for asked in ["direct3d", "webgpu", "", "dx12, gl"] {
+            let err = s.execute("pref.graphicsBackend", &json!({"backend": asked})).unwrap_err();
+            assert!(err.to_string().contains("one of system, dx12, vulkan, gl or metal"), "{asked}: {err}");
+        }
+        assert_eq!(s.prefs.graphics_backend, "system", "a refused backend changes nothing");
+        // Not a string either.
+        assert!(s.execute("pref.graphicsBackend", &json!({"backend": 12})).is_err());
+        // Null reads as "not given": the current backend.
+        assert_eq!(s.execute("pref.graphicsBackend", &json!({"backend": null})).unwrap()["backend"], "system");
     }
 }

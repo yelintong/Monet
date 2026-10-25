@@ -125,6 +125,8 @@ mod gap_handle_tests;
 #[cfg(test)]
 mod gradient_shorthand_tests;
 #[cfg(test)]
+mod graphics_pref_tests;
+#[cfg(test)]
 mod guide_release_tests;
 #[cfg(test)]
 mod home_recents_tests;
@@ -243,9 +245,9 @@ mod variables_export_ui_tests;
 #[cfg(test)]
 mod variables_rename_tests;
 #[cfg(test)]
-mod variants_discovery_tests;
-#[cfg(test)]
 mod variables_view_tests;
+#[cfg(test)]
+mod variants_discovery_tests;
 #[cfg(test)]
 mod vector_panel_tests;
 #[cfg(test)]
@@ -728,6 +730,12 @@ pub struct UiState {
     /// Save was answered: the files save next frame, once a panel field the click took the
     /// keyboard from has committed what was typed (as [`UiState::after_field`]).
     pub save_on_close: bool,
+    /// The renderer this run started with (`pref.graphicsBackend`'s value then): the Preferences'
+    /// Graphics renderer row offers a restart while the preference names another one.
+    pub graphics_started: String,
+    /// A restart was asked for (Preferences' Graphics renderer row): this app starts again as it
+    /// exits, so the renderer now chosen is the one the new window opens with.
+    pub restart: bool,
 }
 
 impl Default for UiState {
@@ -850,6 +858,8 @@ impl Default for UiState {
             confirm_close: false,
             close_after_save_as: None,
             save_on_close: false,
+            graphics_started: "system".into(),
+            restart: false,
         }
     }
 }

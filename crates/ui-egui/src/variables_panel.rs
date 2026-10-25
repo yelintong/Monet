@@ -1438,7 +1438,18 @@ fn value_cell(app: &mut FigApp, ui: &mut Ui, view: &View, v: &Variable, coll: &C
                 let nc = if digits.len() == 8 && digits.chars().all(|ch| ch.is_ascii_hexdigit()) { nc } else { nc.with_alpha(c.a) };
                 set(app, v, mode, json!(nc.to_css_hex()));
             }
-            alpha_text(ui, c, body);
+            // The alpha, as a percentage at the right end. It was painted read-only (right-aligned,
+            // flush to the edge); now the same spot is an input that takes typing and scrubbing.
+            let alpha_r = Rect::from_min_max(pos2(body.max.x - 44.0, body.min.y + 3.0), pos2(body.max.x - 8.0, body.max.y - 3.0));
+            let mut child = ui.new_child(UiBuilder::new().max_rect(alpha_r));
+            let alpha = |pct: f64| c.with_alpha((pct / 100.0).clamp(0.0, 1.0) as f32).to_css_hex();
+            match widgets::number_field(&mut child, id.with("alpha"), Lead::None, Some(f64::from(c.a) * 100.0), "%", alpha_r.width(), 1.0) {
+                Some(FieldEdit::Set(pct)) => set(app, v, mode, json!(alpha(pct))),
+                Some(FieldEdit::Scrub(pct, done)) => {
+                    crate::typography::live(app, "Edit variable", "variable.set", json!({"variable": v.id, "mode": mode, "value": alpha(pct)}), done)
+                }
+                None => {}
+            }
         }
         VariableValue::Number(x) => {
             let mut child = ui.new_child(UiBuilder::new().max_rect(body));

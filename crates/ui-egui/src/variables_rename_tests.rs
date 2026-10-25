@@ -132,7 +132,6 @@ fn dragging_a_variable_to_the_empty_space_below_reorders_it_to_the_end() {
     assert!(u.app.ui.last_error.is_none(), "{:?}", u.app.ui.last_error);
 }
 
-
 #[test]
 fn double_clicking_a_collection_renames_it_with_the_focus_in_the_screen_reader_tree() {
     let mut u = variables_window();

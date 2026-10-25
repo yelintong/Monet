@@ -346,12 +346,15 @@ pub(crate) fn confirm_close(app: &mut FigApp, ctx: &Context) {
         if app.pending_dialog.is_some() {
             return;
         }
-        app.ui.close_after_save_as = None;
-        // Saved: go on with the other files, then close.
-        if app.session.docs.iter().find(|d| d.uid == uid).is_none_or(|d| !d.is_dirty()) {
-            save_then_close(app, ctx);
-        }
-        return;
+    app.ui.close_after_save_as = None;
+    // Saved: go on with the other files, then close. Cancelled or failed: the window stays open,
+    // and a restart asked for goes with the close that was cancelled.
+    if app.session.docs.iter().find(|d| d.uid == uid).is_none_or(|d| !d.is_dirty()) {
+        save_then_close(app, ctx);
+    } else {
+        app.ui.restart = false;
+    }
+    return;
     }
     if !app.ui.confirm_close {
         return;
@@ -396,7 +399,8 @@ pub(crate) fn confirm_close(app: &mut FigApp, ctx: &Context) {
 pub(crate) fn answer_close(app: &mut FigApp, ctx: &Context, answer: CloseAnswer) {
     app.ui.confirm_close = false;
     match answer {
-        CloseAnswer::Cancel => {}
+        // A restart that was asked for goes with the close that was cancelled.
+        CloseAnswer::Cancel => app.ui.restart = false,
         CloseAnswer::DontSave => close_current(app, ctx),
         CloseAnswer::Save => {
             app.ui.save_on_close = true;
@@ -422,8 +426,9 @@ fn save_then_close(app: &mut FigApp, ctx: &Context) {
             app.ui.close_after_save_as = Some(uid);
             app.save_as_dialog();
             if app.pending_dialog.is_none() {
-                // No dialog could start: stay open.
+                // No dialog could start: stay open (and a restart asked for goes with it).
                 app.ui.close_after_save_as = None;
+                app.ui.restart = false;
             }
             ctx.request_repaint();
             return;

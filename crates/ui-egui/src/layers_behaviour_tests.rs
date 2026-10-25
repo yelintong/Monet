@@ -498,14 +498,149 @@ fn dragging_up_the_line_under_a_short_pages_list_shrinks_it_at_once() {
 #[test]
 fn the_pages_list_keeps_three_rows_and_leaves_the_layers_room() {
     use crate::layers::{ROW, pages_list_height};
-    // The default: 40% of the panel.
-    assert_eq!(pages_list_height(None, 800.0), 320.0);
+    // A long list: 40% of the panel until the divider is dragged.
+    let long = 60.0 * ROW;
+    assert_eq!(pages_list_height(None, long, 800.0), 320.0);
     // Dragged short or tall, it stays within three rows and the room the layers need.
-    assert_eq!(pages_list_height(Some(0.0), 800.0), 3.0 * ROW);
-    assert_eq!(pages_list_height(Some(5000.0), 800.0), 800.0 - 40.0 - 3.0 * ROW);
-    assert_eq!(pages_list_height(Some(f32::NAN), 800.0), 320.0);
+    assert_eq!(pages_list_height(Some(0.0), long, 800.0), 3.0 * ROW);
+    assert_eq!(pages_list_height(Some(5000.0), long, 800.0), 800.0 - 40.0 - 3.0 * ROW);
+    assert_eq!(pages_list_height(Some(f32::NAN), long, 800.0), 320.0);
     // A panel too short for both keeps the three rows.
-    assert_eq!(pages_list_height(Some(500.0), 100.0), 3.0 * ROW);
+    assert_eq!(pages_list_height(Some(500.0), long, 100.0), 3.0 * ROW);
+}
+
+#[test]
+fn a_short_pages_list_can_still_be_dragged_taller() {
+    use crate::layers::{ROW, pages_list_height};
+    // One page: until the divider is dragged the list hugs its row, so the divider sits right
+    // under it...
+    let one = ROW;
+    assert_eq!(pages_list_height(None, one, 800.0), one);
+    // ...and dragging the divider down makes the list taller than its rows (the room stays
+    // for the pages, the row sits at the top of it) instead of leaving it stuck.
+    assert_eq!(pages_list_height(Some(200.0), one, 800.0), 200.0);
+    // It never shrinks under the row it holds.
+    assert_eq!(pages_list_height(Some(0.0), one, 800.0), one);
+}
+
+#[test]
+fn dragging_the_line_under_a_short_pages_list_grows_it() {
+    // One page: the list hugs its row, and the line under it must still drag both ways — down
+    // grows the pages' room and moves the layers down, instead of staying put.
+    let mut s = Session::new();
+    let rect = id(s.execute("shape.rectangle", &json!({"x": 0, "y": 0, "width": 10, "height": 10})).unwrap());
+    s.execute("select.none", &json!({})).unwrap();
+    let mut u = Ui::new(s);
+    let before = u.row_at(rect).y;
+    let edge = pages_edge_at(&mut u, before);
+    let at = |dy: f32| Pos2::new(150.0, edge + dy);
+    let button = |p, pressed| Event::PointerButton { pos: p, button: egui::PointerButton::Primary, pressed, modifiers: Modifiers::NONE };
+    u.frame(vec![Event::PointerMoved(at(0.0))]);
+    u.frame(vec![button(at(0.0), true)]);
+    // Sixty points: well inside the room the layers must keep, so the drag lands where the
+    // pointer went (a longer one stops at that limit).
+    for k in 1..=6 {
+        u.frame(vec![Event::PointerMoved(at(10.0 * k as f32))]);
+    }
+    u.frame(vec![button(at(60.0), false)]);
+    for _ in 0..30 {
+        u.frame(vec![]);
+    }
+    let after = u.row_at(rect).y;
+    assert!((after - before - 60.0).abs() < 3.0, "the layers moved from {before} to {after}");
+}
+
+/// The selected rows' blocks: the rects painted in the selection colour.
+fn selection_blocks(u: &mut Ui) -> Vec<egui::Rect> {
+    let t = crate::theme::Tokens::get(&u.ctx);
+    crate::live_tests::flat(&u.frame_output(vec![]).shapes)
+        .iter()
+        .filter_map(|sh| match sh {
+            egui::Shape::Rect(r) if r.fill == t.selected_row => Some(r.rect),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn neighbouring_selected_layers_share_one_rounded_block() {
+    use crate::layers::ROW;
+    let mut s = Session::new();
+    let a = id(s.execute("shape.rectangle", &json!({"x": 0, "y": 0, "width": 10, "height": 10})).unwrap());
+    let b = id(s.execute("shape.rectangle", &json!({"x": 20, "y": 0, "width": 10, "height": 10})).unwrap());
+    let c = id(s.execute("shape.rectangle", &json!({"x": 40, "y": 0, "width": 10, "height": 10})).unwrap());
+    s.execute("select.set", &json!({"ids": [a, b, c]})).unwrap();
+    let mut u = Ui::new(s);
+    let (pa, pb, pc) = (u.row_at(a), u.row_at(b), u.row_at(c));
+    let (lo, hi) = (pa.y.min(pb.y).min(pc.y), pa.y.max(pb.y).max(pc.y));
+    let blocks = selection_blocks(&mut u);
+    // One block covers the three neighbouring rows, not one block per row.
+    let spanning: Vec<egui::Rect> = blocks.iter().copied().filter(|r| r.min.y <= lo && r.max.y >= hi).collect();
+    assert_eq!(spanning.len(), 1, "one block spans the run, blocks: {blocks:?}");
+    let block = spanning[0];
+    // Its height runs from the first row's top to the last row's bottom (the rows' pitch is
+    // the gap between their centres, so the block is that plus one row).
+    assert!((block.height() - ((hi - lo) + ROW)).abs() < 3.0, "the block runs over the whole run: {block:?}");
+    // Nothing paints a separate block for a single row inside the run.
+    let inside = blocks.iter().filter(|r| r.height() < 2.0 * ROW && r.min.y > lo && r.max.y < hi).count();
+    assert_eq!(inside, 0, "no per-row block inside the run, blocks: {blocks:?}");
+
+    // Two selected rows with an unselected one between them keep a block each.
+    u.app.session.execute("select.set", &json!({"ids": [a, c]})).unwrap();
+    for _ in 0..3 {
+        u.frame(vec![]);
+    }
+    let blocks = selection_blocks(&mut u);
+    let spanning = blocks.iter().filter(|r| r.min.y <= lo && r.max.y >= hi).count();
+    assert_eq!(spanning, 0, "rows with a gap between them stay separate, blocks: {blocks:?}");
+}
+
+/// Every rect the panel painted: its rect, its corners and its fill.
+fn painted_rects(u: &mut Ui) -> Vec<(egui::Rect, egui::CornerRadius, egui::Color32)> {
+    crate::live_tests::flat(&u.frame_output(vec![]).shapes)
+        .iter()
+        .filter_map(|sh| match sh {
+            egui::Shape::Rect(r) => Some((r.rect, r.corner_radius, r.fill)),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn a_selected_parent_and_the_rows_inside_it_share_one_block() {
+    use crate::layers::ROW;
+    // A frame with three layers inside it. Selecting the frame marks the rows inside it too, and
+    // the whole group must read as ONE block — not a rounded block with a stack of square rows
+    // under it.
+    let mut s = Session::new();
+    let f = id(s.execute("frame.create", &json!({"x": 0, "y": 0, "width": 200, "height": 200, "name": "F"})).unwrap());
+    let kids = ["a", "b", "c"].map(|n| rect(&mut s, n, 10.0, Some(f)));
+    s.execute("select.set", &json!({"ids": [f]})).unwrap();
+    let mut u = Ui::new(s);
+    u.app.ui.expanded.insert(f);
+    u.frame(vec![]);
+    let t = crate::theme::Tokens::get(&u.ctx);
+    let (top, last) = (u.row_at(f).y, kids.map(|k| u.row_at(k).y).into_iter().fold(f32::MIN, f32::max));
+    let want_h = (last - top) + ROW;
+    let rects = painted_rects(&mut u);
+    // Only the rows' own rects: the left rail's tabs wear the same two colours.
+    let rows_only = |(r, _, _): &(egui::Rect, egui::CornerRadius, egui::Color32)| r.min.x >= 60.0;
+    // One block carries the tint of the rows inside the selected one, over the whole group.
+    let tinted: Vec<_> = rects.iter().filter(|x| rows_only(x)).filter(|(_, _, fill)| *fill == t.selected_row_child).collect();
+    assert_eq!(tinted.len(), 1, "one block for the group, not one per row: {rects:?}");
+    let (block, corners, _) = *tinted[0];
+    assert!((block.height() - want_h).abs() < 3.0, "the block runs over the parent and its rows: {block:?}, want {want_h}");
+    assert_eq!(corners, egui::CornerRadius::same(5), "the block is rounded: {corners:?}");
+    // The selected parent keeps its stronger band at the top of the block, rounding the block's
+    // own corners only — the joins inside the block stay straight.
+    let bands: Vec<_> = rects.iter().filter(|x| rows_only(x)).filter(|(_, _, fill)| *fill == t.selected_row).collect();
+    assert_eq!(bands.len(), 1, "one band, for the selected parent: {rects:?}");
+    let (band, band_corners, _) = *bands[0];
+    assert!(
+        (band.min.y - block.min.y).abs() < 1.0 && (band.max.y - (block.min.y + ROW)).abs() < 1.0,
+        "the band is the parent's row at the top of the block: {band:?} in {block:?}"
+    );
+    assert_eq!(band_corners, egui::CornerRadius { nw: 5, ne: 5, sw: 0, se: 0 }, "the band rounds the block's top corners only: {band_corners:?}");
 }
 
 /// Selecting a page that is far down the list automatically scrolls it into view.

@@ -7,7 +7,7 @@ use figcraft_engine::Session;
 use serde_json::json;
 
 use crate::layers_drag_tests::Ui;
-use crate::live_tests::{flat, text_center};
+use crate::live_tests::{flat, text_center, texts};
 use crate::variables_panel::{Geom, Presentation, Rename};
 
 /// The test window's screen.
@@ -496,4 +496,49 @@ fn dragging_within_a_folder_moves_one_place() {
     let to = row(&shapes, "sm") + vec2(0.0, 8.0);
     drag_from(&mut u, from, to);
     assert_eq!(shown(&u), ["radius", "color/brand", "color/surface", "space/sm", "space/md"]);
+}
+
+#[test]
+fn a_colour_variables_alpha_is_a_field_of_its_own() {
+    let mut s = Session::new();
+    s.execute("variable.createCollection", &json!({"name": "Theme", "modes": ["Light"]})).unwrap();
+    s.execute("variable.create", &json!({"collection": "Theme", "name": "bg", "type": "color", "value": "#02DA96"})).unwrap();
+    let mut u = Ui::new(s);
+    u.app.ui.variables = Some(Default::default());
+    for _ in 0..3 {
+        u.frame(vec![]);
+    }
+    // The percentage at the right end of the value takes typing like the hex does.
+    let shapes = flat(&u.frame_output(vec![]).shapes);
+    click(&mut u, alpha_of_row(&shapes, "02DA96"));
+    u.frame(vec![egui::Event::Text("40".into())]);
+    for pressed in [true, false] {
+        u.frame(vec![egui::Event::Key { key: egui::Key::Enter, physical_key: None, pressed, repeat: false, modifiers: egui::Modifiers::NONE }]);
+    }
+    u.frame(vec![]);
+    assert_eq!(colour_of(&u, "bg").to_css_hex(), "#02DA9666", "40% of the same green");
+    assert!(u.app.ui.last_error.is_none(), "{:?}", u.app.ui.last_error);
+}
+
+/// The middle of the alpha field that sits beside the hex `hex` on screen (the toolbar has
+/// percentages of its own: only the one on that row is the variable's).
+fn alpha_of_row(shapes: &[Shape], hex: &str) -> Pos2 {
+    let row = text_center(shapes, hex).y;
+    texts(shapes)
+        .into_iter()
+        .map(|(t, p, size)| (t, p + size / 2.0))
+        .filter(|(t, p)| t.ends_with('%') && (p.y - row).abs() < 6.0)
+        .map(|(_, p)| p)
+        .next()
+        .unwrap_or_else(|| panic!("no alpha beside {hex:?}"))
+}
+
+/// The colour variable named `name`.
+fn colour_of(u: &Ui, name: &str) -> figcraft_color::Color {
+    let doc = u.app.session.doc().unwrap();
+    let v = doc.variables.variables.iter().find(|v| v.name == name).unwrap_or_else(|| panic!("no variable {name:?}"));
+    match v.values.values().next() {
+        Some(figcraft_doc::VariableValue::Color(c)) => *c,
+        other => panic!("{name:?} is not a colour: {other:?}"),
+    }
 }
