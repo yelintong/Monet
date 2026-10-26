@@ -5,8 +5,13 @@
 //! command (one undo step). The Design panel shows the topmost item first while the model keeps
 //! lists bottom first; other lists (an interaction's actions, pages) show their items in model
 //! order.
+//!
+//! A list whose rows are grouped under captions the list draws itself (the Local styles list)
+//! registers each caption with [`ListDrag::header`] and resolves its own drops with
+//! [`ListDrag::finish_in`]: there, a drop has to say which side of a caption it belongs to, so the
+//! caller — which knows what each caption opens — decides where it lands.
 
-use egui::{AsId, Id, Rect, Sense, Ui, pos2, vec2};
+use egui::{AsId, Id, Pos2, Rect, Sense, Ui, pos2, vec2};
 
 use crate::icons::{self, Icon};
 use crate::theme::{Tokens, regular};
@@ -32,6 +37,20 @@ fn grip_of(list: Id, index: usize) -> Id {
     list.with(("grip", index))
 }
 
+/// Where a drop landed: the item's model index and the index it goes to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Dropped {
+    pub from: usize,
+    pub to: usize,
+}
+
+impl Dropped {
+    /// The move as `(from, to)` model indices (for `fill.move` and friends).
+    pub fn pair(self) -> (usize, usize) {
+        (self.from, self.to)
+    }
+}
+
 /// One list's rows in one frame: lay out each row, register it with [`ListDrag::row`], then call
 /// [`ListDrag::finish`].
 pub struct ListDrag {
@@ -45,6 +64,17 @@ pub struct ListDrag {
     rows: Vec<(usize, Rect)>,
     /// What the pointer carries.
     label: Option<String>,
+    /// Where a drop is taken, when the caller knows better than half a row around the rows: a
+    /// list whose groups open with a caption (the Local styles list) takes a drop anywhere in the
+    /// group, so its first and last rows are as easy to reach as the ones between.
+    bounds: Option<Rect>,
+    /// How far the insertion line stays inside the rows' sides.
+    line_inset: f32,
+    /// The captions drawn between the rows (a folder's header in the Local styles list), in the
+    /// order they were laid out. They take no drag of their own, but a drop over one has to say
+    /// which side of it the drop belongs to — which is why the caller resolves those drops itself
+    /// (see [`ListDrag::finish_in`]).
+    headers: Vec<Rect>,
 }
 
 impl ListDrag {
@@ -69,7 +99,28 @@ impl ListDrag {
             ui.data_mut(|d| d.remove::<usize>(id));
             dragging = None;
         }
-        Self { list, reversed, dragging, rows: Vec::new(), label: None }
+        Self { list, reversed, dragging, rows: Vec::new(), label: None, bounds: None, line_inset: PAD, headers: Vec::new() }
+    }
+
+    /// Take drops anywhere in `bounds` (elsewhere: half a row around the rows). A list whose
+    /// groups open with a caption passes the whole group, so its head and tail are full targets.
+    pub fn bounds(mut self, bounds: Rect) -> Self {
+        self.bounds = Some(bounds);
+        self
+    }
+
+    /// Keep the insertion line `inset` inside the rows' sides (the rows may sit inset themselves).
+    pub fn line_inset(mut self, inset: f32) -> Self {
+        self.line_inset = inset;
+        self
+    }
+
+    /// A caption drawn between the rows (a folder's header): it starts another group, so a drop
+    /// over it has to say which side of the caption it belongs to — the end of the group above or
+    /// the head of the one below. The caller resolves that (see [`ListDrag::finish_in`]); this
+    /// only keeps the caption in the area the insertion line spans.
+    pub fn header(&mut self, rect: Rect) {
+        self.headers.push(rect);
     }
 
     /// Item `index` (model order) was laid out with its main row at `header`, covering `extent`
@@ -109,15 +160,16 @@ impl ListDrag {
     }
 
     /// After the rows: while dragging, the insertion line and the dragged label; on release over
-    /// the list, the move as `(from, to)` model indices (for `fill.move` and friends).
-    pub fn finish(self, ui: &mut Ui) -> Option<(usize, usize)> {
+    /// the list, the move (for `fill.move` and friends).
+    pub fn finish(self, ui: &mut Ui) -> Option<Dropped> {
         let from = self.dragging?;
         let (pos, released) = ui.input(|i| (i.pointer.latest_pos(), i.pointer.any_released()));
-        let target = pos.and_then(|p| drop_slot(&self.rows, from, p, self.reversed));
+        let target = pos.and_then(|p| drop_slot(&self.rows, from, p, self.reversed, self.bounds));
         if let Some((_, y)) = target
             && let Some(span) = self.span()
         {
-            widgets::insertion_line(ui.painter(), span.min.x + PAD, span.max.x - PAD, y);
+            let (x0, x1) = (span.min.x + self.line_inset, span.max.x - self.line_inset);
+            widgets::insertion_line(ui.painter(), x0, x1.max(x0 + 1.0), y);
         }
         if let (Some(p), Some(label)) = (pos, self.label) {
             let t = Tokens::get(ui.ctx());
@@ -128,22 +180,61 @@ impl ListDrag {
             return None;
         }
         ui.data_mut(|d| d.remove::<usize>(drag_id(self.list)));
-        target.map(|(to, _)| (from, to))
+        target.map(|(to, _)| Dropped { from, to })
     }
 
-    /// The area all rows cover.
+    /// After the rows and the captions between them: while dragging, the insertion line and the
+    /// dragged label; on release over the list, `resolve` says where the drop lands — the line's
+    /// y, and what the caller makes of it (None where the drop changes nothing). A list whose
+    /// groups open with a caption (the Local styles list) resolves its drops here: a caption takes
+    /// a drop on either side of it, and only the caller knows which group each side belongs to.
+    pub fn finish_in<T>(self, ui: &mut Ui, resolve: impl FnOnce(usize, Pos2) -> Option<(f32, T)>) -> Option<T> {
+        let from = self.dragging?;
+        let (pos, released) = ui.input(|i| (i.pointer.latest_pos(), i.pointer.any_released()));
+        let made = pos.filter(|p| self.area().is_none_or(|a| a.contains(*p))).and_then(|p| resolve(from, p));
+        if let Some((y, _)) = &made
+            && let Some(span) = self.span()
+        {
+            let (x0, x1) = (span.min.x + self.line_inset, span.max.x - self.line_inset);
+            widgets::insertion_line(ui.painter(), x0, x1.max(x0 + 1.0), *y);
+        }
+        if let (Some(p), Some(label)) = (pos, self.label) {
+            let t = Tokens::get(ui.ctx());
+            let galley = ui.painter().layout_no_wrap(label, regular(11.0), t.text);
+            widgets::drag_ghost(ui.ctx(), p, galley);
+        }
+        if !released {
+            return None;
+        }
+        ui.data_mut(|d| d.remove::<usize>(drag_id(self.list)));
+        made.map(|(_, made)| made)
+    }
+
+    /// Where a drop is taken: `bounds` when the caller gave them (a whole group, its captions
+    /// included), else half a row around the rows.
+    fn area(&self) -> Option<Rect> {
+        let (first, last) = (self.rows.first()?.1, self.rows.last()?.1);
+        let slack = first.height().min(last.height()) / 2.0;
+        Some(self.bounds.unwrap_or_else(|| {
+            Rect::from_min_max(pos2(first.min.x.min(last.min.x), first.min.y - slack), pos2(first.max.x.max(last.max.x), last.max.y + slack))
+        }))
+    }
+
+    /// The area all rows and captions cover.
     fn span(&self) -> Option<Rect> {
-        self.rows.iter().map(|(_, r)| *r).reduce(|a, b| a.union(b))
+        self.rows.iter().map(|(_, r)| *r).chain(self.headers.iter().copied()).reduce(|a, b| a.union(b))
     }
 }
 
 /// Where item `from` lands when dropped at `p` over `rows` (top to bottom; the model's last item
 /// first when `reversed`): its new model index and the insertion line's y. None outside the list
-/// (half a row of slack above and below) or where it would stay put.
-fn drop_slot(rows: &[(usize, Rect)], from: usize, p: egui::Pos2, reversed: bool) -> Option<(usize, f32)> {
+/// (`bounds`, or half a row of slack above and below the rows) or where nothing would change.
+fn drop_slot(rows: &[(usize, Rect)], from: usize, p: egui::Pos2, reversed: bool, bounds: Option<Rect>) -> Option<(usize, f32)> {
     let (first, last) = (rows.first()?.1, rows.last()?.1);
     let slack = first.height().min(last.height()) / 2.0;
-    let area = Rect::from_min_max(pos2(first.min.x.min(last.min.x), first.min.y - slack), pos2(first.max.x.max(last.max.x), last.max.y + slack));
+    let area = bounds.unwrap_or_else(|| {
+        Rect::from_min_max(pos2(first.min.x.min(last.min.x), first.min.y - slack), pos2(first.max.x.max(last.max.x), last.max.y + slack))
+    });
     if !area.contains(p) {
         return None;
     }
@@ -151,13 +242,15 @@ fn drop_slot(rows: &[(usize, Rect)], from: usize, p: egui::Pos2, reversed: bool)
     let shown = rows.iter().position(|(i, _)| *i == from)?;
     // The gap under the pointer: how many rows sit above it.
     let gap = rows.iter().filter(|(_, r)| r.center().y < p.y).count();
+    // The row above the gap is the dragged one (it goes back where it was), or the one below is.
     if gap == shown || gap == shown + 1 {
         return None;
     }
-    let y = match (gap.checked_sub(1).and_then(|g| rows.get(g)), rows.get(gap)) {
-        (Some((_, above)), Some((_, below))) => (above.max.y + below.min.y) / 2.0,
-        (None, _) => first.min.y,
-        (_, None) => last.max.y,
+    // The line sits on the edge of the row the drop belongs to: over the row below the gap, or
+    // under the one above it at the end of the list.
+    let y = match rows.get(gap) {
+        Some((_, below)) => below.min.y,
+        None => rows[gap - 1].1.max.y,
     };
     // Shown position once moved, then its model index.
     let at = if gap > shown { gap - 1 } else { gap };
@@ -210,19 +303,35 @@ mod tests {
     fn drop_slots_map_to_model_indices() {
         let r = rows(3);
         // Drag the bottom item (model 0, shown last) above the top one: it becomes the top (2).
-        assert_eq!(drop_slot(&r, 0, pos2(100.0, 4.0), true), Some((2, 0.0)));
+        assert_eq!(drop_slot(&r, 0, pos2(100.0, 4.0), true, None), Some((2, 0.0)));
         // Between the first and second rows: model 1.
-        assert_eq!(drop_slot(&r, 0, pos2(100.0, 40.0), true), Some((1, 32.0)));
+        assert_eq!(drop_slot(&r, 0, pos2(100.0, 40.0), true, None), Some((1, 32.0)));
         // Around itself: no move.
-        assert_eq!(drop_slot(&r, 0, pos2(100.0, 70.0), true), None);
-        assert_eq!(drop_slot(&r, 0, pos2(100.0, 95.0), true), None);
+        assert_eq!(drop_slot(&r, 0, pos2(100.0, 70.0), true, None), None);
+        assert_eq!(drop_slot(&r, 0, pos2(100.0, 95.0), true, None), None);
         // The top item to the bottom: model 0.
-        assert_eq!(drop_slot(&r, 2, pos2(100.0, 95.0), true), Some((0, 96.0)));
+        assert_eq!(drop_slot(&r, 2, pos2(100.0, 95.0), true, None), Some((0, 96.0)));
         // Outside the list, or an item it doesn't show.
-        assert_eq!(drop_slot(&r, 2, pos2(100.0, 200.0), true), None);
-        assert_eq!(drop_slot(&r, 2, pos2(400.0, 95.0), true), None);
-        assert_eq!(drop_slot(&r, 7, pos2(100.0, 4.0), true), None);
-        assert_eq!(drop_slot(&[], 0, pos2(0.0, 0.0), true), None);
+        assert_eq!(drop_slot(&r, 2, pos2(100.0, 200.0), true, None), None);
+        assert_eq!(drop_slot(&r, 2, pos2(400.0, 95.0), true, None), None);
+        assert_eq!(drop_slot(&r, 7, pos2(100.0, 4.0), true, None), None);
+        assert_eq!(drop_slot(&[], 0, pos2(0.0, 0.0), true, None), None);
+    }
+
+    #[test]
+    fn a_given_area_takes_drops_over_the_whole_group() {
+        // Rows 0..96 with a caption above them (the group's header) and room below.
+        let r = rows(3);
+        let area = Rect::from_min_max(pos2(0.0, -32.0), pos2(240.0, 128.0));
+        // Over the caption, far above the first row: the head of the list.
+        assert_eq!(drop_slot(&r, 0, pos2(100.0, -20.0), false, Some(area)), Some((0, 0.0)));
+        // Well below the last row: the tail.
+        assert_eq!(drop_slot(&r, 2, pos2(100.0, 120.0), false, Some(area)), Some((2, 96.0)));
+        // The area still bounds the drop: just outside it nothing happens.
+        assert_eq!(drop_slot(&r, 2, pos2(100.0, 140.0), false, Some(area)), None);
+        // Dropping a row where it already is stays put, however wide the area.
+        assert_eq!(drop_slot(&r, 2, pos2(100.0, -20.0), false, Some(area)), None);
+        assert_eq!(drop_slot(&r, 0, pos2(100.0, 120.0), false, Some(area)), None);
     }
 
     #[test]
@@ -230,11 +339,11 @@ mod tests {
         // Shown in model order: model index k at row k.
         let r: Vec<(usize, Rect)> = (0..3).map(|k| (k, Rect::from_min_size(pos2(0.0, k as f32 * 32.0), vec2(240.0, 32.0)))).collect();
         // The first item below the last: model 2.
-        assert_eq!(drop_slot(&r, 0, pos2(100.0, 95.0), false), Some((2, 96.0)));
+        assert_eq!(drop_slot(&r, 0, pos2(100.0, 95.0), false, None), Some((2, 96.0)));
         // The last item above the first: model 0.
-        assert_eq!(drop_slot(&r, 2, pos2(100.0, 4.0), false), Some((0, 0.0)));
+        assert_eq!(drop_slot(&r, 2, pos2(100.0, 4.0), false, None), Some((0, 0.0)));
         // The first between the second and third: model 1.
-        assert_eq!(drop_slot(&r, 0, pos2(100.0, 70.0), false), Some((1, 64.0)));
-        assert_eq!(drop_slot(&r, 1, pos2(100.0, 40.0), false), None);
+        assert_eq!(drop_slot(&r, 0, pos2(100.0, 70.0), false, None), Some((1, 64.0)));
+        assert_eq!(drop_slot(&r, 1, pos2(100.0, 40.0), false, None), None);
     }
 }

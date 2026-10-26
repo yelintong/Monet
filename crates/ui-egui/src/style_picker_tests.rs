@@ -32,6 +32,34 @@ fn names_split_into_folders() {
     assert!(StyleSlot::Text.holds(&StyleKind::Text { style: Default::default() }) && StyleSlot::Text.has_grid());
 }
 
+/// The Local styles list's lines as text: a folder's label, or a style's last part, indented by
+/// the level it sits at.
+fn shape(lines: &[Entry]) -> Vec<String> {
+    lines
+        .iter()
+        .map(|e| match e {
+            Entry::Folder { label, depth, .. } => format!("{}{label}", "  ".repeat(*depth)),
+            Entry::Style(s, depth) => format!("{}·{}", "  ".repeat(*depth), leaf(&s.name)),
+        })
+        .collect()
+}
+
+#[test]
+fn folders_nest_as_deep_as_their_names_go() {
+    let st = |id: &str, name: &str| Style {
+        id: id.into(),
+        name: name.into(),
+        description: String::new(),
+        kind: StyleKind::Paint { paints: vec![] },
+        bound: Default::default(),
+    };
+    let styles = [st("a", "Top"), st("b", "Brand/Primary"), st("c", "Brand/Blue/500"), st("d", "Loose")];
+    // A name's folders are folders even when nothing else names them: "Brand" for "Brand/Blue".
+    assert_eq!(shape(&entries(styles.iter(), |_| false)), ["·Top", "·Loose", "Brand", "  ·Primary", "  Blue", "    ·500"]);
+    // Folding a folder hides its whole branch, not just the styles named directly in it.
+    assert_eq!(shape(&entries(styles.iter(), |p| p == "Brand")), ["·Top", "·Loose", "Brand"]);
+}
+
 fn frame(ctx: &egui::Context, app: &mut FigApp, t: &mut f64) {
     frame_with(ctx, app, t, vec![]);
 }
@@ -192,8 +220,25 @@ fn a_click_in_the_colour_picker_keeps_the_style_editor_open() {
     );
 }
 
+/// The Local styles list's rows as `Slot`s, `LS_ROW_H` each from `top` down, in the order the
+/// entries are drawn: the styles' indices counting the styles only.
+fn slots_of<'a>(styles: &[&'a Style], top: f32) -> Vec<Slot<'a>> {
+    let mut out: Vec<Slot<'a>> = Vec::new();
+    for (i, e) in entries(styles.iter().copied(), |_| false).into_iter().enumerate() {
+        let r = Rect::from_min_size(pos2(0.0, top + i as f32 * LS_ROW_H), vec2(100.0, LS_ROW_H));
+        match e {
+            Entry::Folder { path, .. } => out.push(Slot::Header { path, rect: r }),
+            Entry::Style(s, _) => {
+                let index = out.iter().filter(|s| matches!(s, Slot::Style { .. })).count();
+                out.push(Slot::Style { index, style: s, rect: r });
+            }
+        }
+    }
+    out
+}
+
 #[test]
-fn local_style_drops_move_into_the_folder_above() {
+fn local_style_drops_join_the_folder_the_line_is_in() {
     let st = |id: &str, name: &str| Style {
         id: id.into(),
         name: name.into(),
@@ -202,14 +247,35 @@ fn local_style_drops_move_into_the_folder_above() {
         bound: Default::default(),
     };
     let (a, b, c) = (st("a", "Top"), st("b", "Brand/One"), st("c", "Brand/Two"));
-    let shown = [&a, &b, &c];
-    // `Top` dropped between One and Two: into Brand, before Two.
-    assert_eq!(drop_move(&shown, 0, 1), Some(json!({"styles": ["a"], "folder": "Brand", "before": "c"})));
-    // Two dropped at the top: the folder of the style below it (none), before Top.
-    assert_eq!(drop_move(&shown, 2, 0), Some(json!({"styles": ["c"], "folder": "", "before": "a"})));
-    // One dropped last: Brand, at the end.
-    assert_eq!(drop_move(&shown, 1, 2), Some(json!({"styles": ["b"], "folder": "Brand"})));
-    assert_eq!(drop_move(&shown, 5, 0), None);
+    let mut doc = Document::new("d");
+    doc.styles = vec![a.clone(), b.clone(), c.clone()];
+    // Rows: Top, Brand, One, Two — a pointer in a row's band (`dy` from its center), a caption's
+    // top half at `dy` negative, its bottom half positive.
+    let slots = slots_of(&[&a, &b, &c], 0.0);
+    let at = |i: usize, dy: f32| Pos2::new(50.0, slots[i].rect().center().y + dy);
+    let query = |from: usize, p: Pos2| drop_move(&doc, &slots, from, p).map(|(_, q)| q);
+    // `Top` dropped between One and Two: the line is in Brand's rows, so it joins Brand.
+    assert_eq!(query(0, at(2, 0.0)), Some(json!({"styles": ["a"], "before": "c", "name": "Brand/Top"})));
+    // Two dropped above Top: out of Brand, before Top.
+    assert_eq!(query(2, Pos2::new(50.0, -5.0)), Some(json!({"styles": ["c"], "before": "a", "name": "Two"})));
+    // One dropped last: the row above gives the folder, so it stays in Brand, at the end.
+    assert_eq!(query(1, at(3, 5.0)), Some(json!({"styles": ["b"]})));
+    // Two dropped on the top half of Brand's header: that ends Top's rows, so it joins Top (and
+    // loses the folder from its name) without moving.
+    assert_eq!(query(2, at(1, -1.0)), Some(json!({"styles": ["c"], "before": "b", "name": "Two"})));
+    // A folder that already has that last part numbers it instead of repeating the name.
+    let (d, e) = (st("d", "Other/One"), st("e", "Brand/Three"));
+    doc.styles = vec![b.clone(), e.clone(), d.clone()];
+    // Rows: Brand, One, Three, Other, One(Other's).
+    let slots = slots_of(&[&b, &e, &d], 0.0);
+    let at = |i: usize, dy: f32| Pos2::new(50.0, slots[i].rect().center().y + dy);
+    let query = |from: usize, p: Pos2| drop_move(&doc, &slots, from, p).map(|(_, q)| q);
+    assert_eq!(query(2, at(1, 0.0)), Some(json!({"styles": ["d"], "before": "e", "name": "Brand/One 2"})));
+    // The last row of a group dropped on the end of the group above joins it in place: nothing
+    // follows, so only its name changes. The line is the same from either side of the caption.
+    assert_eq!(query(2, at(3, -1.0)), Some(json!({"styles": ["d"], "name": "Brand/One 2"})));
+    assert_eq!(query(2, at(2, 5.0)), Some(json!({"styles": ["d"], "name": "Brand/One 2"})));
+    assert_eq!(query(5, at(0, 0.0)), None);
 }
 
 #[test]
@@ -238,6 +304,176 @@ fn local_styles_list_draws_by_type_and_folder() {
 fn edit_local_for_test(app: &mut FigApp, ctx: &egui::Context) {
     let mut out = ctx.run_ui(RawInput::default(), |ui| edit_local(app, ui, StyleSlot::Fill, "Danger"));
     out.textures_delta.clear();
+}
+
+/// The `+`s the Local styles list draws, as the 16 pt box each one's arms span: the section's, one
+/// on each type's caption, and one on every folder's header. Their right edge sits 8 pt in from the
+/// panel's, and each is centred on the row it belongs to.
+#[test]
+fn local_styles_pluses_reach_the_panels_right_edge() {
+    let mut s = Session::new();
+    // "Base" is a style of its own; "Brand/Blue/500" names two folders, each holding a style.
+    for name in ["Base", "Brand/Blue/500"] {
+        s.execute("style.create", &json!({"type": "paint", "name": name, "value": "#0D99FF"})).unwrap();
+    }
+    let mut app = FigApp::new(s, Box::new(NoServices));
+    let ctx = egui::Context::default();
+    let mut t = 0.0;
+    let mut out = None;
+    for _ in 0..3 {
+        out = Some(frame_shapes(&ctx, &mut app, &mut t));
+    }
+    let shapes = out.expect("frames drawn");
+    let icon = Tokens::get(&ctx).icon_secondary;
+    // One on the section, one on the Color styles caption, one on each of the two folders.
+    let pluses = pluses(&shapes, icon);
+    assert_eq!(pluses.len(), 4, "{pluses:?}");
+    // The panel's content edge: the separators drawn inside it reach it. The toolbar's own rule
+    // runs the whole window, so only the right half's lines count. A separator's stroke is drawn
+    // to the edge and so ends half a point past the rows, which the allowance below covers.
+    let edge = segments(&shapes, Tokens::get(&ctx).border).iter().filter(|s| s.0.x > 720.0).flat_map(|s| [s.0.x, s.1.x]).fold(f32::MIN, f32::max);
+    let text = |s: &str| -> Pos2 {
+        let (_, p, size) = crate::live_tests::texts(&shapes).into_iter().find(|(t, _, _)| t == s).unwrap_or_else(|| panic!("no text {s:?}"));
+        p + size / 2.0
+    };
+    for (at, box_) in &pluses {
+        assert!((box_ - 16.0).abs() < 0.01, "a + is 16 pt: {box_}");
+        let right = at.x + box_ / 2.0;
+        assert!((edge - right - 8.0).abs() < 1.0, "a + ends 8 pt in from the panel's edge: {right} of {edge}");
+    }
+    // The rows that carry a `+`: the section's header, the type's caption, and each folder's. A
+    // style's own row carries none, which the count above pins down.
+    let mut want: Vec<f32> = [tr("Local styles"), StyleSlot::Fill.title()].iter().map(|s| text(s).y).collect();
+    want.extend(["Brand", "Blue"].map(|f| text(f).y));
+    let mut got: Vec<f32> = pluses.iter().map(|(at, _)| at.y).collect();
+    want.sort_by(|a, b| a.total_cmp(b));
+    got.sort_by(|a, b| a.total_cmp(b));
+    assert_eq!(want.len(), got.len(), "one + per row that takes one");
+    for (w, g) in want.iter().zip(&got) {
+        // A galley's box sits a point or so off its glyphs, so "on the row" allows a couple of
+        // points: the rows are 24 pt apart, so a `+` on the wrong one is far outside that.
+        assert!((w - g).abs() < 2.0, "a + sits on its row: {g} vs {w}");
+    }
+}
+
+/// The `+`s drawn in `shapes`, as the centre and the 16 pt box each one's arms span: a `+` is two
+/// segments crossing at their middle, one vertical and one horizontal.
+fn pluses(shapes: &[egui::Shape], icon: egui::Color32) -> Vec<(Pos2, f32)> {
+    let mut out: Vec<(Pos2, f32)> = Vec::new();
+    for a in segments(shapes, icon) {
+        for b in segments(shapes, icon) {
+            let (v, h) = if a.0.x == a.1.x && b.0.y == b.1.y { (a, b) } else { continue };
+            let mid = |s: (Pos2, Pos2)| s.0 + (s.1 - s.0) / 2.0;
+            if (mid(v) - mid(h)).length() < 0.01 {
+                // The arms span 11 of the 16 grid units, so the box is that much wider than they are.
+                let arm = (v.1.y - v.0.y).abs().max((h.1.x - h.0.x).abs());
+                out.push((mid(v), arm * 16.0 / 11.0));
+            }
+        }
+    }
+    out
+}
+
+/// The `+`s ask for a new style: a folder's makes one of the type, in that folder, and the
+/// section's asks which type in a menu. Either way the new style opens in the editor.
+#[test]
+fn local_styles_pluses_make_a_style_and_open_it() {
+    let mut s = Session::new();
+    for name in ["Base", "Brand/Blue/500"] {
+        s.execute("style.create", &json!({"type": "paint", "name": name, "value": "#0D99FF"})).unwrap();
+    }
+    let mut app = FigApp::new(s, Box::new(NoServices));
+    let ctx = egui::Context::default();
+    let mut t = 0.0;
+    let icon = Tokens::get(&ctx).icon_secondary;
+    // The `+`s top to bottom: the section's, the caption's, the Brand folder's, the Blue folder's
+    // (Blue sits inside Brand, as its name says).
+    let rows = |app: &mut FigApp, t: &mut f64| -> Vec<Pos2> {
+        let mut shapes = Vec::new();
+        for _ in 0..3 {
+            shapes = frame_shapes(&ctx, app, t);
+        }
+        let mut at: Vec<Pos2> = pluses(&shapes, icon).into_iter().map(|(c, _)| c).collect();
+        at.sort_by(|a, b| a.y.total_cmp(&b.y));
+        at
+    };
+    let names = |app: &FigApp| -> Vec<(String, &'static str)> {
+        app.session.doc().unwrap().styles.iter().map(|s| (s.name.clone(), s.kind.type_name())).collect()
+    };
+    // A `+` makes `want` of type `t` and opens it in the editor.
+    let made = |app: &mut FigApp, t: &mut f64, which: usize, want: &str, kind: &str| {
+        let at = rows(app, t);
+        assert!(at.len() > 3, "the section, the caption and both folders: {at:?}");
+        click_at(&ctx, app, t, at[which]);
+        let made = names(app);
+        assert!(made.iter().any(|(n, k)| n == want && *k == kind), "{want} of {kind}: {made:?}");
+        assert_eq!(editing(app).as_deref(), Some(want), "{want} opens in the editor");
+    };
+
+    // A folder's `+` makes one of the type, in that folder: no menu to pick from. The deepest
+    // folder first, then the one it sits in, so the list grows under both.
+    made(&mut app, &mut t, 3, "Brand/Blue/Color 1", "paint");
+    made(&mut app, &mut t, 2, "Brand/Color 1", "paint");
+    // A type's caption `+` makes one of that type, at the top level.
+    made(&mut app, &mut t, 1, "Color 1", "paint");
+    // The section's `+` asks which type: its menu lists them all, and one makes that type.
+    let at = rows(&mut app, &mut t);
+    click_at(&ctx, &mut app, &mut t, at[0]);
+    let menu = frame_shapes(&ctx, &mut app, &mut t);
+    let item = crate::live_tests::texts(&menu)
+        .into_iter()
+        .find(|(t, _, _)| t == StyleSlot::Grid.title())
+        .map(|(_, p, size)| p + size / 2.0)
+        .unwrap_or_else(|| panic!("no {} item in the menu", StyleSlot::Grid.title()));
+    click_at(&ctx, &mut app, &mut t, item);
+    let made = names(&app);
+    assert!(made.iter().any(|(n, k)| n == "Grid 1" && *k == StyleSlot::Grid.create_type()), "{made:?}");
+    assert_eq!(editing(&app).as_deref(), Some("Grid 1"), "Grid 1 opens in the editor");
+}
+
+/// The last frame's shapes, with the Design panel showing the document's Local styles.
+fn frame_shapes(ctx: &egui::Context, app: &mut FigApp, t: &mut f64) -> Vec<egui::Shape> {
+    plus_frame(ctx, app, t, Vec::new())
+}
+
+/// One frame carrying `events`, and the shapes it painted (popups included).
+fn plus_frame(ctx: &egui::Context, app: &mut FigApp, t: &mut f64, events: Vec<egui::Event>) -> Vec<egui::Shape> {
+    *t += 1.0 / 60.0;
+    let input = RawInput { screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(1440.0, 900.0))), time: Some(*t), events, ..Default::default() };
+    let mut out = ctx.run_ui(input, |ui| app.ui(ui));
+    out.textures_delta.clear();
+    out.shapes.into_iter().flat_map(|c| crate::live_tests::flat(std::slice::from_ref(&c))).collect()
+}
+
+/// A left click at `p`: the pointer goes there, presses, and lets go.
+fn click_at(ctx: &egui::Context, app: &mut FigApp, t: &mut f64, p: Pos2) {
+    for pressed in [true, false] {
+        plus_frame(
+            ctx,
+            app,
+            t,
+            vec![
+                egui::Event::PointerMoved(p),
+                egui::Event::PointerButton { pos: p, button: egui::PointerButton::Primary, pressed, modifiers: Default::default() },
+            ],
+        );
+    }
+}
+
+/// The style the Local styles editor has open, by name.
+fn editing(app: &FigApp) -> Option<String> {
+    app.ui.style_picker.as_ref().and_then(|p| p.edit.as_ref()).map(|e| e.name.clone())
+}
+
+/// Straight segments in `c`.
+fn segments(shapes: &[egui::Shape], c: egui::Color32) -> Vec<(Pos2, Pos2)> {
+    shapes
+        .iter()
+        .filter_map(|s| match s {
+            egui::Shape::LineSegment { points, stroke } if stroke.color == c => Some((points[0], points[1])),
+            _ => None,
+        })
+        .collect()
 }
 
 /// Commits `typed` in the text style editor's field `field` ("ts_lh" / "ts_ls") with Enter and
@@ -328,7 +564,8 @@ fn editor_left(u: &mut crate::layers_drag_tests::Ui) -> f32 {
         if let egui::Shape::Text(t) = &c.shape
             && t.galley.text() == "Edit style"
         {
-            left = Some(t.pos.x - 30.0);
+            // The shared popover's title sits 16 in from its edge, its content 8 (its padding).
+            left = Some(t.pos.x - 8.0);
         }
     }
     left.expect("the editor's title")
@@ -442,4 +679,93 @@ fn text_style_editor_binds_variables_from_its_fields() {
     let Some(StyleKind::Text { style: def }) = doc.style("Body").map(|s| &s.kind) else { panic!("a text style") };
     assert_eq!((def.font_size, def.font_style.as_str()), (18.0, "Bold"), "the style takes the variables' values");
     assert!(u.app.ui.last_error.is_none(), "{:?}", u.app.ui.last_error);
+}
+
+// ---- Dropping into the Local styles list, driven headless ----
+
+/// A session with paint styles `names`, in that order.
+fn paint_session(names: &[&str]) -> Session {
+    let mut s = Session::new();
+    for name in names {
+        s.execute("style.create", &json!({"type": "paint", "name": name, "value": "#0D99FF"})).unwrap();
+    }
+    s
+}
+
+/// The Local styles list over `names`, with `folded`'s folders folded.
+fn styles_ui(names: &[&str], folded: &[&str]) -> crate::layers_drag_tests::Ui {
+    let mut u = crate::layers_drag_tests::Ui::new(paint_session(names));
+    if !folded.is_empty() {
+        let set: std::collections::HashSet<String> = folded.iter().map(|f| format!("fill/{f}")).collect();
+        u.ctx.data_mut(|d| d.insert_temp(crate::style_picker::folded_id(), set));
+        u.frame(vec![]);
+    }
+    u
+}
+
+/// The styles' names, in document order.
+fn style_names(u: &crate::layers_drag_tests::Ui) -> Vec<String> {
+    u.app.session.doc().unwrap().styles.iter().map(|s| s.name.clone()).collect()
+}
+
+/// Drag the row under `from` to `to`, released there.
+fn drop_row(u: &mut crate::layers_drag_tests::Ui, from: Pos2, to: Pos2) {
+    u.drag_to(from, to);
+    u.button(to, false);
+}
+
+#[test]
+fn a_folded_folder_takes_a_drop_into_it() {
+    // The caption's bottom half opens the folder even when it is folded: only the caption is
+    // drawn, and it used to end the list's rows, so a drop there never reached the folder.
+    let mut u = styles_ui(&["Top", "Brand/One", "Brand/Two"], &["Brand"]);
+    let texts = drawn_texts(&mut u);
+    let (top, brand) = (text_at(&texts, "Top"), text_at(&texts, "Brand"));
+    drop_row(&mut u, top, Pos2::new(top.x, brand.y + 8.0));
+    assert_eq!(style_names(&u), ["Brand/One", "Brand/Two", "Brand/Top"]);
+    // Its top half ends the group above, where `Top` already is: nothing changes.
+    let mut u = styles_ui(&["Top", "Brand/One", "Brand/Two"], &["Brand"]);
+    let texts = drawn_texts(&mut u);
+    let (top, brand) = (text_at(&texts, "Top"), text_at(&texts, "Brand"));
+    drop_row(&mut u, top, Pos2::new(top.x, brand.y - 8.0));
+    assert_eq!(style_names(&u), ["Top", "Brand/One", "Brand/Two"]);
+}
+
+#[test]
+fn a_folder_of_only_deeper_folders_takes_a_drop_at_its_own_level() {
+    // `Brand` holds only `Brand/Blue/500`: its own level is an empty position, which the line
+    // under its caption (or over Blue's) is the only way to reach.
+    let mut u = styles_ui(&["Top", "Brand/Blue/500"], &[]);
+    let texts = drawn_texts(&mut u);
+    let (top, brand) = (text_at(&texts, "Top"), text_at(&texts, "Brand"));
+    drop_row(&mut u, text_at(&texts, "500"), Pos2::new(top.x, brand.y + 8.0));
+    assert_eq!(style_names(&u), ["Top", "Brand/500"]);
+    // The same line from the other side, over Blue's caption.
+    let mut u = styles_ui(&["Top", "Brand/Blue/500"], &[]);
+    let texts = drawn_texts(&mut u);
+    let (top, blue) = (text_at(&texts, "Top"), text_at(&texts, "Blue"));
+    drop_row(&mut u, text_at(&texts, "500"), Pos2::new(top.x, blue.y - 8.0));
+    assert_eq!(style_names(&u), ["Top", "Brand/500"]);
+    // Over Brand's caption ends the group above: out of the folders, at the root.
+    let mut u = styles_ui(&["Top", "Brand/Blue/500"], &[]);
+    let texts = drawn_texts(&mut u);
+    let (top, brand) = (text_at(&texts, "Top"), text_at(&texts, "Brand"));
+    drop_row(&mut u, text_at(&texts, "500"), Pos2::new(top.x, brand.y - 8.0));
+    assert_eq!(style_names(&u), ["Top", "500"]);
+}
+
+#[test]
+fn a_style_leaves_a_folder_for_the_root_above_the_first_one() {
+    // Nothing but folder styles: the line over the first caption is the root's, above the folder.
+    let mut u = styles_ui(&["Brand/One", "Brand/Two"], &[]);
+    let texts = drawn_texts(&mut u);
+    let (one, brand) = (text_at(&texts, "One"), text_at(&texts, "Brand"));
+    drop_row(&mut u, one, Pos2::new(one.x, brand.y - 8.0));
+    assert_eq!(style_names(&u), ["One", "Brand/Two"]);
+    // The same line from the section's caption, above the first row.
+    let mut u = styles_ui(&["Brand/One", "Brand/Two"], &[]);
+    let texts = drawn_texts(&mut u);
+    let (one, brand) = (text_at(&texts, "One"), text_at(&texts, "Brand"));
+    drop_row(&mut u, one, Pos2::new(one.x, brand.y - 20.0));
+    assert_eq!(style_names(&u), ["One", "Brand/Two"]);
 }

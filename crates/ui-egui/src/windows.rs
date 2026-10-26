@@ -346,15 +346,15 @@ pub(crate) fn confirm_close(app: &mut FigApp, ctx: &Context) {
         if app.pending_dialog.is_some() {
             return;
         }
-    app.ui.close_after_save_as = None;
-    // Saved: go on with the other files, then close. Cancelled or failed: the window stays open,
-    // and a restart asked for goes with the close that was cancelled.
-    if app.session.docs.iter().find(|d| d.uid == uid).is_none_or(|d| !d.is_dirty()) {
-        save_then_close(app, ctx);
-    } else {
-        app.ui.restart = false;
-    }
-    return;
+        app.ui.close_after_save_as = None;
+        // Saved: go on with the other files, then close. Cancelled or failed: the window stays open,
+        // and a restart asked for goes with the close that was cancelled.
+        if app.session.docs.iter().find(|d| d.uid == uid).is_none_or(|d| !d.is_dirty()) {
+            save_then_close(app, ctx);
+        } else {
+            app.ui.restart = false;
+        }
+        return;
     }
     if !app.ui.confirm_close {
         return;

@@ -58,7 +58,7 @@ pub fn specs() -> Vec<CommandSpec> {
         spec!(
             "style.move",
             "Move styles",
-            "{styles [ids], before? (style id; default: the end), folder? (\"Brand/Blog\"; \"\" = no folder: the styles are renamed into it)}",
+            "{styles [ids], before? (style id; default: the end), folder? (\"Brand/Blog\"; \"\" = no folder: the styles are renamed into it), name? (one style: its new name, which wins over `folder`)}",
             true,
             move_styles
         ),
@@ -596,6 +596,12 @@ fn move_styles(s: &mut Session, p: &Value) -> Result<Value> {
     if picked.is_empty() {
         return Err(bad(cmd, "no styles to move"));
     }
+    // A name names one style: the list's drag gives the exact one it needs (see the UI's
+    // `drop_move`), which may differ from what `folder` alone would make of the last part.
+    let name = string(p, "name").map(|n| style_name(cmd, &n)).transpose()?;
+    if name.is_some() && keys.len() != 1 {
+        return Err(bad(cmd, "`name` renames one style"));
+    }
     picked.sort_unstable();
     picked.dedup();
     let folder = match string(p, "folder") {
@@ -617,6 +623,11 @@ fn move_styles(s: &mut Session, p: &Value) -> Result<Value> {
         for st in &mut moved {
             st.name = in_folder(f, &st.name);
         }
+    }
+    if let Some(n) = name
+        && let Some(st) = moved.first_mut()
+    {
+        st.name = n;
     }
     let at = before.and_then(|b| doc.styles.iter().position(|x| x.id == b)).unwrap_or(doc.styles.len());
     doc.styles.splice(at..at, moved);

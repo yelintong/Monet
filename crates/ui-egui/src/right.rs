@@ -192,7 +192,7 @@ pub fn right_panel(app: &mut FigApp, ui: &mut Ui) {
         }
     });
     ui.painter().line_segment([tabs.left_bottom(), tabs.right_bottom()], Stroke::new(1.0, t.border));
-    egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+    crate::widgets::scroll_area().auto_shrink([false, false]).show(ui, |ui| {
         ui.spacing_mut().item_spacing = vec2(8.0, 0.0);
         if app.session.tool.tool == figcraft_engine::ToolId::Comment {
             crate::comments::panel(app, ui);
@@ -461,7 +461,7 @@ fn page_section(app: &mut FigApp, ui: &mut Ui, doc: &Document) {
         }
     });
     widgets::separator(ui);
-    widgets::section_header(ui, tr("Local styles"), &[], figcraft_engine::library::local_styles(doc).next().is_none());
+    // The section header (and its `+`) is the list's own: it opens the editor on a new style.
     crate::style_picker::local_styles(app, ui, doc);
     widgets::separator(ui);
     crate::export_panel::page_section(app, ui, doc, page);
@@ -1160,7 +1160,7 @@ fn paints(app: &mut FigApp, ui: &mut Ui, doc: &Document, sel: &[NodeId], fills: 
                 let r = paint_row(app, ui, &ids, i, p, fills);
                 drag.row(ui, i, r, r, || paint_label(p));
             }
-            if let Some((from, to)) = drag.finish(ui) {
+            if let Some((from, to)) = drag.finish(ui).map(crate::list_drag::Dropped::pair) {
                 app.run(if fills { "fill.move" } else { "stroke.move" }, json!({"ids": ids, "from": from, "to": to}));
                 // An open colour picker keeps editing the paint it was on.
                 if let Some(crate::colorpicker::PickerTarget::Paint { fills: f, index, .. }) = &mut app.ui.picker
@@ -1827,7 +1827,7 @@ fn effects(app: &mut FigApp, ui: &mut Ui, doc: &Document, sel: &[NodeId]) {
         }
         drag.row(ui, i, header, header.with_max_y(ui.cursor().min.y.max(header.max.y)), || tr(e.label()).to_string());
     }
-    if let Some((from, to)) = drag.finish(ui) {
+    if let Some((from, to)) = drag.finish(ui).map(crate::list_drag::Dropped::pair) {
         app.run("effect.move", json!({"ids": ids, "from": from, "to": to}));
         move_flags(ui, FX_OPEN, list.len(), from, to);
         if let Some(crate::colorpicker::PickerTarget::Effect { index, .. }) = &mut app.ui.picker {
@@ -2155,7 +2155,7 @@ fn grids(app: &mut FigApp, ui: &mut Ui, doc: &Document, sel: &[NodeId]) {
         }
         drag.row(ui, i, header, header.with_max_y(ui.cursor().min.y.max(header.max.y)), || grid_label(g));
     }
-    if let Some((from, to)) = drag.finish(ui) {
+    if let Some((from, to)) = drag.finish(ui).map(crate::list_drag::Dropped::pair) {
         app.run("grid.move", json!({"ids": ids, "from": from, "to": to}));
         move_flags(ui, "grid_open", list.len(), from, to);
     }

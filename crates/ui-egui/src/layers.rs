@@ -251,7 +251,7 @@ fn pages(app: &mut FigApp, ui: &mut Ui) {
     let shown_rows = pages.iter().filter(|(_, name, divider)| !filtering || (!*divider && name.to_lowercase().contains(&filter))).count();
     let content_h = shown_rows as f32 * (ROW + ui.spacing().item_spacing.y);
     let room_h = pages_list_height(app.ui.pages_height, content_h, ui.available_height());
-    let mut moved = egui::ScrollArea::vertical().id_salt("pages_list").max_height(room_h).auto_shrink([false, false]).show(ui, |ui| {
+    let mut moved = crate::widgets::scroll_area().id_salt("pages_list").max_height(room_h).auto_shrink([false, false]).show(ui, |ui| {
         for (k, (id, name, divider)) in pages.iter().cloned().enumerate() {
             if filtering && (divider || !name.to_lowercase().contains(&filter)) {
                 continue;
@@ -334,7 +334,7 @@ fn pages(app: &mut FigApp, ui: &mut Ui) {
                 }
             });
         }
-        reorder.finish(ui)
+        reorder.finish(ui).map(crate::list_drag::Dropped::pair)
     });
     if current_row_rendered {
         app.ui.pages_seen_page = Some(page_key);
@@ -392,7 +392,7 @@ pub(crate) fn delete_page(app: &mut FigApp, page: NodeId) {
 /// shorter than the rows it holds (up to three), and never so tall that the layers lose their
 /// header and three rows.
 pub(crate) fn pages_list_height(asked: Option<f32>, content: f32, avail: f32) -> f32 {
-    let least = content.min(3.0 * ROW).max(ROW);
+    let least = content.clamp(ROW, 3.0 * ROW);
     let most = (avail - 40.0 - 3.0 * ROW).max(least);
     match asked.filter(|h| h.is_finite()) {
         Some(h) => h.clamp(least, most),
@@ -896,7 +896,7 @@ fn layers(app: &mut FigApp, ui: &mut Ui) {
     // The drag is over a row that takes no drop: the not-allowed cursor shows.
     let mut refused = false;
     // Only the rows in view are laid out and drawn; the rest is empty scroll space.
-    egui::ScrollArea::vertical().auto_shrink([false, false]).show_viewport(ui, |ui, viewport| {
+    crate::widgets::scroll_area().auto_shrink([false, false]).show_viewport(ui, |ui, viewport| {
         let pitch = ROW + ui.spacing().item_spacing.y;
         let top = ui.max_rect().top();
         let total = rows.len() as f32 * pitch;
@@ -983,7 +983,7 @@ fn layers(app: &mut FigApp, ui: &mut Ui) {
                     let x = rr.x_range();
                     // The whole run takes the tint, as one rounded block, so that a selected row
                     // and the rows inside it read as one group instead of a stack of them.
-                    let block = Rect::from_x_y_ranges(x.clone(), at(from)..=at(to) + ROW);
+                    let block = Rect::from_x_y_ranges(x, at(from)..=at(to) + ROW);
                     ui.painter().rect_filled(block, CornerRadius::same(5), t.selected_row_child);
                     // The selected rows inside it, as bands: only the block's own corners round,
                     // so the joins between them stay straight.
@@ -995,7 +995,7 @@ fn layers(app: &mut FigApp, ui: &mut Ui) {
                                 k += 1;
                             }
                             let end = k - 1;
-                            let band = Rect::from_x_y_ranges(x.clone(), at(start)..=at(end) + ROW);
+                            let band = Rect::from_x_y_ranges(x, at(start)..=at(end) + ROW);
                             let edge = |on: bool| if on { 5 } else { 0 };
                             let corners = CornerRadius { nw: edge(start == from), ne: edge(start == from), sw: edge(end == to), se: edge(end == to) };
                             ui.painter().rect_filled(band, corners, run_color(&t, &doc, &rows, start, end));
@@ -1005,7 +1005,12 @@ fn layers(app: &mut FigApp, ui: &mut Ui) {
                     }
                 }
             } else if over || hover == Some(row.id) {
-                ui.painter().rect_stroke(rr, CornerRadius::same(5), Stroke::new(1.0, if is_marked { mark_col } else { ACCENT }), egui::StrokeKind::Inside);
+                ui.painter().rect_stroke(
+                    rr,
+                    CornerRadius::same(5),
+                    Stroke::new(1.0, if is_marked { mark_col } else { ACCENT }),
+                    egui::StrokeKind::Inside,
+                );
             }
             if over {
                 hovered_row = Some(row.id);

@@ -169,7 +169,7 @@ pub fn action_list(app: &mut FigApp, ui: &mut Ui, cx: &Cx, list: &[Action], pref
             d.row(ui, i, header, extent, || action_summary(cx.doc, a));
         }
     }
-    if let Some((from, to)) = drag.and_then(|d| d.finish(ui)) {
+    if let Some((from, to)) = drag.and_then(|d| d.finish(ui)).map(crate::list_drag::Dropped::pair) {
         let moved = cx.slot([prefix, &[from]].concat());
         if run_at(app, &moved, "proto.action.move", json!({ "to": to })).is_some() {
             // The open action (or the one inside it) stays open where it went.

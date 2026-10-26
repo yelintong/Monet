@@ -96,12 +96,7 @@ const GROUPS: &[Group] = &[
 
 /// A board's toolbar: moving around, ink, stickies, shapes, connectors, text, sections, stamps.
 const BOARD_GROUPS: &[Group] = &[
-    Group {
-        key: "bmove",
-        name: tr_noop("Move tools"),
-        tools: &[(ToolId::Move, Icon::Move), (ToolId::Hand, Icon::Hand)],
-        options: Options::None,
-    },
+    Group { key: "bmove", name: tr_noop("Move tools"), tools: &[(ToolId::Move, Icon::Move), (ToolId::Hand, Icon::Hand)], options: Options::None },
     Group {
         key: "ink",
         name: tr_noop("Drawing tools"),
@@ -251,49 +246,49 @@ fn main_toolbar(app: &mut FigApp, ui: &mut Ui, canvas: Rect, t: &Tokens, board: 
             app.run("view.design", json!({}));
         }
     } else {
-    // Mode switcher: Draw · Design · Prototype · Inspect (code).
-    let modes = [(Icon::Pencil, tr("Draw")), (Icon::Frame, tr("Design")), (Icon::Prototype, tr("Prototype")), (Icon::Code, tr("Inspect"))];
-    let active = match app.ui.right_tab {
-        crate::RightTab::Design if app.session.tool.tool == ToolId::Pencil => 0,
-        crate::RightTab::Design => 1,
-        crate::RightTab::Prototype => 2,
-        crate::RightTab::Inspect => 3,
-    };
-    let seg = Rect::from_min_size(pos2(x, cy - CELL / 2.0), vec2(4.0 * CELL, CELL));
-    ui.painter().rect_filled(seg, CornerRadius::same(5), t.field);
-    for (i, (icon, tip)) in modes.iter().enumerate() {
-        let r = Rect::from_min_size(pos2(seg.min.x + i as f32 * CELL, seg.min.y), vec2(CELL, CELL));
-        let resp = ui.interact(r, ui.id().with(("mode", i)), Sense::click()).on_hover_text(*tip);
-        a11y::toggle(&resp, tip, i == active);
-        if i == active {
-            // The current mode lifts with a plain white inset, no outline.
-            ui.painter().rect_filled(r.shrink(2.0), CornerRadius::same(3), t.panel);
-        } else if resp.hovered() {
-            ui.painter().rect_filled(r, CornerRadius::same(5), t.hover);
-        }
-        icons::paint(
-            ui.painter(),
-            Rect::from_center_size(r.center(), vec2(MODE_GLYPH, MODE_GLYPH)),
-            *icon,
-            if i == active { t.accent_text } else { t.icon_secondary },
-        );
-        if resp.clicked() {
-            match i {
-                0 => {
-                    app.ui.right_tab = crate::RightTab::Design;
-                    app.run("tool.set", json!({"tool": "pencil"}));
-                }
-                1 => {
-                    app.ui.right_tab = crate::RightTab::Design;
-                    if app.session.tool.tool == ToolId::Pencil {
-                        app.run("tool.set", json!({"tool": "move"}));
+        // Mode switcher: Draw · Design · Prototype · Inspect (code).
+        let modes = [(Icon::Pencil, tr("Draw")), (Icon::Frame, tr("Design")), (Icon::Prototype, tr("Prototype")), (Icon::Code, tr("Inspect"))];
+        let active = match app.ui.right_tab {
+            crate::RightTab::Design if app.session.tool.tool == ToolId::Pencil => 0,
+            crate::RightTab::Design => 1,
+            crate::RightTab::Prototype => 2,
+            crate::RightTab::Inspect => 3,
+        };
+        let seg = Rect::from_min_size(pos2(x, cy - CELL / 2.0), vec2(4.0 * CELL, CELL));
+        ui.painter().rect_filled(seg, CornerRadius::same(5), t.field);
+        for (i, (icon, tip)) in modes.iter().enumerate() {
+            let r = Rect::from_min_size(pos2(seg.min.x + i as f32 * CELL, seg.min.y), vec2(CELL, CELL));
+            let resp = ui.interact(r, ui.id().with(("mode", i)), Sense::click()).on_hover_text(*tip);
+            a11y::toggle(&resp, tip, i == active);
+            if i == active {
+                // The current mode lifts with a plain white inset, no outline.
+                ui.painter().rect_filled(r.shrink(2.0), CornerRadius::same(3), t.panel);
+            } else if resp.hovered() {
+                ui.painter().rect_filled(r, CornerRadius::same(5), t.hover);
+            }
+            icons::paint(
+                ui.painter(),
+                Rect::from_center_size(r.center(), vec2(MODE_GLYPH, MODE_GLYPH)),
+                *icon,
+                if i == active { t.accent_text } else { t.icon_secondary },
+            );
+            if resp.clicked() {
+                match i {
+                    0 => {
+                        app.ui.right_tab = crate::RightTab::Design;
+                        app.run("tool.set", json!({"tool": "pencil"}));
                     }
+                    1 => {
+                        app.ui.right_tab = crate::RightTab::Design;
+                        if app.session.tool.tool == ToolId::Pencil {
+                            app.run("tool.set", json!({"tool": "move"}));
+                        }
+                    }
+                    2 => app.ui.right_tab = crate::RightTab::Prototype,
+                    _ => app.ui.right_tab = crate::RightTab::Inspect,
                 }
-                2 => app.ui.right_tab = crate::RightTab::Prototype,
-                _ => app.ui.right_tab = crate::RightTab::Inspect,
             }
         }
-    }
     }
     // Floating help button at the bottom right of the canvas.
     let hr = Rect::from_center_size(pos2(canvas.max.x - 32.0, canvas.max.y - 32.0), vec2(32.0, 32.0));

@@ -398,6 +398,11 @@ fn styles_are_organised_by_slash_names_order_and_duplicates() {
     run(&mut s, "style.move", json!({"styles": [d], "before": c}));
     s.undo().unwrap();
     assert_eq!(names(&s), before);
+    // `name` is the exact new name (one style): the Local styles list passes the one a drop lands
+    // with, so a folder that already has the style's last part takes a numbered name instead.
+    run(&mut s, "style.move", json!({"styles": [d], "name": "Gray/200 copy"}));
+    assert_eq!(s.doc().unwrap().style(&d).unwrap().name, "Gray/200 copy");
+    assert!(s.execute("style.move", &json!({"styles": [d, c], "name": "Both"})).is_err());
 }
 
 #[test]
