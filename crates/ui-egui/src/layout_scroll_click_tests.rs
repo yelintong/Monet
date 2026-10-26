@@ -22,6 +22,7 @@ fn after_scrolling_the_button_still_toggles_and_the_popover_s_clicks_land() {
         delta: egui::vec2(0.0, -120.0),
         phase: egui::TouchPhase::Move,
         modifiers: Default::default(),
+        source: egui::MouseWheelSource::Unknown,
     };
     h.frame(vec![egui::Event::PointerMoved(egui::pos2(1300.0, 500.0)), wheel]);
     h.frames(8);

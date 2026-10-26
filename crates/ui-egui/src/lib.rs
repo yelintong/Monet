@@ -263,7 +263,11 @@ mod variables_view_tests;
 #[cfg(test)]
 mod variants_discovery_tests;
 #[cfg(test)]
+<<<<<<< HEAD
 mod vector_keys_tests;
+=======
+mod variables_view_tests;
+>>>>>>> c1312516
 #[cfg(test)]
 mod vector_panel_tests;
 #[cfg(test)]
@@ -672,12 +676,16 @@ pub struct UiState {
     /// The prototype preview pane floating over the canvas, when open.
     pub preview: Option<present::Pane>,
     pub picker: Option<colorpicker::PickerTarget>,
+<<<<<<< HEAD
     /// The colour picker's popover while it is open (its place survives a drag).
     pub picker_popover: Option<popover::Popover>,
     /// The control that opened the picker, refreshed every frame it is drawn (the panel scrolls):
     /// a press in it is held out of the popover's closing, so its own click toggles the picker.
     pub picker_button: Option<egui::Rect>,
     /// The screen y of the swatch that opened the colour picker (its top the picker aligns with).
+=======
+    /// The y (canvas-space) a picker opened from a control anchors under, so it lands by that control.
+>>>>>>> c1312516
     pub picker_y: Option<f32>,
     pub context_menu: Option<(egui::Pos2, Vec<NodeId>)>,
     /// The context menu was asked for from the keyboard (`view.contextMenu`): it opens at the
@@ -881,8 +889,11 @@ impl Default for UiState {
             present_view: present::PresentView::default(),
             preview: None,
             picker: None,
+<<<<<<< HEAD
             picker_popover: None,
             picker_button: None,
+=======
+>>>>>>> c1312516
             picker_y: None,
             context_menu: None,
             key_menu: false,
@@ -1055,6 +1066,19 @@ impl FigApp {
         self.ui.picker_y = top;
     }
 
+<<<<<<< HEAD
+=======
+    /// Clicking the control that opened the colour picker closes it again; clicking another opens
+    /// the picker for that one.
+    pub fn toggle_picker(&mut self, target: crate::colorpicker::PickerTarget, top: Option<f32>) {
+        if self.ui.picker.as_ref() == Some(&target) {
+            crate::colorpicker::close(self);
+        } else {
+            self.open_picker(target, top);
+        }
+    }
+
+>>>>>>> c1312516
     pub fn new(session: Session, services: Box<dyn Services>) -> Self {
         // The main window's panels open as wide as they were left.
         let (left_width, right_width) = session.prefs.panel_widths;

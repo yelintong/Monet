@@ -96,11 +96,16 @@ pub fn rail(app: &mut FigApp, ui: &mut Ui) {
     y += 44.0;
     ui.painter().line_segment([pos2(r.min.x + 18.0, y), pos2(r.max.x - 18.0, y)], Stroke::new(1.0, t.border));
     y += 12.0;
+<<<<<<< HEAD
     let items = [
         (Icon::Page, tr("File"), Some(LeftTab::File)),
         (Icon::Assets, tr("Assets"), Some(LeftTab::Assets)),
         (Icon::Variables, tr("Variables"), None),
     ];
+=======
+    let items =
+        [(Icon::Page, tr("File"), Some(LeftTab::File)), (Icon::Assets, tr("Assets"), Some(LeftTab::Assets)), (Icon::Variables, tr("Variables"), None)];
+>>>>>>> c1312516
     for (icon, label, tab) in items {
         let ir = Rect::from_center_size(pos2(r.center().x, y + 14.0), vec2(36.0, 28.0));
         let hit = Rect::from_min_max(pos2(r.min.x, y), pos2(r.max.x, y + 48.0));

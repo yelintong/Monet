@@ -478,6 +478,7 @@ fn only_the_mode_columns_scroll_sideways() {
         delta: vec2(60.0, 0.0),
         phase: egui::TouchPhase::Move,
         modifiers: egui::Modifiers::NONE,
+        source: egui::MouseWheelSource::Unknown,
     }]);
     u.frame(vec![]);
     let shapes = flat(&u.frame_output(vec![]).shapes);
@@ -927,6 +928,7 @@ fn a_row_scrolled_out_of_view_is_clipped_away() {
             delta: vec2(0.0, -120.0),
             phase: egui::TouchPhase::Move,
             modifiers: egui::Modifiers::NONE,
+            source: egui::MouseWheelSource::Unknown,
         }]);
     }
     u.frame(vec![]);
