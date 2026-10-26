@@ -17,11 +17,7 @@ use crate::a11y::Tip;
 use crate::colorpicker::PickerTarget;
 use crate::i18n::{tr, tr_noop, trf, trn};
 use crate::icons::{self, Icon};
-<<<<<<< HEAD
 use crate::list_drag::{Dropped, ListDrag};
-=======
-use crate::list_drag::ListDrag;
->>>>>>> c1312516
 use crate::right::{menu_check, menu_item};
 use crate::theme::{Tokens, regular, semibold};
 use crate::widgets::{self, FieldEdit, Lead};
@@ -993,11 +989,7 @@ fn collections_list(app: &mut FigApp, ui: &mut Ui, st: &mut Editor, views: &[Vie
             }
         }
     }
-<<<<<<< HEAD
     if let Some((from, to)) = coll_drag.finish(ui).map(Dropped::pair)
-=======
-    if let Some((from, to)) = coll_drag.finish(ui)
->>>>>>> c1312516
         && from != to
         && let Some(id) = local_ids.get(from).cloned()
     {
@@ -1201,11 +1193,7 @@ fn group_rows(app: &mut FigApp, ui: &mut Ui, view: &View, coll: &Collection, st:
     }
     // A group dropped at a new place reorders the Groups list (and the table's group headers, which
     // read the same order): remembered per collection as a view preference.
-<<<<<<< HEAD
     if let Some((from, to)) = drag.finish(ui).map(Dropped::pair)
-=======
-    if let Some((from, to)) = drag.finish(ui)
->>>>>>> c1312516
         && from != to
     {
         let mut ordered = ids.clone();
@@ -2045,14 +2033,11 @@ fn value_cell(app: &mut FigApp, ui: &mut Ui, view: &View, v: &Variable, coll: &C
             widgets::paint_swatch(ui.painter(), sw, &figcraft_color::Paint::solid(*c));
             let target = PickerTarget::Variable { id: v.id.clone(), mode: mode.to_string() };
             let sresp = ui.interact(sw.expand(2.0), id.with("swatch"), Sense::click()).tip(tr("Edit colour"));
-<<<<<<< HEAD
             if app.ui.picker.as_ref() == Some(&target) {
                 // The picker holds the press that opened it, so a second press on the swatch still
                 // reaches it — its own click toggles the picker shut.
                 app.ui.picker_button = Some(sresp.rect);
             }
-=======
->>>>>>> c1312516
             if sresp.clicked() {
                 // Its top on the swatch (a variable's paint has no place of its own to sit on).
                 app.toggle_picker(target, Some(sw.min.y));

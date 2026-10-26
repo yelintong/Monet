@@ -258,7 +258,6 @@ pub fn number_field_bindable_menu(
     number_field_impl(ui, id, lead, value, suffix, width, step, binding, empty, dim, menu)
 }
 
-<<<<<<< HEAD
 /// A save admitted for another document cannot make this reused field commit its cached draft.
 /// Drop only this editor's transient state, before a natural focus-loss branch can read it.
 fn cancel_retargeted_field_save(ui: &mut Ui, id: Id) {
@@ -279,8 +278,6 @@ fn cancel_retargeted_field_save(ui: &mut Ui, id: Id) {
     ui.memory_mut(|m| m.surrender_focus(editor));
 }
 
-=======
->>>>>>> c1312516
 #[allow(clippy::too_many_arguments)]
 fn number_field_impl(
     ui: &mut Ui,
