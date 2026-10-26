@@ -894,7 +894,7 @@ fn dragging_a_mode_heading_moves_that_column() {
     let table_left = g.panel.min.x + g.sidebar_width();
     let table_w = g.table_width();
     let cols = Columns::of(table_w, 2, st);
-    let head = Rect::from_min_size(Pos2::new(table_left, g.panel.min.y + Geom::HEADER_H), vec2(table_w, 32.0));
+    let head = Rect::from_min_size(Pos2::new(table_left, g.panel.min.y + Geom::HEADER_H), vec2(table_w, 40.0));
     assert_eq!(mode_names(&u), ["Light", "Dark"]);
     // Carry "Dark" (the second column) to the left of "Light" by its heading.
     let from = cols.mode_rect(head, 1).center();
@@ -917,7 +917,7 @@ fn a_row_scrolled_out_of_view_is_clipped_away() {
     }
     let g = Geom::floating(u.ctx.content_rect(), None, true);
     let table_left = g.panel.min.x + 265.0;
-    let head_bottom = g.panel.min.y + Geom::HEADER_H + 32.0;
+    let head_bottom = g.panel.min.y + Geom::HEADER_H + 40.0;
     // Scroll the rows to the bottom.
     let over = Pos2::new(table_left + 300.0, g.panel.min.y + Geom::HEADER_H + 120.0);
     u.frame(vec![egui::Event::PointerMoved(over)]);
@@ -1032,8 +1032,8 @@ fn a_colour_cells_swatch_opens_the_picker_and_a_second_click_closes_it() {
     // "brand" has no folder, so it is the table's first row; one mode, so one value column.
     let st = u.app.ui.variables.as_ref().expect("open");
     let cols = Columns::of(g.table_width(), 1, st);
-    let table = Pos2::new(g.panel.min.x + 265.0, g.panel.min.y + Geom::HEADER_H + 32.0);
-    let cell = cols.mode_rect(Rect::from_min_size(table, vec2(g.table_width(), 36.0)), 0);
+    let table = Pos2::new(g.panel.min.x + 265.0, g.panel.min.y + Geom::HEADER_H + 40.0);
+    let cell = cols.mode_rect(Rect::from_min_size(table, vec2(g.table_width(), 40.0)), 0);
     // The swatch at the cell's left edge, as a fill's row has it.
     let swatch = Pos2::new(cell.min.x + 16.0, cell.center().y);
     click(&mut u, swatch);
@@ -1043,4 +1043,37 @@ fn a_colour_cells_swatch_opens_the_picker_and_a_second_click_closes_it() {
     click(&mut u, swatch);
     assert_eq!(u.app.ui.picker, None, "a second click closes it");
     assert!(u.app.ui.last_error.is_none(), "{:?}", u.app.ui.last_error);
+}
+
+/// The centre y of text `s` drawn in the table (x at or right of the sidebar's divider), so the
+/// sidebar's own group labels don't get mistaken for the table's. Row names are centred in the row,
+/// so a row's text centre is the row's centre exactly; a group header's text is drawn 2px below the
+/// header's centre, so its text centre is `header_centre + 2`.
+fn table_text_y(shapes: &[Shape], s: &str, table_left: f32) -> f32 {
+    crate::live_tests::texts(shapes)
+        .into_iter()
+        .find(|(t, p, _)| t == s && p.x >= table_left)
+        .unwrap_or_else(|| panic!("no table text {s:?} at x≥{table_left}"))
+        .1
+        .y
+}
+
+#[test]
+fn the_group_rows_and_headers_keep_the_forty_pixel_rhythm() {
+    let mut u = with_groups();
+    let shapes = flat(&u.frame_output(vec![]).shapes);
+    let g = Geom::floating(u.ctx.content_rect(), None, true);
+    let table_left = g.panel.min.x + 265.0;
+    let cy = |s: &str| table_text_y(&shapes, s, table_left);
+    // Rows in the same group are ROW_H = 40 apart: their names are centred, so text centres are
+    // exact row centres.
+    assert!((cy("surface") - cy("brand") - 40.0).abs() <= 0.5, "ROW_H = {}", cy("surface") - cy("brand"));
+    // A group header's first member starts right under it (no gap), so the header's centre is 40px
+    // above its first row's centre — GROUP_H. The header's text sits 2px low, so the text-centre
+    // difference is 40 − 2 = 38.
+    assert!((cy("brand") - cy("color") - 38.0).abs() <= 0.5, "GROUP_H = {}", cy("brand") - cy("color"));
+    // A group header's centre is ROW_H/2 + GROUP_GAP + GROUP_H/2 below the centre of the row above
+    // it; with the header's 2px text offset that is 20 + 16 + 20 + 2 = 58. This pins GROUP_GAP = 16
+    // once ROW_H and GROUP_H are fixed above.
+    assert!((cy("space") - cy("surface") - 58.0).abs() <= 0.5, "GROUP_GAP = {}", cy("space") - cy("surface"));
 }

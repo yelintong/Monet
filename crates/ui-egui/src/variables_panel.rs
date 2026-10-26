@@ -34,12 +34,16 @@ const MODE_MIN: f32 = 100.0;
 const MODE_MAX: f32 = 420.0;
 /// The column at the table's right end: the button that adds a mode. It never scrolls.
 const ADD_W: f32 = 40.0;
-const ROW_H: f32 = 36.0;
-const HEAD_ROW_H: f32 = 32.0;
+const ROW_H: f32 = 40.0;
+const HEAD_ROW_H: f32 = 40.0;
 /// The horizontal scrollbar's strip, under the rows (only the mode columns scroll).
 const HSCROLL_H: f32 = 12.0;
 /// The bottom bar's height: "+ Create variable" and the row of the table's scrollbar.
-const BOTTOM_H: f32 = 41.0;
+const BOTTOM_H: f32 = 40.0;
+/// A group header's height, and the gap above it (from the row above, or the column header
+/// when a group opens the table).
+const GROUP_H: f32 = 40.0;
+const GROUP_GAP: f32 = 16.0;
 /// The search field in the top bar, and the filter button joined to its right end.
 const SEARCH_W: f32 = 174.0;
 const FILTER_W: f32 = 25.0;
@@ -163,7 +167,7 @@ impl Geom {
     pub const MIN_W: f32 = 480.0;
     pub const MIN_H: f32 = 240.0;
     /// The header's height, in both presentations.
-    pub const HEADER_H: f32 = 44.0;
+    pub const HEADER_H: f32 = 40.0;
 
     /// The floating panel at `pos` (its remembered top-left; centred when it has none), kept
     /// inside `screen`.
@@ -1323,7 +1327,7 @@ fn table(app: &mut FigApp, ui: &mut Ui, view: &View, st: &mut Editor, slots: &mu
             prev = Some(g);
         }
     }
-    let content_h = list.len() as f32 * ROW_H + groups as f32 * 28.0;
+    let content_h = list.len() as f32 * ROW_H + groups as f32 * (GROUP_H + GROUP_GAP);
     // Reserve the bar room only when the rows overflow, matching egui's own show-scroll decision
     // (content_h > inner_size, where inner_size already excludes the bar). Otherwise the table hugs
     // the panel's right edge with no gap.
@@ -1357,7 +1361,9 @@ fn table(app: &mut FigApp, ui: &mut Ui, view: &View, st: &mut Editor, slots: &mu
                 if group != Some(g) {
                     group = Some(g);
                     if !g.is_empty() {
-                        let (r, _) = ui.allocate_exact_size(vec2(width, 28.0), Sense::hover());
+                        // A group clears its label from the row above it by this much.
+                        ui.add_space(GROUP_GAP);
+                        let (r, _) = ui.allocate_exact_size(vec2(width, GROUP_H), Sense::hover());
                         ui.painter().text(pos2(r.min.x + 16.0, r.center().y + 2.0), Align2::LEFT_CENTER, g, semibold(11.0), t.text_secondary);
                         slots.push(Slot::group(r, Some(g.to_string())));
                         // The rule under the group's label that the old palette drew and this one dropped.
@@ -1746,7 +1752,7 @@ fn header_row(app: &mut FigApp, ui: &mut Ui, view: &View, coll: &Collection, st:
     // The button that adds a mode, at the table's right end where nothing scrolls.
     let add = cols.add_rect(r);
     if editable
-        && widgets::icon_button_at(ui, Id::new("vars_add_mode"), Rect::from_center_size(add.center(), vec2(24.0, 24.0)), Icon::Plus, tr("Add mode"))
+        && widgets::icon_button_at(ui, Id::new("vars_add_mode"), Rect::from_center_size(add.center(), vec2(40.0, 40.0)), Icon::Plus, tr("Add mode"))
     {
         let name = unique("Mode", |n| coll.modes.iter().any(|m| m.name == n));
         if let Some(id) = app.run("variable.addMode", json!({"collection": coll.id, "name": name})).and_then(|r| r["id"].as_str().map(str::to_string))
@@ -1874,7 +1880,7 @@ fn var_row(app: &mut FigApp, ui: &mut Ui, view: &View, coll: &Collection, v: &Va
         if widgets::icon_button_at(
             ui,
             Id::new(("vars_row_edit", &v.id)),
-            Rect::from_center_size(add_r.center(), vec2(22.0, 22.0)),
+            Rect::from_center_size(add_r.center(), vec2(40.0, 40.0)),
             Icon::Adjust,
             tr("Edit variable"),
         ) {
