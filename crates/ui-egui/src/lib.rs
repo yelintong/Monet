@@ -9,6 +9,8 @@ pub mod a11y;
 pub mod assets_panel;
 pub mod bidi;
 pub mod board_bar;
+pub mod board_facilitate;
+mod board_picker;
 pub mod branch_ui;
 pub mod canvas;
 pub mod cjk;
@@ -66,13 +68,17 @@ pub mod theme;
 pub mod toolbar;
 pub mod typography;
 pub mod ui_scale;
+pub mod updates_ui;
 pub mod variable_ui;
 pub mod variables_panel;
 pub mod vector_panel;
 pub mod versions;
+pub mod widget_bar;
 pub mod widgets;
 pub mod windows;
 
+#[cfg(test)]
+mod board_picker_tests;
 #[cfg(test)]
 mod board_ui_tests;
 #[cfg(test)]
@@ -92,6 +98,8 @@ mod canvas_drag_tests;
 mod canvas_fixes_tests;
 #[cfg(test)]
 mod canvas_image_rect_tests;
+#[cfg(test)]
+mod clipboard_fence_tests;
 #[cfg(test)]
 mod colorpicker_eyedropper_tests;
 #[cfg(test)]
@@ -203,6 +211,8 @@ mod perf_tests;
 #[cfg(test)]
 mod plugin_panel_tests;
 #[cfg(test)]
+mod plugin_save_ui_tests;
+#[cfg(test)]
 mod plugins_browse_tests;
 #[cfg(test)]
 mod popover_tests;
@@ -216,6 +226,8 @@ mod present_tab_tests;
 mod present_tests;
 #[cfg(test)]
 mod present_view_tests;
+#[cfg(test)]
+mod property_menu_tests;
 #[cfg(test)]
 mod proto_editor_tests;
 #[cfg(test)]
@@ -251,11 +263,15 @@ mod variables_view_tests;
 #[cfg(test)]
 mod variants_discovery_tests;
 #[cfg(test)]
+mod vector_keys_tests;
+#[cfg(test)]
 mod vector_panel_tests;
 #[cfg(test)]
 mod vector_tail_ui_tests;
 #[cfg(test)]
 mod web_clipboard_tests;
+#[cfg(test)]
+mod web_save_tests;
 #[cfg(test)]
 mod windows_qa_tests;
 #[cfg(test)]
@@ -273,7 +289,7 @@ use figcraft_doc::NodeId;
 use figcraft_engine::Session;
 use serde_json::{Value, json};
 
-pub use control::{ControlReply, ControlRequest};
+pub use control::{ControlReply, ControlRequest, RequestGate, RequestState};
 
 /// Platform services the app crate provides (file dialogs, clipboard, URLs).
 pub trait Services {
@@ -302,6 +318,8 @@ pub trait Services {
         Box::pin(std::future::ready(None))
     }
     fn clipboard_set_text(&mut self, _s: &str) {}
+    /// Give native services access to the window context for platform clipboard output.
+    fn set_egui_context(&mut self, _ctx: &egui::Context) {}
     fn clipboard_get_text(&mut self) -> Option<String> {
         None
     }
@@ -320,6 +338,11 @@ pub trait Services {
     /// The system asks for reduced motion (its accessibility setting).
     fn reduce_motion(&self) -> bool {
         false
+    }
+    /// The system asks for the dark interface (the freedesktop colour scheme): for platforms whose
+    /// windowing stack doesn't report a theme (winit gives none on Linux and the BSDs).
+    fn system_dark(&self) -> Option<bool> {
+        None
     }
     /// After a panic in a frame: keep recovery copies of unsaved files.
     fn emergency_save(&mut self, _session: &Session) {}
@@ -417,9 +440,8 @@ impl Wake for RepaintWaker {
 pub struct NoServices;
 impl Services for NoServices {}
 
-/// Put `text` on the system clipboard through egui's output, which the browser shell writes while
-/// it handles the copy event (the only time a page may write it). For shells without a clipboard
-/// of their own.
+/// Put `text` on the system clipboard through egui's platform output. Native integrations handle
+/// it directly; the browser shell writes it while handling the copy event.
 pub fn egui_copy_text(ctx: &egui::Context, text: &str) {
     ctx.copy_text(text.to_string());
 }
@@ -497,11 +519,68 @@ pub(crate) fn repaint_in(ctx: &egui::Context, secs: f64) {
     }
 }
 
+/// A monotonic clock for background work (autosave, recovery, capture deadlines).
+///
+/// `Context::input(|i| i.time)` is the UI pass's time and is stale in `run_logic`; wall-clock time
+/// can jump. `web_time::Instant` is monotonic on native and in the browser. Tests drive deadlines
+/// directly with [`FrameClock::set_test_now`].
+pub struct FrameClock {
+    origin: web_time::Instant,
+    test_now: Option<f64>,
+}
+
+impl Default for FrameClock {
+    /// Start the frame clock at the current web time with no injected test time.
+    fn default() -> Self {
+        Self { origin: web_time::Instant::now(), test_now: None }
+    }
+}
+
+impl FrameClock {
+    /// Seconds since the app started (or the injected test time).
+    pub fn now(&self) -> f64 {
+        self.test_now.unwrap_or_else(|| self.origin.elapsed().as_secs_f64())
+    }
+
+    /// Set a fake monotonic time (tests); `None` returns to the real clock.
+    pub fn set_test_now(&mut self, secs: Option<f64>) {
+        self.test_now = secs;
+    }
+}
+
 /// The side panels' widths: the least and most a drag of their edge gives, what a double-click on
 /// the edge puts back, and how much of the window they leave the canvas.
 pub const LEFT_PANEL: std::ops::RangeInclusive<f32> = 200.0..=480.0;
 pub const RIGHT_PANEL: std::ops::RangeInclusive<f32> = 240.0..=480.0;
 pub const PANEL_DEFAULT: f32 = 240.0;
+/// Windows narrower than this (logical points: phones, portrait tablets) show one side panel at a
+/// time over the canvas, opened from two buttons, instead of both beside it.
+pub const NARROW_WIDTH: f32 = 760.0;
+/// What an open side panel leaves of a narrow window: the column of panel buttons.
+const MOBILE_STRIP: f32 = 48.0;
+
+/// The side panel a narrow window shows.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum MobilePanel {
+    Left,
+    Right,
+}
+
+impl UiState {
+    /// Opens the left panel; a narrow window shows it in place of the right one.
+    pub fn open_left_panel(&mut self) {
+        self.left_collapsed = false;
+        self.mobile_panel = Some(MobilePanel::Left);
+    }
+
+    /// Closes the left panel.
+    pub fn close_left_panel(&mut self) {
+        self.left_collapsed = true;
+        if self.mobile_panel == Some(MobilePanel::Left) {
+            self.mobile_panel = None;
+        }
+    }
+}
 pub const CANVAS_MIN: f32 = 160.0;
 
 /// The widths the side panels are drawn at in `avail` points (the window less the icon rail), from
@@ -683,6 +762,10 @@ pub struct UiState {
     /// The Rename layers dialog (several layers), while open.
     pub batch_rename: Option<dialogs::BatchRenameUi>,
     pub left_collapsed: bool,
+    /// The side panel open in a narrow window (a phone), where only one shows at a time.
+    pub mobile_panel: Option<MobilePanel>,
+    /// The window was narrow (one side panel at a time) at the last frame.
+    pub narrow: bool,
     pub comments: comments::CommentUi,
     pub versions: versions::VersionUi,
     /// The branch review dialog, while open.
@@ -692,7 +775,13 @@ pub struct UiState {
 
     /// What FigCraft last put on the system clipboard: when the clipboard still holds it, a paste
     /// uses our copied layers; anything else there (an image, SVG, text) came from another app.
+    /// `None` also means a programmatic copy changed the engine clipboard without writing the OS
+    /// clipboard, so the system text is no longer known to be ours.
     pub last_copy: Option<String>,
+    /// The engine clipboard's layers generation when `last_copy` was mirrored. A programmatic
+    /// copy changes the engine clipboard without writing the OS clipboard; the generation then
+    /// no longer matches, so the stale mirror is not mistaken for the user's own copy.
+    pub last_copy_generation: u64,
     /// Since the last V key release: whether its press arrived, and whether a paste event did
     /// (`shortcuts::swallowed_paste`).
     pub v_pressed: bool,
@@ -700,14 +789,14 @@ pub struct UiState {
     /// The window got the focus back since the last V release.
     pub refocused: bool,
     /// A save shortcut pressed while a panel field had the keyboard: the field lets go (which
-    /// commits what was typed) and the command runs the next frame (`shortcuts::handle`).
-    pub after_field: Option<&'static str>,
+    /// commits what was typed) and the command runs next frame for that document/window.
+    pub after_field: Option<shortcuts::AfterFieldSave>,
     /// The modifiers held, as of the last modifier change in the raw events: a paste event doesn't
     /// carry them.
     pub held: egui::Modifiers,
-    /// When (UI clock, seconds) open documents next get an autosave checkpoint.
+    /// When (monotonic [`FrameClock`], seconds) open documents next get an autosave checkpoint.
     pub next_autosave: f64,
-    /// With auto-save on: when (UI clock, seconds) files with unsaved changes are next saved, and
+    /// With auto-save on: when (monotonic [`FrameClock`], seconds) files with unsaved changes are next saved, and
     /// the revisions of those files it waits on (a change restarts the wait).
     pub auto_save_at: Option<(f64, u64)>,
     /// Files being encoded for auto-save on threads of their own (tab `uid`).
@@ -743,6 +832,9 @@ pub struct UiState {
 }
 
 impl Default for UiState {
+    /// Seed the default UI state (panel widths, tabs, pages, Home, presenters, pickers and
+    /// dialogs off, and the rest of the transient UI fields); `FigApp::new` overrides panel
+    /// widths and the pages height from preferences.
     fn default() -> Self {
         Self {
             left_width: PANEL_DEFAULT,
@@ -839,12 +931,15 @@ impl Default for UiState {
             find: None,
             batch_rename: None,
             left_collapsed: false,
+            mobile_panel: None,
+            narrow: false,
             comments: comments::CommentUi::default(),
             versions: versions::VersionUi::default(),
             branch_review: None,
             dev: dev_mode::DevUi::default(),
 
             last_copy: None,
+            last_copy_generation: 0,
             v_pressed: false,
             paste_event: false,
             refocused: false,
@@ -867,6 +962,14 @@ impl Default for UiState {
             restart: false,
         }
     }
+}
+
+/// A control reply waiting for the pass that presents an injected input batch. The viewport keeps
+/// one window's batch from acknowledging (or erroring) another window's request.
+pub(crate) struct PendingAck {
+    pub(crate) viewport: egui::ViewportId,
+    pub(crate) tx: std::sync::mpsc::Sender<ControlReply>,
+    pub(crate) reply: ControlReply,
 }
 
 /// The whole FigCraft UI.
@@ -907,6 +1010,39 @@ pub struct FigApp {
     /// The automation roots the app was started with: every frame and control request runs
     /// confined to them ([`windows::guard`]).
     pub automation_roots: Option<Arc<figcraft_engine::file_access::Roots>>,
+    /// The active-document id when synthetic input was queued: a batch is dropped when the file
+    /// changed before a UI pass applied it.
+    pub(crate) control_input_doc: Option<u64>,
+    /// This frame applies events injected through the control channel: no system clipboard
+    /// read or write may happen for them.
+    pub(crate) control_synthetic: bool,
+    /// `ui.input` replies waiting for the pass that actually presents the injected batch (a
+    /// discarded sizing pass must not acknowledge it).
+    pub(crate) input_acks: Vec<PendingAck>,
+    /// Replies whose batch this frame took into its raw input: sent only if the pass is presented.
+    pub(crate) applied_acks: Vec<PendingAck>,
+    /// The batch taken into this frame's raw input, kept so a discarded pass gives it back.
+    pub(crate) applied_input: Option<Vec<egui::Event>>,
+    /// `handle("ui.input")` queued raw events whose acknowledgement waits for the applied pass
+    /// (controller-only input is applied at once and needs no fence).
+    pub(crate) control_input_queued: bool,
+    /// The viewport whose batch this frame took into its raw input (`applied_input`/`applied_acks`).
+    pub(crate) applied_frame: Option<egui::ViewportId>,
+    /// Monotonic time for background work and capture deadlines.
+    pub(crate) clock: FrameClock,
+    /// Screenshot requests admitted, settling and awaiting readback.
+    pub(crate) capture: control::CaptureState,
+    /// [`Self::background_tick`] ran for this pass (so [`Self::ui`] does not repeat it).
+    logic_ticked: bool,
+    /// The last frame whose UI setup ran (multi-pass frames set up once).
+    ui_frame_stamp: Option<(egui::ViewportId, u64)>,
+    /// IME owner/generation/change-cause state for the on-canvas text editor, per viewport.
+    pub(crate) ime: egui::ime_context::ImeContextTracker,
+    /// The check for a newer release and its prompt (desktop; [`updates_ui`]).
+    pub(crate) updates_rt: updates_ui::Runtime,
+    /// Test-only count of the one IME observation each viewport pass makes.
+    #[cfg(test)]
+    pub(crate) ime_observations: u32,
 }
 
 /// What to do with the result of a command run in the background.
@@ -944,6 +1080,21 @@ impl FigApp {
             pending_dialog: None,
             ui_context: None,
             automation_roots: None,
+            control_input_doc: None,
+            control_synthetic: false,
+            input_acks: Vec::new(),
+            applied_acks: Vec::new(),
+            applied_input: None,
+            control_input_queued: false,
+            applied_frame: None,
+            clock: FrameClock::default(),
+            capture: control::CaptureState::default(),
+            logic_ticked: false,
+            ui_frame_stamp: None,
+            ime: egui::ime_context::ImeContextTracker::new(),
+            updates_rt: updates_ui::Runtime::default(),
+            #[cfg(test)]
+            ime_observations: 0,
         }
     }
 
@@ -956,10 +1107,32 @@ impl FigApp {
 
     /// Run a command, surfacing errors as a toast. Returns the result.
     pub fn run(&mut self, id: &str, params: Value) -> Option<Value> {
+        let layers_generation = self.session.clipboard.layers_generation;
         let r = self.session.execute(id, &params);
         self.clear_comment_draft_after_tool_set(id, r.is_ok());
         self.handle_ui_requests();
+        self.invalidate_synthetic_copy(layers_generation);
+        // A command may change the file the window shows (`doc.switch`, `doc.nextTab`,
+        // `file.open`/`file.close`). Record that presentation before returning, so an in-flight
+        // screenshot admitted on the old file cannot accept pixels from the new one.
+        self.observe_presentation();
         r.map_err(|e| self.failed(id, &e)).ok()
+    }
+
+    /// A programmatic command that changed the engine clipboard never wrote the system clipboard:
+    /// forget the old system mirror so a later user paste does not trust it as our own copy.
+    /// `before` is the layers generation captured before the command ran.
+    pub(crate) fn invalidate_synthetic_copy(&mut self, before: u64) {
+        if self.control_synthetic && self.session.clipboard.layers_generation != before {
+            self.ui.last_copy = None;
+        }
+    }
+
+    /// Record the file the window drawing now shows, with a monotonic generation that changes on
+    /// every switch (an A→B→A switch is two generations, never the admitted one again).
+    pub(crate) fn observe_presentation(&mut self) {
+        let window = self.windows.current;
+        self.windows.presentation(&self.session, window);
     }
 
     /// [`run`](Self::run) for something the user did (a dialog, a drop, a paste, a recent file):
@@ -1084,6 +1257,83 @@ impl FigApp {
         }
     }
 
+    /// Finish the frame that applies an injected batch: acknowledge it once the pass is presented,
+    /// and stop fencing the system clipboard. Only the viewport whose batch this frame took acts.
+    pub(crate) fn end_input_frame(&mut self, ctx: &egui::Context) {
+        if self.applied_frame != Some(ctx.viewport_id()) {
+            return;
+        }
+        self.applied_input = None;
+        if ctx.will_discard() {
+            // Keep `applied_frame`/`applied_acks`: the rerun pass must present (and acknowledge)
+            // the same frame without replaying the input.
+            return;
+        }
+        self.applied_frame = None;
+        for ack in self.applied_acks.drain(..) {
+            let _ = ack.tx.send(ack.reply);
+        }
+        self.control_synthetic = false;
+    }
+
+    /// The app's monotonic clock in seconds, also usable from logic-only callbacks (recovery,
+    /// control deadlines). Never `ctx.input(i.time)`, which is stale there.
+    pub fn now_secs(&self) -> f64 {
+        self.clock.now()
+    }
+
+    /// Queue raw input injected through the control channel for the window drawing next, tagged
+    /// with the document it belongs to (a batch is dropped if another file is active by then).
+    pub(crate) fn push_control_input(&mut self, events: Vec<egui::Event>) -> bool {
+        if events.is_empty() {
+            return false;
+        }
+        let doc = self.session.docs.get(self.session.active).map(|d| d.uid);
+        if !self.control_input.is_empty() && self.control_input_doc != doc {
+            // A queued batch belongs to the file that was open when it was injected; it cannot be
+            // merged with one for the file showing now. Its acknowledgement says so.
+            self.control_input.clear();
+            let viewport = crate::windows::viewport(self.windows.current);
+            crate::windows::fail_input_acks(self, viewport);
+        }
+        // Always the live pane vector: while a child window draws, `windows::enter` has swapped
+        // its pane into the app, and `leave` swaps these events back into that pane.
+        self.control_input.extend(events);
+        self.control_input_doc = doc;
+        self.control_synthetic = true;
+        true
+    }
+
+    /// The acknowledgements waiting for `viewport`'s input batch (other windows keep theirs).
+    pub(crate) fn take_input_acks(&mut self, viewport: egui::ViewportId) -> Vec<PendingAck> {
+        let mut mine = Vec::new();
+        for ack in std::mem::take(&mut self.input_acks) {
+            if ack.viewport == viewport {
+                mine.push(ack);
+            } else {
+                self.input_acks.push(ack);
+            }
+        }
+        mine
+    }
+
+    /// Put `text` on the system clipboard. Input injected through the control channel never
+    /// replaces what the user copied: this is the one write path every copy command goes through.
+    pub(crate) fn clipboard_set_text(&mut self, text: &str) {
+        if self.control_synthetic {
+            return;
+        }
+        self.services.clipboard_set_text(text);
+    }
+
+    /// [`Self::clipboard_set_text`] for an image (straight RGBA).
+    pub(crate) fn clipboard_set_png(&mut self, width: u32, height: u32, rgba: &[u8]) {
+        if self.control_synthetic {
+            return;
+        }
+        self.services.clipboard_set_png(width, height, rgba);
+    }
+
     pub fn toast(&mut self, msg: impl Into<String>) {
         self.ui.toast = Some((msg.into(), ToastClock::Raised));
     }
@@ -1124,7 +1374,14 @@ impl FigApp {
                 "panel.devMode" => {
                     self.ui.right_tab = if self.ui.right_tab == RightTab::Inspect { RightTab::Design } else { RightTab::Inspect };
                 }
-                "panel.leftSidebar" => self.ui.left_collapsed = !self.ui.left_collapsed,
+                "panel.leftSidebar" => {
+                    let shown = if self.ui.narrow { self.ui.mobile_panel == Some(MobilePanel::Left) } else { !self.ui.left_collapsed };
+                    if shown {
+                        self.ui.close_left_panel();
+                    } else {
+                        self.ui.open_left_panel();
+                    }
+                }
                 "panel.widths" => {
                     let width = |k: &str| r.data.get(k).and_then(Value::as_f64).map(|w| w as f32);
                     let (left, right) = (width("left"), width("right"));
@@ -1139,7 +1396,7 @@ impl FigApp {
                 "panel.layers" => self.ui.left_tab = LeftTab::File,
                 "panel.assets" => {
                     self.ui.left_tab = LeftTab::Assets;
-                    self.ui.left_collapsed = false;
+                    self.ui.open_left_panel();
                     self.ui.versions = Default::default();
                 }
                 "panel.icons" => {
@@ -1152,7 +1409,7 @@ impl FigApp {
                 }
                 "panel.libraries" => {
                     self.ui.left_tab = LeftTab::Assets;
-                    self.ui.left_collapsed = false;
+                    self.ui.open_left_panel();
                     self.ui.libraries = true;
                 }
                 "home" => self.ui.home = true,
@@ -1227,6 +1484,7 @@ impl FigApp {
                 }
                 "dialog.unsaved" => self.toast(i18n::tr("This file has unsaved changes")),
                 "dialog.plugins" => self.ui.plugins_window = true,
+                "dialog.pluginSave" => plugins_ui::save_file(self, &r.data),
                 "dialog.cursorChat" => live::open_chat(self),
                 "window.new" | "window.focus" | "window.fullscreen" => self.window_requests.push(r),
                 _ => {}
@@ -1253,8 +1511,10 @@ impl FigApp {
     fn panel_edge(ui: &mut egui::Ui, name: &str, x: f32, rows: egui::Rangef, width: f32, grows: f32) -> Option<f32> {
         let grab = ui.style().interaction.resize_grab_radius_side;
         let rect = egui::Rect::from_x_y_ranges(x - grab..=x + grab, rows);
-        let id = egui::Id::new(("panel_edge", name));
-        let resp = ui.interact(rect, id, egui::Sense::click_and_drag());
+        let id = egui::Id::unique(("panel_edge", name));
+        // Not focusable: an edge is a pointer target, so it must not take Tab/F6 focus from the
+        // panels' controls (see `a11y::focusables`).
+        let resp = ui.interact(rect, id, egui::Sense::CLICK | egui::Sense::DRAG);
         if resp.hovered() || resp.dragged() {
             ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
             ui.painter().vline(x, rows, egui::Stroke::new(2.0, theme::ACCENT));
@@ -1274,6 +1534,15 @@ impl FigApp {
     }
 
     pub fn save_as_dialog(&mut self) {
+        if self.services.downloads() {
+            if let Some(r) = self.run("file.saveAs", json!({"data": true}))
+                && self.download(r["name"].as_str().unwrap_or_default(), &r)
+            {
+                self.run("file.markSaved", json!({}));
+                dialogs::file_saved(self, &r);
+            }
+            return;
+        }
         let Ok(name) = self.session.doc().map(|d| d.name.clone()) else { return };
         self.pick_save(i18n::tr("Save as"), &format!("{name}.figcraft"), &["figcraft", "fig"], |app, mut p| {
             if p.extension().is_none_or(OsStr::is_empty) {
@@ -1335,7 +1604,7 @@ impl FigApp {
         let exts: &[&str] = if place {
             &["png", "jpg", "jpeg", "webp", "gif", "tif", "tiff"]
         } else {
-            &["svg", "png", "jpg", "jpeg", "webp", "gif", "tif", "tiff", "figcraft", "fig"]
+            &["svg", "png", "jpg", "jpeg", "webp", "gif", "tif", "tiff", "figcraft", "fig", "sketch"]
         };
         let title = if place { i18n::tr("Place image") } else { i18n::tr("Import") };
         self.pick_file(title, exts, true, |app, file| {
@@ -1376,6 +1645,18 @@ impl FigApp {
     /// Pick where to save; `done` runs as [`FigApp::pick_open`]'s does.
     pub fn pick_save(&mut self, title: &str, name: &str, exts: &[&str], done: impl FnOnce(&mut FigApp, PathBuf) + 'static) {
         self.start_dialog(|services| services.pick_save(title, name, exts), true, done);
+    }
+
+    /// Hand a command result's base64 `data` over as a download named `name`, where the platform
+    /// saves by downloads rather than save dialogs (the browser, #969). Says so when nothing arrived.
+    pub(crate) fn download(&mut self, name: &str, result: &Value) -> bool {
+        use base64::Engine as _;
+        let bytes = result["data"].as_str().and_then(|d| base64::engine::general_purpose::STANDARD.decode(d).ok());
+        if bytes.is_some_and(|b| self.services.download(name, &b)) {
+            return true;
+        }
+        self.toast(i18n::trf("Couldn't download {name}", &[("name", &name)]));
+        false
     }
 
     /// Pick a folder; `done` runs as [`FigApp::pick_open`]'s does.
@@ -1456,7 +1737,7 @@ impl FigApp {
         self.session.prefs.reduce_motion || self.services.reduce_motion()
     }
 
-    /// The CJK and Bengali scripts the UI shows: the language's, the language picker's (Preferences open),
+    /// The CJK, Bengali and Thai scripts the UI shows: the language's, the language picker's (Preferences open),
     /// typed text's, and those in the open file's names and comments (read when it changes, not
     /// mid-drag). Nothing is checked once every script has a face.
     fn cjk_needed(&mut self, ctx: &egui::Context, installed: u8) -> u8 {
@@ -1496,18 +1777,59 @@ impl FigApp {
         need
     }
 
-    /// Per-frame logic that doesn't draw (control requests, theme, language).
-    pub fn logic(&mut self, ctx: &egui::Context) {
+    /// Work safe from a logic-only callback (`App::logic`, which also runs while hidden) and from
+    /// a normal UI pass: consumed control work, live polling, background completions, autosave and
+    /// recovery deadlines. It never reads UI input, so it must not scan events, run shortcuts or
+    /// lay out anything.
+    pub fn background_tick(&mut self, ctx: &egui::Context) {
+        control::background(self, ctx);
+        // What happened in a live session (the network woke us for it).
+        if self.session.live_poll() {
+            if let Some(m) = self.session.message.take() {
+                self.toast(live::failure_text(&m));
+            }
+            self.background_done(ctx);
+        }
+        // Files that arrived without a command (joined, recovered) take the kept View toggles too.
+        self.session.apply_view_prefs();
+        let now = self.clock.now();
+        self.autosave_tick(ctx, now);
+        self.auto_save_tick(ctx, now);
+        updates_ui::tick(self, ctx);
+        self.logic_ticked = true;
+    }
+
+    /// UI-phase setup that needs a real current `Ui`: fonts/language/theme, interface zoom and the
+    /// render worker. Runs once per frame (pass 0) for the main window, and once per frame for
+    /// every child window (`windows::draw`), never on a logic-only tick.
+    fn ui_setup(&mut self, ctx: &egui::Context) {
+        self.viewport_setup(ctx);
+    }
+
+    /// The app-global part of [`Self::ui_setup`] that every window's frame needs: language, fonts,
+    /// theme and `ui.dark`, the render worker, and the interface zoom plan. eframe only calls
+    /// `App::ui` for the root window, so a child must run this itself before it draws; a child that
+    /// only runs while the root is minimised still gets theme switches, CJK faces for its own
+    /// document, and the right `ui.dark` for its tabs and dialogs.
+    pub(crate) fn viewport_setup(&mut self, ctx: &egui::Context) {
         if self.language.as_ref() != Some(&self.session.prefs.language) {
             i18n::set(&self.session.prefs.language, self.services.system_language().as_deref());
             self.language = Some(self.session.prefs.language.clone());
         }
+        // Screen-reader and bidi language of the UI (fork E17).
+        ctx.set_language(i18n::current().map(|l| l.code.to_string()));
         if !self.fonts_installed {
             // Cmd/Ctrl+= / - / 0 zoom the canvas (view.zoomIn, view.zoomOut, view.zoom100): egui's
             // own keyboard zoom would scale the whole interface on the same keys.
             ctx.options_mut(|o| o.zoom_with_keyboard = false);
+            // A double-click's window is the platform's (0.5 s, Windows' default), not egui's
+            // stricter 0.3 s: a double-click the OS takes must enter a shape's points too.
+            ctx.memory_mut(|m| m.options.input_options.max_double_click_delay = 0.5);
             theme::install_fonts(ctx, false, 0);
             self.fonts_installed = true;
+            // Installed fonts apply from the next frame; a child window draws on here, so ask for
+            // that frame (the root draws nothing on the frame it installs them).
+            ctx.request_repaint();
         } else if figcraft_text::system_fonts_scanned() {
             // Once the system fonts are indexed: faces for names in scripts the UI fonts lack, and
             // for each CJK script once something shows it.
@@ -1522,19 +1844,23 @@ impl FigApp {
         }
         // egui's zoom is for the whole app and multiplies each window's own system scale, so the
         // size is the same relative to every screen; the main window, whose size can hold a size
-        // back, sets it. The browser keeps its own zoom.
-        if ctx.viewport_id() == egui::ViewportId::ROOT {
+        // back, sets it. The browser keeps its own zoom. Every window records its own plan (the
+        // Preferences warning and `ui.inspect` read it), from its own size.
+        {
             let window_px = ctx.content_rect().size() * ctx.pixels_per_point();
             let size = if cfg!(target_arch = "wasm32") { 1.0 } else { self.session.prefs.ui_scale };
             let plan = ui_scale::plan(size, ctx.native_pixels_per_point(), Some((window_px.x, window_px.y)));
-            ctx.set_zoom_factor(plan.zoom);
+            if ctx.viewport_id() == egui::ViewportId::ROOT {
+                ctx.set_zoom_factor(plan.zoom);
+            }
             self.ui.ui_scale = plan;
         }
         let dark = match self.session.prefs.theme.as_str() {
             "dark" => true,
-            // The active visuals were set by us last frame (possibly for a manual theme).
-            // Read the integration's OS theme instead; without one, keep the light fallback.
-            "system" => ctx.system_theme() == Some(egui::Theme::Dark),
+            // The active visuals were set by us last frame (possibly for a manual theme). Read the
+            // integration's OS theme; winit reports none on Linux and the BSDs, where the platform
+            // services' colour scheme answers instead. Without either, keep the light fallback.
+            "system" => ctx.system_theme().map(|t| t == egui::Theme::Dark).or_else(|| self.services.system_dark()).unwrap_or(false),
             _ => false,
         };
         self.ui.dark = dark;
@@ -1548,8 +1874,7 @@ impl FigApp {
 
     /// Every [`AUTOSAVE_SECS`], each open document with unsaved changes since its last version
     /// gets an autosave checkpoint in its version history.
-    fn autosave_tick(&mut self, ctx: &egui::Context) {
-        let now = ctx.input(|i| i.time);
+    fn autosave_tick(&mut self, ctx: &egui::Context, now: f64) {
         if now < self.ui.next_autosave {
             // Wake up for it even if nothing else draws a frame by then.
             repaint_in(ctx, self.ui.next_autosave - now);
@@ -1570,14 +1895,17 @@ impl FigApp {
     /// With auto-save on, files that have a path are saved [`AUTO_SAVE_SECS`] after they last
     /// changed (not during a gesture, a live preview or while a version is shown). The file is
     /// encoded on a thread of its own, so a big one doesn't hold up the window, and written here.
-    fn auto_save_tick(&mut self, ctx: &egui::Context) {
-        let now = ctx.input(|i| i.time);
+    fn auto_save_tick(&mut self, ctx: &egui::Context, now: f64) {
         let mut failed = self.auto_save_done();
         // The browser has no files to save to.
         let on = !cfg!(target_arch = "wasm32") && self.session.prefs.auto_save;
         let saving = &self.ui.auto_saving;
         let due = |d: &&figcraft_engine::DocState| {
-            d.path.is_some() && d.branch_of.is_none() && d.preview.is_none() && d.is_dirty() && !saving.iter().any(|(uid, _)| *uid == d.uid)
+            d.path.as_deref().is_some_and(|p| d.images_lost_saving_to(p).is_none())
+                && d.branch_of.is_none()
+                && d.preview.is_none()
+                && d.is_dirty()
+                && !saving.iter().any(|(uid, _)| *uid == d.uid)
         };
         let changes = if on { self.session.docs.iter().filter(due).map(|d| d.revision).reduce(u64::wrapping_add) } else { None };
         match changes {
@@ -1652,23 +1980,26 @@ impl FigApp {
         // nothing changed, so this is every frame.
         self.session.sync_icon_fonts();
         let first = !self.fonts_installed;
-        self.logic(&ctx);
-        self.autosave_tick(&ctx);
-        self.auto_save_tick(&ctx);
-        if first {
-            // New fonts apply from the next frame; draw nothing until then.
+        if ctx.current_pass_index() == 0 && self.ui_frame_stamp != Some(stamp) {
+            self.ui_frame_stamp = Some(stamp);
+            self.frame_stats.record(&ctx);
+            self.ui_setup(&ctx);
+        }
+        if first && self.fonts_installed {
+            // New fonts apply from the next frame; draw nothing until then. Anything taken into
+            // this frame's (undrawn) input waits for the first drawn frame.
             ctx.request_repaint();
+            if let Some(events) = self.applied_input.take() {
+                self.push_control_input(events);
+            }
+            self.input_acks.append(&mut self.applied_acks);
+            self.applied_frame = None;
+            self.control_synthetic = false;
+            // The next (drawn) frame ticks for itself in a direct harness.
+            self.logic_ticked = false;
+            self.observe_ime(&ctx, false);
             return;
         }
-        // What happened in a live session (the network woke us for it).
-        if self.session.live_poll() {
-            if let Some(m) = self.session.message.take() {
-                self.toast(live::failure_text(&m));
-            }
-            self.background_done(&ctx);
-        }
-        // Files that arrived without a command (joined, recovered) take the kept View toggles too.
-        self.session.apply_view_prefs();
         windows::begin(self, &ctx);
         let (files, prefs) = (self.session.docs.len(), self.session.prefs.clone());
         self.frame(ui);
@@ -1677,6 +2008,10 @@ impl FigApp {
             windows::repaint_others(self, &ctx);
         }
         windows::show(self, &ctx);
+        // The injected batch was applied by the frame that took it. A discarded sizing pass keeps
+        // its acknowledgement for the presented pass but never replays the input (its side effects
+        // already happened and would otherwise duplicate).
+        self.end_input_frame(&ctx);
         // Plugins installed, removed or set up are kept at once: a crash doesn't lose them.
         // So are the owner tokens of files put online.
         if std::mem::take(&mut self.session.plugins.unsaved) | std::mem::take(&mut self.session.live.unsaved) {
@@ -1698,9 +2033,38 @@ impl FigApp {
         !hidden && (!board || self.ui.board_panel)
     }
 
+    /// A narrow window's two buttons for the side panels (touch-sized); the open one closes again.
+    fn mobile_buttons(&mut self, ctx: &egui::Context, at: egui::Pos2) {
+        use a11y::Tip as _;
+        let t = theme::Tokens::get(ctx);
+        egui::Area::new(egui::Id::unique("mobile_panel_buttons")).order(egui::Order::Foreground).fixed_pos(at).show(ctx, |ui| {
+            for (side, icon, name) in
+                [(MobilePanel::Left, icons::Icon::Layers, i18n::tr("Layers")), (MobilePanel::Right, icons::Icon::Panels, i18n::tr("Design"))]
+            {
+                let open = self.ui.mobile_panel == Some(side);
+                let (r, resp) = ui.allocate_exact_size(egui::vec2(40.0, 40.0), egui::Sense::click());
+                let resp = resp.tip(name);
+                let fill = if open { t.accent } else { t.panel };
+                ui.painter().rect(r, 8.0, fill, egui::Stroke::new(1.0, t.border), egui::StrokeKind::Inside);
+                icons::paint(ui.painter(), r.shrink(10.0), icon, if open { t.accent_on } else { t.icon });
+                if resp.clicked() {
+                    if side == MobilePanel::Left && !open {
+                        self.ui.open_left_panel();
+                    } else {
+                        self.ui.mobile_panel = if open { None } else { Some(side) };
+                    }
+                }
+                ui.add_space(4.0);
+            }
+        });
+    }
+
     /// One frame of the window drawing now.
     pub(crate) fn frame(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
+        // Bind this input batch before controls or pointer input can replace its composing
+        // target/caret. Outgoing IME receipts run after mutation and cannot authorize it.
+        let ime_input = shortcuts::ImeInputBaseline::capture(self);
         let t = theme::Tokens::get(&ctx);
         // A field that had the keyboard when the frame began keeps its keys from the shortcuts
         // even if it lets go during the frame (Enter commits it), or as it began (egui drops the
@@ -1717,7 +2081,7 @@ impl FigApp {
         windows::requests(self, &ctx);
         selection_spacing::sync(self, &ctx);
         // Before any widget: the navigation keys (F6, Tab, arrows, Escape) move the keyboard.
-        a11y::begin(self, &ctx);
+        a11y::begin(self, &ctx, ui.scope_id());
         if self.ui.title_bar == TitleBar::Custom {
             tabs::resize_edges(&ctx);
         }
@@ -1730,15 +2094,21 @@ impl FigApp {
         self.end_pen_outside_design();
         tabs::relink_presents(self);
         tabs::tab_bar(self, ui);
+        // Control/window work and this pass's physical tab click may have replaced the owner.
+        // A shared field ID in that replacement must never consume the old commit marker.
+        let field_save = shortcuts::revalidate_field_save(self, &ctx, field_save);
         if self.ui.present.is_some() {
             // A close request can arrive while the presenter fills the window. Let its unsaved
             // changes dialog take Escape and draw above the player just as it does in the editor.
             dialogs::keys(self, &ctx);
             present::show(self, ui);
             dialogs::show(self, &ctx);
+            updates_ui::show(self, &ctx);
             // What went wrong while presenting (a widget's plugin failing) shows over it.
             self.toast_ui(&ctx);
             windows::requests(self, &ctx);
+            shortcuts::clear_field_save_marker(&ctx);
+            self.observe_ime(&ctx, false);
             return;
         }
         if !self.has_files() || self.ui.home {
@@ -1754,11 +2124,17 @@ impl FigApp {
             }
             self.toast_ui(&ctx);
             windows::requests(self, &ctx);
+            shortcuts::clear_field_save_marker(&ctx);
+            self.observe_ime(&ctx, false);
             return;
         }
         let hidden = self.session.ds().map(|d| d.view.ui_hidden).unwrap_or(false);
-        let right_open = self.right_panel_shown(hidden);
-        if !hidden {
+        let narrow = !hidden && ui.available_width() < NARROW_WIDTH;
+        let mobile = self.ui.mobile_panel.filter(|_| narrow);
+        self.ui.narrow = narrow;
+        // A narrow window shows the right panel when its button asks for it, a board's too.
+        let right_open = (self.right_panel_shown(hidden) && !narrow) || mobile == Some(MobilePanel::Right);
+        if !hidden && (!narrow || mobile == Some(MobilePanel::Left)) {
             egui::Panel::left("left_rail")
                 .exact_size(56.0)
                 .resizable(false)
@@ -1776,7 +2152,9 @@ impl FigApp {
         let rows = ui.available_rect_before_wrap().y_range();
         let mut edges: Vec<(&str, f32, f32, f32)> = Vec::new();
         if left_open {
-            edges.push(("left", ui.available_rect_before_wrap().min.x + left_w, left_w, 1.0));
+            if !narrow {
+                edges.push(("left", ui.available_rect_before_wrap().min.x + left_w, left_w, 1.0));
+            }
             egui::Panel::left("left_panel")
                 .resizable(false)
                 .exact_size(left_w)
@@ -1848,7 +2226,7 @@ impl FigApp {
         branch_ui::keys(self, &ctx);
         live::dialog_keys(self, &ctx);
         dialogs::keys(self, &ctx);
-        shortcuts::handle(self, &ctx, typing, swallowed);
+        shortcuts::handle_input(self, &ctx, typing, swallowed, ime_input, field_save);
         menus::popups(self, &ctx);
         variable_ui::picker(self, &ctx);
         style_picker::show(self, &ctx);
@@ -1877,6 +2255,11 @@ impl FigApp {
         // changed), from the window with its file.
         let windows = &self.windows;
         self.session.live_sync_in(|uid| uid.map_or(0, |u| windows.of(u)) == windows.current);
+        // The canvas editor's IME context is observed exactly once per pass, after every command
+        // this pass ran (shortcuts, menus, dialogs, window requests and live sync). A focused panel
+        // field or an open palette owns the platform IME instead; the early `home`/present paths
+        // above make the same single idle observation.
+        self.observe_ime(&ctx, !typing && !self.field_focus && self.ui.palette.is_none());
     }
 
     /// Clicking the control that opened the colour picker closes it again; clicking another opens
@@ -1917,7 +2300,7 @@ impl FigApp {
             repaint_in(ctx, left);
         }
         let screen = ctx.content_rect();
-        egui::Area::new(egui::Id::new("toast"))
+        egui::Area::new(egui::Id::unique("toast"))
             .fixed_pos(egui::pos2(screen.center().x, screen.max.y - 96.0))
             .pivot(egui::Align2::CENTER_BOTTOM)
             .order(egui::Order::Tooltip)
@@ -2010,17 +2393,17 @@ impl FigApp {
 }
 
 /// The file types File ▸ Open and a drop on the home screen open.
-pub(crate) const OPEN_EXTENSIONS: &[&str] = &["figcraft", "fig", "json", "svg", "png", "jpg", "jpeg", "webp", "gif", "tif", "tiff"];
+pub(crate) const OPEN_EXTENSIONS: &[&str] = &["figcraft", "fig", "sketch", "json", "svg", "png", "jpg", "jpeg", "webp", "gif", "tif", "tiff"];
 
 /// Whether `path` names a file type that opens as a document (the extension, in any case).
 pub(crate) fn opens(path: &Path) -> bool {
     path.extension().and_then(OsStr::to_str).is_some_and(|e| OPEN_EXTENSIONS.iter().any(|x| x.eq_ignore_ascii_case(e)))
 }
 
-/// Whether `path` is a whole document (`.figcraft`, `.fig`, file JSON) rather than an image or SVG:
+/// Whether `path` is a whole document (`.figcraft`, `.fig`, `.sketch`, file JSON) rather than an image or SVG:
 /// dropped on the canvas it opens as a file of its own instead of adding its pages to the open one.
 pub(crate) fn is_document(path: &Path) -> bool {
-    path.extension().and_then(OsStr::to_str).is_some_and(|e| ["figcraft", "fig", "json"].iter().any(|x| x.eq_ignore_ascii_case(e)))
+    path.extension().and_then(OsStr::to_str).is_some_and(|e| ["figcraft", "fig", "sketch", "json"].iter().any(|x| x.eq_ignore_ascii_case(e)))
 }
 
 /// Reads the contents of dropped file `name` that has no file on disk to read by path.
@@ -2048,7 +2431,7 @@ pub(crate) fn drop_overlay(ctx: &egui::Context, rect: egui::Rect, label: &str) {
         return;
     }
     let t = theme::Tokens::get(ctx);
-    let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("drop_overlay")));
+    let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::unique("drop_overlay")));
     let area = rect.shrink(4.0);
     painter.rect_filled(area, egui::CornerRadius::same(8), t.accent.gamma_multiply(0.12));
     painter.rect_stroke(area, egui::CornerRadius::same(8), egui::Stroke::new(2.0, theme::ACCENT), egui::StrokeKind::Inside);

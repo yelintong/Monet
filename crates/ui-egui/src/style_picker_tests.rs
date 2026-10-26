@@ -123,6 +123,8 @@ fn text_session() -> (Session, figcraft_doc::NodeId) {
     (s, t)
 }
 
+/// Asserts hovering a text style previews it without an edit, leaving the popover restores
+/// the value, and clicking applies one undo step and closes the picker.
 #[test]
 fn text_styles_preview_on_hover_and_apply_on_click() {
     let (s, t) = text_session();
@@ -133,7 +135,7 @@ fn text_styles_preview_on_hover_and_apply_on_click() {
     for _ in 0..3 {
         frame(&ctx, &mut app, &mut time);
     }
-    let area = ctx.memory(|m| m.area_rect(Id::new("style_picker_area"))).expect("the picker shows");
+    let area = ctx.memory(|m| m.area_rect(Id::unique("style_picker_area"))).expect("the picker shows");
     let size = |app: &FigApp| app.session.doc().unwrap().node(t).unwrap().kind.text().unwrap().style.font_size;
     let undo = app.session.ds().unwrap().history.undo.len();
     // Down the popover until a style row previews on the canvas: the heading (listed first).
@@ -480,7 +482,7 @@ fn segments(shapes: &[egui::Shape], c: egui::Color32) -> Vec<(Pos2, Pos2)> {
 /// returns the redefined style, if any.
 fn commit_text_field(def: &TextStyle, field: &str, typed: &str) -> Option<TextStyle> {
     let ctx = egui::Context::default();
-    ctx.data_mut(|d| d.insert_temp(Id::new((field, "S")).with("editing"), typed.to_string()));
+    ctx.data_mut(|d| d.insert_temp(Id::unique((field, "S")).with("editing"), typed.to_string()));
     let enter = egui::Event::Key { key: egui::Key::Enter, physical_key: None, pressed: true, repeat: false, modifiers: Default::default() };
     let input = RawInput { screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(400.0, 400.0))), events: vec![enter], ..Default::default() };
     let mut f = Frame { act: None, hover: None, budget: 0 };

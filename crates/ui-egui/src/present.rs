@@ -1740,7 +1740,7 @@ pub fn show(app: &mut FigApp, ui: &mut Ui) {
         app.ui.comments.close();
     }
     finish(app, &mut pres);
-    link_notice(app, &mut pres, &ctx, Id::new("present_link_notice"));
+    link_notice(app, &mut pres, &ctx, Id::unique("present_link_notice"));
     // The options carry over to the next presentation.
     app.ui.present_view = pres.view;
     if live && let Some(BarAction::Responsive(on)) = action {
@@ -1779,78 +1779,82 @@ fn navigation_bar(p: &mut Presenter, ctx: &egui::Context, now: f64) -> Option<St
     let settings = page_settings(doc, p.current);
     let mut navigate = None;
     let mut device_choice = None;
-    egui::Area::new(Id::new("present_navigation")).anchor(Align2::CENTER_BOTTOM, vec2(0.0, -18.0)).order(egui::Order::Foreground).show(ctx, |ui| {
-        egui::Frame::NONE
-            .fill(t.panel)
-            .stroke(Stroke::new(1.0, t.border))
-            .corner_radius(CornerRadius::same(9))
-            .inner_margin(egui::Margin::symmetric(8, 5))
-            .show(ui, |ui| {
-                ui.horizontal(|ui| {
-                    let prev = index.and_then(|i| i.checked_sub(1)).and_then(|i| frames.get(i)).copied();
-                    let next = index.and_then(|i| frames.get(i + 1)).copied();
-                    let previous =
-                        ui.add_enabled(prev.is_some(), egui::Button::new("").min_size(vec2(26.0, 24.0))).on_hover_text(tr("Previous frame"));
-                    icons::paint(
-                        ui.painter(),
-                        Rect::from_center_size(previous.rect.center(), vec2(21.0, 21.0)),
-                        Icon::ChevronLeft,
-                        if prev.is_some() { t.icon } else { t.icon_secondary },
-                    );
-                    if previous.clicked() {
-                        navigate = prev;
-                    }
-                    ui.label(egui::RichText::new(format!("{} / {}", index.map_or(0, |i| i + 1), frames.len())).color(t.text));
-                    let following = ui.add_enabled(next.is_some(), egui::Button::new("").min_size(vec2(26.0, 24.0))).on_hover_text(tr("Next frame"));
-                    icons::paint(
-                        ui.painter(),
-                        Rect::from_center_size(following.rect.center(), vec2(21.0, 21.0)),
-                        Icon::ChevronRight,
-                        if next.is_some() { t.icon } else { t.icon_secondary },
-                    );
-                    if following.clicked() {
-                        navigate = next;
-                    }
-                    ui.separator();
-                    let model = if settings.device.is_empty() || settings.device == "None" { tr("No device") } else { &settings.device };
-                    let device_menu = ui.menu_button(format!("{model}    "), |ui| {
-                        navigation_menu(ui, |ui| {
-                            egui::ScrollArea::vertical().max_height(410.0).show(ui, |ui| {
-                                if ui.selectable_label(settings.device.is_empty() || settings.device == "None", tr("No device")).clicked() {
-                                    device_choice = Some("None".to_owned());
-                                    ui.close();
-                                }
-                                ui.separator();
-                                for device in PrototypeSettings::DEVICES {
-                                    let label = format!("{}  {}×{}", device.name, device.width as u32, device.height as u32);
-                                    if ui.selectable_label(settings.device == device.name, label).clicked() {
-                                        device_choice = Some(device.name.to_owned());
+    egui::Area::new(Id::unique("present_navigation")).anchor(Align2::CENTER_BOTTOM, vec2(0.0, -18.0)).order(egui::Order::Foreground).show(
+        ctx,
+        |ui| {
+            egui::Frame::NONE
+                .fill(t.panel)
+                .stroke(Stroke::new(1.0, t.border))
+                .corner_radius(CornerRadius::same(9))
+                .inner_margin(egui::Margin::symmetric(8, 5))
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        let prev = index.and_then(|i| i.checked_sub(1)).and_then(|i| frames.get(i)).copied();
+                        let next = index.and_then(|i| frames.get(i + 1)).copied();
+                        let previous =
+                            ui.add_enabled(prev.is_some(), egui::Button::new("").min_size(vec2(26.0, 24.0))).on_hover_text(tr("Previous frame"));
+                        icons::paint(
+                            ui.painter(),
+                            Rect::from_center_size(previous.rect.center(), vec2(21.0, 21.0)),
+                            Icon::ChevronLeft,
+                            if prev.is_some() { t.icon } else { t.icon_secondary },
+                        );
+                        if previous.clicked() {
+                            navigate = prev;
+                        }
+                        ui.label(egui::RichText::new(format!("{} / {}", index.map_or(0, |i| i + 1), frames.len())).color(t.text));
+                        let following =
+                            ui.add_enabled(next.is_some(), egui::Button::new("").min_size(vec2(26.0, 24.0))).on_hover_text(tr("Next frame"));
+                        icons::paint(
+                            ui.painter(),
+                            Rect::from_center_size(following.rect.center(), vec2(21.0, 21.0)),
+                            Icon::ChevronRight,
+                            if next.is_some() { t.icon } else { t.icon_secondary },
+                        );
+                        if following.clicked() {
+                            navigate = next;
+                        }
+                        ui.separator();
+                        let model = if settings.device.is_empty() || settings.device == "None" { tr("No device") } else { &settings.device };
+                        let device_menu = ui.menu_button(format!("{model}    "), |ui| {
+                            navigation_menu(ui, |ui| {
+                                egui::ScrollArea::vertical().max_height(410.0).show(ui, |ui| {
+                                    if ui.selectable_label(settings.device.is_empty() || settings.device == "None", tr("No device")).clicked() {
+                                        device_choice = Some("None".to_owned());
+                                        ui.close();
+                                    }
+                                    ui.separator();
+                                    for device in PrototypeSettings::DEVICES {
+                                        let label = format!("{}  {}×{}", device.name, device.width as u32, device.height as u32);
+                                        if ui.selectable_label(settings.device == device.name, label).clicked() {
+                                            device_choice = Some(device.name.to_owned());
+                                            ui.close();
+                                        }
+                                    }
+                                    ui.separator();
+                                    if ui.selectable_label(settings.device == PrototypeSettings::CUSTOM_DEVICE, tr("Custom size")).clicked() {
+                                        device_choice = Some(PrototypeSettings::CUSTOM_DEVICE.to_owned());
+                                        ui.close();
+                                    }
+                                });
+                            });
+                        });
+                        paint_menu_chevron(ui.painter(), device_menu.response.rect, t.icon_secondary);
+                        let scale_menu = ui.menu_button(format!("{}    ", tr(p.view.scale.label(settings.device().is_some()))), |ui| {
+                            navigation_menu(ui, |ui| {
+                                for scale in PresentScale::options(settings.device().is_some()) {
+                                    if ui.selectable_label(p.view.scale == *scale, tr(scale.label(settings.device().is_some()))).clicked() {
+                                        p.set_scale(*scale);
                                         ui.close();
                                     }
                                 }
-                                ui.separator();
-                                if ui.selectable_label(settings.device == PrototypeSettings::CUSTOM_DEVICE, tr("Custom size")).clicked() {
-                                    device_choice = Some(PrototypeSettings::CUSTOM_DEVICE.to_owned());
-                                    ui.close();
-                                }
                             });
                         });
+                        paint_menu_chevron(ui.painter(), scale_menu.response.rect, t.icon_secondary);
                     });
-                    paint_menu_chevron(ui.painter(), device_menu.response.rect, t.icon_secondary);
-                    let scale_menu = ui.menu_button(format!("{}    ", tr(p.view.scale.label(settings.device().is_some()))), |ui| {
-                        navigation_menu(ui, |ui| {
-                            for scale in PresentScale::options(settings.device().is_some()) {
-                                if ui.selectable_label(p.view.scale == *scale, tr(scale.label(settings.device().is_some()))).clicked() {
-                                    p.set_scale(*scale);
-                                    ui.close();
-                                }
-                            }
-                        });
-                    });
-                    paint_menu_chevron(ui.painter(), scale_menu.response.rect, t.icon_secondary);
                 });
-            });
-    });
+        },
+    );
     if let Some(id) = navigate {
         p.go(id, Transition::Instant, 0.0, Easing::Linear, now, true, false);
     }
@@ -2002,7 +2006,7 @@ impl Pane {
 
 /// The preview pane's window id (its position and size persist under it).
 pub fn pane_id() -> Id {
-    Id::new("proto_preview_pane")
+    Id::unique("proto_preview_pane")
 }
 
 /// Show the preview pane while `app.ui.preview` is set (call once per frame, before shortcuts:
@@ -2194,6 +2198,9 @@ fn player(p: &mut Presenter, ui: &mut Ui, rect: Rect, now: f64, chrome: Chrome) 
         p.restart(p.start, now);
     }
     if p.doc.as_ref().is_none_or(|d| !d.contains(p.current)) {
+        // Controller buttons pressed with no frame to show are dropped, as they are while a link
+        // notice shows.
+        p.pads.clear();
         if !chrome.pane {
             return Some(BarAction::Close);
         }
@@ -2217,13 +2224,15 @@ fn player(p: &mut Presenter, ui: &mut Ui, rect: Rect, now: f64, chrome: Chrome) 
     if p.step_fling(now) {
         ctx.request_repaint();
     }
-    let resp = ui.interact(area, ui.id().with("present_area"), Sense::click_and_drag());
+    let resp = ui.interact(area, ui.scope_id().with("present_area"), Sense::click_and_drag());
     let over = resp.contains_pointer();
     if let Some(l) = layout(p, area, chrome) {
         // The pane only takes the keyboard while the pointer is over it. While a link notice shows
         // the prototype takes neither keys nor the pointer (Escape there cancels the notice).
         let keys = chrome.keys && p.link_notice.is_none() && (!chrome.pane || over);
         input(p, &ctx, &l, over && p.link_notice.is_none(), keys, chrome.pane, now);
+    } else {
+        p.pads.clear();
     }
     let Some(l) = layout(p, area, chrome) else { return action };
     p.shown = Some((p.current, l.place, l.clip.intersect(area)));
@@ -2317,7 +2326,7 @@ fn top_bar(p: &mut Presenter, ui: &mut Ui, bar: Rect, now: f64, chrome: Chrome) 
         let w = if chrome.pane { 24.0 } else { ui.painter().layout_no_wrap(shown.to_string(), regular(11.5), text).size().x + 16.0 };
         let br = Rect::from_min_size(pos2(x - w, bar.center().y - 12.0), vec2(w, 24.0));
         x = br.min.x - if chrome.pane { 2.0 } else { 4.0 };
-        let mut resp = ui.interact(br, ui.id().with(("pbar", *label)), Sense::click());
+        let mut resp = ui.interact(br, ui.scope_id().with(("pbar", *label)), Sense::click());
         if chrome.pane {
             resp = resp.tip(shown);
         }
@@ -2369,7 +2378,7 @@ fn top_bar(p: &mut Presenter, ui: &mut Ui, bar: Rect, now: f64, chrome: Chrome) 
         let tip = playing.map(|f| f.description.trim()).filter(|d| !d.is_empty()).unwrap_or(tr("Flows")).to_string();
         let galley = left.layout_no_wrap(label, semibold(11.5), text);
         let fr = Rect::from_min_size(pos2(lx, bar.center().y - 12.0), vec2(galley.size().x + 30.0, 24.0));
-        let resp = ui.interact(fr.intersect(left.clip_rect()), ui.id().with("pflows"), Sense::click()).tip(tip);
+        let resp = ui.interact(fr.intersect(left.clip_rect()), ui.scope_id().with("pflows"), Sense::click()).tip(tip);
         if resp.hovered() {
             left.rect_filled(fr, CornerRadius::same(5), hover);
         }
@@ -2502,7 +2511,9 @@ fn input(p: &mut Presenter, ctx: &egui::Context, l: &Layout, over_area: bool, ke
         )
     });
     let keys = if keys_on { keys } else { Vec::new() };
+    // Controller buttons pressed while a link notice shows are dropped, as keys are.
     let pads = std::mem::take(&mut p.pads);
+    let pads = if p.link_notice.is_none() { pads } else { Vec::new() };
     // A transition a drag started follows the pointer while it stays down, then plays on from there.
     if let Some(a) = p.anim.as_mut()
         && let Some((from, dir, len)) = a.follow

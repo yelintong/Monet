@@ -179,7 +179,7 @@ pub fn show(app: &mut FigApp, ctx: &egui::Context) {
     let mut open = true;
     let mut action = None;
     egui::Window::new("Compare changes")
-        .id(Id::new("dev_compare_window"))
+        .id(Id::unique("dev_compare_window"))
         .title_bar(false)
         .collapsible(false)
         .resizable(false)
@@ -277,7 +277,7 @@ pub(crate) fn header(ui: &mut Ui, t: &Tokens, title: &str, name: &str, mode: &mu
     for (m, label) in modes.iter().rev() {
         let g = ui.painter().layout_no_wrap((*label).into(), regular(11.0), t.text);
         let cell = Rect::from_min_max(pos2(x - g.size().x - 20.0, r.center().y - 12.0), pos2(x, r.center().y + 12.0));
-        let resp = ui.interact(cell, Id::new(("compare_mode", label)), Sense::click());
+        let resp = ui.interact(cell, Id::unique(("compare_mode", label)), Sense::click());
         let on = *mode == *m;
         crate::a11y::tab(&resp, label, on);
         if on {
@@ -294,7 +294,7 @@ pub(crate) fn header(ui: &mut Ui, t: &Tokens, title: &str, name: &str, mode: &mu
     }
     if widgets::icon_button_at(
         ui,
-        Id::new("compare_close"),
+        Id::unique("compare_close"),
         Rect::from_center_size(pos2(r.max.x - 24.0, r.center().y), vec2(24.0, 24.0)),
         Icon::Close,
         tr("Close"),
@@ -344,7 +344,7 @@ pub(crate) fn images(ui: &mut Ui, t: &Tokens, r: Rect, shots: [(&Shot, &str); 2]
             p.text(pos2(img.min.x, label_y), Align2::LEFT_CENTER, before_label, semibold(11.0), t.text_secondary);
             p.text(pos2(img.max.x, label_y), Align2::RIGHT_CENTER, after_label, semibold(11.0), t.text_secondary);
             // The slider: a line with a knob, dragged (or clicked) anywhere over the images.
-            let resp = ui.interact(img, Id::new("compare_split"), Sense::click_and_drag());
+            let resp = ui.interact(img, Id::unique("compare_split"), Sense::click_and_drag());
             if let Some(pos) = resp.interact_pointer_pos().filter(|_| resp.dragged() || resp.clicked()) {
                 *split = ((pos.x - img.min.x) / img.width().max(1.0)).clamp(0.0, 1.0);
             }

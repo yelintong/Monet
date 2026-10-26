@@ -128,10 +128,10 @@ pub fn tool_definitions() -> Vec<Value> {
         tool(
             "batch",
             "Run commands as one step",
-            "Run several commands in order as ONE undo step (engine `command.batch`). If any command fails, everything is rolled back and the error names the failing step. Returns an array of the results in order. A later step can use a layer an earlier step created: anywhere in its params, {\"$step\": n} stands for the `id` in step n's result (zero-based; {\"$step\": n, \"field\": \"…\"} picks another field). Example: [{\"command\":\"node.create\",\"params\":{\"type\":\"frame\"}}, {\"command\":\"node.create\",\"params\":{\"type\":\"text\",\"text\":\"Hi\",\"parent\":{\"$step\":0}}}] builds a frame and a text inside it in one call.",
+            "Run several commands in order as ONE undo step (engine `command.batch`). If any command fails, everything is rolled back and the error names the failing step. Returns an array of the results in order. A later step can use what an earlier step returned: name a step with \"as\": \"card\", then anywhere in a later step's params {\"$ref\": \"card\"} stands for the `id` in its result ({\"$step\": n} does the same by zero-based position). Add \"field\" for another part of the result: a key or a slash path, e.g. {\"$ref\": \"copy\", \"field\": \"ids/0\"} for the first id edit.duplicate returned. Any object with a `$ref` or `$step` key is a reference. Example: [{\"command\":\"node.create\",\"as\":\"card\",\"params\":{\"type\":\"frame\"}}, {\"command\":\"node.create\",\"params\":{\"type\":\"text\",\"text\":\"Hi\",\"parent\":{\"$ref\":\"card\"}}}] builds a frame and a text inside it in one call.",
             obj(
                 json!({
-                    "commands": {"type": "array", "minItems": 1, "description": "Steps to run", "items": obj(json!({"command": string("Command id"), "params": {"type": "object"}}), &["command"])},
+                    "commands": {"type": "array", "minItems": 1, "description": "Steps to run", "items": obj(json!({"command": string("Command id"), "params": {"type": "object"}, "as": string("Name for this step, unique in the batch; later steps use its result with {\"$ref\": name}")}), &["command"])},
                     "label": string("Undo history label (default \"Batch\")"),
                 }),
                 &["commands"],
@@ -253,7 +253,7 @@ pub fn tool_definitions() -> Vec<Value> {
         tool(
             "open_file",
             "Open file",
-            "Open a .figcraft or .json document (FigCraft or REST API file JSON), a .fig file (best effort, with `warnings` for what wasn't imported), an .svg (becomes vectors) or an image (becomes an image layer) as the active document. Returns the new document's summary.",
+            "Open a .figcraft or .json document (FigCraft or REST API file JSON), a .fig or .sketch file (best effort, with `warnings` for what wasn't imported; .sketch from Sketch 48 or newer), an .svg (becomes vectors) or an image (becomes an image layer) as the active document. Returns the new document's summary.",
             obj(
                 json!({
                     "path": string("File path"),
@@ -513,7 +513,11 @@ fn batch(b: &mut dyn Backend, a: &Map<String, Value>) -> Result<ToolResult, Stri
         };
         let mut params = params;
         friendly_params(&mut params);
-        steps.push(json!({"command": cmd, "params": params}));
+        let mut step = json!({"command": cmd, "params": params});
+        if let (Some(name), Some(o)) = (c.get("as"), step.as_object_mut()) {
+            o.insert("as".into(), name.clone());
+        }
+        steps.push(step);
     }
     let label = s_arg(a, "label")?.unwrap_or("Batch");
     exec(b, "command.batch", json!({"label": label, "commands": steps})).map(|v| ToolResult::json(&v))
@@ -742,7 +746,7 @@ fn get_node(b: &mut dyn Backend, a: &Map<String, Value>) -> Result<ToolResult, S
             }
         }
         if used_wire + MARKER_RESERVE <= budget {
-            return Ok(ToolResult::json(&with_marker(value, depth, used, wire, used_wire, max_bytes, true, None)));
+            return Ok(ToolResult::json(&with_marker(value, Cut { asked: depth, used, asked_wire: wire, used_wire }, max_bytes, true, None)));
         }
     }
 
@@ -767,10 +771,7 @@ fn get_node(b: &mut dyn Backend, a: &Map<String, Value>) -> Result<ToolResult, S
     let over = wire > budget || next.is_some();
     let mut out = with_marker(
         value,
-        depth,
-        used,
-        wire,
-        used_wire,
+        Cut { asked: depth, used, asked_wire: wire, used_wire },
         max_bytes,
         over,
         Some(json!({
@@ -812,19 +813,19 @@ fn children_window(value: &mut Value, offset: usize, budget: usize) -> bool {
     true
 }
 
-/// `value` with the `truncated` object saying how it was cut. `over`: the subtree asked for passed
-/// the limit (else the window is only the `offset` asked for). `children`: the window, when the
-/// children were cut as well as (or instead of) the depth.
-fn with_marker(
-    mut value: Value,
+/// How a subtree was cut: the depth asked for and the depth reported, with their sizes on the wire.
+struct Cut {
     asked: u64,
     used: u64,
     asked_wire: usize,
     used_wire: usize,
-    max_bytes: usize,
-    over: bool,
-    children: Option<Value>,
-) -> Value {
+}
+
+/// `value` with the `truncated` object saying how it was cut. `over`: the subtree asked for passed
+/// the limit (else the window is only the `offset` asked for). `children`: the window, when the
+/// children were cut as well as (or instead of) the depth.
+fn with_marker(mut value: Value, cut: Cut, max_bytes: usize, over: bool, children: Option<Value>) -> Value {
+    let Cut { asked, used, asked_wire, used_wire } = cut;
     if let Some(obj) = value.as_object_mut() {
         let mut marker = json!({
             "requestedDepth": asked,

@@ -8,7 +8,7 @@ use serde_json::{Map, Value, json};
 
 use super::{CommandSpec, ok};
 use crate::params::*;
-use crate::{EngineError, Result, Session, bad, spec};
+use crate::{BatchStep, EngineError, Result, Session, bad, spec};
 
 pub fn specs() -> Vec<CommandSpec> {
     vec![
@@ -235,6 +235,22 @@ pub fn specs() -> Vec<CommandSpec> {
         spec!("stroke.remove", "Remove stroke", "{ids?, index}", true, |s, p| paint_list(s, p, false, false)),
         spec!("fill.set", "Set fill", "{ids?, index?, paint | color, opacity?, visible?, blend?}", true, |s, p| paint_set(s, p, true)),
         spec!("stroke.set", "Set stroke", "{ids?, index?, paint | color, opacity?, visible?, blend?}", true, |s, p| paint_set(s, p, false)),
+        spec!("fill.copy", "Copy fill", "{id?, index? (default the top fill)}", false, |s, p| paint_copy(s, p, true)),
+        spec!("fill.paste", "Paste fill", "{ids?, index? (replace the fill there; without: add one)}", true, |s, p| paint_paste(s, p, true)),
+        spec!(
+            "stroke.copy",
+            "Copy stroke",
+            "{id?, index? (default the top stroke)}  its paint and the stroke's weight, alignment, sides, caps, joins and dashes",
+            false,
+            |s, p| paint_copy(s, p, false)
+        ),
+        spec!(
+            "stroke.paste",
+            "Paste stroke",
+            "{ids?, index? (replace the stroke there; without: add one)}  the copied stroke's settings come with its paint",
+            true,
+            |s, p| paint_paste(s, p, false)
+        ),
         spec!(
             "fill.pattern",
             "Pattern fill",
@@ -342,15 +358,16 @@ pub fn specs() -> Vec<CommandSpec> {
             }
             ok()
         }),
-        spec!("command.batch", "Run several commands", "{label?, commands: [{command, params}]} (one undo step)", false, |s, p| {
+        spec!("command.batch", "Run several commands", "{label?, commands: [{command, params, as?}]} (one undo step)", false, |s, p| {
             let label = string(p, "label").unwrap_or_else(|| "Batch".into());
-            let cmds: Vec<(String, Value)> = match get(p, "commands") {
+            let cmds: Vec<BatchStep> = match get(p, "commands") {
                 Some(Value::Array(a)) => {
                     let mut out = Vec::new();
                     for (i, c) in a.iter().enumerate() {
                         let cmd =
                             c.get("command").and_then(Value::as_str).ok_or_else(|| bad("command.batch", format!("step {i} has no `command`")))?;
-                        out.push((cmd.to_string(), c.get("params").cloned().unwrap_or(json!({}))));
+                        let params = c.get("params").cloned().unwrap_or(json!({}));
+                        out.push(BatchStep { name: crate::batch::step_name(i, c)?, ..BatchStep::new(cmd, params) });
                     }
                     out
                 }
@@ -541,6 +558,7 @@ pub fn copy_to_clipboard(s: &mut Session, cmd: &str, ids: &[NodeId]) -> Result<(
     s.clipboard.nodes = nodes;
     s.clipboard.images = images;
     s.clipboard.bounds = bounds;
+    s.clipboard.layers_generation = s.clipboard.layers_generation.wrapping_add(1);
     Ok(())
 }
 
@@ -600,6 +618,10 @@ pub fn design_clipboard_buffer(html: &str) -> Option<Vec<u8>> {
     figcraft_format::fig::is_fig(&bytes).then_some(bytes)
 }
 
+/// Paste design layers from clipboard HTML or base64 `data`: decode and reject missing,
+/// invalid or oversized data, load a temporary `.fig`, take its top-level page layers,
+/// store them as a foreign-file clipboard source with a bumped layers generation, then
+/// delegate to `paste` and append import warnings.
 fn paste_design_layers(s: &mut Session, p: &Value) -> Result<Value> {
     const CMD: &str = "edit.pasteDesignLayers";
     let bytes = match (string(p, "html"), string(p, "data")) {
@@ -614,10 +636,28 @@ fn paste_design_layers(s: &mut Session, p: &Value) -> Result<Value> {
         return Err(EngineError::Disabled(CMD.into(), "the copied layers came in empty".into()));
     }
     let (nodes, images, bounds) = copied(&doc, &tops);
+    // A design-app paste replaces the copied layers, not the copied rows: a `fill.copy` before it
+    // still pastes afterwards.
     let props = s.clipboard.props.take();
+    let paint = s.clipboard.paint.take();
+    let stroke = s.clipboard.stroke.take();
+    let effect = s.clipboard.effect.take();
     // No open file has id 0. So paste treats this copy as a copy from a different file.
-    s.clipboard =
-        crate::Clipboard { nodes, images, props, bounds, source_doc: 0, source: Some(doc), source_path: None, copied_components: BTreeSet::new() };
+    let layers_generation = s.clipboard.layers_generation.wrapping_add(1);
+    s.clipboard = crate::Clipboard {
+        nodes,
+        images,
+        props,
+        paint,
+        stroke,
+        effect,
+        bounds,
+        source_doc: 0,
+        source: Some(doc),
+        source_path: None,
+        copied_components: BTreeSet::new(),
+        layers_generation,
+    };
     let mut out = paste(s, p)?;
     if !other.issues.is_empty() {
         out["warnings"] = json!(other.issues);
@@ -1418,6 +1458,61 @@ fn paint_set(s: &mut Session, p: &Value, fills: bool) -> Result<Value> {
     ok()
 }
 
+/// Copy paint `index` (the top one by default) of the first target into the clipboard. A stroke
+/// takes its node-wide settings (weight, alignment, sides, caps, joins, dashes) along.
+fn paint_copy(s: &mut Session, p: &Value, fills: bool) -> Result<Value> {
+    let cmd = if fills { "fill.copy" } else { "stroke.copy" };
+    let id = targets(s, p).first().copied().ok_or_else(|| bad(cmd, "select a layer"))?;
+    let at = opt_index(cmd, p, "index")?;
+    let (paint, stroke) = {
+        let doc = s.doc()?;
+        let n = doc.get(id)?;
+        let list = if fills { &n.fills } else { &n.strokes };
+        let at = at.unwrap_or(list.len().saturating_sub(1));
+        let paint = list.get(at).cloned().ok_or_else(|| bad(cmd, format!("no {} at index {at}", if fills { "fill" } else { "stroke" })))?;
+        (paint, (!fills).then(|| n.stroke.clone()))
+    };
+    s.clipboard.paint = Some((fills, paint.clone()));
+    s.clipboard.stroke = stroke;
+    serde_json::to_value(&paint).map_err(|e| bad(cmd, e.to_string()))
+}
+
+/// Paste the copied paint onto the targets: replacing paint `index` there, or adding one. A
+/// stroke's copied settings go onto each target too.
+fn paint_paste(s: &mut Session, p: &Value, fills: bool) -> Result<Value> {
+    let cmd = if fills { "fill.paste" } else { "stroke.paste" };
+    let Some((copied_fills, paint)) = s.clipboard.paint.clone() else {
+        return Err(EngineError::Disabled(cmd.into(), "no copied fill or stroke".into()));
+    };
+    if copied_fills != fills {
+        let what = if fills { "stroke" } else { "fill" };
+        return Err(EngineError::Disabled(cmd.into(), format!("the copied paint is a {what}")));
+    }
+    let ids = req_targets(cmd, s, p)?;
+    // A copied pattern pointing at a target or a layer inside it would make the layer pattern
+    // itself; `fill.pattern` refuses the same, and the renderer would drop the pattern.
+    if let figcraft_color::PaintKind::Pattern(pt) = &paint.kind {
+        let doc = s.doc()?;
+        if ids.iter().any(|t| doc.is_ancestor(*t, NodeId(pt.source))) {
+            return Err(bad(cmd, "a layer can't be filled with itself or a layer inside it"));
+        }
+    }
+    let mut q = json!({"ids": ids, "paint": serde_json::to_value(paint).map_err(|e| bad(cmd, e.to_string()))?});
+    let out = match opt_index(cmd, p, "index")? {
+        Some(at) => {
+            q["index"] = json!(at);
+            paint_set(s, &q, fills)?
+        }
+        None => paint_list(s, &q, fills, true)?,
+    };
+    if let Some(stroke) = s.clipboard.stroke.clone().filter(|_| !fills) {
+        for id in ids {
+            s.doc_mut()?.get_mut(id)?.stroke = stroke.clone();
+        }
+    }
+    Ok(out)
+}
+
 fn pattern_fill(s: &mut Session, p: &Value) -> Result<Value> {
     const CMD: &str = "fill.pattern";
     let src = req_id(CMD, p, "source")?;
@@ -1451,6 +1546,42 @@ fn effect_add(s: &mut Session, p: &Value) -> Result<Value> {
     };
     for i in req_targets("effect.add", s, p)? {
         s.doc_mut()?.get_mut(i)?.effects.push(e.clone());
+    }
+    ok()
+}
+
+/// Copy effect `index` (the top one by default) of the first target into the clipboard.
+fn effect_copy(s: &mut Session, p: &Value) -> Result<Value> {
+    const CMD: &str = "effect.copy";
+    let id = targets(s, p).first().copied().ok_or_else(|| bad(CMD, "select a layer"))?;
+    let at = opt_index(CMD, p, "index")?;
+    let e = {
+        let doc = s.doc()?;
+        let list = &doc.get(id)?.effects;
+        let at = at.unwrap_or(list.len().saturating_sub(1));
+        list.get(at).cloned().ok_or_else(|| bad(CMD, format!("no effect at index {at}")))?
+    };
+    s.clipboard.effect = Some(e.clone());
+    serde_json::to_value(&e).map_err(|err| bad(CMD, err.to_string()))
+}
+
+/// Paste the copied effect onto the targets: replacing effect `index` there, or adding one.
+fn effect_paste(s: &mut Session, p: &Value) -> Result<Value> {
+    const CMD: &str = "effect.paste";
+    let Some(e) = s.clipboard.effect.clone() else {
+        return Err(EngineError::Disabled(CMD.into(), "no copied effect".into()));
+    };
+    let at = opt_index(CMD, p, "index")?;
+    for id in req_targets(CMD, s, p)? {
+        let n = s.doc_mut()?.get_mut(id)?;
+        match at {
+            Some(i) => {
+                if let Some(slot) = n.effects.get_mut(i) {
+                    *slot = e.clone();
+                }
+            }
+            None => n.effects.push(e.clone()),
+        }
     }
     ok()
 }

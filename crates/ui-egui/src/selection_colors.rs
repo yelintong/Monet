@@ -24,8 +24,11 @@ struct Cache {
     colors: Arc<Vec<SelectionColor>>,
 }
 
+/// Return the cached selection colours when the document and selection match. During an
+/// interaction reuse an existing matching cache, or return an empty list without discovering
+/// colours; otherwise discover and cache them.
 fn colors(ui: &Ui, document: u64, doc: &Arc<Document>, ids: &[NodeId], interacting: bool) -> Arc<Vec<SelectionColor>> {
-    let key = Id::new("selection_colors_cache");
+    let key = Id::unique("selection_colors_cache");
     if let Some(cache) = ui.data(|d| d.get_temp::<Cache>(key))
         && cache.document == document
         && cache.ids == ids
@@ -49,6 +52,9 @@ pub(crate) fn toggle(app: &mut FigApp, targets: Vec<PaintTarget>, top: Option<f3
     app.toggle_picker(PickerTarget::SelectionColor { targets, selection: ds.selection.clone(), document: ds.uid }, top);
 }
 
+/// Draw the selection-colour groups (at least two): swatch opens the picker, hex and opacity
+/// edits, style/variable detach/apply/bind, and “select layers with this color”; disabled
+/// during an interaction.
 pub fn section(app: &mut FigApp, ui: &mut Ui, doc: &Arc<Document>, ids: &[NodeId]) {
     let Ok(ds) = app.session.ds() else { return };
     let interacting = ds.interaction.is_some();
@@ -79,7 +85,7 @@ pub fn section(app: &mut FigApp, ui: &mut Ui, doc: &Arc<Document>, ids: &[NodeId
                                 toggle(app, group.targets.clone(), None);
                             }
                         } else if let Some(color) = group.paint.solid_color() {
-                            if let Some(hex) = widgets::text_field_named(ui, ui.id().with("hex"), &color.to_hex(), width, tr("Color")) {
+                            if let Some(hex) = widgets::text_field_named(ui, ui.scope_id().with("hex"), &color.to_hex(), width, tr("Color")) {
                                 if let Some(color) = Color::from_hex(&hex) {
                                     let mut paint = group.paint.clone();
                                     paint.kind = figcraft_color::PaintKind::Solid { color: color.with_alpha(1.0) };
@@ -98,7 +104,7 @@ pub fn section(app: &mut FigApp, ui: &mut Ui, doc: &Arc<Document>, ids: &[NodeId
                             }
                         }
                         let alpha = format!("{}%", figcraft_doc::trim_num(f64::from(group.paint.opacity) * 100.0));
-                        if let Some(value) = widgets::text_field_named(ui, ui.id().with("opacity"), &alpha, 44.0, tr("Opacity"))
+                        if let Some(value) = widgets::text_field_named(ui, ui.scope_id().with("opacity"), &alpha, 44.0, tr("Opacity"))
                             && let Ok(value) = value.trim().trim_end_matches('%').parse::<f32>()
                             && value.is_finite()
                         {
@@ -249,10 +255,12 @@ mod tests {
         assert!(!p.frame(vec![]).iter().any(|(s, _)| s == "Selection colors"));
     }
 
+    /// Asserts the panel reuses cached colours through a live interaction and refreshes the cache
+    /// after the commit.
     #[test]
     fn panel_keeps_cached_colors_during_interaction_and_refreshes_after_commit() {
         let (mut p, a, _) = Panel::new();
-        let key = Id::new("selection_colors_cache");
+        let key = Id::unique("selection_colors_cache");
         let before = p.ctx.data(|d| d.get_temp::<Cache>(key)).unwrap();
         p.app.session.begin_interaction("Color").unwrap();
         for hex in ["#00ff00", "#ffff00", "#00ffff"] {
@@ -268,10 +276,12 @@ mod tests {
         assert!(!Arc::ptr_eq(&before.colors, &after.colors));
     }
 
+    /// Asserts no cached colours are discovered during an interaction, and cancelling restores
+    /// the panel with the original colours.
     #[test]
     fn panel_defers_discovery_without_a_matching_cache_during_interaction() {
         let (mut p, a, _) = Panel::new();
-        let key = Id::new("selection_colors_cache");
+        let key = Id::unique("selection_colors_cache");
         p.ctx.data_mut(|d| d.remove::<Cache>(key));
         p.app.session.begin_interaction("Color").unwrap();
         p.app.run("fill.set", json!({"id":a,"color":"#00ff00"}));

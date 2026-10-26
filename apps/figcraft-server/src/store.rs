@@ -658,7 +658,10 @@ impl Store {
         let dir = self.dir(&id);
         let written = fs::create_dir_all(&dir)
             .map_err(|e| e.to_string())
-            .and_then(|()| disk::write_atomic(&dir.join(SNAPSHOT), &bytes).map_err(|e| e.to_string()))
+            .and_then(|()| {
+                disk::sync_dir(Some(&self.root.join(FILES)));
+                disk::write_atomic(&dir.join(SNAPSHOT), &bytes).map_err(|e| e.to_string())
+            })
             .and_then(|()| disk::write_atomic(&dir.join(LOG), &disk::log_header(1)).map_err(|e| e.to_string()))
             .and_then(|()| write_json(&dir.join(LINKS), &[edit.clone(), view.clone()]))
             // Last: a folder without its description is an upload cut short.
@@ -1480,14 +1483,18 @@ impl Backend for Store {
     }
 
     fn idle(&mut self, file: &str, server: &mut Server) -> bool {
-        let dirty = self.files.get_mut(file).and_then(|e| e.log.as_mut()).is_some_and(|log| {
-            let _ = flush_log(file, log);
-            log.dirty
+        let compact = self.files.get_mut(file).is_some_and(|entry| {
+            let snapshot_seq = entry.meta.seq;
+            entry.log.as_mut().is_some_and(|log| {
+                // Issued client ids and refusals are durable in the log; only edits need a
+                // new image-bearing snapshot. Still try a snapshot if syncing the log failed.
+                flush_log(file, log).is_err() || (log.dirty && server.seq() > snapshot_seq)
+            })
         });
-        if dirty {
+        if compact {
             self.compact(file, server);
         }
-        // It closes anyway, everything in its snapshot: a compaction cut short needs no report.
+        // It closes anyway, with its state in the snapshot and durable log.
         self.cut_short.retain(|f| f != file);
         if let Some(e) = self.files.get_mut(file) {
             e.log = None;

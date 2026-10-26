@@ -112,8 +112,9 @@ const BOARD_GROUPS: &[Group] = &[
     Group { key: "comment", name: tr_noop("Comment"), tools: &[(ToolId::Comment, Icon::Comment)], options: Options::None },
 ];
 
+/// Return the last tool index remembered for a toolbar group, falling back to `default`.
 fn remembered(ui: &Ui, key: &str, default: ToolId) -> ToolId {
-    ui.data(|d| d.get_temp::<u8>(egui::Id::new(("tb_last", key)))).and_then(|i| ToolId::ALL.get(i as usize).copied()).unwrap_or(default)
+    ui.data(|d| d.get_temp::<u8>(egui::Id::unique(("tb_last", key)))).and_then(|i| ToolId::ALL.get(i as usize).copied()).unwrap_or(default)
 }
 
 pub fn show(app: &mut FigApp, ui: &mut Ui) {
@@ -301,10 +302,11 @@ fn main_toolbar(app: &mut FigApp, ui: &mut Ui, canvas: Rect, t: &Tokens, board: 
             (tr("Getting started"), "help.gettingStarted"),
             (tr("Keyboard shortcuts"), "help.shortcuts"),
             (tr("Help page"), "help.page"),
+            (tr("Check for updates…"), "help.checkForUpdates"),
             (tr("About FigCraft"), "help.about"),
         ] {
             if crate::right::menu_item(ui, l, crate::shortcuts::shortcut(c).unwrap_or("")) {
-                app.run(c, json!({}));
+                crate::menus::invoke(app, c);
                 ui.close();
             }
         }
@@ -341,7 +343,7 @@ fn view_only_toolbar(app: &mut FigApp, ui: &mut Ui, why: &'static str) {
     }
     divider(ui, &t, x, cy);
     let badge = Rect::from_min_size(pos2(x + 12.0, cy - 13.0), vec2(badge_w, 26.0));
-    let resp = ui.interact(badge, ui.id().with("view_only"), Sense::hover()).on_hover_text(why);
+    let resp = ui.interact(badge, ui.scope_id().with("view_only"), Sense::hover()).on_hover_text(why);
     a11y::status(&resp, label, why);
     ui.painter().rect_filled(badge, CornerRadius::same(13), t.field);
     icons::paint(ui.painter(), Rect::from_center_size(pos2(badge.min.x + 12.0 + 7.0, cy), vec2(14.0, 14.0)), Icon::Eye, t.icon_secondary);
@@ -433,7 +435,9 @@ fn builder_toolbar(app: &mut FigApp, ui: &mut Ui) {
 }
 
 /// Where a toolbar pill `width` wide sits: centred 12 px above the canvas's bottom edge.
+/// (Never wider than the canvas less a margin: on a phone the main toolbar scrolls inside it.)
 pub(crate) fn pill_rect(canvas: Rect, width: f32) -> Rect {
+    let width = width.min((canvas.width() - 16.0).max(0.0));
     Rect::from_center_size(pos2(canvas.center().x, canvas.max.y - 12.0 - 24.0), vec2(width, 48.0))
 }
 
@@ -444,7 +448,7 @@ fn pill(ui: &Ui, nav: &mut Nav, canvas: Rect, width: f32, t: &Tokens) -> Rect {
     // The pill takes the press and the drag over it: its buttons sense clicks only, and egui gives
     // a drag the canvas under them would sense to the canvas, so the pen placed an anchor there.
     // Not focusable: the keyboard walks the buttons, not the pill.
-    ui.interact(rect, ui.id().with("pill"), Sense::CLICK | Sense::DRAG);
+    ui.interact(rect, ui.scope_id().with("pill"), Sense::CLICK | Sense::DRAG);
     a11y::area(nav, Region::Toolbar, rect);
     a11y::container_bounds(ui, rect);
     let painter = ui.painter();
@@ -458,7 +462,7 @@ fn pill(ui: &Ui, nav: &mut Nav, canvas: Rect, width: f32, t: &Tokens) -> Rect {
 
 /// A square tool button: accent when active, tinted on hover; `tip` is its tooltip and name.
 pub(crate) fn tool_cell(ui: &mut Ui, t: &Tokens, r: Rect, id: impl egui::AsIdSalt, icon: Icon, active: bool, tip: &str) -> egui::Response {
-    let resp = ui.interact(r, ui.id().with(id), Sense::click()).on_hover_ui(|ui| {
+    let resp = ui.interact(r, ui.scope_id().with(id), Sense::click()).on_hover_ui(|ui| {
         ui.label(tip);
     });
     a11y::toggle(&resp, tip, active);
@@ -485,7 +489,7 @@ const DONE_W: f32 = 56.0;
 fn done_button(ui: &mut Ui, t: &Tokens, x: f32, cy: f32, tip: &str) -> bool {
     divider(ui, t, x, cy);
     let done = Rect::from_min_size(pos2(x + 12.0, cy - 14.0), vec2(DONE_W, 28.0));
-    let resp = ui.interact(done, ui.id().with("tool_done"), Sense::click()).tip(tip);
+    let resp = ui.interact(done, ui.scope_id().with("tool_done"), Sense::click()).tip(tip);
     ui.painter().rect_filled(done, CornerRadius::same(6), if resp.hovered() { t.accent_hover } else { t.accent });
     ui.painter().text(done.center(), Align2::CENTER_CENTER, tr("Done"), crate::theme::semibold(11.5), t.accent_on);
     resp.clicked()
@@ -503,7 +507,7 @@ fn flyout(app: &mut FigApp, ui: &mut Ui, g: &Group, bottom_left: egui::Pos2) {
         let mut y = rect.min.y + 8.0;
         for (tid, icon) in g.tools {
             let r = Rect::from_min_size(pos2(rect.min.x + 8.0, y), vec2(w - 16.0, item_h));
-            let resp = ui.interact(r, ui.id().with(("fly", tid.id())), Sense::click());
+            let resp = ui.interact(r, ui.scope_id().with(("fly", tid.id())), Sense::click());
             a11y::menu_item(&resp, tr(tid.label()), tid.shortcut(), Some(*tid == app.session.tool.tool));
             // The keyboard's item is highlighted like the hovered one.
             a11y::own_focus(&resp);
@@ -527,7 +531,7 @@ fn flyout(app: &mut FigApp, ui: &mut Ui, g: &Group, bottom_left: egui::Pos2) {
     }
     if let Some(tid) = chosen {
         if let Some(i) = ToolId::ALL.iter().position(|x| *x == tid) {
-            ui.data_mut(|d| d.insert_temp(egui::Id::new(("tb_last", g.key)), i as u8));
+            ui.data_mut(|d| d.insert_temp(egui::Id::unique(("tb_last", g.key)), i as u8));
         }
         app.run("tool.set", json!({"tool": tid.id()}));
         app.ui.tool_flyout = None;
@@ -571,7 +575,7 @@ fn options_flyout(app: &mut FigApp, ui: &mut Ui, g: &Group, bottom_left: egui::P
 
 /// A tool group's flyout (an egui area).
 fn flyout_id(key: &str) -> egui::Id {
-    egui::Id::new(("flyout_area", key))
+    egui::Id::unique(("flyout_area", key))
 }
 
 /// "Shift+Cmd+K" → "⇧⌘K" on macOS, "Ctrl+Shift+K" elsewhere.
@@ -583,6 +587,18 @@ pub fn pretty_shortcut(s: &str) -> String {
 mod tests {
     use super::*;
     use egui::Shape;
+
+    #[test]
+    fn pill_never_outgrows_a_phone_canvas() {
+        let full = main_width(GROUPS, false);
+        let phone = Rect::from_min_size(pos2(0.0, 0.0), vec2(375.0, 700.0));
+        let pill = pill_rect(phone, full);
+        assert!(pill.width() <= phone.width() - 16.0 && pill.min.x >= 8.0 && pill.max.x <= phone.max.x - 8.0, "{pill:?}");
+        // A desktop canvas keeps the full width, and a degenerate one doesn't go negative.
+        let wide = Rect::from_min_size(pos2(0.0, 0.0), vec2(1400.0, 800.0));
+        assert_eq!(pill_rect(wide, full).width(), full);
+        assert_eq!(pill_rect(Rect::from_min_size(pos2(0.0, 0.0), vec2(4.0, 4.0)), full).width(), 0.0);
+    }
 
     /// The stroke widths `icon` paints with in a `size` box at `ppp` pixels per point.
     fn widths(ppp: f32, icon: Icon, size: f32) -> Vec<f32> {

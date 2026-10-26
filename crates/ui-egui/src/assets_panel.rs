@@ -164,8 +164,9 @@ enum Act {
     Hide(NodeId, bool),
 }
 
+/// Stable egui id for the assets drag payload.
 fn drag_id() -> Id {
-    Id::new("asset_drag")
+    Id::unique("asset_drag")
 }
 
 /// Whether component `id` has the same layers in two versions of a document (layers an edit
@@ -276,7 +277,7 @@ fn refresh_libraries(app: &mut FigApp, ui: &Ui) {
         return;
     }
     let paths: Vec<String> = doc.libraries.enabled.iter().map(|l| l.path.clone()).collect();
-    let id = Id::new("asset_libraries_checked");
+    let id = Id::unique("asset_libraries_checked");
     let now = ui.input(|i| i.time);
     let last: Option<f64> = ui.data(|d| d.get_temp(id));
     if last.is_none_or(|l| now - l >= LIBRARY_REFRESH) {
@@ -285,7 +286,7 @@ fn refresh_libraries(app: &mut FigApp, ui: &Ui) {
         }
         ui.data_mut(|d| d.insert_temp(id, now));
         // Team libraries: in the background, at once for one not fetched yet.
-        let sid = Id::new("asset_server_libraries_checked");
+        let sid = Id::unique("asset_server_libraries_checked");
         let fetched: Option<f64> = ui.data(|d| d.get_temp(sid));
         let unread = paths.iter().any(|p| is_server_link(p) && app.session.libraries.cached(p).is_none());
         if paths.iter().any(|p| is_server_link(p)) && (unread || fetched.is_none_or(|l| now - l >= SERVER_REFRESH)) {
@@ -299,7 +300,7 @@ fn refresh_libraries(app: &mut FigApp, ui: &Ui) {
 /// The search field with the libraries button; returns the lowercase query.
 fn search_row(app: &mut FigApp, ui: &mut Ui, w: f32) -> String {
     let t = Tokens::get(ui.ctx());
-    let filter_id = Id::new("asset_filter");
+    let filter_id = Id::unique("asset_filter");
     let mut filter: String = ui.data(|d| d.get_temp(filter_id)).unwrap_or_default();
     let (fr, _) = ui.allocate_exact_size(vec2(w, 40.0), Sense::hover());
     let field = Rect::from_min_max(pos2(fr.min.x + 12.0, fr.min.y + 8.0), pos2(fr.max.x - 44.0, fr.max.y - 4.0));
@@ -309,7 +310,7 @@ fn search_row(app: &mut FigApp, ui: &mut Ui, w: f32) -> String {
     let mut child = ui.new_child(egui::UiBuilder::new().max_rect(te_rect));
     let r = child.add(
         egui::TextEdit::singleline(&mut filter)
-            .id(Id::new("asset_filter_field"))
+            .id(Id::unique("asset_filter_field"))
             .frame(egui::Frame::NONE)
             .font(regular(11.0))
             .hint_text(tr("Search assets"))
@@ -324,7 +325,7 @@ fn search_row(app: &mut FigApp, ui: &mut Ui, w: f32) -> String {
     }
     ui.data_mut(|d| d.insert_temp(filter_id, filter.clone()));
     let br = Rect::from_center_size(pos2(fr.max.x - 26.0, field.center().y), vec2(24.0, 24.0));
-    let bresp = ui.interact(br, Id::new("asset_libraries_btn"), Sense::click()).tip(tr("Libraries"));
+    let bresp = ui.interact(br, Id::unique("asset_libraries_btn"), Sense::click()).tip(tr("Libraries"));
     if bresp.hovered() {
         ui.painter().rect_filled(br, CornerRadius::same(5), t.hover);
     }
@@ -342,7 +343,7 @@ fn updates_banner(app: &mut FigApp, ui: &mut Ui, w: f32, count: usize) {
     let r = Rect::from_min_max(pos2(row.min.x + 12.0, row.min.y + 4.0), pos2(row.max.x - 12.0, row.max.y - 4.0));
     ui.painter().rect_filled(r, CornerRadius::same(6), t.selected_row);
     let what = trn("{n} components and styles have newer versions", count, &[]);
-    ui.interact(r, Id::new("asset_updates"), Sense::hover()).on_hover_text(what);
+    ui.interact(r, Id::unique("asset_updates"), Sense::hover()).on_hover_text(what);
     ui.painter().text(pos2(r.min.x + 10.0, r.center().y), Align2::LEFT_CENTER, tr("Library updates available"), semibold(11.0), t.text);
     let mut child =
         ui.new_child(egui::UiBuilder::new().max_rect(Rect::from_min_max(pos2(r.max.x - 70.0, r.min.y + 6.0), pos2(r.max.x - 6.0, r.max.y))));
@@ -438,7 +439,7 @@ fn tiles(ui: &mut Ui, w: f32, src: &Source, list: &[Tile], thumbs: &Thumbs, want
             let r = Rect::from_min_size(pos2(x, y), vec2(tile, tile));
             let resp = ui.interact(
                 r.union(Rect::from_min_size(r.left_bottom(), vec2(tile, TILE_LABEL))),
-                Id::new(("asset", src, item.id.0)),
+                Id::unique(("asset", src, item.id.0)),
                 Sense::click_and_drag(),
             );
             ui.painter().rect_filled(r, CornerRadius::same(6), t.field);
@@ -581,6 +582,10 @@ fn render_thumbs(ui: &Ui, w: f32, thumbs: &mut Thumbs, wanted: &[(Source, NodeId
     }
 }
 
+/// Draw the Assets panel: refresh libraries, switch to the libraries view when asked,
+/// otherwise cache a listing keyed by revision, query and library state, render local and
+/// enabled-library assets with reused thumbnails, and dispatch place, style, hide, toggle
+/// and drag actions.
 pub fn show(app: &mut FigApp, ui: &mut Ui) {
     refresh_libraries(app, ui);
     if app.ui.libraries {
@@ -593,7 +598,7 @@ pub fn show(app: &mut FigApp, ui: &mut Ui) {
     let revision = ds.revision;
     let q = search_row(app, ui, w);
     let key = (revision, q.clone(), libraries_key(app, &doc));
-    let listing_id = Id::new("asset_listing");
+    let listing_id = Id::unique("asset_listing");
     let listing = match ui.data(|d| d.get_temp::<Arc<Listing>>(listing_id)) {
         Some(l) if l.key == key => l,
         _ => {
@@ -605,12 +610,12 @@ pub fn show(app: &mut FigApp, ui: &mut Ui) {
     if listing.updates > 0 {
         updates_banner(app, ui, w, listing.updates);
     }
-    let mut thumbs: Thumbs = ui.data(|d| d.get_temp(Id::new("asset_thumbs"))).unwrap_or_default();
+    let mut thumbs: Thumbs = ui.data(|d| d.get_temp(Id::unique("asset_thumbs"))).unwrap_or_default();
     let mut sources: Vec<(Source, Arc<Document>)> = vec![(Source::Local, doc.clone())];
     sources.extend(listing.libraries.iter().filter_map(|l| l.doc.clone().map(|d| (Source::Library(l.id.clone()), d))));
     invalidate_thumbs(ui, &mut thumbs, &sources);
     let mut wanted = Vec::new();
-    let collapsed_id = Id::new("asset_collapsed_libraries");
+    let collapsed_id = Id::unique("asset_collapsed_libraries");
     let collapsed: HashSet<String> = ui.data(|d| d.get_temp(collapsed_id)).unwrap_or_default();
     let mut act = None;
     egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
@@ -657,7 +662,7 @@ pub fn show(app: &mut FigApp, ui: &mut Ui) {
     render_thumbs(ui, w, &mut thumbs, &wanted);
     let drag = ui.data(|d| d.get_temp::<AssetDrag>(drag_id()));
     let tex = drag.as_ref().and_then(|d| thumbs.map.get(&(d.src.clone(), d.component)).cloned().flatten());
-    ui.data_mut(|d| d.insert_temp(Id::new("asset_thumbs"), thumbs));
+    ui.data_mut(|d| d.insert_temp(Id::unique("asset_thumbs"), thumbs));
     match act {
         Some(Act::Drag(d)) => ui.data_mut(|m| {
             m.insert_temp(drag_id(), d);
@@ -773,9 +778,11 @@ fn drag_feedback(app: &mut FigApp, ui: &mut Ui, doc: &Document, libs: &HashMap<S
     ui.ctx().request_repaint();
 }
 
+/// Draw the 64×64 component ghost on the tooltip layer, using the thumbnail when available
+/// and the component or component-set icon otherwise.
 fn ghost(ui: &Ui, p: Pos2, set: bool, tex: Option<egui::TextureHandle>) {
     let t = Tokens::get(ui.ctx());
-    let painter = ui.ctx().layer_painter(egui::LayerId::new(egui::Order::Tooltip, Id::new("asset_ghost")));
+    let painter = ui.ctx().layer_painter(egui::LayerId::new(egui::Order::Tooltip, Id::unique("asset_ghost")));
     let r = Rect::from_center_size(p, vec2(64.0, 64.0));
     painter.rect_filled(r, CornerRadius::same(6), t.panel.gamma_multiply(0.9));
     painter.rect_stroke(r, CornerRadius::same(6), Stroke::new(1.0, COMPONENT), egui::StrokeKind::Inside);
@@ -812,7 +819,7 @@ fn libraries_view(app: &mut FigApp, ui: &mut Ui) {
     let w = ui.available_width();
     let (hr, _) = ui.allocate_exact_size(vec2(w, 40.0), Sense::hover());
     let back = Rect::from_center_size(pos2(hr.min.x + 24.0, hr.center().y), vec2(24.0, 24.0));
-    let bresp = ui.interact(back, Id::new("asset_libraries_back"), Sense::click()).tip(tr("Back to assets"));
+    let bresp = ui.interact(back, Id::unique("asset_libraries_back"), Sense::click()).tip(tr("Back to assets"));
     if bresp.hovered() {
         ui.painter().rect_filled(back, CornerRadius::same(5), t.hover);
     }
@@ -831,8 +838,12 @@ fn libraries_view(app: &mut FigApp, ui: &mut Ui) {
     });
 }
 
+/// Draw the publish form: status, publishable components/styles/collections, description and
+/// publish buttons. Run `library.publish` locally or publish to the server in the
+/// background, reset the form on success, and report when the file is unsaved so other files
+/// cannot yet use it.
 fn publish_form(app: &mut FigApp, ui: &mut Ui, w: f32, doc: &Document) {
-    let form_id = Id::new("asset_publish_form");
+    let form_id = Id::unique("asset_publish_form");
     let mut form: PublishForm = ui.data(|d| d.get_temp(form_id)).unwrap_or_default();
     title(ui, w, tr("This file"));
     let m = doc.published.as_ref().map(|p| &p.manifest);
@@ -901,7 +912,7 @@ fn publish_form(app: &mut FigApp, ui: &mut Ui, w: f32, doc: &Document) {
     ui.horizontal(|ui| {
         ui.add_space(PAD);
         if let Some(d) =
-            crate::widgets::text_field(ui, Id::new("asset_publish_description"), &description, w - PAD * 2.0, tr("Description (optional)"))
+            crate::widgets::text_field(ui, Id::unique("asset_publish_description"), &description, w - PAD * 2.0, tr("Description (optional)"))
         {
             form.description = Some(d);
         }
@@ -965,7 +976,7 @@ fn publish_form(app: &mut FigApp, ui: &mut Ui, w: f32, doc: &Document) {
 /// How other files use this file's library on its server (asked for with a button: it is a
 /// request to the server).
 fn usage(app: &mut FigApp, ui: &mut Ui, w: f32, link: &str) {
-    let usage_id = Id::new(("asset_library_usage", link));
+    let usage_id = Id::unique(("asset_library_usage", link));
     let loading = app.session.waiting_for(USAGE);
     let (mut ask, mut stop) = (false, false);
     ui.horizontal(|ui| {
@@ -1010,6 +1021,8 @@ fn usage(app: &mut FigApp, ui: &mut Ui, w: f32, link: &str) {
     ui.add_space(8.0);
 }
 
+/// Draw the libraries enabled in this file with version/count/status, remove and swap
+/// actions, add-file and pasted-link controls, and background fetch/cancel handling.
 fn enabled_libraries(app: &mut FigApp, ui: &mut Ui, w: f32, doc: &Document) {
     let t = Tokens::get(ui.ctx());
     title(ui, w, tr("Libraries in this file"));
@@ -1050,9 +1063,9 @@ fn enabled_libraries(app: &mut FigApp, ui: &mut Ui, w: f32, doc: &Document) {
         let clip = Rect::from_min_size(pos2(r.min.x + PAD, r.min.y), vec2(text_w, r.height()));
         ui.painter().with_clip_rect(clip).galley(pos2(r.min.x + PAD, r.min.y + 6.0), name, t.text);
         ui.painter().with_clip_rect(clip).galley(pos2(r.min.x + PAD, r.min.y + 23.0), line, t.text_secondary);
-        ui.interact(clip, Id::new(("asset_lib_row", &l.id)), Sense::hover()).on_hover_text(shown_path(&l.path));
+        ui.interact(clip, Id::unique(("asset_lib_row", &l.id)), Sense::hover()).on_hover_text(shown_path(&l.path));
         let x = Rect::from_center_size(pos2(r.max.x - 24.0, r.center().y), vec2(24.0, 24.0));
-        let xr = ui.interact(x, Id::new(("asset_lib_remove", &l.id)), Sense::click()).tip(tr("Remove library from this file"));
+        let xr = ui.interact(x, Id::unique(("asset_lib_remove", &l.id)), Sense::click()).tip(tr("Remove library from this file"));
         if xr.hovered() {
             ui.painter().rect_filled(x, CornerRadius::same(5), t.hover);
         }
@@ -1063,7 +1076,7 @@ fn enabled_libraries(app: &mut FigApp, ui: &mut Ui, w: f32, doc: &Document) {
         if swappable {
             let sw = Rect::from_center_size(pos2(r.max.x - 52.0, r.center().y), vec2(24.0, 24.0));
             let sr = ui
-                .interact(sw, Id::new(("asset_lib_swap", &l.id)), Sense::click())
+                .interact(sw, Id::unique(("asset_lib_swap", &l.id)), Sense::click())
                 .tip(tr("Swap library: use another library's assets of the same names"));
             if sr.hovered() {
                 ui.painter().rect_filled(sw, CornerRadius::same(5), t.hover);
@@ -1089,7 +1102,7 @@ fn enabled_libraries(app: &mut FigApp, ui: &mut Ui, w: f32, doc: &Document) {
     let pasted = ui
         .horizontal(|ui| {
             ui.add_space(PAD);
-            crate::widgets::text_field(ui, Id::new("asset_add_link"), "", w - PAD * 2.0, tr("Paste a team library link (a view link)"))
+            crate::widgets::text_field(ui, Id::unique("asset_add_link"), "", w - PAD * 2.0, tr("Paste a team library link (a view link)"))
         })
         .inner;
     if let Some(link) = pasted.map(|l| l.trim().to_string()).filter(|l| !l.is_empty())
@@ -1140,7 +1153,7 @@ fn added(app: &mut FigApp, r: &Value) {
 /// Tests: the components whose thumbnails are cached (for this file's assets).
 #[cfg(test)]
 pub(crate) fn cached_thumbnails(ctx: &egui::Context) -> Vec<NodeId> {
-    let thumbs: Thumbs = ctx.data(|d| d.get_temp(Id::new("asset_thumbs"))).unwrap_or_default();
+    let thumbs: Thumbs = ctx.data(|d| d.get_temp(Id::unique("asset_thumbs"))).unwrap_or_default();
     let mut out: Vec<NodeId> = thumbs.map.keys().filter(|(s, _)| *s == Source::Local).map(|(_, id)| *id).collect();
     out.sort();
     out

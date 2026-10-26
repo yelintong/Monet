@@ -96,6 +96,7 @@ struct Has {
     shape: Option<BoardShape>,
     text: bool,
     connector: Option<(Routing, bool)>,
+    table: bool,
 }
 
 /// What the selected board objects take from the bar (layers that aren't board objects, a section
@@ -116,10 +117,11 @@ fn has(app: &FigApp) -> Option<Has> {
                 h.connector = Some((c.routing, n.stroke.cap_end != StrokeCap::None));
             }
             Some(BoardItem::Label { .. }) => h.text = true,
+            Some(BoardItem::Table) => h.table = true,
             Some(BoardItem::Stamp { .. }) | None => {}
         }
     }
-    (h.color || h.text || h.connector.is_some()).then_some(h)
+    (h.color || h.text || h.connector.is_some() || h.table).then_some(h)
 }
 
 const CELL: f32 = 28.0;
@@ -142,7 +144,10 @@ impl Has {
             w += TEXT_SIZES.len() as f32 * (CELL + 2.0) + PART_END;
         }
         if self.connector.is_some() {
-            w += 3.0 * (CELL + 2.0) + PART_END;
+            w += 4.0 * (CELL + 2.0) + PART_END;
+        }
+        if self.table {
+            w += crate::board_picker::TABLE_PART_W;
         }
         w
     }
@@ -170,7 +175,7 @@ pub fn show(app: &mut FigApp, ctx: &egui::Context) {
     let size = vec2(h.width(), 40.0);
     let at = place(sel, size, app.canvas.rect);
     let t = Tokens::get(ctx);
-    egui::Area::new(egui::Id::new("board_bar")).fixed_pos(at).order(egui::Order::Middle).show(ctx, |ui| {
+    egui::Area::new(egui::Id::unique("board_bar")).fixed_pos(at).order(egui::Order::Middle).show(ctx, |ui| {
         let (rect, _) = ui.allocate_exact_size(size, Sense::click());
         a11y::container_bounds(ui, rect);
         let p = ui.painter();
@@ -188,6 +193,9 @@ pub fn show(app: &mut FigApp, ctx: &egui::Context) {
         if h.text {
             x = size_part(app, ui, x, cy, &t);
         }
+        if h.table {
+            x = crate::board_picker::table_part(app, ui, x, cy, &t);
+        }
         if let Some((routing, arrow)) = h.connector {
             line_part(app, ui, (routing, arrow), pos2(x, cy), &t);
         }
@@ -198,7 +206,7 @@ pub fn show(app: &mut FigApp, ctx: &egui::Context) {
 fn color_part(app: &mut FigApp, ui: &mut Ui, mut x: f32, cy: f32, t: &Tokens) -> f32 {
     for (i, (name, c)) in BOARD_COLORS.iter().enumerate() {
         let r = Rect::from_center_size(pos2(x + SWATCH / 2.0, cy), vec2(SWATCH, SWATCH));
-        let resp = ui.interact(r, ui.id().with(("bb_color", i)), Sense::click()).on_hover_text(tr(color_label(name)));
+        let resp = ui.interact(r, ui.scope_id().with(("bb_color", i)), Sense::click()).on_hover_text(tr(color_label(name)));
         a11y::button(&resp, tr(color_label(name)));
         if resp.hovered() {
             ui.painter().rect_filled(r.expand(2.0), CornerRadius::same(6), t.hover);
@@ -215,7 +223,7 @@ fn color_part(app: &mut FigApp, ui: &mut Ui, mut x: f32, cy: f32, t: &Tokens) ->
 /// The shape menu at `at` (its left edge and middle), showing `shape`; where the next part starts.
 fn shape_part(app: &mut FigApp, ui: &mut Ui, shape: BoardShape, at: Pos2, t: &Tokens) -> f32 {
     let r = Rect::from_min_size(pos2(at.x, at.y - CELL / 2.0), vec2(CELL + 12.0, CELL));
-    let resp = ui.interact(r, ui.id().with("bb_shape"), Sense::click()).on_hover_text(tr("Shape"));
+    let resp = ui.interact(r, ui.scope_id().with("bb_shape"), Sense::click()).on_hover_text(tr("Shape"));
     a11y::menu_button(&resp, tr("Shape"), a11y::menu_open(&resp));
     if resp.hovered() {
         ui.painter().rect_filled(r, CornerRadius::same(5), t.hover);
@@ -240,7 +248,7 @@ fn shape_part(app: &mut FigApp, ui: &mut Ui, shape: BoardShape, at: Pos2, t: &To
 fn size_part(app: &mut FigApp, ui: &mut Ui, mut x: f32, cy: f32, t: &Tokens) -> f32 {
     for (label, size) in TEXT_SIZES {
         let r = Rect::from_center_size(pos2(x + CELL / 2.0, cy), vec2(CELL, CELL));
-        let resp = ui.interact(r, ui.id().with(("bb_size", label)), Sense::click()).on_hover_text(tr("Text size"));
+        let resp = ui.interact(r, ui.scope_id().with(("bb_size", label)), Sense::click()).on_hover_text(tr("Text size"));
         a11y::button(&resp, &format!("{} {label}", tr("Text size")));
         if resp.hovered() {
             ui.painter().rect_filled(r, CornerRadius::same(5), t.hover);
@@ -254,12 +262,13 @@ fn size_part(app: &mut FigApp, ui: &mut Ui, mut x: f32, cy: f32, t: &Tokens) -> 
     divider(ui, t, x, cy)
 }
 
-/// A connector's routing (straight, elbow) and end arrow at `at`, as they are now (`line`).
+/// A connector's routing (straight, elbow, curved) and end arrow at `at`, as they are now (`line`).
 fn line_part(app: &mut FigApp, ui: &mut Ui, line: (Routing, bool), at: Pos2, t: &Tokens) {
     let (routing, arrow) = line;
     let cells = [
         (Icon::Line, tr("Straight"), routing == Routing::Straight, json!({"style": "straight"})),
         (Icon::Connector, tr("Elbow"), routing == Routing::Elbow, json!({"style": "elbow"})),
+        (Icon::CurvedConnector, tr("Curved"), routing == Routing::Curved, json!({"style": "curved"})),
         (Icon::Arrow, tr("Arrow at the end"), arrow, json!({"endCap": if arrow { "none" } else { "triangleArrow" }})),
     ];
     let mut x = at.x;
@@ -273,9 +282,51 @@ fn line_part(app: &mut FigApp, ui: &mut Ui, line: (Routing, bool), at: Pos2, t: 
 }
 
 /// A thin separator after `x`; where the next part starts.
-fn divider(ui: &Ui, t: &Tokens, x: f32, cy: f32) -> f32 {
+pub(crate) fn divider(ui: &Ui, t: &Tokens, x: f32, cy: f32) -> f32 {
     ui.painter().line_segment([pos2(x + 2.0, cy - 10.0), pos2(x + 2.0, cy + 10.0)], Stroke::new(1.0, t.border));
     x + 8.0
+}
+
+/// The dot grid's spacing on the page at 100%, and the closest its dots come on screen (points):
+/// zoomed out, every second, fourth… dot stays, the ones going fading out first.
+const DOT_STEP: f64 = 24.0;
+const DOT_MIN_GAP: f64 = 14.0;
+
+/// A board page's dot grid on its background `bg`, for the canvas render to draw under the
+/// layers: dark dots on a light page, light ones on a dark page, in the theme's ink, about a point
+/// and a half across on screen. `None` on design files.
+pub fn dots(app: &FigApp, bg: Color32, t: &Tokens) -> Option<figcraft_render::Dots> {
+    let ds = app.session.ds().ok()?;
+    if !figcraft_engine::board::is_board(&ds.doc) {
+        return None;
+    }
+    let zoom = ds.view.zoom;
+    let (step, fade) = dot_spacing(zoom)?;
+    let dark_page = 0.2126 * f32::from(bg.r()) + 0.7152 * f32::from(bg.g()) + 0.0722 * f32::from(bg.b()) < 128.0;
+    let ink = if dark_page == t.dark { t.text } else { t.bg };
+    let alpha = if dark_page { 0.22 } else { 0.18 };
+    let color = |a: f32| figcraft_color::Color::from_rgba8(ink.r(), ink.g(), ink.b(), (a * 255.0).round() as u8);
+    let size = (1.5 * zoom.sqrt()).clamp(1.0, 3.0) / zoom;
+    Some(figcraft_render::Dots { step, size, color: color(alpha), faded: color(alpha * fade) })
+}
+
+/// The dot grid's spacing on the page at `zoom` (doubled until the dots are far enough apart on
+/// screen), and how strongly the dots the next doubling drops still show (0 to 1).
+pub(crate) fn dot_spacing(zoom: f64) -> Option<(f64, f32)> {
+    if !(zoom.is_finite() && zoom > 0.0) {
+        return None;
+    }
+    // Bounded: past about 1000 doublings the step is no longer finite, and there are no dots.
+    let mut step = DOT_STEP;
+    for _ in 0..1100 {
+        if step * zoom >= DOT_MIN_GAP {
+            break;
+        }
+        step *= 2.0;
+    }
+    let gap = step * zoom;
+    // From one to two minimum gaps apart, the in-between dots fade in.
+    (gap.is_finite() && gap >= DOT_MIN_GAP).then(|| (step, ((gap - DOT_MIN_GAP) / DOT_MIN_GAP).clamp(0.0, 1.0) as f32))
 }
 
 /// The name of the person who placed the stamp under the pointer, beside it.

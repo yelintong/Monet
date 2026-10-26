@@ -291,7 +291,7 @@ impl Callout {
 
 /// Where the template being edited in Connect to code keeps its draft.
 fn template_id(owner: NodeId, lang: CodeLang) -> Id {
-    Id::new(("code_connect_template", owner, lang.id()))
+    Id::unique(("code_connect_template", owner, lang.id()))
 }
 
 /// Layer `id`'s code in `lang`, generated again only when the document or the choice change (a
@@ -390,7 +390,7 @@ pub fn playground_section(app: &mut FigApp, ui: &mut Ui, doc: &Document, id: Nod
             "text" => row(ui, 32.0, |ui| {
                 widgets::label(ui, name, t.text_secondary);
                 let cur = value.as_str().unwrap_or("");
-                let field = Id::new(("playground_text", id, name));
+                let field = Id::unique(("playground_text", id, name));
                 if let Some(new) = widgets::text_field_named(ui, field, cur, ui.available_width().max(60.0), name)
                     && new != cur
                 {
@@ -471,10 +471,10 @@ pub fn connect_section(app: &mut FigApp, ui: &mut Ui, doc: &Document, id: NodeId
     let col = widgets::col_width(ui.available_width());
     row(ui, 32.0, |ui| {
         ui.spacing_mut().item_spacing.x = 8.0;
-        if let Some(v) = widgets::text_field(ui, Id::new(("code_connect_import", owner, lang.id())), &link.import_path, col, tr("Import path")) {
+        if let Some(v) = widgets::text_field(ui, Id::unique(("code_connect_import", owner, lang.id())), &link.import_path, col, tr("Import path")) {
             edit = Some(("importPath", v));
         }
-        if let Some(v) = widgets::text_field(ui, Id::new(("code_connect_name", owner, lang.id())), &link.name, col, tr("Component name")) {
+        if let Some(v) = widgets::text_field(ui, Id::unique(("code_connect_name", owner, lang.id())), &link.name, col, tr("Component name")) {
             edit = Some(("name", v));
         }
     });
@@ -585,13 +585,13 @@ pub fn annotations_section(app: &mut FigApp, ui: &mut Ui, doc: &Document, id: No
             t.text_secondary,
         );
         let del = Rect::from_center_size(pos2(r.max.x - PAD - 4.0, r.center().y), vec2(22.0, 22.0));
-        if widgets::icon_button_at(ui, Id::new(("annot_del", id, k)), del, Icon::Minus, tr("Remove annotation")) {
+        if widgets::icon_button_at(ui, Id::unique(("annot_del", id, k)), del, Icon::Minus, tr("Remove annotation")) {
             app.run("annotation.remove", json!({"id": id, "index": k}));
         }
-        if let Some(cat) = category_menu(ui, doc, Id::new(("annot_cat", id, k)), a) {
+        if let Some(cat) = category_menu(ui, doc, Id::unique(("annot_cat", id, k)), a) {
             app.run("annotation.edit", json!({"id": id, "index": k, "category": cat}));
         }
-        if let Some(label) = widgets::multiline_field(ui, Id::new(("annot_note", id, k)), &a.label, tr("Add a note for developers"), 2) {
+        if let Some(label) = widgets::multiline_field(ui, Id::unique(("annot_note", id, k)), &a.label, tr("Add a note for developers"), 2) {
             if label.trim().is_empty() && a.properties.is_empty() {
                 app.run("annotation.remove", json!({"id": id, "index": k}));
             } else {
@@ -602,7 +602,7 @@ pub fn annotations_section(app: &mut FigApp, ui: &mut Ui, doc: &Document, id: No
         for (p, v) in annotations::pinned(doc, id, a) {
             prop_row(app, ui, &v.unwrap_or_else(|| Prop { label: p.label.to_string(), value: "—".into(), color: None, token: None }));
         }
-        if let Some(p) = pin_menu(ui, Id::new(("annot_pin", id, k)), &sections, &a.properties) {
+        if let Some(p) = pin_menu(ui, Id::unique(("annot_pin", id, k)), &sections, &a.properties) {
             let mut props = a.properties.clone();
             match props.iter().position(|q| q == p.id) {
                 Some(i) => {
@@ -620,7 +620,7 @@ pub fn annotations_section(app: &mut FigApp, ui: &mut Ui, doc: &Document, id: No
     }
     // A new annotation starts as a note; properties are pinned to it afterwards.
     if n.annotations.len() < annotations::MAX_PER_LAYER
-        && let Some(label) = widgets::multiline_field(ui, Id::new(("annot_new", id)), "", tr("Add an annotation for developers"), 1)
+        && let Some(label) = widgets::multiline_field(ui, Id::unique(("annot_new", id)), "", tr("Add an annotation for developers"), 1)
         && !label.trim().is_empty()
     {
         app.run("annotation.add", json!({"id": id, "label": label}));
@@ -636,7 +636,7 @@ pub fn dev_resources_section(app: &mut FigApp, ui: &mut Ui, doc: &Document, id: 
     let Some(n) = doc.node(id).filter(|n| !n.is_page()) else { return };
     let list = dev_resources::list(doc, id);
     let can_add = !components::inside_instance(doc, id) && n.dev_resources.len() < dev_resources::MAX_PER_LAYER;
-    let (adding_id, editing_id) = (Id::new(("devres_adding", id)), Id::new(("devres_editing", id)));
+    let (adding_id, editing_id) = (Id::unique(("devres_adding", id)), Id::unique(("devres_editing", id)));
     let mut adding = can_add && ui.data(|d| d.get_temp::<bool>(adding_id)).unwrap_or(false);
     let mut editing = ui.data(|d| d.get_temp::<usize>(editing_id)).filter(|i| *i < n.dev_resources.len());
     widgets::separator(ui);
@@ -652,10 +652,10 @@ pub fn dev_resources_section(app: &mut FigApp, ui: &mut Ui, doc: &Document, id: 
             let mut edit = None;
             row(ui, 32.0, |ui| {
                 ui.spacing_mut().item_spacing.x = 8.0;
-                if let Some(v) = widgets::text_field(ui, Id::new(("devres_name", id, i)), name, col, tr("Name")) {
+                if let Some(v) = widgets::text_field(ui, Id::unique(("devres_name", id, i)), name, col, tr("Name")) {
                     edit = Some(json!({"id": id, "index": i, "name": v}));
                 }
-                if let Some(v) = widgets::text_field(ui, Id::new(("devres_url", id, i)), url, col, "https://…") {
+                if let Some(v) = widgets::text_field(ui, Id::unique(("devres_url", id, i)), url, col, "https://…") {
                     edit = Some(json!({"id": id, "index": i, "url": v}));
                 }
                 if widgets::icon_button(ui, Icon::Check, tr("Done")) {
@@ -692,10 +692,10 @@ pub fn dev_resources_section(app: &mut FigApp, ui: &mut Ui, doc: &Document, id: 
         if let Some(i) = item.index {
             let del = Rect::from_center_size(pos2(r.max.x - PAD - 4.0, r.center().y), vec2(22.0, 22.0));
             let pen = del.translate(vec2(-26.0, 0.0));
-            if widgets::icon_button_at(ui, Id::new(("devres_edit", id, i)), pen, Icon::Pencil, tr("Edit dev resource")) {
+            if widgets::icon_button_at(ui, Id::unique(("devres_edit", id, i)), pen, Icon::Pencil, tr("Edit dev resource")) {
                 editing = Some(i);
             }
-            if widgets::icon_button_at(ui, Id::new(("devres_del", id, i)), del, Icon::Minus, tr("Remove dev resource")) {
+            if widgets::icon_button_at(ui, Id::unique(("devres_del", id, i)), del, Icon::Minus, tr("Remove dev resource")) {
                 app.run("devResource.remove", json!({"id": id, "index": i}));
                 editing = None;
             }
@@ -704,7 +704,7 @@ pub fn dev_resources_section(app: &mut FigApp, ui: &mut Ui, doc: &Document, id: 
     if adding {
         let w = ui.available_width() - PAD * 2.0;
         let mut added = None;
-        row(ui, 32.0, |ui| added = widgets::text_field(ui, Id::new(("devres_new", id)), "", w, tr("Paste a link (https://…)")));
+        row(ui, 32.0, |ui| added = widgets::text_field(ui, Id::unique(("devres_new", id)), "", w, tr("Paste a link (https://…)")));
         if let Some(url) = added.filter(|u| !u.trim().is_empty())
             && app.run("devResource.add", json!({"id": id, "url": url})).is_some()
         {
@@ -810,7 +810,7 @@ fn measurement_row(ui: &mut Ui, t: &Tokens, doc: &Document, m: &Placed) -> Optio
     if resp.clicked() {
         action = Some(("select.set", json!({"ids": [m.from]})));
     }
-    if widgets::icon_button_at(ui, Id::new(("measure_del", m.from, m.index)), del, Icon::Minus, tr("Remove measurement")) {
+    if widgets::icon_button_at(ui, Id::unique(("measure_del", m.from, m.index)), del, Icon::Minus, tr("Remove measurement")) {
         action = Some(("devMode.removeMeasurement", json!({"from": m.from, "index": m.index})));
     }
     action
@@ -886,7 +886,7 @@ pub fn categories_section(app: &mut FigApp, ui: &mut Ui) {
         let (r, _) = ui.allocate_exact_size(vec2(ui.available_width(), 30.0), Sense::hover());
         // The colour: click for the palette.
         let sw = Rect::from_center_size(pos2(r.min.x + PAD + 8.0, r.center().y), vec2(16.0, 16.0));
-        let sw_resp = ui.interact(sw, Id::new(("cat_color", &c.id)), Sense::click()).tip(tr("Colour"));
+        let sw_resp = ui.interact(sw, Id::unique(("cat_color", &c.id)), Sense::click()).tip(tr("Colour"));
         crate::a11y::color(&sw_resp, &c.name, &c.color.to_css_hex());
         ui.painter().rect_filled(sw, CornerRadius::same(4), doc_c32(ui.ctx(), c.color));
         if sw_resp.hovered() {
@@ -909,14 +909,14 @@ pub fn categories_section(app: &mut FigApp, ui: &mut Ui) {
             });
         });
         let name_r = Rect::from_min_max(pos2(sw.max.x + 8.0, r.min.y + 3.0), pos2(r.max.x - PAD - 28.0, r.max.y - 3.0));
-        if let Some(name) = widgets::text_field_inline(ui, Id::new(("cat_name", &c.id)), &c.name, name_r, regular(11.0))
+        if let Some(name) = widgets::text_field_inline(ui, Id::unique(("cat_name", &c.id)), &c.name, name_r, regular(11.0))
             && name.trim() != c.name
             && !name.trim().is_empty()
         {
             action = Some(("annotation.editCategory", json!({"id": c.id, "name": name.trim()})));
         }
         let del = Rect::from_center_size(pos2(r.max.x - PAD - 8.0, r.center().y), vec2(22.0, 22.0));
-        if widgets::icon_button_at(ui, Id::new(("cat_del", &c.id)), del, Icon::Minus, tr("Delete category (its annotations stay)")) {
+        if widgets::icon_button_at(ui, Id::unique(("cat_del", &c.id)), del, Icon::Minus, tr("Delete category (its annotations stay)")) {
             action = Some(("annotation.removeCategory", json!({"id": c.id})));
         }
     }
@@ -1014,7 +1014,7 @@ pub fn ready_list(app: &mut FigApp, ui: &mut Ui) {
                 CornerRadius::same(5),
                 t.hover,
             );
-            if widgets::icon_button_at(ui, Id::new(("ready_focus", item.id)), focus_r, Icon::Frame, tr("Open in focus view")) {
+            if widgets::icon_button_at(ui, Id::unique(("ready_focus", item.id)), focus_r, Icon::Frame, tr("Open in focus view")) {
                 focus = Some(item.id);
             }
         }
@@ -1058,7 +1058,7 @@ pub fn focus_bar(app: &mut FigApp, ctx: &egui::Context, canvas: Rect) {
     // Somewhere to go: another ready frame, or into the list from outside it.
     let can_step = list.len() > usize::from(at.is_some());
     let t = Tokens::get(ctx);
-    let action = widgets::canvas_banner(ctx, Id::new("dev_focus_bar"), canvas, |ui| {
+    let action = widgets::canvas_banner(ctx, Id::unique("dev_focus_bar"), canvas, |ui| {
         let mut out = None;
         let icon = crate::layers::node_icon(&doc, id);
         icons::paint(ui.painter(), Rect::from_center_size(ui.cursor().min + vec2(7.0, 12.0), vec2(14.0, 14.0)), icon, t.icon_secondary);

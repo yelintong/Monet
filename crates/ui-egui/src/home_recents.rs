@@ -685,7 +685,7 @@ fn heading(ui: &mut Ui, t: &Tokens, text: &str) {
 
 /// The id of `path`'s card or row (stable, so the keyboard stays on it as the order changes).
 fn card_id(path: &str) -> Id {
-    Id::new(("home_recent_file", path))
+    Id::unique(("home_recent_file", path))
 }
 
 /// Clicks, keys and the context menu on a card or row: a click selects, a double-click or Enter
@@ -764,7 +764,7 @@ fn arrows(ui: &Ui, recents: &mut Recents, files: &[Shown], across: usize, down: 
 fn file_icon(ui: &Ui, t: &Tokens, center: egui::Pos2, file: &Shown) {
     let r = Rect::from_center_size(center, vec2(16.0, 16.0));
     match FileKind::of(Path::new(&file.path)) {
-        FileKind::FigCraft | FileKind::Fig => {
+        FileKind::FigCraft | FileKind::Fig | FileKind::Sketch => {
             ui.painter().rect_filled(r, CornerRadius::same(4), t.accent);
             icons::paint(ui.painter(), r.shrink(3.0), icons::file_mark(file.kind), t.accent_on);
         }
@@ -909,7 +909,7 @@ fn list(ui: &mut Ui, t: &Tokens, recents: &mut Recents, files: &[Shown], now: u6
         let x0 = if i == 0 { header.min.x } else { header.min.x + date_x(i) };
         let x1 = if i + 1 < columns.len() { header.min.x + date_x(i + 1) } else { header.max.x };
         let cell = Rect::from_min_max(pos2(x0, header.min.y), pos2(x1, header.max.y));
-        let resp = ui.interact(cell, Id::new(("home_recents_header", key.id())), Sense::click());
+        let resp = ui.interact(cell, Id::unique(("home_recents_header", key.id())), Sense::click());
         a11y::button(&resp, &trf("Sort by {column}", &[("column", label)]));
         let on = sort.key == *key;
         if resp.hovered() {

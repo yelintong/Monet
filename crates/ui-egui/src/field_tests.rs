@@ -467,29 +467,33 @@ fn lead(u: &Ui, id: Id) -> Pos2 {
     u.ctx.read_response(id.with("lead")).unwrap_or_else(|| panic!("no field {id:?}")).rect.center()
 }
 
+/// Asserts scrubbing the colour picker's R and alpha fields updates the colour live, each
+/// scrub adding one undo step.
 #[test]
 fn scrubbing_colour_picker_fields_is_live_and_one_undo_step() {
     let (mut u, a, _) = setup();
     let rgba = |u: &Ui| u.app.session.doc().unwrap().node(a).unwrap().fills[0].solid_color().unwrap().to_rgba8();
     let [r0, .., a0] = rgba(&u);
-    u.ctx.data_mut(|d| d.insert_temp(Id::new("cp_model"), 1usize));
+    u.ctx.data_mut(|d| d.insert_temp(Id::unique("cp_model"), 1usize));
     u.app.ui.picker = Some(crate::colorpicker::PickerTarget::Paint { fills: true, index: 0, ids: vec![a] });
     // The picker window takes a frame to size itself.
     for _ in 0..3 {
         u.frame(vec![]);
     }
     let steps = undo_steps(&u);
-    let from = lead(&u, Id::new(("cp_f", "r")));
+    let from = lead(&u, Id::unique(("cp_f", "r")));
     drag(&mut u, from, -20.0, Modifiers::NONE);
     assert_eq!((rgba(&u)[0], undo_steps(&u)), (r0 - 20, steps + 1), "R");
     // The alpha field: a scrub moves it too.
-    let from = lead(&u, Id::new("cp_a"));
+    let from = lead(&u, Id::unique("cp_a"));
     drag(&mut u, from, -30.0, Modifiers::NONE);
     let [.., alpha] = rgba(&u);
     assert!(alpha < a0, "alpha {a0} → {alpha}");
     assert_eq!(undo_steps(&u), steps + 2, "alpha");
 }
 
+/// Asserts scrubbing a prototype delay sets the value once when released and adds one undo
+/// step.
 #[test]
 fn scrubbing_a_prototype_delay_sets_it_once_when_let_go() {
     let mut s = Session::new();
@@ -505,7 +509,7 @@ fn scrubbing_a_prototype_delay_sets_it_once_when_let_go() {
         u.frame(vec![]);
     }
     let steps = undo_steps(&u);
-    let from = lead(&u, Id::new(("proto_delay", f1, 0usize)));
+    let from = lead(&u, Id::unique(("proto_delay", f1, 0usize)));
     drag(&mut u, from, 30.0, Modifiers::NONE);
     let ms = match u.app.session.doc().unwrap().node(f1).unwrap().interactions[0].trigger {
         figcraft_doc::proto::Trigger::AfterDelay { ms } => ms,
@@ -514,13 +518,14 @@ fn scrubbing_a_prototype_delay_sets_it_once_when_let_go() {
     assert_eq!((ms, undo_steps(&u)), (800, steps + 1));
 }
 
+/// Asserts scrubbing the scale panel's width scales the layer live in one undo step.
 #[test]
 fn scrubbing_the_scale_panel_width_scales_live_in_one_undo_step() {
     let (mut u, a, _) = setup();
     u.app.run("tool.set", json!({"tool": "scale"}));
     u.frame(vec![]);
     let steps = undo_steps(&u);
-    let from = lead(&u, Id::new("scale_w"));
+    let from = lead(&u, Id::unique("scale_w"));
     drag(&mut u, from, 20.0, Modifiers::NONE);
     let (_, _, w, h) = geom(&u, a);
     assert_eq!((w, h, undo_steps(&u)), (60.0, 45.0, steps + 1), "40×30 scaled to a width of 60");
@@ -550,14 +555,14 @@ fn the_glass_light_intensity_field_has_a_label() {
     s.execute("select.set", &json!({"ids": [r]})).unwrap();
     s.execute("effect.add", &json!({"type": "glass"})).unwrap();
     let mut u = Ui::new(s);
-    u.ctx.data_mut(|d| d.insert_temp(Id::new(("fx_open", 0usize)), true));
+    u.ctx.data_mut(|d| d.insert_temp(Id::unique(("fx_open", 0usize)), true));
     u.frame(vec![]);
     let shapes = u.frame_output(vec![]).shapes;
-    let lead = u.ctx.read_response(Id::new(("fx_gi", 0usize)).with("lead")).expect("the intensity field is shown").rect;
+    let lead = u.ctx.read_response(Id::unique(("fx_gi", 0usize)).with("lead")).expect("the intensity field is shown").rect;
     let labels: Vec<(String, bool)> =
         painted_texts(&shapes).into_iter().filter(|(_, _, at)| lead.contains(at.center())).map(|(text, cut, _)| (text, cut)).collect();
     assert_eq!(labels, [("Intensity".to_string(), false)], "labelled, and not cut short");
-    let field = u.ctx.read_response(Id::new(("fx_gi", 0usize)).with("field")).expect("its value").rect;
+    let field = u.ctx.read_response(Id::unique(("fx_gi", 0usize)).with("field")).expect("its value").rect;
     assert_eq!(field.max.x - lead.min.x, GLASS_FIELD_W, "the width the next test measures against");
 }
 
@@ -580,6 +585,11 @@ fn the_intensity_label_fits_whole_beside_its_value() {
             let label = lang.ui.iter().find(|(k, _)| *k == "Intensity").map_or("Intensity", |(_, t)| match t {
                 Text::Plain(s) | Text::Plural { other: s, .. } => s,
             });
+            // The test's context has only egui's own font: a label it can't draw (Vietnamese
+            // diacritics, CJK) can't be measured here, and the app draws it with a system font.
+            if !ui.ctx().fonts_mut(|f| f.has_glyphs(&crate::theme::regular(11.0), label)) {
+                continue;
+            }
             let lead = crate::widgets::text_lead_width(ui, label, GLASS_FIELD_W);
             if lang.code == "en" {
                 english = width(label);
@@ -593,13 +603,15 @@ fn the_intensity_label_fits_whole_beside_its_value() {
     out.textures_delta.clear();
 }
 
+/// Asserts a label too long for its number field is elided before the value, while the value
+/// stays whole and both remain inside the field.
 #[test]
 fn a_label_too_long_for_its_field_ends_in_an_ellipsis_before_the_value() {
     let ctx = egui::Context::default();
     let mut field = egui::Rect::NOTHING;
     let mut out = ctx.run_ui(Default::default(), |ui| {
         let lead = crate::widgets::Lead::Text("A label much wider than its field");
-        let _ = crate::widgets::number_field(ui, Id::new("long"), lead, Some(80.0), "%", 60.0, 1.0);
+        let _ = crate::widgets::number_field(ui, Id::unique("long"), lead, Some(80.0), "%", 60.0, 1.0);
         field = ui.min_rect();
     });
     out.textures_delta.clear();
@@ -632,7 +644,7 @@ fn grid_ui(grid: serde_json::Value) -> (Ui, NodeId) {
     s.execute("node.set", &json!({"ids": [f], "props": {"grids": [grid]}})).unwrap();
     s.execute("select.set", &json!({"ids": [f]})).unwrap();
     let mut u = Ui::new(s);
-    u.ctx.data_mut(|d| d.insert_temp(Id::new(("grid_open", 0usize)), true));
+    u.ctx.data_mut(|d| d.insert_temp(Id::unique(("grid_open", 0usize)), true));
     u.frame(vec![]);
     (u, f)
 }
@@ -642,6 +654,7 @@ fn grid_ui(grid: serde_json::Value) -> (Ui, NodeId) {
 fn scroll_to(u: &mut Ui, id: Id) {
     let wheel = Event::MouseWheel {
         unit: egui::MouseWheelUnit::Point,
+        source: egui::MouseWheelSource::Unknown,
         delta: egui::vec2(0.0, -300.0),
         phase: egui::TouchPhase::Move,
         modifiers: Modifiers::NONE,
@@ -664,7 +677,7 @@ fn scroll_to(u: &mut Ui, id: Id) {
 /// placeholder said 0 everywhere, which turned the gap's mode off.
 #[test]
 fn typing_auto_is_zero_only_where_zero_is_the_automatic_value() {
-    let count_id = Id::new(("grid_field", "count", 0usize));
+    let count_id = Id::unique(("grid_field", "count", 0usize));
     let (mut u, f) = grid_ui(json!({"kind": "columns", "align": "min", "count": 3, "size": 8, "gutter": 10}));
     let count = |u: &Ui| u.app.session.doc().unwrap().node(f).unwrap().grids[0].count;
     scroll_to(&mut u, count_id);
@@ -674,7 +687,7 @@ fn typing_auto_is_zero_only_where_zero_is_the_automatic_value() {
     assert_eq!(count(&u), 4, "and a number is that count");
     // A stretched grid works its width out from the frame: the field shows Auto and takes no edit.
     let (mut u, f) = grid_ui(json!({"kind": "columns", "align": "stretch", "count": 3, "size": 0}));
-    let size_id = Id::new(("grid_field", "size", 0usize));
+    let size_id = Id::unique(("grid_field", "size", 0usize));
     scroll_to(&mut u, size_id);
     type_at(&mut u, size_id, "40");
     assert_eq!(u.app.session.doc().unwrap().node(f).unwrap().grids[0].size, 0.0, "a stretched grid's width isn't set");
@@ -692,7 +705,7 @@ fn typing_auto_is_zero_only_where_zero_is_the_automatic_value() {
     u.frame(vec![]);
     let gap = |u: &Ui| u.app.session.doc().unwrap().node(f).unwrap().layout.as_ref().unwrap().gap;
     let before = gap(&u);
-    type_at(&mut u, Id::new("al_gap"), "Auto");
+    type_at(&mut u, Id::unique("al_gap"), "Auto");
     assert_eq!(gap(&u), before, "the word isn't a value where Auto is a mode");
 }
 

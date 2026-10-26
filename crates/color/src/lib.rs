@@ -195,7 +195,14 @@ impl Color {
     /// CSS `rgba(...)` / hex text for copy-as-CSS.
     pub fn to_css(self) -> String {
         let [r, g, b, _] = self.to_rgba8();
-        if self.a >= 0.999 { self.to_css_hex() } else { format!("rgba({r}, {g}, {b}, {:.2})", self.a) }
+        if self.a >= 0.999 {
+            return self.to_css_hex();
+        }
+        // Two decimals when they keep the 8-bit alpha, three otherwise (near-transparent colours).
+        let a8 = |a: f32| (a.clamp(0.0, 1.0) * 255.0).round() as u8;
+        let short = format!("{:.2}", self.a);
+        let alpha = if short.parse::<f32>().is_ok_and(|v| a8(v) == a8(self.a)) { short } else { format!("{:.3}", self.a) };
+        format!("rgba({r}, {g}, {b}, {alpha})")
     }
 
     /// Linear interpolation in sRGB (as gradients render).

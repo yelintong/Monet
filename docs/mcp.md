@@ -317,7 +317,7 @@ Or in a project's `.mcp.json`:
 | `select {ids}` | Replace the selection (`[]` deselects). |
 | `export {ids, format, scale \| size, path?, bleed?, cropMarks?, bleedMarks?, cmyk?, contentsOnly?, includeBoundingBox?, svgOutlineText?, svgIdAttribute?, svgSimplifyStroke?}` | png, jpg, svg, webp, pdf, or `fig`: the whole file as `.fig`, experimental (see Exporting `.fig` files below); `size` is `2x`, `512w` or `512h`. The image covers what the layers paint (shadows towards their offset, strokes, unclipped children, a mask group's mask; hidden layers take no room; a slice is its area with everything under it, or only the frame or group it sits in while `contentsOnly` is on); `contentsOnly: false` also draws every other layer showing in that area, `includeBoundingBox` exports the layers' own boxes; SVG: `svgOutlineText: false` keeps `<text>`, `svgIdAttribute` writes unique ids from layer names, `svgSimplifyStroke: false` writes every stroke as an outline. The same options go in export settings (`export.add` / `export.update`). PDF: frames one page each (sized in points), anything else together on one page; print options: `bleed` (points or a length like `"3mm"`, `"0.125in"`), crop and bleed marks, CMYK colour (see Exports below), also taken by `file.export`, `file.exportLayers`, `file.exportFramesPdf` and stored per export setting by `export.add` / `export.update`; `run_command` `file.exportFramesPdf {page?, path?}` writes every top-level frame of a page. Without `path`, images come back as MCP image content, SVG as text. Layers' own export settings: `run_command` with `export.add` / `export.update {index, size?, suffix?, format?}` / `export.remove` and `file.exportLayers {ids?, dir?, assets?}` (every layer once per setting, named `<layer><suffix>.<format>`, a slash in a layer name making a folder; `assets: true` exports the Inspect tab's assets instead: icons as SVG, images as PNG). |
 | `screenshot {ids?, scale?, maxSize?, window?}` | PNG of the page (with background) or of layers, scaled to fit `maxSize` (default 1600). `window: true` captures the app window in front when attached, a window id (see Windows below) that window. |
-| `open_file {path, variables?}` / `save_file {path?}` | Open `.figcraft`, `.json` (FigCraft JSON or REST API file JSON with its variables, see below), `.fig` (best effort, see below), `.svg` (see Importing SVG below) or an image; save as `.figcraft`. `open_file` returns `opened` (for a file opened anew, a `summary` of `name`, `pages`, `layers` and `images`, and `warnings` or `repairs`; a file that was already open just gives its `index`) and the document's `document` outline. |
+| `open_file {path, variables?}` / `save_file {path?}` | Open `.figcraft`, `.json` (FigCraft JSON or REST API file JSON with its variables, see below), `.fig` (best effort, see below), `.sketch` (Sketch 48 and newer, best effort), `.svg` (see Importing SVG below) or an image; save as `.figcraft`. `open_file` returns `opened` (for a file opened anew, a `summary` of `name`, `pages`, `layers` and `images`, and `warnings` or `repairs`; a file that was already open just gives its `index`) and the document's `document` outline. |
 | `undo` / `redo` | Step through history. |
 | `pointer {kind, x, y, to?, steps?, tool?, shift, alt, cmd, pressure?, pressureTo?}` | Mouse gestures in page coordinates with the current tool: `click`, `double`, `drag`, `down`, `move`, `up`, `hover`. A dragged layer drops into the frame or auto layout slot under the pointer, except one inside a group, a boolean group or an instance (outside its slots), which only moves. `pressure` (0–1) is pen pressure; a drag goes from `pressure` to `pressureTo` (see Brushes and pen pressure). |
 | `key {key, shift, alt, cmd}` | A shortcut or key as if typed on the canvas (every default shortcut, tool keys, Escape, Delete, arrows, number keys for opacity, arrows that pan the view when nothing is selected; while editing text, the text shortcuts and then text editing keys). Keys are names like `A`, `0`, `Enter`, `ArrowLeft`, `=`, `/`, or egui's (`Plus`, `Questionmark`); `cmd` is Cmd on macOS and Ctrl elsewhere. |
@@ -396,20 +396,36 @@ one undo step and returns the ids it made:
   (`Shift+Cmd/Ctrl+Enter` in the app does both).
 - `board.shape {shape, x, y, width?, height?, text?, color?, parent?}` → `{id, text}`: a shape with centred,
   wrapping text: `rectangle roundedRectangle ellipse diamond triangle speechBubble chevron`.
-- `board.connector {from, to, fromSide?, toSide?, style?: straight|elbow, startCap?, endCap?, label?}`
+- `board.connector {from, to, fromSide?, toSide?, style?: straight|elbow|curved, startCap?, endCap?, label?}`
   → `{id, label?}`: `from`/`to` are layer ids or `{x, y}` page points; sides are `auto` (the side
   facing the other end) or `top right bottom left`; caps are stroke caps (default an arrow at the
-  end). The connector re-routes itself whenever what it joins moves or resizes, also when someone
-  else in a live session moves it; a deleted end stays where it was as a point. `board.label {id,
-  text}` sets its label (empty removes it).
+  end). An elbow goes around the objects it joins when the short way would cross them; a curved
+  one leaves and arrives along the sides. The connector re-routes itself whenever what it joins
+  moves or resizes, also when someone else in a live session moves it; a deleted end stays where it
+  was as a point. `board.label {id, text}` sets its label (empty removes it).
+- `board.reattach {id?, end: from|to, target, side?}` → `{id}`: moves one end of a connector
+  (default the selected one; its label stands for it) onto `target`, a layer id or an `{x, y}`
+  page point where the end stays free. Refused when both ends would be on one layer or the target
+  is a connector. Dragging a selected connector's end handle in the app does the same.
 - `board.stamp {x, y, stamp: thumbsUp|heart|plusOne|star|question|check}` → `{id}`: a round badge
   centred there, with your name on it for hover.
 - `board.ink {path | points, highlighter?, color?, select? (default true)}` → `{id}`: a marker (or
   wide, see-through highlighter) stroke.
 - `board.setColor {ids?, color}`: stickies and shapes take it as their fill, connectors and ink as
-  their line. `board.setStyle {ids?, shape?, fontSize?, style?, startCap?, endCap?}`: a shape's
-  outline and text size, a connector's routing and arrowheads.
-- Tools for `pointer`: `tool.sticky {color?}`, `tool.shape {shape?}`, `tool.connector {style?}`
+  their line. `board.setStyle {ids?, shape?, fontSize?, style?: straight|elbow|curved, startCap?,
+  endCap?}`: a shape's outline and text size, a connector's routing and arrowheads.
+- `board.templates` → `[{id, name, description, width, height}]` lists the built-in templates:
+  `retrospective brainstorm weeklyPlanner flowChart kanban`. `board.template {name, x?, y?}` →
+  `{name, ids}` places one (its top-left at `x`, `y`; centred in the view without them) as ordinary
+  sections, stickies, shapes, connectors and text, selected, in one undo step.
+- `board.table {rows?, columns?, cells?, x?, y?}` → `{id, rows, columns, cells}`: a table (default
+  3 × 3, at most 50 × 20; `cells` is `[["Name", "Role"], …]` row by row and sets the size when
+  `rows`/`columns` are left out). It is an auto layout frame of row frames holding cell frames, each
+  with one text layer; `cells` in the answer holds those text layers' ids row by row, so
+  `node.set {id, props: {characters}}` changes a cell. A cell's row grows with its text. `board.tableEdit {id?, action: addRow|addColumn|removeRow|removeColumn,
+  index?}` → the same answer: `index` is where the new row or column goes, or which one goes
+  (default the last); `id` may be the table or any layer in it.
+- Tools for `pointer`: `tool.sticky {color?}`, `tool.shape {shape?}`, `tool.connector {style?: straight|elbow|curved}`
   (drag from one object to another), `tool.marker {color?}`, `tool.highlighter {color?}`,
   `tool.eraser` (drag over strokes), `tool.stamp {stamp?}`; Text and Section are the usual tools.
 
@@ -424,6 +440,40 @@ one undo step and returns the ids it made:
 `from` and `to` are the `id`s the two `board.sticky` calls returned (here `{"id": 2, "text": 3}` and
 `{"id": 4, "text": 5}` in a new board without an author name; a sticky with its author's name takes
 one more id). In a `batch`, step references (`{"from": {"$step": 1}, "to": {"$step": 2}}`, the `id`s steps 1 and 2 returned) avoid counting.
+
+Running a session on a board: a countdown and votes. Both are part of the board, so everyone in a
+live session sees the same, and neither is an undo step (undo leaves them as they are). On a
+design file they refuse.
+
+- `board.timer {action: start|pause|resume|add|stop, minutes?}` → `{state, left, text, ends}`: one
+  countdown per board. `start` takes `minutes` (default 5) and `add` adds them (default 1), from
+  one second up to 1440 minutes in all; `pause` keeps the time left, `resume` counts it down again.
+  The timer keeps its end time (milliseconds since 1970) or, paused, the time left, and each
+  client counts down on its own clock. `board.timerState {}` reads it: `state` is `off`,
+  `running`, `paused` or `done` (it ran out: 0:00 until someone stops it), `left` milliseconds,
+  `text` as `m:ss` (or `h:mm:ss`).
+- `board.vote {action: start|cast|retract|end|clear, …}` → the vote as `board.voteResults` gives
+  it. One vote at a time: `start {votes? (per person, 1–99, default 3), on?: all|stickies|selection
+  (default all), ids? (with selection; default the selected layers)}` (a vote that ended may be
+  replaced; one still running is refused), `cast {id}` puts one of your votes on an object (several
+  on the same object are fine; once yours are used up it refuses), `retract {id}` takes one back,
+  `end` shows everyone's votes, `clear` removes the vote and its results. `voter` (any action)
+  votes as someone else, for scripts and tests; by default you are your live-session client, or
+  your name (`pref.userName`) when the file isn't shared. In the app a click on an object votes
+  while a vote runs, and a click on your badge (or an Alt-click) takes the vote back.
+- `board.voteResults {voter?}` → `{state: off|running|ended, votesPerPerson, on, by, left, mine:
+  [{id, votes}], voters, results?}`: while it runs you see your own votes only (`mine`, `left`) and
+  how many have voted; once it ends `results` lists `[{id, name, votes, rank}]`, most votes first
+  (ties share a rank), with `name` the sticky's text or the layer's name. Votes on deleted objects
+  don't count.
+
+```json
+{"command": "board.timer", "params": {"action": "start", "minutes": 10}}
+{"command": "board.vote", "params": {"action": "start", "votes": 2, "on": "stickies"}}
+{"command": "board.vote", "params": {"action": "cast", "id": 2}}
+{"command": "board.vote", "params": {"action": "end"}}
+{"command": "board.voteResults", "params": {}}
+```
 
 ### Sections, handoff and arrow keys
 
@@ -535,7 +585,7 @@ on; `key` resolves keys the way the canvas does. Commands behind keys:
 - `pref.startOnHome {on?}`: the desktop app starts on the Home screen instead of in a new file
   (off by default; files named on the command line still open, and `--control` starts in a new
   file anyway, so control callers have a document).
-- `pref.language {language: system|en|cs|ru|es|es-419|fr|de|pt-BR|ja|ka|ko|sv|zh-Hans|…}`: the app's interface language, applied live ("system":
+- `pref.language {language: system|en|cs|ru|es|es-419|fr|de|pt-BR|ja|ka|ko|sv|vi|zh-Hans|…}`: the app's interface language, applied live ("system":
   the OS or browser language; a language without a catalog shows English). Command ids, labels and
   every result stay English.
 
@@ -1118,7 +1168,8 @@ branches). Driven with `run_command`:
 
 - `branch.create {name?}` copies the file into a new branch tab and returns `{id, name, index}`.
   The branch remembers the file as it is now (its base) and makes new ids in its own id space, so
-  layers, styles and comments made on both sides never clash.
+  layers, styles and comments made on both sides never clash. Its history starts with a `Branch
+  created` version.
 - `branch.list` lists the branches of the file shown (or of the file a branch tab belongs to):
   `[{id, name, time, state: active|merged|archived, index?}]` (`index`: its open tab).
 - `branch.open {id}` opens a branch in a tab (or switches to it). Edit it like any document.
@@ -1140,15 +1191,26 @@ branches). Driven with `run_command`:
   conflict key to `"branch"` or `"main"`; the merge is refused while a conflict has none, so
   neither side's work is dropped without a choice.
 - `branch.updateFromMain {id?, resolutions?}` brings the main file's changes since the base into the
-  branch the same way (the new base is the main file as it is now). It is not undoable: the branch
-  tab's undo history starts over.
+  branch the same way (the new base is the main file as it is now) and adds an `Updated from main`
+  version to the branch's history. It is not undoable: the branch tab's undo history starts over.
 - `branch.archive {id?}` sets a branch aside without merging (it stays in the file and can still be
   opened, but not merged).
 
 Each branch keeps its own version history: on a branch tab, `file.saveVersion`, `version.autosave`
 and the `version.*` commands (list, preview, restore, rename, delete, duplicate) act on the
 branch's versions, which are saved in the file with the branch and stay with it when it is merged
-or archived. Branches aren't available in a live session.
+or archived.
+
+In a live session branches work the same way and stay with the person who made them (others
+don't see them). A branch made in the session makes its ids in your own client space, far above
+the ids the main file makes, so the session server takes them. Everyone's edits on main while the
+branch is open are main's changes in the review (against the branch's own base), and conflicts
+with them are resolved as offline. `branch.merge` is one edit of the session document: everyone
+gets it, and it is one step of your own undo history. It is refused on a view link, and for a
+branch made outside the session (or in an earlier one) whose new layers, styles, variables or
+comments lie in another id space, which the server would refuse; merge those once the file has
+left the session. While a session is still starting, branch commands that need your client id
+wait for it.
 
 ### Collaboration changes
 
@@ -1379,17 +1441,24 @@ Plugin settings are kept per plugin with the preferences (in a headless session,
 {"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"run_command","arguments":{"command":"plugin.event","params":{"id":"org.figcraft.examples.swatch-grid","control":"generate"}}}}
 ```
 
-Widgets (API 3, layers on the canvas a plugin draws) are driven the same way: `widget.insert
+Widgets (API 3 and 4, layers on the canvas a plugin draws) are driven the same way: `widget.insert
 {plugin, x?, y?}` puts one on the page (centred in the view without a position) and returns `{id,
 plugin, state, targets, output, logs, calls, fuel}`; `widget.click {id, target}` clicks one of its
 `targets` as a click on the canvas would (the plugin redraws it; one undo step; returns the same);
-`widget.list` lists every widget in the file with its plugin, page, state and targets. A widget's
-state is layer data, so it is saved, undone and synced with the file.
+`widget.list` lists every widget in the file with its plugin, page, state and targets. With plugin
+API 4 a widget can have editable text fields and a property menu (both listed with it, as `fields`
+and `menu`): `widget.setText {id, field, value}` sets a field as typing in it would (the value,
+at most 1,000 characters, goes into the state under the field's name and the plugin redraws; one
+undo step), and `widget.menu {id, item, value?}` uses a menu item (a toggle's `value` is `true` or
+`false`, by default the opposite of now; a colour's is one of its options). A widget's state is
+layer data, so it is saved, undone and synced with the file.
 
 ```json
 {"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"run_command","arguments":{"command":"widget.insert","params":{"plugin":"org.figcraft.examples.counter"}}}}
 {"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"run_command","arguments":{"command":"widget.click","params":{"id":12,"target":"increment"}}}}
 {"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"run_command","arguments":{"command":"widget.list","params":{}}}}
+{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"run_command","arguments":{"command":"widget.setText","params":{"id":12,"field":"label","value":"Votes"}}}}
+{"jsonrpc":"2.0","id":8,"method":"tools/call","params":{"name":"run_command","arguments":{"command":"widget.menu","params":{"id":12,"item":"big"}}}}
 ```
 
 Plugins from a `figcraft-server`'s plugin directory ([`plugins.md`](plugins.md#plugin-directories)):
@@ -1832,25 +1901,47 @@ Align and distribute as one undo step:
 
 ### Step references
 
-A step in a `batch` can use what an earlier step returned. `{"$step": n}` anywhere in a step's
-params (a value, an item in `ids`, a nested field) is replaced by the `id` in the result of step `n`
-(zero-based) before the step runs; `{"$step": n, "field": "name"}` takes another field of that
-result. This builds a nested tree in one call and one undo step, without guessing ids:
+A step in a `batch` can use what an earlier step returned. Give the step a name with `"as"` (next to
+`command` and `params`), and `{"$ref": "name"}` anywhere in a later step's params (a value, an item
+in `ids`, a nested field) is replaced by the `id` in that step's result before the later step runs.
+This builds a nested tree in one call and one undo step, without guessing ids or counting steps:
 
 ```json
 {"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"batch","arguments":{"label":"Card","commands":[
-  {"command":"node.create","params":{"type":"frame","name":"Card","props":{"layout":"vertical","gap":12}}},
-  {"command":"node.create","params":{"type":"text","parent":{"$step":0},"text":"Ada Lovelace"}},
-  {"command":"node.create","params":{"type":"frame","parent":{"$step":0},"name":"Button"}},
-  {"command":"node.create","params":{"type":"text","parent":{"$step":2},"text":"Follow"}}]}}}
+  {"command":"node.create","as":"card","params":{"type":"frame","name":"Card","props":{"layout":"vertical","gap":12}}},
+  {"command":"node.create","params":{"type":"text","parent":{"$ref":"card"},"text":"Ada Lovelace"}},
+  {"command":"node.create","as":"button","params":{"type":"frame","parent":{"$ref":"card"},"name":"Button"}},
+  {"command":"node.create","params":{"type":"text","parent":{"$ref":"button"},"text":"Follow"}}]}}}
 ```
 
-A reference to the same or a later step, a negative or non-integer index, a missing `field` or any
-other key next to `$step` fails the whole batch, which is rolled back. Only an object whose keys are
-`$step` (and optionally `field`) is a reference: text such as `"$step 0"` is left as written. The
-`$step` key is reserved in step params: an object holding it anywhere (in plugin data or a variable
-value too) is read as a reference. A step that is itself a `command.batch` is passed on as written,
-so the references in its steps are to its own steps, not the outer batch's.
+`{"$step": n}` refers to a step by its zero-based position instead, and works in the same places;
+the two can be mixed. Names are any non-empty string and must be unique within the batch.
+
+`"field"` takes something other than the `id`: a key of the result (`{"$ref": "card", "field":
+"name"}`) or a path into it, with `/` between the parts and list items by zero-based index, the way
+`variable.bind` names `fills/0/color`. `edit.duplicate` returns `{"ids": [...]}`, so its first copy is
+`ids/0`:
+
+```json
+{"jsonrpc":"2.0","id":10,"method":"tools/call","params":{"name":"batch","arguments":{"label":"Copy","commands":[
+  {"command":"edit.duplicate","as":"copy","params":{"ids":[5]}},
+  {"command":"node.set","params":{"ids":[{"$ref":"copy","field":"ids/0"}],"props":{"name":"Card copy"}}}]}}}
+```
+
+A path may start with `/`, as in JSON Pointer (`/ids/0`). A key that itself holds `/` is matched as
+written before it is read as a path. A path ends at whatever value it reaches, so `"field": "ids"` is
+the whole list.
+
+These fail the whole batch, which is rolled back, with an error naming the step: two steps with the
+same `as` (before any step runs); a `$ref` to a name no step has (the error lists the names there
+are) or to the same or a later step; a `$step` to the same or a later step, or that is negative or
+not an integer; a `field` the result doesn't have (the error names the full path and, for a list,
+how many items it has); any key next to `$ref` or `$step` other than `field`. Only an object holding
+a `$ref` or `$step` key is a reference: text such as `"$ref card"` is left as written. Both keys are
+reserved in step params: an object holding either anywhere (in plugin data or a variable value too)
+is read as a reference. A step that is itself a `command.batch` is passed on as written, so the
+references in its steps are to its own steps and names, not the outer batch's; the outer batch can
+reach into its result list with a path (`{"$ref": "inner", "field": "1/id"}`).
 
 The end-to-end tests in `crates/mcp/tests/it/agent_tasks.rs` are worked examples of realistic tasks
 (auto layout, a card built in one batch with step references, components and overrides, gradients

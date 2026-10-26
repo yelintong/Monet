@@ -40,8 +40,9 @@ struct Picker {
     at: Pos2,
 }
 
+/// Stable egui id for the variable picker.
 fn picker_id() -> Id {
-    Id::new("variable_picker")
+    Id::unique("variable_picker")
 }
 
 /// The variable `field` is bound to on every one of `ids` (its name), if they agree.
@@ -198,7 +199,7 @@ pub fn open_style(ui: &Ui, style: &str, field: &str, kind: VariableType, at: Pos
 
 /// Where the open picker is on screen (clicks in it don't close what opened it).
 pub fn picker_rect(ctx: &egui::Context) -> Option<Rect> {
-    picker_open(ctx).then(|| ctx.memory(|m| m.area_rect(Id::new("variable_picker_area")))).flatten()
+    picker_open(ctx).then(|| ctx.memory(|m| m.area_rect(Id::unique("variable_picker_area")))).flatten()
 }
 
 /// Whether the picker is open (Escape closes it before what opened it).
@@ -339,7 +340,7 @@ fn number_field_edit(
 /// otherwise nothing and false.
 pub fn bound_chip(app: &mut FigApp, ui: &mut Ui, ids: &[NodeId], field: &str, kind: VariableType, rect: Rect) -> bool {
     let Some(name) = app.session.doc().ok().and_then(|d| bound_name(d, ids, field)) else { return false };
-    let ev = widgets::bound_field(ui, Id::new(("bound_chip", field, ids)), Lead::None, rect, &name);
+    let ev = widgets::bound_field(ui, Id::unique(("bound_chip", field, ids)), Lead::None, rect, &name);
     handle(app, ui, ids, field, kind, ev);
     true
 }
@@ -369,7 +370,7 @@ pub fn bindable(
 /// A variable button at the right end of `rect` while the pointer is over it: opens the picker
 /// to bind `field` of `ids`.
 pub fn bind_button(ui: &mut Ui, rect: Rect, ids: &[NodeId], field: &str, kind: VariableType) {
-    if variable_button(ui, rect, Id::new(("bind_button", field, ids))) {
+    if variable_button(ui, rect, Id::unique(("bind_button", field, ids))) {
         open(ui, ids, field, kind, rect.left_bottom());
     }
 }
@@ -396,7 +397,7 @@ pub fn bound_row(app: &mut FigApp, ui: &mut Ui, ids: &[NodeId], field: &str, kin
     let Some(name) = app.session.doc().ok().and_then(|d| bound_name(d, ids, field)) else { return };
     crate::right::row(ui, 32.0, |ui| {
         let (rect, _) = ui.allocate_exact_size(vec2(width.min(ui.available_width()), widgets::FIELD_H), Sense::hover());
-        let ev = widgets::bound_field(ui, Id::new(("bound_row", field)), lead, rect, &name);
+        let ev = widgets::bound_field(ui, Id::unique(("bound_row", field)), lead, rect, &name);
         handle(app, ui, ids, field, kind, ev);
     });
 }
@@ -413,7 +414,7 @@ pub fn picker(app: &mut FigApp, ctx: &egui::Context) {
     let Ok(doc) = app.session.ds().map(|d| d.doc.clone()) else { return };
     let libs = libraries(app, &doc);
     let t = Tokens::get(ctx);
-    let query_id = Id::new("variable_picker_query");
+    let query_id = Id::unique("variable_picker_query");
     let mut query: String = ctx.data(|d| d.get_temp(query_id)).unwrap_or_default();
     let q = query.trim().to_lowercase();
     // Bindings offer variables scoped to the property; aliases, any that wouldn't loop (library
@@ -445,7 +446,7 @@ pub fn picker(app: &mut FigApp, ctx: &egui::Context) {
     let groups = groups(&doc, &libs, keep);
     let mut chosen: Option<Pick> = None;
     let mut close = false;
-    let area = egui::Area::new(Id::new("variable_picker_area")).order(egui::Order::Foreground).fixed_pos(p.at + vec2(0.0, 4.0)).show(ctx, |ui| {
+    let area = egui::Area::new(Id::unique("variable_picker_area")).order(egui::Order::Foreground).fixed_pos(p.at + vec2(0.0, 4.0)).show(ctx, |ui| {
         egui::Frame::NONE.fill(t.menu).corner_radius(CornerRadius::same(10)).inner_margin(egui::Margin::same(8)).show(ui, |ui| {
             ui.set_width(240.0);
             ui.horizontal(|ui| {
@@ -492,7 +493,7 @@ pub fn picker(app: &mut FigApp, ctx: &egui::Context) {
         });
     });
     let rect = area.response.rect;
-    ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, Id::new("variable_picker_border"))).rect_stroke(
+    ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, Id::unique("variable_picker_border"))).rect_stroke(
         rect,
         CornerRadius::same(10),
         Stroke::new(1.0, Color32::from_black_alpha(40)),

@@ -209,13 +209,28 @@ icons! {
     PenNib,
     /// A board file (and the sticky note tool): a note with its bottom corner folded up.
     Board,
+    /// Board templates: a board laid out in blocks, a note and lines of text. A table: a grid.
+    /// The table bar's rows and columns: a strip with a plus or a minus beyond its end.
+    Templates,
+    Table,
+    AddRow,
+    RemoveRow,
+    AddColumn,
+    RemoveColumn,
     /// Board tools: a chisel-tipped marker; a broad highlighter over its band; a connector
     /// between two boxes; shapes (a square behind a circle); a stamp (a badge with a check).
     Marker,
     Highlighter,
     Connector,
+    /// A curved connector: the connector's two boxes joined by a quarter bend instead of a corner.
+    CurvedConnector,
     Shapes,
     Stamp,
+    /// Running a board session: a stopwatch (the timer), two bars (pause) and a ballot going
+    /// into a box (voting).
+    Timer,
+    Pause,
+    Vote,
     /// A measurement: a dimension line with arrowheads between two end ticks.
     Measure,
     /// Collapse the Variables editor to a floating panel.
@@ -1197,6 +1212,36 @@ fn draw(p: &P, icon: Icon) {
             p.line(5.0, 6.5, 11.0, 6.5);
             p.line(5.0, 9.5, 8.0, 9.5);
         }
+        Templates => {
+            p.rect(1.5, 2.5, 14.5, 13.5, 1.5);
+            p.fill_rect(3.5, 4.5, 7.5, 8.5, 0.5);
+            p.line(9.5, 5.5, 12.5, 5.5);
+            p.line(9.5, 7.5, 12.5, 7.5);
+            p.line(3.5, 11.0, 12.5, 11.0);
+        }
+        Table => {
+            p.rect(1.5, 2.5, 14.5, 13.5, 1.0);
+            p.line(1.5, 6.5, 14.5, 6.5);
+            p.line(1.5, 10.0, 14.5, 10.0);
+            p.line(6.0, 2.5, 6.0, 13.5);
+            p.line(10.0, 2.5, 10.0, 13.5);
+        }
+        AddRow | RemoveRow => {
+            p.rect(1.5, 2.5, 14.5, 8.5, 1.0);
+            p.line(8.0, 2.5, 8.0, 8.5);
+            p.line(5.5, 12.5, 10.5, 12.5);
+            if icon == AddRow {
+                p.line(8.0, 10.0, 8.0, 15.0);
+            }
+        }
+        AddColumn | RemoveColumn => {
+            p.rect(2.5, 1.5, 8.5, 14.5, 1.0);
+            p.line(2.5, 8.0, 8.5, 8.0);
+            p.line(10.0, 8.0, 15.0, 8.0);
+            if icon == AddColumn {
+                p.line(12.5, 5.5, 12.5, 10.5);
+            }
+        }
         Marker => {
             p.poly(&[(3.0, 13.0), (3.0, 10.5), (10.0, 3.5), (12.5, 6.0), (5.5, 13.0)], true);
             p.line(8.5, 5.0, 11.0, 7.5);
@@ -1213,6 +1258,12 @@ fn draw(p: &P, icon: Icon) {
             p.poly(&[(6.5, 4.0), (12.0, 4.0), (12.0, 9.0)], false);
             p.head((12.0, 9.0), FRAC_PI_2, 2.4);
         }
+        CurvedConnector => {
+            p.rect(1.5, 1.5, 6.5, 6.5, 1.0);
+            p.rect(9.5, 9.5, 14.5, 14.5, 1.0);
+            p.arc(6.5, 9.0, 5.5, -FRAC_PI_2, 0.0);
+            p.head((12.0, 9.0), FRAC_PI_2, 2.4);
+        }
         Shapes => {
             p.rect(1.5, 5.5, 9.5, 13.5, 1.0);
             p.circle(10.5, 5.5, 4.0);
@@ -1220,6 +1271,22 @@ fn draw(p: &P, icon: Icon) {
         Stamp => {
             p.circle(8.0, 8.0, 6.0);
             p.poly(&[(5.0, 8.3), (7.2, 10.5), (11.0, 6.0)], false);
+        }
+        Timer => {
+            p.circle(8.0, 9.0, 5.5);
+            p.line(8.0, 9.0, 8.0, 6.0);
+            p.line(6.0, 1.5, 10.0, 1.5);
+            p.line(8.0, 1.5, 8.0, 3.5);
+            p.line(12.0, 4.0, 13.5, 2.5);
+        }
+        Pause => {
+            p.fill_rect(4.0, 3.0, 6.5, 13.0, 0.5);
+            p.fill_rect(9.5, 3.0, 12.0, 13.0, 0.5);
+        }
+        Vote => {
+            p.rect(2.5, 8.5, 13.5, 13.5, 1.0);
+            p.poly(&[(5.5, 8.5), (5.5, 2.5), (10.5, 2.5), (10.5, 8.5)], false);
+            p.poly(&[(6.6, 5.6), (7.7, 6.7), (9.4, 4.6)], false);
         }
         Measure => {
             p.line(2.5, 4.0, 2.5, 12.0);
@@ -1338,7 +1405,7 @@ pub fn paint_outlines(painter: &Painter, rect: Rect, size: f64, parts: &[(&figcr
 /// Every icon at the sizes the UI uses, labelled: for reviewing the set (`ui.set {iconGallery}`).
 pub fn gallery(ctx: &egui::Context) {
     let t = crate::theme::Tokens::get(ctx);
-    egui::Area::new(egui::Id::new("icon_gallery")).order(egui::Order::Foreground).fixed_pos(Pos2::ZERO).show(ctx, |ui| {
+    egui::Area::new(egui::Id::unique("icon_gallery")).order(egui::Order::Foreground).fixed_pos(Pos2::ZERO).show(ctx, |ui| {
         let screen = ctx.content_rect();
         let (r, _) = ui.allocate_exact_size(screen.size(), egui::Sense::click());
         ui.painter().rect_filled(r, 0.0, t.panel);
@@ -1436,7 +1503,7 @@ mod tests {
         let mut u = crate::layers_drag_tests::Ui::new(s);
         u.frame(vec![]);
         let shapes = u.frame_output(vec![]).shapes;
-        let lead = |name: &str| u.ctx.read_response(egui::Id::new(name).with("lead")).map(|r| r.rect).unwrap_or_else(|| panic!("{name} is shown"));
+        let lead = |name: &str| u.ctx.read_response(egui::Id::unique(name).with("lead")).map(|r| r.rect).unwrap_or_else(|| panic!("{name} is shown"));
         let (rotation, radius) = (marks(&shapes, lead("pos_rot")), marks(&shapes, lead("ap_rad")));
         assert!(!rotation.is_empty() && !radius.is_empty(), "both draw an icon");
         assert_ne!(rotation, radius);

@@ -200,7 +200,7 @@ fn finish(app: &mut FigApp) {
 
 /// The selected gradient stop in the picker (shared with the on-canvas stops).
 pub fn stop_id() -> Id {
-    Id::new("cp_stop")
+    Id::unique("cp_stop")
 }
 
 /// Apply a swatch colour: a solid paint's colour, or the selected gradient stop's.
@@ -225,7 +225,7 @@ fn set_color(app: &mut FigApp, target: &PickerTarget, paint: &mut Paint, c: Colo
 fn page_colors(app: &FigApp, ui: &Ui) -> Vec<Color> {
     let Ok(ds) = app.session.ds() else { return vec![] };
     let key = (std::sync::Arc::as_ptr(&ds.doc) as usize, ds.page);
-    let cache_id = Id::new("cp_doc_colors");
+    let cache_id = Id::unique("cp_doc_colors");
     if let Some((k, colors)) = ui.data(|d| d.get_temp::<((usize, figcraft_doc::NodeId), Vec<Color>)>(cache_id))
         && k == key
     {
@@ -242,7 +242,7 @@ const MODELS: [&str; 5] = ["Hex", "RGB", "HSL", "HSB", "CSS"];
 /// The model dropdown with its fields and the alpha field. Returns a new colour and whether the
 /// edit is done (false while a field is being scrubbed).
 fn model_fields(ui: &mut Ui, c: Color) -> Option<(Color, bool)> {
-    let model_id = Id::new("cp_model");
+    let model_id = Id::unique("cp_model");
     let model: usize = ui.data(|d| d.get_temp(model_id)).unwrap_or(0).min(MODELS.len() - 1);
     let mut out: Option<Color> = None;
     let mut done = true;
@@ -260,7 +260,7 @@ fn model_fields(ui: &mut Ui, c: Color) -> Option<(Color, bool)> {
         });
         let num = |ui: &mut Ui, id: &str, v: f64, w: f32| match widgets::number_field(
             ui,
-            Id::new(("cp_f", id)),
+            Id::unique(("cp_f", id)),
             widgets::Lead::None,
             Some(v.round()),
             "",
@@ -310,19 +310,19 @@ fn model_fields(ui: &mut Ui, c: Color) -> Option<(Color, bool)> {
                 }
             }
             "CSS" => {
-                if let Some(text) = widgets::text_field(ui, Id::new("cp_css"), &c.to_css(), 152.0, "") {
+                if let Some(text) = widgets::text_field(ui, Id::unique("cp_css"), &c.to_css(), 152.0, "") {
                     out = Color::parse_css(&text);
                 }
             }
             _ => {
-                if let Some(h) = widgets::text_field(ui, Id::new("cp_hex"), &c.to_hex(), 101.0, "") {
+                if let Some(h) = widgets::text_field(ui, Id::unique("cp_hex"), &c.to_hex(), 101.0, "") {
                     out = Color::from_hex_or_name(&h).map(|h| h.with_alpha(if h.a < 1.0 { h.a } else { c.a }));
                 }
             }
         }
         if MODELS.get(model) != Some(&"CSS") {
             let alpha = Some((f64::from(out.unwrap_or(c).a) * 100.0).round());
-            let edit = match widgets::number_field(ui, Id::new("cp_a"), widgets::Lead::None, alpha, "%", 44.0, 1.0) {
+            let edit = match widgets::number_field(ui, Id::unique("cp_a"), widgets::Lead::None, alpha, "%", 44.0, 1.0) {
                 Some(widgets::FieldEdit::Set(v)) => Some((v, true)),
                 Some(widgets::FieldEdit::Scrub(v, end)) => Some((v, end)),
                 None => None,
@@ -340,6 +340,8 @@ fn hue_color(ctx: &egui::Context, h: f32) -> Color32 {
     doc_c32(ctx, Hsb { h, s: 1.0, b: 1.0 }.to_color())
 }
 
+/// Draw the saturation/value square and its knob, updating `hsb.s` and `hsb.b` on click or
+/// drag; returns `(changed, done)`.
 fn sv_square(ui: &mut Ui, rect: Rect, hsb: &mut Hsb) -> (bool, bool) {
     // White → hue horizontally, then transparent → black vertically.
     let mut m = Mesh::default();
@@ -363,7 +365,7 @@ fn sv_square(ui: &mut Ui, rect: Rect, hsb: &mut Hsb) -> (bool, bool) {
     m2.add_triangle(0, 1, 2);
     m2.add_triangle(0, 2, 3);
     ui.painter().add(m2);
-    let resp = ui.interact(rect, Id::new("cp_sv"), Sense::click_and_drag());
+    let resp = ui.interact(rect, Id::unique("cp_sv"), Sense::click_and_drag());
     let mut changed = false;
     if (resp.dragged() || resp.clicked() || resp.drag_started())
         && let Some(p) = resp.interact_pointer_pos()
@@ -378,6 +380,8 @@ fn sv_square(ui: &mut Ui, rect: Rect, hsb: &mut Hsb) -> (bool, bool) {
     (changed, resp.drag_stopped() || resp.clicked())
 }
 
+/// Draw the hue gradient and knob, updating `hsb.h` clamped below 360; returns
+/// `(changed, done)`.
 fn hue_slider(ui: &mut Ui, rect: Rect, hsb: &mut Hsb) -> (bool, bool) {
     let n = 12;
     let mut m = Mesh::default();
@@ -394,7 +398,7 @@ fn hue_slider(ui: &mut Ui, rect: Rect, hsb: &mut Hsb) -> (bool, bool) {
         }
     }
     ui.painter().add(m);
-    slider_knob(ui, rect, hsb.h / 360.0, Id::new("cp_hue"))
+    slider_knob(ui, rect, hsb.h / 360.0, Id::unique("cp_hue"))
         .map(|(t, done)| {
             hsb.h = (t * 360.0).clamp(0.0, 359.9);
             (true, done)
@@ -418,6 +422,8 @@ fn slider_knob(ui: &mut Ui, rect: Rect, t: f32, id: Id) -> Option<(f32, bool)> {
     None
 }
 
+/// Draw the checkerboard and transparent-to-opaque alpha gradient with a knob; returns the
+/// new alpha and done state, or `None` when the slider is not interacting.
 fn alpha_slider(ui: &mut Ui, rect: Rect, color: Color) -> Option<(f32, bool)> {
     widgets::checker(&ui.painter().with_clip_rect(rect), rect, rect.height() / 2.0);
     let mut m = Mesh::default();
@@ -433,7 +439,7 @@ fn alpha_slider(ui: &mut Ui, rect: Rect, color: Color) -> Option<(f32, bool)> {
     m.add_triangle(0, 1, 2);
     m.add_triangle(0, 2, 3);
     ui.painter().add(m);
-    slider_knob(ui, rect, color.a, Id::new("cp_alpha"))
+    slider_knob(ui, rect, color.a, Id::unique("cp_alpha"))
 }
 
 pub fn show(app: &mut FigApp, ctx: &egui::Context) {
@@ -990,7 +996,7 @@ fn pattern_controls(app: &mut FigApp, ui: &mut Ui, target: &PickerTarget, paint:
         ui.add_space(16.0);
         let field = |ui: &mut Ui, key: &str, lead: Lead, value: f64, suffix: &str| match widgets::number_field(
             ui,
-            Id::new(key),
+            Id::unique(key),
             lead,
             Some(value),
             suffix,
@@ -1036,7 +1042,7 @@ fn saved_preset_row(ui: &mut Ui, name: &str) -> Option<PresetAction> {
     let w = ui.available_width().max(180.0);
     let (r, resp) = ui.allocate_exact_size(vec2(w, 26.0), Sense::click());
     let del = Rect::from_center_size(pos2(r.max.x - 14.0, r.center().y), vec2(20.0, 20.0));
-    let del_resp = ui.interact(del, ui.id().with(("cp_preset_del", name)), Sense::click()).tip(tr("Delete preset"));
+    let del_resp = ui.interact(del, ui.scope_id().with(("cp_preset_del", name)), Sense::click()).tip(tr("Delete preset"));
     let hot = resp.hovered() || del_resp.hovered();
     if hot {
         ui.painter().rect_filled(r, CornerRadius::same(5), t.menu_hover);
@@ -1068,7 +1074,7 @@ fn image_presets(app: &mut FigApp, ui: &mut Ui, target: &PickerTarget, paint: &m
         .find(|(_, f)| *f == filters)
         .map(|(name, _)| name)
         .unwrap_or_else(|| if filters.is_identity() { tr("No preset").into() } else { tr("Custom").into() });
-    let name_id = Id::new("cp_preset_name");
+    let name_id = Id::unique("cp_preset_name");
     let mut naming: Option<String> = ui.data(|d| d.get_temp(name_id));
     let mut action = None;
     ui.horizontal(|ui| {

@@ -79,7 +79,8 @@ fn combine_ui(app: &mut FigApp, ui: &mut Ui, doc: &Document, sel: &[NodeId]) {
 fn description_ui(app: &mut FigApp, ui: &mut Ui, id: NodeId, description: &str) {
     widgets::separator(ui);
     widgets::sublabels(ui, tr("Description"), None);
-    if let Some(new) = widgets::multiline_field(ui, Id::new(("comp_desc", id)), description, tr("Describe how and when to use this component"), 3) {
+    if let Some(new) = widgets::multiline_field(ui, Id::unique(("comp_desc", id)), description, tr("Describe how and when to use this component"), 3)
+    {
         app.run("node.set", json!({"id": id, "props": {"description": new.chars().take(10_000).collect::<String>()}}));
     }
     ui.add_space(8.0);
@@ -91,7 +92,7 @@ fn description_ui(app: &mut FigApp, ui: &mut Ui, id: NodeId, description: &str) 
 pub(crate) fn local_components(app: &FigApp, ui: &Ui, doc: &Document) -> std::sync::Arc<Vec<(NodeId, String)>> {
     type Cached = ((u64, u64), std::sync::Arc<Vec<(NodeId, String)>>);
     let key = app.session.ds().map(|d| (d.uid, d.revision)).unwrap_or_default();
-    let id = Id::new("component_panel_local_components");
+    let id = Id::unique("component_panel_local_components");
     if let Some((k, list)) = ui.data(|d| d.get_temp::<Cached>(id))
         && k == key
     {
@@ -267,7 +268,7 @@ fn properties_ui(app: &mut FigApp, ui: &mut Ui, doc: &Document, owner: NodeId) {
         let header = row_rect(ui, 32.0, |ui| {
             let (ir, _) = ui.allocate_exact_size(vec2(14.0, 14.0), Sense::hover());
             icons::paint(ui.painter(), ir, Icon::ComponentSet, COMPONENT);
-            if let Some(nn) = widgets::text_field(ui, Id::new(("vprop_name", owner, k.as_str())), k, 110.0, tr("Name")) {
+            if let Some(nn) = widgets::text_field(ui, Id::unique(("vprop_name", owner, k.as_str())), k, 110.0, tr("Name")) {
                 app.run("component.editProperty", json!({"id": owner, "name": k, "newName": nn}));
             }
             let def = defaults.get(k).or(vals.first()).cloned().unwrap_or_default();
@@ -292,7 +293,7 @@ fn properties_ui(app: &mut FigApp, ui: &mut Ui, doc: &Document, owner: NodeId) {
             row(ui, 30.0, |ui| {
                 ui.add_space(22.0);
                 for v in &chunk {
-                    if let Some(nv) = widgets::text_field(ui, Id::new(("vprop_val", owner, k.as_str(), v.as_str())), v, 62.0, "")
+                    if let Some(nv) = widgets::text_field(ui, Id::unique(("vprop_val", owner, k.as_str(), v.as_str())), v, 62.0, "")
                         && nv != *v
                     {
                         app.run("component.editProperty", json!({"id": owner, "name": k, "value": v, "newValue": nv}));
@@ -320,7 +321,7 @@ fn properties_ui(app: &mut FigApp, ui: &mut Ui, doc: &Document, owner: NodeId) {
         row(ui, 32.0, |ui| {
             let (ir, _) = ui.allocate_exact_size(vec2(14.0, 14.0), Sense::hover());
             icons::paint(ui.painter(), ir, type_icon(d), COMPONENT);
-            if let Some(nn) = widgets::text_field(ui, Id::new(("prop_name", owner, k.as_str())), k, 96.0, tr("Name")) {
+            if let Some(nn) = widgets::text_field(ui, Id::unique(("prop_name", owner, k.as_str())), k, 96.0, tr("Name")) {
                 app.run("component.editProperty", json!({"id": owner, "name": k, "newName": nn}));
             }
             match d {
@@ -330,7 +331,7 @@ fn properties_ui(app: &mut FigApp, ui: &mut Ui, doc: &Document, owner: NodeId) {
                     }
                 }
                 PropDef::Text { default } => {
-                    if let Some(v) = widgets::text_field(ui, Id::new(("prop_def", owner, k.as_str())), default, 84.0, tr("Default")) {
+                    if let Some(v) = widgets::text_field(ui, Id::unique(("prop_def", owner, k.as_str())), default, 84.0, tr("Default")) {
                         app.run("component.editProperty", json!({"id": owner, "name": k, "default": v}));
                     }
                 }
@@ -701,7 +702,7 @@ fn instance_props(app: &mut FigApp, ui: &mut Ui, doc: &Document, n: &Node, comps
                 PropDef::Text { .. } => {
                     crate::variable_ui::bindable(app, ui, &[id], &bind_field, VariableType::String, w, |app, ui| {
                         let cur = v.as_str().unwrap_or_default().to_string();
-                        if let Some(ns) = widgets::text_field(ui, Id::new(("iprop", id, k.as_str())), &cur, w, "")
+                        if let Some(ns) = widgets::text_field(ui, Id::unique(("iprop", id, k.as_str())), &cur, w, "")
                             && ns != cur
                         {
                             app.run("instance.setProperties", json!({"ids": [id], "properties": {k.clone(): ns}}));

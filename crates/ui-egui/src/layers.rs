@@ -82,7 +82,7 @@ pub fn rail(app: &mut FigApp, ui: &mut Ui) {
     let mut y = r.min.y + 8.0;
     // Main menu (logo).
     let lr = Rect::from_center_size(pos2(r.center().x, y + 16.0), vec2(36.0, 32.0));
-    let lresp = ui.interact(lr, ui.id().with("rail_menu"), Sense::click()).tip(tr("Main menu"));
+    let lresp = ui.interact(lr, ui.scope_id().with("rail_menu"), Sense::click()).tip(tr("Main menu"));
     if lresp.hovered() || app.ui.main_menu {
         ui.painter().rect_filled(lr, CornerRadius::same(6), t.hover);
     }
@@ -127,10 +127,10 @@ pub fn rail(app: &mut FigApp, ui: &mut Ui) {
                 Some(tb) => {
                     // Leaving the version history shows the tab rather than collapsing it.
                     if active {
-                        app.ui.left_collapsed = true;
+                        app.ui.close_left_panel();
                     } else {
                         app.ui.left_tab = tb;
-                        app.ui.left_collapsed = false;
+                        app.ui.open_left_panel();
                     }
                     app.ui.versions = Default::default();
                 }
@@ -143,6 +143,8 @@ pub fn rail(app: &mut FigApp, ui: &mut Ui) {
     }
 }
 
+/// Draw the left panel: versions when open, otherwise the file/Assets header with in-place
+/// file rename and collapse control, followed by Pages and Layers or the Assets panel.
 pub fn left_panel(app: &mut FigApp, ui: &mut Ui) {
     if app.ui.versions.open {
         crate::versions::panel(app, ui);
@@ -159,19 +161,19 @@ pub fn left_panel(app: &mut FigApp, ui: &mut Ui) {
         let name = app.session.doc().map(|d| d.name.clone()).unwrap_or_default();
         let nr = Rect::from_min_max(pos2(head.min.x + 14.0, head.min.y + 14.0), pos2(head.max.x - 48.0, head.min.y + 34.0));
         let start = std::mem::take(&mut app.ui.rename_file);
-        if let (Some(new), _) = crate::widgets::rename_field(ui, Id::new("filename"), &name, nr, semibold(13.0), start) {
+        if let (Some(new), _) = crate::widgets::rename_field(ui, Id::unique("filename"), &name, nr, semibold(13.0), start) {
             app.run("file.rename", json!({"name": new}));
         }
         ui.painter().text(pos2(head.min.x + 16.0, head.min.y + 46.0), Align2::LEFT_CENTER, tr("Drafts"), regular(11.0), t.text_secondary);
     }
     let hr = Rect::from_center_size(pos2(head.max.x - 24.0, head.min.y + 24.0), vec2(24.0, 24.0));
-    let hresp = ui.interact(hr, ui.id().with("hideui"), Sense::click()).tip(tr("Collapse panel"));
+    let hresp = ui.interact(hr, ui.scope_id().with("hideui"), Sense::click()).tip(tr("Collapse panel"));
     if hresp.hovered() {
         ui.painter().rect_filled(hr, CornerRadius::same(5), t.hover);
     }
     icons::paint(ui.painter(), hr.shrink(5.0), Icon::Panels, t.icon);
     if hresp.clicked() {
-        app.ui.left_collapsed = true;
+        app.ui.close_left_panel();
     }
     ui.painter().line_segment([head.left_bottom(), head.right_bottom()], Stroke::new(1.0, t.border));
     match app.ui.left_tab {
@@ -184,6 +186,8 @@ pub fn left_panel(app: &mut FigApp, ui: &mut Ui) {
     }
 }
 
+/// Draw the page list with open/search/add controls, filtering, selection, rename,
+/// reorder/drag and layer drop-to-page; Dev Mode allows opening pages but blocks mutations.
 fn pages(app: &mut FigApp, ui: &mut Ui) {
     let t = Tokens::get(ui.ctx());
     // Dev Mode only inspects: rows open pages, but don't add, rename, reorder, duplicate or delete.
@@ -193,19 +197,19 @@ fn pages(app: &mut FigApp, ui: &mut Ui) {
     }
     let w = ui.available_width();
     let (hr, _) = ui.allocate_exact_size(vec2(w, 40.0), Sense::hover());
-    let tresp = ui.interact(Rect::from_min_size(hr.min, vec2(w - 40.0, 40.0)), ui.id().with("pages_toggle"), Sense::click());
+    let tresp = ui.interact(Rect::from_min_size(hr.min, vec2(w - 40.0, 40.0)), ui.scope_id().with("pages_toggle"), Sense::click());
     a11y::toggle(&tresp, tr("Pages"), app.ui.pages_open);
     ui.painter().text(pos2(hr.min.x + 16.0, hr.center().y), Align2::LEFT_CENTER, tr("Pages"), semibold(11.0), t.text);
     if tresp.clicked() {
         app.ui.pages_open = !app.ui.pages_open;
     }
     let sr = Rect::from_center_size(pos2(hr.max.x - 50.0, hr.center().y), vec2(24.0, 24.0));
-    let sresp = ui.interact(sr, ui.id().with("lsearch"), Sense::click()).tip(tr("Search pages"));
+    let sresp = ui.interact(sr, ui.scope_id().with("lsearch"), Sense::click()).tip(tr("Search pages"));
     if sresp.hovered() || app.ui.page_search {
         ui.painter().rect_filled(sr, CornerRadius::same(5), t.hover);
     }
     icons::paint(ui.painter(), sr.shrink(5.0), Icon::Search, t.icon);
-    let search_id = Id::new("page_search_field");
+    let search_id = Id::unique("page_search_field");
     if sresp.clicked() {
         app.ui.page_search = !app.ui.page_search;
         app.ui.page_filter.clear();
@@ -214,7 +218,7 @@ fn pages(app: &mut FigApp, ui: &mut Ui) {
         }
     }
     let ar = Rect::from_center_size(pos2(hr.max.x - 22.0, hr.center().y), vec2(24.0, 24.0));
-    let aresp = ui.interact(ar, ui.id().with("addpage"), Sense::click()).tip(tr("Add new page"));
+    let aresp = ui.interact(ar, ui.scope_id().with("addpage"), Sense::click()).tip(tr("Add new page"));
     if aresp.hovered() {
         ui.painter().rect_filled(ar, CornerRadius::same(5), t.hover);
     }
@@ -300,7 +304,7 @@ fn pages(app: &mut FigApp, ui: &mut Ui) {
                 let tr = Rect::from_min_max(pos2(r.min.x + 8.0, r.min.y + 4.0), pos2(r.max.x - 4.0, r.max.y - 4.0));
                 let start = ui.data_mut(|d| d.remove_temp::<bool>(page_rename_start_id())).unwrap_or(false);
                 let font = if id == cur { semibold(11.0) } else { regular(11.0) };
-                if let (Some(new), _) = crate::widgets::rename_field(ui, Id::new(("pagename", id)), &name, tr, font, start) {
+                if let (Some(new), _) = crate::widgets::rename_field(ui, Id::unique(("pagename", id)), &name, tr, font, start) {
                     rename_done = Some((id, new));
                 }
             } else if !divider {
@@ -413,8 +417,9 @@ fn pages_edge(app: &mut FigApp, ui: &mut Ui, shown: f32) {
     let w = ui.available_width();
     let (line, _) = ui.allocate_exact_size(vec2(w, 1.0), Sense::hover());
     let grab = ui.style().interaction.resize_grab_radius_side;
-    let id = Id::new("pages_edge");
-    let resp = ui.interact(line.expand2(vec2(0.0, grab)), id, Sense::click_and_drag());
+    let id = Id::unique("pages_edge");
+    // Not focusable, like the side panels' edges: Tab/F6 must not stop on an unnamed drag handle.
+    let resp = ui.interact(line.expand2(vec2(0.0, grab)), id, Sense::CLICK | Sense::DRAG);
     let active = resp.hovered() || resp.dragged();
     if active {
         ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeVertical);
@@ -447,12 +452,12 @@ fn pages_edge(app: &mut FigApp, ui: &mut Ui, shown: f32) {
 
 /// A page rename just asked for by a double click: its field takes the focus when drawn (temp data).
 fn page_rename_start_id() -> Id {
-    Id::new("page_rename_start")
+    Id::unique("page_rename_start")
 }
 
 /// The layer row being dragged in the panel (temp data).
 fn layer_drag_id() -> Id {
-    Id::new("layer_drag")
+    Id::unique("layer_drag")
 }
 
 /// A press on a row's eye or padlock dragged across other rows: every row passed gets the state the
@@ -465,8 +470,9 @@ struct Sweep {
     ids: Vec<NodeId>,
 }
 
+/// Stable egui id for the eye/padlock sweep state.
 fn sweep_id() -> Id {
-    Id::new("layer_toggle_sweep")
+    Id::unique("layer_toggle_sweep")
 }
 
 /// What a drag of row `dragging` moves: the selection when the row is in it, else the row.
@@ -584,7 +590,7 @@ fn hash_expanded(expanded: &BTreeSet<NodeId>) -> u64 {
 pub(crate) fn rows_for(ui: &Ui, doc: &Arc<Document>, page: NodeId, expanded: &BTreeSet<NodeId>, filter: &str) -> Arc<Vec<Row>> {
     let ex = if filter.is_empty() { hash_expanded(expanded) } else { 0 };
     ui.data_mut(|d| {
-        let c = d.get_temp_mut_or_default::<RowCache>(Id::new("layer_rows"));
+        let c = d.get_temp_mut_or_default::<RowCache>(Id::unique("layer_rows"));
         let fresh = c.doc.as_ref().is_some_and(|d| Arc::ptr_eq(d, doc)) && c.page == Some(page) && c.expanded == ex && c.filter == filter;
         if !fresh {
             let rows = listed_rows(doc, page, expanded, filter);
@@ -726,7 +732,7 @@ pub(crate) fn start_rename(app: &mut FigApp, ids: &[NodeId]) {
     let rows = listed_rows(&doc, page, &app.ui.expanded, &app.ui.layer_filter.trim().to_lowercase());
     let Some(id) = rows.iter().map(|r| r.id).find(|r| ids.contains(r)) else { return };
     app.ui.left_tab = LeftTab::File;
-    app.ui.left_collapsed = false;
+    app.ui.open_left_panel();
     rename_layer(app, id);
 }
 
@@ -748,8 +754,9 @@ fn rename_layer(app: &mut FigApp, id: NodeId) {
     app.ui.layers_seen_sel = app.session.selection();
 }
 
+/// Stable egui id for a layer row's rename field.
 fn rename_id(id: NodeId) -> Id {
-    Id::new(("rename", id))
+    Id::unique(("rename", id))
 }
 
 /// Left edge of a row's contents (disclosure triangle) in the row's inner rect `rr`.
@@ -799,7 +806,7 @@ fn search_field(ui: &mut Ui, t: &Tokens, w: f32, id: Id, hint: &str, text: &mut 
             .frame(egui::Frame::NONE)
             .font(regular(11.0))
             .hint_text(hint)
-            .vertical_align(egui::Align::Center)
+            .align(egui::Align2::LEFT_CENTER)
             .desired_width(te_rect.width()),
     );
     // After the field: the click that opened it ends elsewhere, which would take the focus back.
@@ -816,6 +823,8 @@ fn search_field(ui: &mut Ui, t: &Tokens, w: f32, id: Id, hint: &str, text: &mut 
     }
 }
 
+/// Draw the layer tree with search, cached rows, reveal-selection expansion and scrolling,
+/// rename/Tab navigation, selection and drag/drop, sweep toggles and Dev Mode restrictions.
 fn layers(app: &mut FigApp, ui: &mut Ui) {
     let t = Tokens::get(ui.ctx());
     // Dev Mode only inspects: rows select and expand, but don't rename, reorder, hide or lock.
@@ -827,12 +836,12 @@ fn layers(app: &mut FigApp, ui: &mut Ui) {
     let (hr, _) = ui.allocate_exact_size(vec2(w, 40.0), Sense::hover());
     ui.painter().text(pos2(hr.min.x + 16.0, hr.center().y), Align2::LEFT_CENTER, tr("Layers"), semibold(11.0), t.text);
     let sr = Rect::from_center_size(pos2(hr.max.x - 22.0, hr.center().y), vec2(24.0, 24.0));
-    let sresp = ui.interact(sr, ui.id().with("layer_search_btn"), Sense::click()).tip(tr("Search layers"));
+    let sresp = ui.interact(sr, ui.scope_id().with("layer_search_btn"), Sense::click()).tip(tr("Search layers"));
     if sresp.hovered() || app.ui.layer_search {
         ui.painter().rect_filled(sr, CornerRadius::same(5), t.hover);
     }
     icons::paint(ui.painter(), sr.shrink(5.0), Icon::Search, t.icon);
-    let search_id = Id::new("layer_search_field");
+    let search_id = Id::unique("layer_search_field");
     if sresp.clicked() {
         app.ui.layer_search = !app.ui.layer_search;
         app.ui.layer_filter.clear();
@@ -1024,7 +1033,7 @@ fn layers(app: &mut FigApp, ui: &mut Ui) {
             // Expand triangle.
             if row.has_kids {
                 let tri = Rect::from_center_size(pos2(x0 + 6.0, r.center().y), vec2(14.0, 14.0));
-                let tresp = ui.interact(tri, ui.id().with(("tri", row.id)), Sense::click());
+                let tresp = ui.interact(tri, ui.scope_id().with(("tri", row.id)), Sense::click());
                 let open = app.ui.expanded.contains(&row.id);
                 a11y::button(&tresp, if open { tr("Collapse") } else { tr("Expand") });
                 icons::paint(ui.painter(), tri.shrink(1.0), if open { Icon::Chevron } else { Icon::ChevronRight }, t.icon_secondary);
@@ -1091,7 +1100,7 @@ fn layers(app: &mut FigApp, ui: &mut Ui) {
                 icons::paint(ui.painter(), er.shrink(3.0), if hidden { Icon::EyeOff } else { Icon::Eye }, t.icon_secondary);
             }
             if show_eye && !dev {
-                let eresp = ui.interact(er, ui.id().with(("eye", row.id)), Sense::click_and_drag());
+                let eresp = ui.interact(er, ui.scope_id().with(("eye", row.id)), Sense::click_and_drag());
                 a11y::toggle(&eresp, tr("Hidden"), hidden);
                 if eresp.clicked() {
                     vis = Some(row.id);
@@ -1105,7 +1114,7 @@ fn layers(app: &mut FigApp, ui: &mut Ui) {
                 icons::paint(ui.painter(), lr.shrink(3.0), if locked || row.locked_above { Icon::Lock } else { Icon::Unlock }, col);
             }
             if show_lock && !dev {
-                let lresp = ui.interact(lr, ui.id().with(("lock", row.id)), Sense::click_and_drag());
+                let lresp = ui.interact(lr, ui.scope_id().with(("lock", row.id)), Sense::click_and_drag());
                 a11y::toggle(&lresp, tr("Locked"), locked || row.locked_above);
                 if lresp.clicked() {
                     lock = Some(row.id);
@@ -1160,7 +1169,7 @@ fn layers(app: &mut FigApp, ui: &mut Ui) {
                     ui.painter().rect_stroke(rr, CornerRadius::same(5), Stroke::new(2.0, ACCENT), egui::StrokeKind::Inside);
                     // Holding over a collapsed group or frame opens it, to drop deeper inside.
                     if row.has_kids && !app.ui.expanded.contains(&row.id) {
-                        let hold_id = Id::new("layer_drag_hold");
+                        let hold_id = Id::unique("layer_drag_hold");
                         let now = ui.input(|i| i.time);
                         match ui.data(|d| d.get_temp::<(NodeId, f64)>(hold_id)) {
                             Some((id, since)) if id == row.id => {
@@ -1195,7 +1204,7 @@ fn layers(app: &mut FigApp, ui: &mut Ui) {
         // Empty space below clears selection.
         let rest = Rect::from_x_y_ranges(band.x_range(), (top + total)..=(top + total.max(viewport.max.y)));
         // A click target for the pointer only (no stop for the keyboard).
-        if rest.height() > 0.0 && ui.interact(rest, Id::new("layers_empty_space"), Sense::CLICK).clicked() {
+        if rest.height() > 0.0 && ui.interact(rest, Id::unique("layers_empty_space"), Sense::CLICK).clicked() {
             app.run("select.none", json!({}));
         }
     });
@@ -1231,7 +1240,7 @@ fn layers(app: &mut FigApp, ui: &mut Ui) {
     if ui.input(|i| i.pointer.any_released()) {
         ui.data_mut(|d| {
             d.remove::<NodeId>(drag_id);
-            d.remove::<(NodeId, f64)>(Id::new("layer_drag_hold"));
+            d.remove::<(NodeId, f64)>(Id::unique("layer_drag_hold"));
         });
         // A drag started in the design can end after a switch to Dev Mode.
         if let (Some(_), Some((target, zone))) = (dragging, drop)
