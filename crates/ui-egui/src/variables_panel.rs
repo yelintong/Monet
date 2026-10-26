@@ -75,6 +75,30 @@ impl Slot {
     }
 }
 
+/// A variable put on the editor's clipboard by a copy: what a paste makes a copy of. Its values are
+/// kept by mode *name*, so a paste into a collection whose modes are named alike keeps them, and one
+/// with other modes takes the default value (a copy across collections still makes sense).
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct CopiedVariable {
+    name: String,
+    kind: VariableType,
+    /// (mode name, value), in the mode order of the collection it came from.
+    values: Vec<(String, VariableValue)>,
+    /// The default mode's value: what a mode it has no value for gets.
+    value: VariableValue,
+    description: String,
+}
+
+impl CopiedVariable {
+    /// `v` as it is in `coll`: its name, type, description and every mode's value.
+    fn of(v: &Variable, coll: &Collection) -> CopiedVariable {
+        let values: Vec<(String, VariableValue)> =
+            coll.modes.iter().filter_map(|m| v.values.get(&m.id).map(|val| (m.name.clone(), val.clone()))).collect();
+        let value = values.first().map(|(_, val)| val.clone()).unwrap_or_else(|| VariableValue::default_for(v.kind));
+        CopiedVariable { name: v.name.clone(), kind: v.kind, values, value, description: v.description.clone() }
+    }
+}
+
 /// What's being renamed inline.
 #[derive(Clone, Debug, PartialEq, Hash)]
 pub(crate) enum Rename {
@@ -215,7 +239,7 @@ pub struct Editor {
     /// The rename just started: its field takes the focus in the frame it's first drawn.
     rename_start: bool,
     /// The variable whose details (name, description, scopes) are open.
-    details: Option<String>,
+    pub(crate) details: Option<String>,
     /// The group the table shows ("space" or "color/brand"); None = every variable.
     group: Option<String>,
     /// The collections sidebar shows (its fold button, in the header).
@@ -248,6 +272,19 @@ pub struct Editor {
     /// The collections list's share of the sidebar's body (0..1); the groups list takes the rest.
     /// The divider between them drags it, so the two can trade height.
     pub(crate) sidebar_split: f32,
+    /// The row clicked last. It only decides where a paste goes (under it, else at the end of the
+    /// table), so it lives as long as the editor is open.
+    pub(crate) selected: Option<String>,
+    /// The variable copied here (Cmd/Ctrl+C), waiting for a paste.
+    pub(crate) copied: Option<CopiedVariable>,
+    /// A copy asked for from the keyboard, run by the next frame that has the shown rows (the
+    /// keys are taken before the table is drawn).
+    pub(crate) copy_request: bool,
+    /// A paste asked for from the keyboard: run with the rows in hand, like the copy.
+    pub(crate) paste_request: bool,
+    /// Where the panel was drawn last frame: a press outside it lets the selected row go (the
+    /// selection is the table's, and a click on the canvas is about the canvas).
+    pub(crate) panel: Option<Rect>,
     /// While the floating panel is moved by its header: where the pointer took hold of it, from
     /// the panel's top-left. The frame after puts the panel back under the pointer, so it follows
     /// it without lagging behind — and, recomputed each frame, it doesn't stick at the screen edge
@@ -279,6 +316,11 @@ impl Default for Editor {
             mode_drag: None,
             group_order: std::collections::BTreeMap::new(),
             sidebar_split: 0.5,
+            selected: None,
+            copied: None,
+            copy_request: false,
+            paste_request: false,
+            panel: None,
             grab: None,
         }
     }
@@ -364,6 +406,79 @@ impl<'a> View<'a> {
     }
 }
 
+/// The table's own Ctrl/Cmd+C and Ctrl/Cmd+V, taken before the window's shortcuts (which would
+/// copy the canvas selection, or paste onto it). The keys only stay the table's while it can use
+/// them: a row selected for the copy, something copied for the paste, and no field holding the
+/// keyboard. The copy and the paste run in [`table`], which has the shown rows in hand.
+pub fn keys(app: &mut FigApp, ctx: &Context) {
+    if app.ui.variables.is_none() || app.ui.present.is_some() || crate::a11y::field_focused(ctx) {
+        return;
+    }
+    // Escape lets the row go (a drag cancels itself): a paste then lands at the end of the table.
+    let letting_go = app.ui.variables.as_ref().is_some_and(|st| st.selected.is_some() && st.drag.is_none() && st.mode_drag.is_none())
+        && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
+    // A press anywhere else lets it go too: the row is the table's selection, and a click on the
+    // canvas is about the canvas (Ctrl+C there copies layers, not the row). A press in the details
+    // window or the colour picker it opened is still about that row.
+    let elsewhere = app.ui.picker.is_none() && app.ui.variables.as_ref().is_some_and(|st| st.details.is_none());
+    let away = elsewhere
+        && app
+            .ui
+            .variables
+            .as_ref()
+            .and_then(|st| st.panel.zip(ctx.input(|i| i.pointer.press_origin())))
+            .is_some_and(|(panel, p)| !panel.contains(p));
+    if letting_go || away {
+        if let Some(st) = app.ui.variables.as_mut() {
+            st.selected = None;
+        }
+        ctx.request_repaint();
+    }
+    let (copying, pasting) = ctx.input(|i| {
+        let (mut copying, mut pasting, mut paste_event, mut release) = (false, false, false, false);
+        for e in &i.events {
+            match e {
+                egui::Event::Copy => copying = true,
+                egui::Event::Paste(_) => {
+                    pasting = true;
+                    paste_event = true;
+                }
+                egui::Event::Key { key: egui::Key::C, pressed: true, modifiers, .. } if modifiers.command => copying = true,
+                egui::Event::Key { key: egui::Key::V, pressed: true, modifiers, .. } if modifiers.command => pasting = true,
+                egui::Event::Key { key: egui::Key::V, pressed: false, modifiers, .. } if modifiers.command => release = true,
+                _ => {}
+            }
+        }
+        // egui-winit swallows the Cmd/Ctrl+V press and, when the clipboard holds no text, sends only
+        // the release: that release is the paste then (the window's own paste reads the same state).
+        let hidden = release && !paste_event && !app.ui.paste_event && !app.ui.v_pressed;
+        (copying, pasting || hidden)
+    });
+    let (selected, copied) = app.ui.variables.as_ref().map_or((false, false), |st| (st.selected.is_some(), st.copied.is_some()));
+    let (copying, pasting) = (copying && selected, pasting && copied);
+    if !copying && !pasting {
+        return;
+    }
+    if let Some(st) = app.ui.variables.as_mut() {
+        st.copy_request |= copying;
+        st.paste_request |= pasting;
+    }
+    if pasting {
+        // Held as if the press had arrived, so the window's shortcuts don't paste onto the canvas.
+        app.ui.v_pressed = true;
+    }
+    ctx.input_mut(|i| {
+        i.events.retain(|e| match e {
+            egui::Event::Copy => !copying,
+            egui::Event::Paste(_) => !pasting,
+            egui::Event::Key { key: egui::Key::C, pressed: true, modifiers, .. } => !(copying && modifiers.command),
+            egui::Event::Key { key: egui::Key::V, modifiers, .. } => !(pasting && modifiers.command),
+            _ => true,
+        });
+    });
+    ctx.request_repaint();
+}
+
 /// Show the editor while it's open (call once per frame). The floating panel draws here; the full
 /// view is drawn by [`full`], in the place the editor panels would have taken.
 pub fn show(app: &mut FigApp, ctx: &Context) {
@@ -403,6 +518,7 @@ pub fn full(app: &mut FigApp, ctx: &Context, panel: Rect) {
 fn draw(app: &mut FigApp, ctx: &Context, st: &mut Editor, g: Geom) -> bool {
     let t = Tokens::get(ctx);
     let mut open = true;
+    st.panel = Some(g.panel);
     let frame = if g.floating { egui::Frame::window(&ctx.global_style()).fill(t.panel) } else { egui::Frame::NONE.fill(t.panel) }
         .inner_margin(egui::Margin::same(0));
     egui::Area::new(Id::new("variables_panel")).order(egui::Order::Middle).fixed_pos(g.panel.min).constrain(g.floating).show(ctx, |ui| {
@@ -813,6 +929,9 @@ fn sidebar(
         egui::ScrollArea::vertical()
             .id_salt("vars_collections_scroll")
             .auto_shrink([false, false])
+            // A ScrollArea is at least 64 pt tall by default, whatever it is given: a list the
+            // divider squeezed under that would push the panel's own height out with it.
+            .min_scrolled_height(0.0)
             .show(ui, |ui| collections_list(app, ui, st, views));
     });
     // The divider that trades the two heights: dragged up and down to give the collections list
@@ -833,9 +952,12 @@ fn sidebar(
     let (gr, _) = ui.allocate_exact_size(vec2(side_w, groups_head), Sense::hover());
     ui.painter().text(pos2(gr.min.x + 16.0, gr.center().y), Align2::LEFT_CENTER, tr("Groups"), semibold(11.0), t.text_secondary);
     ui.allocate_ui_with_layout(vec2(side_w, groups_h), top_down, |ui| {
-        egui::ScrollArea::vertical().id_salt(format!("vars_groups_scroll/{}", c.id)).auto_shrink([false, false]).show(ui, |ui| {
-            group_rows(app, ui, view, c, st, slots);
-        });
+        egui::ScrollArea::vertical().id_salt(format!("vars_groups_scroll/{}", c.id)).auto_shrink([false, false]).min_scrolled_height(0.0).show(
+            ui,
+            |ui| {
+                group_rows(app, ui, view, c, st, slots);
+            },
+        );
     });
 }
 
@@ -1119,6 +1241,8 @@ fn group_of(name: &str) -> &str {
 
 fn table(app: &mut FigApp, ui: &mut Ui, view: &View, st: &mut Editor, slots: &mut Vec<Slot>) {
     let t = Tokens::get(ui.ctx());
+    // A copy or a paste asked for from the keyboard: run here, where the shown rows are in hand.
+    let (copying, pasting) = (std::mem::take(&mut st.copy_request), std::mem::take(&mut st.paste_request));
     // A sidebar click this frame picked another source: shown next frame.
     if !view.is(st.library.as_deref()) {
         ui.ctx().request_repaint();
@@ -1166,6 +1290,12 @@ fn table(app: &mut FigApp, ui: &mut Ui, view: &View, st: &mut Editor, slots: &mu
             (None, None) => ga.cmp(gb),
         }
     });
+    if copying && let Some(v) = st.selected.as_deref().and_then(|id| view.vars.get(id)) {
+        st.copied = Some(CopiedVariable::of(v, coll));
+    }
+    if pasting && view.editable() {
+        paste(app, view, coll, st, &list);
+    }
     let ta = ui.available_height();
     let scroll = ui.spacing().scroll;
     let reserved = scroll.bar_width + scroll.bar_inner_margin + scroll.bar_outer_margin; // == allocated_width()
@@ -1213,30 +1343,88 @@ fn table(app: &mut FigApp, ui: &mut Ui, view: &View, st: &mut Editor, slots: &mu
     st.scroll_x = st.scroll_x.clamp(0.0, cols.max_sx());
     cols.sx = st.scroll_x;
     header_row(app, ui, view, coll, st, &cols, head);
-    egui::ScrollArea::vertical().id_salt("vars_rows").auto_shrink([false, false]).max_height(rows_h).show(ui, |ui| {
-        ui.spacing_mut().item_spacing = vec2(0.0, 0.0);
-        let mut group: Option<&str> = None;
-        for v in &list {
-            let g = group_of(&v.name);
-            if group != Some(g) {
-                group = Some(g);
-                if !g.is_empty() {
-                    let (r, _) = ui.allocate_exact_size(vec2(width, 28.0), Sense::hover());
-                    ui.painter().text(pos2(r.min.x + 16.0, r.center().y + 2.0), Align2::LEFT_CENTER, g, semibold(11.0), t.text_secondary);
-                    slots.push(Slot::group(r, Some(g.to_string())));
-                    // The rule under the group's label that the old palette drew and this one dropped.
-                    ui.painter().line_segment([r.left_bottom(), r.right_bottom()], Stroke::new(1.0, t.border));
+    egui::ScrollArea::vertical()
+        .id_salt("vars_rows")
+        .auto_shrink([false, false])
+        // Same floor as the sidebar's lists: the rows fit the height they are given, no more.
+        .min_scrolled_height(0.0)
+        .max_height(rows_h)
+        .show(ui, |ui| {
+            ui.spacing_mut().item_spacing = vec2(0.0, 0.0);
+            let mut group: Option<&str> = None;
+            for v in &list {
+                let g = group_of(&v.name);
+                if group != Some(g) {
+                    group = Some(g);
+                    if !g.is_empty() {
+                        let (r, _) = ui.allocate_exact_size(vec2(width, 28.0), Sense::hover());
+                        ui.painter().text(pos2(r.min.x + 16.0, r.center().y + 2.0), Align2::LEFT_CENTER, g, semibold(11.0), t.text_secondary);
+                        slots.push(Slot::group(r, Some(g.to_string())));
+                        // The rule under the group's label that the old palette drew and this one dropped.
+                        ui.painter().line_segment([r.left_bottom(), r.right_bottom()], Stroke::new(1.0, t.border));
+                    }
                 }
+                var_row(app, ui, view, coll, v, st, &cols, slots);
             }
-            var_row(app, ui, view, coll, v, st, &cols, slots);
-        }
-        if list.is_empty() && (!q.is_empty() || !st.hidden_kinds.is_empty()) {
-            let (r, _) = ui.allocate_exact_size(vec2(width, ROW_H), Sense::hover());
-            ui.painter().text(pos2(r.min.x + 16.0, r.center().y), Align2::LEFT_CENTER, tr("No matching variables"), regular(11.0), t.text_secondary);
-        }
-    });
+            if list.is_empty() && (!q.is_empty() || !st.hidden_kinds.is_empty()) {
+                let (r, _) = ui.allocate_exact_size(vec2(width, ROW_H), Sense::hover());
+                ui.painter().text(
+                    pos2(r.min.x + 16.0, r.center().y),
+                    Align2::LEFT_CENTER,
+                    tr("No matching variables"),
+                    regular(11.0),
+                    t.text_secondary,
+                );
+            }
+        });
     if hscroll_needed {
         hscroll(ui, width, &cols, st);
+    }
+}
+
+/// Pastes the copied variable under the selected row (`list`'s order), or at the end of the table
+/// when no row is selected. One batch, so it is one undo step.
+fn paste(app: &mut FigApp, view: &View, coll: &Collection, st: &mut Editor, list: &[&Variable]) {
+    let Some(clip) = st.copied.clone() else { return };
+    let taken = |n: &str| view.in_collection(&coll.id).any(|x| x.name == n);
+    let name = (1..1000)
+        .map(|k| if k == 1 { format!("{} copy", clip.name) } else { format!("{} copy {k}", clip.name) })
+        .find(|n| !taken(n))
+        .unwrap_or_else(|| format!("{} copy", clip.name));
+    // This collection's modes take the value of the mode named alike, else the copied default.
+    let values: serde_json::Map<String, Value> = coll
+        .modes
+        .iter()
+        .map(|m| {
+            let val = clip.values.iter().find(|(n, _)| *n == m.name).map_or(&clip.value, |(_, v)| v);
+            (m.name.clone(), value_json(val))
+        })
+        .collect();
+    let mut create = json!({"collection": coll.id, "name": name, "type": clip.kind.id(), "values": values});
+    if !clip.description.is_empty() {
+        create["description"] = json!(clip.description);
+    }
+    // Under the selected row is before the row after it; nothing selected (or a row the table doesn't
+    // show) puts it after the collection's last variable, at the bottom of the whole list.
+    let at = st.selected.as_deref().and_then(|id| list.iter().position(|v| v.id == id));
+    let before = at.and_then(|i| list.get(i + 1)).map(|v| v.id.clone());
+    let params = json!({
+        "label": "Paste variable",
+        "commands": [
+            {"command": "variable.create", "params": create},
+            {"command": "variable.move", "params": {
+                // The row after the selection may be in another folder, and a move takes the folder
+                // of the variable it goes before unless it is told: this one keeps its own.
+                "variable": {"$step": 0, "field": "id"},
+                "before": before,
+                "group": group_of(&name),
+            }},
+        ],
+    });
+    let Some(made) = app.run("command.batch", params) else { return };
+    // The pasted row is the selected one now, so a second paste lands under it.
+    if let Some(id) = made.get(0).and_then(|r| r.get("id")).and_then(Value::as_str) {
+        st.selected = Some(id.to_string());
     }
 }
 
@@ -1412,6 +1600,33 @@ fn notice_row(app: &mut FigApp, ui: &mut Ui, view: &View, coll: &Collection, st:
     }
 }
 
+/// The width mode column `mode` fits to on a double-click of its divider: its widest value laid
+/// out the way the cell draws it, or its heading if that is wider.
+fn auto_mode_width(ui: &Ui, view: &View, coll: &Collection, mode: &Mode) -> f32 {
+    let t = Tokens::get(ui.ctx());
+    let text = |s: &str| ui.painter().layout_no_wrap(s.to_string(), regular(11.0), t.text).size().x;
+    let widest = view
+        .in_collection(&coll.id)
+        .filter_map(|v| v.values.get(&mode.id))
+        .map(|val| match val {
+            // The swatch (4 in, 16 wide), the gap after it, the hex, a gap, then the alpha's 48
+            // at the right end: what `value_cell` lays out, so the hex keeps its whole text.
+            VariableValue::Color(c) => 82.0 + text(&c.to_hex()),
+            // A field's own padding either side of what it shows.
+            VariableValue::Number(x) => text(&format!("{x}")) + 20.0,
+            VariableValue::String(s) => text(s) + 20.0,
+            // The tick box, its gap, and the label.
+            VariableValue::Boolean(b) => 22.0 + text(if *b { tr("True") } else { tr("False") }),
+            // The chip's variable icon and gap, then the aliased variable's name.
+            VariableValue::Alias(a) => 25.0 + text(view.vars.get(a).map(|x| x.name.as_str()).unwrap_or_default()),
+        })
+        .fold(text(&mode.name) + 16.0, f32::max);
+    // The alias button on the cell's right (an extended collection also has a reset beside it),
+    // then the cell's padding: 4 on the left, 8 on the right.
+    let button = if coll.extends.is_some() { 50.0 } else { 26.0 };
+    (widest + button + 12.0).clamp(MODE_MIN, MODE_MAX)
+}
+
 fn header_row(app: &mut FigApp, ui: &mut Ui, view: &View, coll: &Collection, st: &mut Editor, cols: &Columns, r: Rect) {
     let t = Tokens::get(ui.ctx());
     // An extended collection has the modes of the one it extends.
@@ -1561,7 +1776,11 @@ fn header_row(app: &mut FigApp, ui: &mut Ui, view: &View, coll: &Collection, st:
         // Only the column whose edge this is changes; the others keep the widths they were dragged
         // to (they used to share one width, so dragging one squeezed all of them).
         let mut w = cols.width_of(i);
-        if column_edge(ui, Id::new(("vars_mode_edge", &m.id)), cell.max.x, cell.min.x, r, &mut w, MODE_MIN, MODE_MAX, None)
+        // A double-click fits the column to its content, like the name column's divider. The width
+        // means laying out every value of the column, so it is worked out under the pointer only.
+        let edge = Rect::from_min_max(pos2(cell.max.x - 3.0, r.min.y), pos2(cell.max.x + 3.0, r.max.y));
+        let auto = ui.rect_contains_pointer(edge).then(|| auto_mode_width(ui, view, coll, m));
+        if column_edge(ui, Id::new(("vars_mode_edge", &m.id)), cell.max.x, cell.min.x, r, &mut w, MODE_MIN, MODE_MAX, auto)
             && (w - cols.width_of(i)).abs() > 0.01
         {
             st.set_mode_width(&m.id, w);
@@ -1585,8 +1804,16 @@ fn var_row(app: &mut FigApp, ui: &mut Ui, view: &View, coll: &Collection, v: &Va
     let editable = view.editable();
     let (r, resp) = ui.allocate_exact_size(vec2(cols.width, ROW_H), Sense::click_and_drag());
     slots.push(Slot::var(r, v.id.clone()));
-    if resp.hovered() || (editable && st.details.as_deref() == Some(v.id.as_str())) {
+    // The row clicked last: where a paste goes. Clicking a value inside the row leaves its own
+    // widget the click, so only the row's own parts (its name, the gaps) select it.
+    let selected = st.selected.as_deref() == Some(v.id.as_str());
+    if selected {
+        ui.painter().rect_filled(r, CornerRadius::ZERO, t.selected_row);
+    } else if resp.hovered() || (editable && st.details.as_deref() == Some(v.id.as_str())) {
         ui.painter().rect_filled(r, CornerRadius::ZERO, t.hover);
+    }
+    if resp.clicked() || (editable && resp.secondary_clicked()) {
+        st.selected = Some(v.id.clone());
     }
     // The name column: it stays put while the modes scroll beside it.
     let name_r = cols.name_rect(r);
@@ -1642,12 +1869,36 @@ fn var_row(app: &mut FigApp, ui: &mut Ui, view: &View, coll: &Collection, v: &Va
         wide.painter().line_segment([pos2(cell.max.x, r.min.y), pos2(cell.max.x, r.max.y)], Stroke::new(1.0, t.border));
     }
     if editable {
+        // The row's own button, under the add-mode column's heading: the variable's details (the
+        // same as "Edit variable" in its context menu).
+        if widgets::icon_button_at(
+            ui,
+            Id::new(("vars_row_edit", &v.id)),
+            Rect::from_center_size(add_r.center(), vec2(22.0, 22.0)),
+            Icon::Adjust,
+            tr("Edit variable"),
+        ) {
+            st.selected = Some(v.id.clone());
+            st.details = Some(v.id.clone());
+        }
         if !inherited && resp.double_clicked() && ui.input(|i| i.pointer.interact_pos()).is_some_and(|p| p.x < text_r.max.x) {
             start_rename(st, target.clone());
         }
         crate::right::context_popup(&resp).show(|ui| {
             if menu_item(ui, tr("Edit variable"), "") {
+                st.selected = Some(v.id.clone());
                 st.details = Some(v.id.clone());
+                ui.close();
+            }
+            if menu_item(ui, tr("Copy"), "") {
+                st.selected = Some(v.id.clone());
+                st.copied = Some(CopiedVariable::of(v, coll));
+                ui.close();
+            }
+            if st.copied.is_some() && menu_item(ui, tr("Paste"), "") {
+                // Under this row: run by the next frame, which has the rows to place it by.
+                st.selected = Some(v.id.clone());
+                st.paste_request = true;
                 ui.close();
             }
             if !inherited && menu_item(ui, tr("Rename"), "") {
@@ -1769,24 +2020,24 @@ fn value_cell(app: &mut FigApp, ui: &mut Ui, view: &View, v: &Variable, coll: &C
     match val {
         VariableValue::Color(c) => {
             ui.painter().rect_filled(body, CornerRadius::same(5), t.field);
-            let sw = Rect::from_center_size(pos2(body.min.x + 13.0, body.center().y), vec2(14.0, 14.0));
+            // The same control a fill's paint row has: the swatch at the field's left edge (a click
+            // opens the colour picker — a second one closes it), the hex, then the alpha at the right
+            // end behind a rule, which is where a fill keeps its opacity.
+            let sw = Rect::from_min_size(pos2(body.min.x + 4.0, body.center().y - 8.0), vec2(16.0, 16.0));
             widgets::paint_swatch(ui.painter(), sw, &figcraft_color::Paint::solid(*c));
-            if ui.interact(sw.expand(3.0), id.with("swatch"), Sense::click()).tip(tr("Edit colour")).clicked() {
+            let target = PickerTarget::Variable { id: v.id.clone(), mode: mode.to_string() };
+            let sresp = ui.interact(sw.expand(2.0), id.with("swatch"), Sense::click()).tip(tr("Edit colour"));
+            if app.ui.picker.as_ref() == Some(&target) {
+                // The picker holds the press that opened it, so a second press on the swatch still
+                // reaches it — its own click toggles the picker shut.
+                app.ui.picker_button = Some(sresp.rect);
+            }
+            if sresp.clicked() {
                 // Its top on the swatch (a variable's paint has no place of its own to sit on).
-                app.open_picker(PickerTarget::Variable { id: v.id.clone(), mode: mode.to_string() }, Some(sw.min.y));
+                app.toggle_picker(target, Some(sw.min.y));
             }
-            let hex_r = Rect::from_min_max(pos2(sw.max.x + 8.0, body.min.y + 4.0), pos2(body.max.x - 44.0, body.max.y - 4.0));
-            if let Some(h) = widgets::text_field_inline(ui, id.with("hex"), &c.to_hex(), hex_r, regular(11.0))
-                && let Some(nc) = figcraft_color::Color::from_hex_or_name(&h)
-            {
-                // Six digits (or a colour name) keep the alpha; eight digits set it.
-                let digits = h.trim().trim_start_matches('#');
-                let nc = if digits.len() == 8 && digits.chars().all(|ch| ch.is_ascii_hexdigit()) { nc } else { nc.with_alpha(c.a) };
-                set(app, v, mode, json!(nc.to_css_hex()));
-            }
-            // The alpha, as a percentage at the right end. It was painted read-only (right-aligned,
-            // flush to the edge); now the same spot is an input that takes typing and scrubbing.
-            let alpha_r = Rect::from_min_max(pos2(body.max.x - 44.0, body.min.y + 3.0), pos2(body.max.x - 8.0, body.max.y - 3.0));
+            let alpha_r = Rect::from_min_max(pos2(body.max.x - 48.0, body.min.y), body.max);
+            ui.painter().line_segment([pos2(alpha_r.min.x, body.min.y + 4.0), pos2(alpha_r.min.x, body.max.y - 4.0)], Stroke::new(1.0, t.panel));
             let mut child = ui.new_child(UiBuilder::new().max_rect(alpha_r));
             let alpha = |pct: f64| c.with_alpha((pct / 100.0).clamp(0.0, 1.0) as f32).to_css_hex();
             match widgets::number_field(&mut child, id.with("alpha"), Lead::None, Some(f64::from(c.a) * 100.0), "%", alpha_r.width(), 1.0) {
@@ -1795,6 +2046,16 @@ fn value_cell(app: &mut FigApp, ui: &mut Ui, view: &View, v: &Variable, coll: &C
                     crate::typography::live(app, "Edit variable", "variable.set", json!({"variable": v.id, "mode": mode, "value": alpha(pct)}), done)
                 }
                 None => {}
+            }
+            let hex_r =
+                Rect::from_min_max(pos2(sw.max.x + 8.0, body.min.y + 4.0), pos2((alpha_r.min.x - 6.0).max(sw.max.x + 10.0), body.max.y - 4.0));
+            if let Some(h) = widgets::text_field_inline(ui, id.with("hex"), &c.to_hex(), hex_r, regular(11.0))
+                && let Some(nc) = figcraft_color::Color::from_hex_or_name(&h)
+            {
+                // Six digits (or a colour name) keep the alpha; eight digits set it.
+                let digits = h.trim().trim_start_matches('#');
+                let nc = if digits.len() == 8 && digits.chars().all(|ch| ch.is_ascii_hexdigit()) { nc } else { nc.with_alpha(c.a) };
+                set(app, v, mode, json!(nc.to_css_hex()));
             }
         }
         VariableValue::Number(x) => {
@@ -1839,7 +2100,8 @@ fn read_only_value(ui: &Ui, val: &VariableValue, body: Rect) {
     ui.painter().rect_filled(body, CornerRadius::same(5), t.field);
     let mut x = body.min.x + 8.0;
     if let VariableValue::Color(c) = val {
-        let sw = Rect::from_center_size(pos2(body.min.x + 13.0, body.center().y), vec2(14.0, 14.0));
+        // The swatch sits where a fill's does, at the field's left edge.
+        let sw = Rect::from_min_size(pos2(body.min.x + 4.0, body.center().y - 8.0), vec2(16.0, 16.0));
         widgets::paint_swatch(ui.painter(), sw, &figcraft_color::Paint::solid(*c));
         x = sw.max.x + 8.0;
         alpha_text(ui, c, body);

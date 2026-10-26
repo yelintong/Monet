@@ -1706,6 +1706,9 @@ impl FigApp {
         // even if it lets go during the frame (Enter commits it), or as it began (egui drops the
         // focus on Escape before the frame, which cancels the field's edit and nothing else).
         let typing = std::mem::take(&mut self.field_focus) || a11y::field_focused(&ctx);
+        // The Variables editor's own keys first: a row's copy and paste, which the window's shortcuts
+        // would otherwise take for the canvas selection (before `swallowed_paste` reads the raw ones).
+        variables_panel::keys(self, &ctx);
         let swallowed = shortcuts::swallowed_paste(self, &ctx);
         // A dialog that closed acts first, in the window it was opened from.
         self.poll_dialog(&ctx);

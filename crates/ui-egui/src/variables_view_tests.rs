@@ -401,6 +401,49 @@ fn the_columns_edges_drag_their_widths() {
     assert!(st.mode_width(&id) < 200.0, "the mode column is narrower: {}", st.mode_width(&id));
 }
 
+/// A double click at `p`: two presses and releases inside egui's double-click window.
+fn double_click(u: &mut Ui, p: Pos2) {
+    u.frame(vec![egui::Event::PointerMoved(p)]);
+    click(u, p);
+    click(u, p);
+}
+
+#[test]
+fn double_clicking_a_mode_columns_edge_fits_it_to_its_values() {
+    let mut u = with_variables();
+    // The colour variable is the widest thing the column holds; without it only two numbers (8 and
+    // 16) and the heading are left, far narrower than 200.
+    u.app.session.execute("variable.delete", &json!({"variable": "brand"})).unwrap();
+    let g = Geom::floating(u.ctx.content_rect(), None, true);
+    let table_left = g.panel.min.x + 265.0;
+    u.frame(vec![]);
+    let id = mode_ids(&u).remove(0);
+    let st = u.app.ui.variables.as_ref().expect("open");
+    assert_eq!(st.mode_width(&id), 200.0, "a column starts at the default width");
+    // A double-click on its divider fits it down to the narrowest a column goes (MODE_MIN).
+    let edge = Pos2::new(table_left + st.name_w + 1.0 + 200.0, g.panel.min.y + Geom::HEADER_H + 16.0);
+    double_click(&mut u, edge);
+    let st = u.app.ui.variables.as_ref().expect("open");
+    assert!((st.mode_width(&id) - 100.0).abs() < 0.5, "the column fitted its values: {}", st.mode_width(&id));
+    assert!(u.app.ui.last_error.is_none(), "{:?}", u.app.ui.last_error);
+}
+
+#[test]
+fn double_clicking_a_mode_columns_edge_widens_it_to_a_long_value() {
+    let mut u = with_variables();
+    let long = "A value far wider than the column it starts in";
+    u.app.session.execute("variable.create", &json!({"collection": "Tokens", "name": "note", "type": "string", "value": long})).unwrap();
+    let g = Geom::floating(u.ctx.content_rect(), None, true);
+    let table_left = g.panel.min.x + 265.0;
+    u.frame(vec![]);
+    let id = mode_ids(&u).remove(0);
+    let edge = Pos2::new(table_left + 240.0 + 1.0 + 200.0, g.panel.min.y + Geom::HEADER_H + 16.0);
+    double_click(&mut u, edge);
+    let st = u.app.ui.variables.as_ref().expect("open");
+    assert!(st.mode_width(&id) > 200.0, "the column grew to hold the long value: {}", st.mode_width(&id));
+    assert!(st.mode_width(&id) < 420.0, "and stays within MODE_MAX: {}", st.mode_width(&id));
+}
+
 #[test]
 fn dragging_one_mode_columns_edge_leaves_the_others_alone() {
     let mut u = with_two_modes();
@@ -679,6 +722,31 @@ fn the_sidebars_divider_drag_trades_the_two_lists() {
     assert!(u.app.ui.last_error.is_none(), "{:?}", u.app.ui.last_error);
 }
 
+#[test]
+fn dragging_the_sidebar_divider_to_the_top_keeps_the_panels_height() {
+    // egui's ScrollArea is at least 64 pt tall whatever it is given. With the divider at the top the
+    // collections list is 40, and that floor used to grow the panel by the 24 pt difference — the
+    // window got taller the further the divider was dragged up.
+    let mut u = with_two_modes();
+    let st = u.app.ui.variables.clone().expect("open");
+    let g = Geom::floating(u.ctx.content_rect(), st.pos, st.sidebar).with_sidebar_width(st.sidebar_w).with_size(st.size);
+    let h = g.body_height();
+    let av = h - 34.0;
+    let split_total = (av - 7.0 - 34.0).max(80.0);
+    let collections_h = (st.sidebar_split * split_total).clamp(40.0, (split_total - 40.0).max(40.0));
+    let divider_y = g.panel.min.y + Geom::HEADER_H + 34.0 + collections_h + 3.0;
+    let x = g.panel.min.x + 100.0;
+    // Past the panel's own top edge: the drag keeps going where the list cannot.
+    drag_from(&mut u, Pos2::new(x, divider_y), Pos2::new(x, g.panel.min.y - 120.0));
+    let st = u.app.ui.variables.as_ref().expect("open");
+    assert!(st.sidebar_split < 0.2, "the collections list shrank: {}", st.sidebar_split);
+    let g = Geom::floating(u.ctx.content_rect(), st.pos, st.sidebar).with_sidebar_width(st.sidebar_w).with_size(st.size);
+    let shapes = flat(&u.frame_output(vec![]).shapes);
+    let bottom = panel_frame_bottom(&shapes, g.panel).expect("the panel's frame");
+    assert!((bottom - g.panel.max.y).abs() <= 3.0, "the panel grew: frame bottom {bottom}, panel bottom {}", g.panel.max.y);
+    assert!(u.app.ui.last_error.is_none(), "{:?}", u.app.ui.last_error);
+}
+
 /// The rail's selected marks (the chips filled with the selected-row colour). The rail is the 56 pt
 /// column on the left, so nothing from the panels can sneak in.
 fn rail_marks(u: &mut Ui) -> Vec<Rect> {
@@ -873,4 +941,106 @@ fn a_row_scrolled_out_of_view_is_clipped_away() {
         }
     }
     assert!(seen > 0, "the visible rows still draw their values");
+}
+
+/// A variable's id by name.
+fn var_id(u: &Ui, name: &str) -> String {
+    u.app
+        .session
+        .doc()
+        .unwrap()
+        .variables
+        .variables
+        .iter()
+        .find(|v| v.name == name)
+        .map(|v| v.id.clone())
+        .unwrap_or_else(|| panic!("no variable {name:?}"))
+}
+
+/// The variables in document order.
+fn order(u: &Ui) -> Vec<String> {
+    u.app.session.doc().unwrap().variables.variables.iter().map(|v| v.name.clone()).collect()
+}
+
+/// Whether a rect filled with `fill` covers `p` (a row's own background).
+fn filled_at(shapes: &[Shape], p: Pos2, fill: egui::Color32) -> bool {
+    shapes.iter().any(|s| matches!(s, Shape::Rect(r) if r.fill == fill && r.rect.contains(p)))
+}
+
+#[test]
+fn a_clicked_row_is_marked_and_a_copy_of_it_pastes_under_it() {
+    let mut u = with_variables();
+    let shapes = flat(&u.frame_output(vec![]).shapes);
+    let row = text_center(&shapes, "sm");
+    click(&mut u, row);
+    let sm = var_id(&u, "space/sm");
+    let st = u.app.ui.variables.as_ref().expect("open");
+    assert_eq!(st.selected.as_deref(), Some(sm.as_str()), "the clicked row is the selected one");
+    // The selection shows: the row is painted in the colour the layers panel marks a selected row with.
+    let fill = crate::theme::Tokens::get(&u.ctx).selected_row;
+    // The panel fades in as it opens (egui Areas do), so let it settle before reading its colours.
+    for _ in 0..12 {
+        u.frame(vec![]);
+    }
+    assert!(filled_at(&flat(&u.frame_output(vec![]).shapes), row, fill), "the selected row is marked");
+    // Cmd/Ctrl+C puts the row on the editor's clipboard...
+    u.frame(vec![egui::Event::Copy]);
+    assert!(u.app.ui.variables.as_ref().expect("open").copied.is_some(), "the row is copied");
+    // ...and Cmd/Ctrl+V makes a copy of it right under the row it came from.
+    u.frame(vec![egui::Event::Paste(String::new())]);
+    let names = order(&u);
+    let at = names.iter().position(|n| n == "space/sm copy").unwrap_or_else(|| panic!("no copy: {names:?}"));
+    assert_eq!(names[at - 1], "space/sm", "right under the row it was copied from: {names:?}");
+    let st = u.app.ui.variables.as_ref().expect("open");
+    assert_eq!(st.selected.as_deref(), Some(var_id(&u, "space/sm copy").as_str()), "the pasted row is selected");
+    assert!(u.app.ui.last_error.is_none(), "{:?}", u.app.ui.last_error);
+}
+
+#[test]
+fn a_paste_with_no_row_selected_lands_at_the_end_of_the_list() {
+    let mut u = with_variables();
+    let shapes = flat(&u.frame_output(vec![]).shapes);
+    click(&mut u, text_center(&shapes, "sm"));
+    u.frame(vec![egui::Event::Copy]);
+    // Escape lets the row go: the paste then goes to bottom of the whole list, not under a row.
+    u.frame(vec![egui::Event::Key { key: egui::Key::Escape, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE }]);
+    assert!(u.app.ui.variables.as_ref().expect("open").selected.is_none(), "nothing is selected");
+    u.frame(vec![egui::Event::Paste(String::new())]);
+    let names = order(&u);
+    assert_eq!(names.last().map(String::as_str), Some("space/sm copy"), "at the bottom: {names:?}");
+    assert!(u.app.ui.last_error.is_none(), "{:?}", u.app.ui.last_error);
+}
+
+#[test]
+fn each_rows_button_at_the_tables_right_end_opens_its_details() {
+    let mut u = with_variables();
+    let g = Geom::floating(u.ctx.content_rect(), None, true);
+    let shapes = flat(&u.frame_output(vec![]).shapes);
+    let row = text_center(&shapes, "sm");
+    // Under the add-mode column's heading: the row's own edit button, at its far right.
+    click(&mut u, Pos2::new(g.panel.max.x - 20.0, row.y));
+    let st = u.app.ui.variables.as_ref().expect("open");
+    assert_eq!(st.details.as_deref(), Some(var_id(&u, "space/sm").as_str()), "the row's button opens its details");
+    assert_eq!(st.selected.as_deref(), Some(var_id(&u, "space/sm").as_str()), "and marks the row");
+    assert!(u.app.ui.last_error.is_none(), "{:?}", u.app.ui.last_error);
+}
+
+#[test]
+fn a_colour_cells_swatch_opens_the_picker_and_a_second_click_closes_it() {
+    let mut u = with_variables();
+    let g = Geom::floating(u.ctx.content_rect(), None, true);
+    // "brand" has no folder, so it is the table's first row; one mode, so one value column.
+    let st = u.app.ui.variables.as_ref().expect("open");
+    let cols = Columns::of(g.table_width(), 1, st);
+    let table = Pos2::new(g.panel.min.x + 265.0, g.panel.min.y + Geom::HEADER_H + 32.0);
+    let cell = cols.mode_rect(Rect::from_min_size(table, vec2(g.table_width(), 36.0)), 0);
+    // The swatch at the cell's left edge, as a fill's row has it.
+    let swatch = Pos2::new(cell.min.x + 16.0, cell.center().y);
+    click(&mut u, swatch);
+    let want = crate::colorpicker::PickerTarget::Variable { id: var_id(&u, "brand"), mode: mode_ids(&u).remove(0) };
+    assert_eq!(u.app.ui.picker, Some(want), "the swatch opens the colour picker for that value");
+    // A second click on it closes the picker again (the picker holds the press that opened it).
+    click(&mut u, swatch);
+    assert_eq!(u.app.ui.picker, None, "a second click closes it");
+    assert!(u.app.ui.last_error.is_none(), "{:?}", u.app.ui.last_error);
 }
