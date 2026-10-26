@@ -611,6 +611,106 @@ fn colour_of(u: &Ui, name: &str) -> figcraft_color::Color {
     }
 }
 
+/// The bottom of the panel's own backdrop. The floating panel's window frame is the rect that starts
+/// at the panel's top-left and spans its width; it wraps the editor's content, so when the content
+/// outgrows the panel the frame grows with it — its bottom then sits past `g.panel`'s. (Looking for
+/// "the lowest shape inside the panel's columns" does not work: the canvas behind the panel keeps
+/// drawing its own vertical rules and its bottom toolbar in that same band.)
+fn panel_frame_bottom(shapes: &[Shape], panel: Rect) -> Option<f32> {
+    fn walk(s: &Shape, panel: Rect, out: &mut Option<f32>) {
+        match s {
+            Shape::Vec(v) => v.iter().for_each(|s| walk(s, panel, out)),
+            Shape::Rect(rs) => {
+                let same_origin = (rs.rect.min.x - panel.min.x).abs() < 2.0 && (rs.rect.min.y - panel.min.y).abs() < 2.0;
+                let same_width = (rs.rect.width() - panel.width()).abs() < 4.0;
+                if same_origin && same_width {
+                    *out = Some(out.map_or(rs.rect.max.y, |y: f32| y.max(rs.rect.max.y)));
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut out = None;
+    for s in shapes {
+        walk(s, panel, &mut out);
+    }
+    out
+}
+
+#[test]
+fn the_panel_does_not_grow_when_mode_columns_overflow() {
+    // Two wide modes force the horizontal scrollbar. The editor must pay for it out of the rows'
+    // area, not by making the panel taller: content taller than the panel grows the window frame
+    // past `g.panel`, which leaves the bottom resize handle inside the panel instead of on its edge.
+    let mut u = with_two_modes();
+    u.app.ui.variables.as_mut().expect("open").mode_w = 400.0;
+    u.frame(vec![]);
+    let st = u.app.ui.variables.as_ref().expect("open");
+    let g = Geom::floating(u.ctx.content_rect(), st.pos, st.sidebar).with_sidebar_width(st.sidebar_w).with_size(st.size);
+    let modes = u.app.session.doc().ok().and_then(|d| d.variables.collections.first().map(|c| c.modes.clone())).unwrap_or_default();
+    assert_eq!(modes.len(), 2);
+    assert!(Columns::for_modes(g.table_width(), &modes, st).max_sx() > 0.0, "the mode columns overflow");
+    let shapes = flat(&u.frame_output(vec![]).shapes);
+    let bottom = panel_frame_bottom(&shapes, g.panel).expect("the panel's frame");
+    // The 1 pt window stroke is painted just outside the frame's rect; a few points of slack, not
+    // the 32 pt (header) or 44 pt (header + bar) the panel used to grow by.
+    assert!((bottom - g.panel.max.y).abs() <= 3.0, "the panel grew: frame bottom {bottom}, panel bottom {}", g.panel.max.y);
+    assert!(u.app.ui.last_error.is_none(), "{:?}", u.app.ui.last_error);
+}
+
+#[test]
+fn the_sidebars_divider_drag_trades_the_two_lists() {
+    // The divider between the collections and groups lists drags to give one more of the sidebar's
+    // body than the other.
+    let mut u = with_two_modes();
+    let st = u.app.ui.variables.as_ref().expect("open");
+    let g = Geom::floating(u.ctx.content_rect(), st.pos, st.sidebar).with_sidebar_width(st.sidebar_w);
+    let h = g.body_height();
+    let av = h - 34.0;
+    let split_total = (av - 7.0 - 34.0).max(80.0);
+    let collections_h = (st.sidebar_split * split_total).clamp(40.0, (split_total - 40.0).max(40.0));
+    // The divider sits a few px into the 7 pt strip right after the collections list.
+    let divider_y = g.panel.min.y + Geom::HEADER_H + 34.0 + collections_h + 3.0;
+    let x = g.panel.min.x + 100.0;
+    // Dragging it down gives the collections list more of the sidebar's body.
+    drag_from(&mut u, Pos2::new(x, divider_y), Pos2::new(x, divider_y + 60.0));
+    let st = u.app.ui.variables.as_ref().expect("open");
+    assert!(st.sidebar_split > 0.5, "the collections list grew: {}", st.sidebar_split);
+    assert!(u.app.ui.last_error.is_none(), "{:?}", u.app.ui.last_error);
+}
+
+/// The rail's selected marks (the chips filled with the selected-row colour). The rail is the 56 pt
+/// column on the left, so nothing from the panels can sneak in.
+fn rail_marks(u: &mut Ui) -> Vec<Rect> {
+    let selected = crate::theme::Tokens::get(&u.ctx).selected_row;
+    flat(&u.frame_output(vec![]).shapes)
+        .iter()
+        .filter_map(|s| match s {
+            Shape::Rect(r) if r.fill == selected && r.rect.max.x < 56.0 => Some(r.rect),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn the_rail_marks_the_variables_button_while_the_editor_is_open() {
+    // The Variables button opens the editor rather than a panel tab, so it had no selected state at
+    // all — with the editor up it looked like nothing was open. It shows the mark now, for both
+    // presentations, and drops it when the editor closes.
+    let mut u = Ui::new(Session::new());
+    let idle = rail_marks(&mut u);
+    u.app.ui.variables = Some(Default::default());
+    for presentation in [Presentation::Floating, Presentation::Full] {
+        u.app.ui.variables.as_mut().expect("open").presentation = presentation;
+        let open = rail_marks(&mut u);
+        let added: Vec<Rect> = open.iter().copied().filter(|r| !idle.contains(r)).collect();
+        assert_eq!(added.len(), 1, "the Variables button is the one that gained the mark ({presentation:?}): {open:?} vs {idle:?}");
+    }
+    // Closing it takes the mark away again: the rail is back to what it looked like before.
+    u.app.ui.variables = None;
+    assert_eq!(rail_marks(&mut u), idle, "the rail is idle again once the editor closes");
+}
+
 /// A vertical line (constant x) in `shapes` whose x is within `tol` of `x` and spans at least `h`.
 fn vline_near(shapes: &[Shape], x: f32, tol: f32, h: f32) -> bool {
     shapes.iter().any(|s| match s {

@@ -245,6 +245,9 @@ pub struct Editor {
     /// here so the sidebar filter and the table's group headers agree (a view preference, not stored
     /// in the document, as groups are derived from variable names).
     pub(crate) group_order: std::collections::BTreeMap<String, Vec<String>>,
+    /// The collections list's share of the sidebar's body (0..1); the groups list takes the rest.
+    /// The divider between them drags it, so the two can trade height.
+    pub(crate) sidebar_split: f32,
     /// While the floating panel is moved by its header: where the pointer took hold of it, from
     /// the panel's top-left. The frame after puts the panel back under the pointer, so it follows
     /// it without lagging behind — and, recomputed each frame, it doesn't stick at the screen edge
@@ -275,6 +278,7 @@ impl Default for Editor {
             drag: None,
             mode_drag: None,
             group_order: std::collections::BTreeMap::new(),
+            sidebar_split: 0.5,
             grab: None,
         }
     }
@@ -783,51 +787,92 @@ fn sidebar(
     ) {
         create_collection(app, local, st);
     }
-    egui::ScrollArea::vertical().id_salt("vars_sidebar").auto_shrink([false, false]).show(ui, |ui| {
-        let mut local_ids: Vec<String> = Vec::new();
-        let mut coll_drag = ListDrag::in_order(ui, "vars_collections");
-        for v in views {
-            if let Some((_, name)) = v.library
-                && !v.collections.is_empty()
-            {
-                library_title(ui, name);
-            }
-            if v.library.is_none() {
-                for c in &v.collections {
-                    local_ids.push(c.id.clone());
-                    let idx = local_ids.len() - 1;
-                    collection_row(app, ui, v, c, st, Some(&mut coll_drag), idx);
-                }
-            } else {
-                for c in &v.collections {
-                    collection_row(app, ui, v, c, st, None, 0);
-                }
-            }
-        }
-        // A collection dropped before another moves to that place (one undo step); dropping past the
-        // last one puts it at the end. Library collections stay where they are.
-        if let Some((from, to)) = coll_drag.finish(ui).map(Dropped::pair) {
-            if from != to
-                && let Some(id) = local_ids.get(from).cloned()
-            {
-                let mut params = json!({ "collection": id });
-                if let Some(b) = local_ids.get(to).cloned() {
-                    params["before"] = json!(b);
-                }
-                app.run("variable.moveCollection", params);
-            }
-        }
-        // The groups of the selected collection: a section of their own under a line, as in the
-        // Variables palette's sidebar (not nested under the collection's row).
-        if let Some(c) = coll {
-            ui.add_space(6.0);
-            let (sep, _) = ui.allocate_exact_size(vec2(ui.available_width(), 1.0), Sense::hover());
-            ui.painter().rect_filled(sep, CornerRadius::ZERO, t.border);
-            let (gr, _) = ui.allocate_exact_size(vec2(ui.available_width(), 34.0), Sense::hover());
-            ui.painter().text(pos2(gr.min.x + 16.0, gr.center().y), Align2::LEFT_CENTER, tr("Groups"), semibold(11.0), t.text_secondary);
-            group_rows(app, ui, view, c, st, slots);
-        }
+    let side_w = ui.available_width();
+    let av = ui.available_height();
+    let top_down = egui::Layout::top_down(egui::Align::Min);
+    // The collections list, then (when a collection is selected) a draggable divider and the groups
+    // list. The two share the sidebar's body; dragging the divider between them trades their heights.
+    let Some(c) = coll else {
+        // No collection selected: the collections take the whole body (the groups section is empty).
+        ui.allocate_ui_with_layout(vec2(side_w, av), top_down, |ui| {
+            egui::ScrollArea::vertical()
+                .id_salt("vars_collections_scroll")
+                .auto_shrink([false, false])
+                .show(ui, |ui| collections_list(app, ui, st, views));
+        });
+        return;
+    };
+    let div_h = 7.0;
+    let groups_head = 34.0;
+    let split_total = (av - div_h - groups_head).max(80.0);
+    let collections_h = (st.sidebar_split * split_total).clamp(40.0, (split_total - 40.0).max(40.0));
+    let groups_h = (split_total - collections_h).max(0.0);
+    let split_top = ui.cursor().min.y;
+    // Collections.
+    ui.allocate_ui_with_layout(vec2(side_w, collections_h), top_down, |ui| {
+        egui::ScrollArea::vertical()
+            .id_salt("vars_collections_scroll")
+            .auto_shrink([false, false])
+            .show(ui, |ui| collections_list(app, ui, st, views));
     });
+    // The divider that trades the two heights: dragged up and down to give the collections list
+    // more or less of the sidebar's body.
+    let (dr, _) = ui.allocate_exact_size(vec2(side_w, div_h), Sense::hover());
+    ui.painter().rect_filled(Rect::from_min_max(pos2(dr.min.x, dr.min.y + 3.0), pos2(dr.max.x, dr.min.y + 4.0)), CornerRadius::ZERO, t.border);
+    let div_resp = ui.interact(dr, Id::new("vars_split"), Sense::drag());
+    if div_resp.hovered() || div_resp.dragged() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeVertical);
+    }
+    if div_resp.dragged()
+        && let Some(p) = ui.input(|i| i.pointer.interact_pos())
+    {
+        let new_h = (p.y - split_top).clamp(40.0, split_total - 40.0);
+        st.sidebar_split = (new_h / split_total).clamp(0.05, 0.95);
+    }
+    // Groups: the heading, then its own scrolling list.
+    let (gr, _) = ui.allocate_exact_size(vec2(side_w, groups_head), Sense::hover());
+    ui.painter().text(pos2(gr.min.x + 16.0, gr.center().y), Align2::LEFT_CENTER, tr("Groups"), semibold(11.0), t.text_secondary);
+    ui.allocate_ui_with_layout(vec2(side_w, groups_h), top_down, |ui| {
+        egui::ScrollArea::vertical().id_salt(format!("vars_groups_scroll/{}", c.id)).auto_shrink([false, false]).show(ui, |ui| {
+            group_rows(app, ui, view, c, st, slots);
+        });
+    });
+}
+
+/// The sidebar's collections list: this file's collections (dragged to reorder them) and each
+/// library's under its heading. A drop before another collection moves it to that place, one undo
+/// step; dropping past the last one puts it at the end. Library collections stay where they are.
+fn collections_list(app: &mut FigApp, ui: &mut Ui, st: &mut Editor, views: &[View]) {
+    let mut local_ids: Vec<String> = Vec::new();
+    let mut coll_drag = ListDrag::in_order(ui, "vars_collections");
+    for v in views {
+        if let Some((_, name)) = v.library
+            && !v.collections.is_empty()
+        {
+            library_title(ui, name);
+        }
+        if v.library.is_none() {
+            for c in &v.collections {
+                local_ids.push(c.id.clone());
+                let idx = local_ids.len() - 1;
+                collection_row(app, ui, v, c, st, Some(&mut coll_drag), idx);
+            }
+        } else {
+            for c in &v.collections {
+                collection_row(app, ui, v, c, st, None, 0);
+            }
+        }
+    }
+    if let Some((from, to)) = coll_drag.finish(ui).map(Dropped::pair)
+        && from != to
+        && let Some(id) = local_ids.get(from).cloned()
+    {
+        let mut params = json!({ "collection": id });
+        if let Some(b) = local_ids.get(to).cloned() {
+            params["before"] = json!(b);
+        }
+        app.run("variable.moveCollection", params);
+    }
 }
 
 /// A library's heading in the sidebar: its collections follow, read-only.
@@ -951,8 +996,10 @@ fn group_rows(app: &mut FigApp, ui: &mut Ui, view: &View, coll: &Collection, st:
         // A group row (not "All variables") carries the drag; the grab cursor hints it.
         if let Some(id) = g.cloned() {
             let idx = ids.len();
+            // The row's label is the group's last path part; `id` itself is at least that.
+            let leaf = id.rsplit('/').next().unwrap_or(&id).to_string();
             ids.push(id);
-            drag.row_by(&resp, idx, r, || g.unwrap().rsplit('/').next().unwrap_or(g.unwrap()).to_string());
+            drag.row_by(&resp, idx, r, || leaf.clone());
             if resp.hovered() && st.drag.is_none() {
                 ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
             }
@@ -1020,13 +1067,13 @@ fn group_rows(app: &mut FigApp, ui: &mut Ui, view: &View, coll: &Collection, st:
     }
     // A group dropped at a new place reorders the Groups list (and the table's group headers, which
     // read the same order): remembered per collection as a view preference.
-    if let Some((from, to)) = drag.finish(ui).map(Dropped::pair) {
-        if from != to {
-            let mut ordered = ids.clone();
-            let item = ordered.remove(from);
-            ordered.insert(to, item);
-            st.group_order.insert(coll.id.clone(), ordered);
-        }
+    if let Some((from, to)) = drag.finish(ui).map(Dropped::pair)
+        && from != to
+    {
+        let mut ordered = ids.clone();
+        let item = ordered.remove(from);
+        ordered.insert(to, item);
+        st.group_order.insert(coll.id.clone(), ordered);
     }
 }
 
@@ -1119,14 +1166,21 @@ fn table(app: &mut FigApp, ui: &mut Ui, view: &View, st: &mut Editor, slots: &mu
             (None, None) => ga.cmp(gb),
         }
     });
-    // The rows keep clear of the vertical scrollbar, so the header and they line up whether it
-    // shows or not; the header stays put while they scroll under it. egui's ScrollArea already
-    // subtracts its own bar (allocated_width) from the content area *only when the bar is showing*,
-    // so we must reserve that room here only when the list actually overflows — reserving it always
-    // left a gap on the right edge whenever the list was short enough not to need a scrollbar.
-    let rows_h = (ui.available_height() - HSCROLL_H).max(60.0);
+    let ta = ui.available_height();
     let scroll = ui.spacing().scroll;
     let reserved = scroll.bar_width + scroll.bar_inner_margin + scroll.bar_outer_margin; // == allocated_width()
+    // Whether the mode columns overflow sideways (and so need the horizontal scrollbar) is decided
+    // against the width with the vertical bar already reserved: that is the smallest the table gets,
+    // so a column that overflows there overflows for real. Deciding it up front lets the rows' scroll
+    // area give up the scrollbar's height only when the bar will actually be drawn — reserving it
+    // always used to make the table a fixed strip taller than its area, which shoved the panel's own
+    // bottom resize handles off the panel's true bottom edge when the bar appeared.
+    let hscroll_needed = Columns::for_modes((ui.available_width() - reserved).max(0.0), &coll.modes, st).max_sx() > 0.0;
+    // The rows fill what is left of the table area after the header (always) and, when it shows, the
+    // horizontal scrollbar (only then). Both are fixed-height rows above and below them, so the rows'
+    // scroll area now fits the area exactly: no overflow pushes the panel taller, and the resize
+    // handles that sit at the panel's bottom stay flush with it.
+    let rows_h = (ta - HEAD_ROW_H - if hscroll_needed { HSCROLL_H } else { 0.0 }).max(60.0);
     // Total height the rows will take: one row per variable, plus a 28 pt label per non-empty group.
     let mut groups = 0usize;
     let mut prev: Option<&str> = None;
@@ -1181,7 +1235,7 @@ fn table(app: &mut FigApp, ui: &mut Ui, view: &View, st: &mut Editor, slots: &mu
             ui.painter().text(pos2(r.min.x + 16.0, r.center().y), Align2::LEFT_CENTER, tr("No matching variables"), regular(11.0), t.text_secondary);
         }
     });
-    if cols.max_sx() > 0.0 {
+    if hscroll_needed {
         hscroll(ui, width, &cols, st);
     }
 }
