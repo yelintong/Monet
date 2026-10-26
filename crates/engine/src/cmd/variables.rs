@@ -34,6 +34,13 @@ pub fn specs() -> Vec<CommandSpec> {
         spec!("variable.moveMode", "Move mode", "{collection, mode, to (index; 0 = the default mode, layers on Auto follow it)}", true, move_mode),
         spec!("variable.renameCollection", "Rename collection", "{collection, name}", true, rename_collection),
         spec!(
+            "variable.moveCollection",
+            "Move collection",
+            "{collection, before? (a collection it goes before; null or left out = after the last one)}",
+            true,
+            move_collection
+        ),
+        spec!(
             "variable.deleteCollection",
             "Delete collection",
             "{collection} (with its variables; bound layers keep their values)",
@@ -307,6 +314,37 @@ fn move_mode(s: &mut Session, p: &Value) -> Result<Value> {
     let m = coll.modes.remove(from);
     let at = (to.max(0.0) as usize).min(coll.modes.len());
     coll.modes.insert(at, m);
+    ok()
+}
+
+/// Reorders `doc.variables.collections`: the carried collection comes out, then goes before
+/// `before` (a collection of the same list) or, when `before` is null or left out, after the last
+/// one. One list, one undo step — the same shape as `variable.move`.
+fn move_collection(s: &mut Session, p: &Value) -> Result<Value> {
+    let cmd = "variable.moveCollection";
+    let doc = s.doc_mut()?;
+    let id = req_string(cmd, p, "collection")?;
+    let from = doc
+        .variables
+        .collections
+        .iter()
+        .position(|c| c.id == id || c.name == id)
+        .ok_or_else(|| bad(cmd, "no such collection"))?;
+    let c = doc.variables.collections.remove(from);
+    let at = match p.get("before") {
+        None | Some(Value::Null) => doc.variables.collections.len(),
+        Some(Value::String(b)) => {
+            let b = b.trim();
+            doc.variables
+                .collections
+                .iter()
+                .position(|x| x.id == b || x.name == b)
+                .ok_or_else(|| bad(cmd, "`before` names no collection"))?
+        }
+        Some(_) => return Err(bad(cmd, "before: a collection id or name, or null")),
+    };
+    let at = at.min(doc.variables.collections.len());
+    doc.variables.collections.insert(at, c);
     ok()
 }
 

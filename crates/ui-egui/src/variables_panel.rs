@@ -17,6 +17,7 @@ use crate::a11y::Tip;
 use crate::colorpicker::PickerTarget;
 use crate::i18n::{tr, tr_noop, trf, trn};
 use crate::icons::{self, Icon};
+use crate::list_drag::{Dropped, ListDrag};
 use crate::right::{menu_check, menu_item};
 use crate::theme::{Tokens, regular, semibold};
 use crate::widgets::{self, FieldEdit, Lead};
@@ -239,6 +240,11 @@ pub struct Editor {
     drag: Option<String>,
     /// The mode column whose heading is being dragged to another place.
     mode_drag: Option<String>,
+    /// The order the Groups list shows the groups of each collection, by collection id. Empty for a
+    /// collection means the alphabetical order the names derive; a drag writes the reordered paths
+    /// here so the sidebar filter and the table's group headers agree (a view preference, not stored
+    /// in the document, as groups are derived from variable names).
+    pub(crate) group_order: std::collections::BTreeMap<String, Vec<String>>,
     /// While the floating panel is moved by its header: where the pointer took hold of it, from
     /// the panel's top-left. The frame after puts the panel back under the pointer, so it follows
     /// it without lagging behind — and, recomputed each frame, it doesn't stick at the screen edge
@@ -268,6 +274,7 @@ impl Default for Editor {
             hidden_kinds: Vec::new(),
             drag: None,
             mode_drag: None,
+            group_order: std::collections::BTreeMap::new(),
             grab: None,
         }
     }
@@ -777,14 +784,37 @@ fn sidebar(
         create_collection(app, local, st);
     }
     egui::ScrollArea::vertical().id_salt("vars_sidebar").auto_shrink([false, false]).show(ui, |ui| {
+        let mut local_ids: Vec<String> = Vec::new();
+        let mut coll_drag = ListDrag::in_order(ui, "vars_collections");
         for v in views {
             if let Some((_, name)) = v.library
                 && !v.collections.is_empty()
             {
                 library_title(ui, name);
             }
-            for c in &v.collections {
-                collection_row(app, ui, v, c, st);
+            if v.library.is_none() {
+                for c in &v.collections {
+                    local_ids.push(c.id.clone());
+                    let idx = local_ids.len() - 1;
+                    collection_row(app, ui, v, c, st, Some(&mut coll_drag), idx);
+                }
+            } else {
+                for c in &v.collections {
+                    collection_row(app, ui, v, c, st, None, 0);
+                }
+            }
+        }
+        // A collection dropped before another moves to that place (one undo step); dropping past the
+        // last one puts it at the end. Library collections stay where they are.
+        if let Some((from, to)) = coll_drag.finish(ui).map(Dropped::pair) {
+            if from != to
+                && let Some(id) = local_ids.get(from).cloned()
+            {
+                let mut params = json!({ "collection": id });
+                if let Some(b) = local_ids.get(to).cloned() {
+                    params["before"] = json!(b);
+                }
+                app.run("variable.moveCollection", params);
             }
         }
         // The groups of the selected collection: a section of their own under a line, as in the
@@ -811,11 +841,20 @@ fn library_title(ui: &mut Ui, name: &str) {
     resp.on_hover_text(tr("Library: its variables are read-only here; edit them in the library file and publish it"));
 }
 
-/// One collection in the sidebar (with its groups while selected).
-fn collection_row(app: &mut FigApp, ui: &mut Ui, view: &View, c: &Collection, st: &mut Editor) {
+/// One collection in the sidebar (with its groups while selected). `drag` carries the sidebar's
+/// collection-reorder drag (Some for this file's editable collections, None for a library's): a row
+/// registered with it drags to a new place among the collections.
+fn collection_row(app: &mut FigApp, ui: &mut Ui, view: &View, c: &Collection, st: &mut Editor, drag: Option<&mut ListDrag>, index: usize) {
     let t = Tokens::get(ui.ctx());
-    let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 30.0), Sense::click());
+    let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 30.0), if drag.is_some() { Sense::click_and_drag() } else { Sense::click() });
     let r = r.shrink2(vec2(8.0, 1.0));
+    // A draggable collection (this file's): the row carries the drag and shows a grab cursor over it.
+    if let Some(drag) = drag {
+        drag.row_by(&resp, index, r, || c.name.clone());
+        if resp.hovered() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
+        }
+    }
     let selected = view.is(st.library.as_deref()) && st.collection.as_deref() == Some(c.id.as_str());
     if selected {
         ui.painter().rect_filled(r, CornerRadius::same(5), t.selected_row);
@@ -889,11 +928,35 @@ fn group_rows(app: &mut FigApp, ui: &mut Ui, view: &View, coll: &Collection, st:
     let t = Tokens::get(ui.ctx());
     let members: Vec<&Variable> = view.in_collection(&coll.id).collect();
     let names: Vec<&str> = members.iter().map(|v| v.name.as_str()).collect();
-    let list = groups(names.iter().copied());
+    let mut list = groups(names.iter().copied());
+    // Show the groups in the order the user dragged them to (a session preference, as groups are
+    // derived from variable names); any not yet placed by a drag follow alphabetically.
+    let order = st.group_order.get(&coll.id).cloned().unwrap_or_default();
+    list.sort_by(|a, b| {
+        let pa = order.iter().position(|g| g == a);
+        let pb = order.iter().position(|g| g == b);
+        match (pa, pb) {
+            (Some(i), Some(j)) => i.cmp(&j),
+            (Some(_), None) => std::cmp::Ordering::Less,
+            (None, Some(_)) => std::cmp::Ordering::Greater,
+            (None, None) => a.cmp(b),
+        }
+    });
+    let mut ids: Vec<String> = Vec::new();
+    let mut drag = ListDrag::in_order(ui, format!("vars_groups/{}", coll.id));
     let rows = std::iter::once(None).chain(list.iter().map(Some));
     for g in rows {
-        let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 26.0), Sense::click());
+        let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 26.0), Sense::click_and_drag());
         let r = r.shrink2(vec2(8.0, 0.0));
+        // A group row (not "All variables") carries the drag; the grab cursor hints it.
+        if let Some(id) = g.cloned() {
+            let idx = ids.len();
+            ids.push(id);
+            drag.row_by(&resp, idx, r, || g.unwrap().rsplit('/').next().unwrap_or(g.unwrap()).to_string());
+            if resp.hovered() && st.drag.is_none() {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
+            }
+        }
         slots.push(Slot::group(r, g.cloned()));
         let on = st.group.as_ref() == g;
         // A dragged row over this folder: dropping it there moves it in.
@@ -954,6 +1017,16 @@ fn group_rows(app: &mut FigApp, ui: &mut Ui, view: &View, coll: &Collection, st:
                 ui.close();
             }
         });
+    }
+    // A group dropped at a new place reorders the Groups list (and the table's group headers, which
+    // read the same order): remembered per collection as a view preference.
+    if let Some((from, to)) = drag.finish(ui).map(Dropped::pair) {
+        if from != to {
+            let mut ordered = ids.clone();
+            let item = ordered.remove(from);
+            ordered.insert(to, item);
+            st.group_order.insert(coll.id.clone(), ordered);
+        }
     }
 }
 
@@ -1031,10 +1104,46 @@ fn table(app: &mut FigApp, ui: &mut Ui, view: &View, st: &mut Editor, slots: &mu
         .in_collection(&coll.id)
         .filter(|v| in_group(v) && !hidden.contains(&v.kind) && (q.is_empty() || v.name.to_lowercase().contains(&q)))
         .collect();
-    list.sort_by(|a, b| group_of(&a.name).cmp(group_of(&b.name)));
+    // Groups in the order the user dragged them to in the sidebar (else alphabetical); the variables
+    // within a group keep their document order.
+    let order = st.group_order.get(&coll.id).cloned().unwrap_or_default();
+    list.sort_by(|a, b| {
+        let ga = group_of(&a.name);
+        let gb = group_of(&b.name);
+        let pa = order.iter().position(|g| g == ga);
+        let pb = order.iter().position(|g| g == gb);
+        match (pa, pb) {
+            (Some(i), Some(j)) => i.cmp(&j),
+            (Some(_), None) => std::cmp::Ordering::Less,
+            (None, Some(_)) => std::cmp::Ordering::Greater,
+            (None, None) => ga.cmp(gb),
+        }
+    });
     // The rows keep clear of the vertical scrollbar, so the header and they line up whether it
-    // shows or not; the header stays put while they scroll under it.
-    let bar = ui.spacing().scroll.bar_width + ui.spacing().scroll.bar_inner_margin;
+    // shows or not; the header stays put while they scroll under it. egui's ScrollArea already
+    // subtracts its own bar (allocated_width) from the content area *only when the bar is showing*,
+    // so we must reserve that room here only when the list actually overflows — reserving it always
+    // left a gap on the right edge whenever the list was short enough not to need a scrollbar.
+    let rows_h = (ui.available_height() - HSCROLL_H).max(60.0);
+    let scroll = ui.spacing().scroll;
+    let reserved = scroll.bar_width + scroll.bar_inner_margin + scroll.bar_outer_margin; // == allocated_width()
+    // Total height the rows will take: one row per variable, plus a 28 pt label per non-empty group.
+    let mut groups = 0usize;
+    let mut prev: Option<&str> = None;
+    for v in &list {
+        let g = group_of(&v.name);
+        if prev != Some(g) {
+            if !g.is_empty() {
+                groups += 1;
+            }
+            prev = Some(g);
+        }
+    }
+    let content_h = list.len() as f32 * ROW_H + groups as f32 * 28.0;
+    // Reserve the bar room only when the rows overflow, matching egui's own show-scroll decision
+    // (content_h > inner_size, where inner_size already excludes the bar). Otherwise the table hugs
+    // the panel's right edge with no gap.
+    let bar = if content_h > rows_h - reserved { reserved } else { 0.0 };
     // Never wider than the table area: a vertical ScrollArea clips only its scroll axis, so a wider
     // row would spill past the panel's right edge. The columns below shrink to fit `width`.
     let width = (ui.available_width() - bar).max(0.0);
@@ -1050,7 +1159,6 @@ fn table(app: &mut FigApp, ui: &mut Ui, view: &View, st: &mut Editor, slots: &mu
     st.scroll_x = st.scroll_x.clamp(0.0, cols.max_sx());
     cols.sx = st.scroll_x;
     header_row(app, ui, view, coll, st, &cols, head);
-    let rows_h = (ui.available_height() - HSCROLL_H).max(60.0);
     egui::ScrollArea::vertical().id_salt("vars_rows").auto_shrink([false, false]).max_height(rows_h).show(ui, |ui| {
         ui.spacing_mut().item_spacing = vec2(0.0, 0.0);
         let mut group: Option<&str> = None;
@@ -1062,6 +1170,8 @@ fn table(app: &mut FigApp, ui: &mut Ui, view: &View, st: &mut Editor, slots: &mu
                     let (r, _) = ui.allocate_exact_size(vec2(width, 28.0), Sense::hover());
                     ui.painter().text(pos2(r.min.x + 16.0, r.center().y + 2.0), Align2::LEFT_CENTER, g, semibold(11.0), t.text_secondary);
                     slots.push(Slot::group(r, Some(g.to_string())));
+                    // The rule under the group's label that the old palette drew and this one dropped.
+                    ui.painter().line_segment([r.left_bottom(), r.right_bottom()], Stroke::new(1.0, t.border));
                 }
             }
             var_row(app, ui, view, coll, v, st, &cols, slots);
@@ -1201,14 +1311,19 @@ fn hscroll(ui: &mut Ui, width: f32, cols: &Columns, st: &mut Editor) {
 
 /// A column's edge at `x` over `r`: dragging it sets `value` to the pointer's distance from `base`.
 /// True while the pointer is on it (so the caller can light the edge).
-fn column_edge(ui: &mut Ui, id: Id, x: f32, base: f32, r: Rect, value: &mut f32, min: f32, max: f32) -> bool {
+fn column_edge(ui: &mut Ui, id: Id, x: f32, base: f32, r: Rect, value: &mut f32, min: f32, max: f32, auto: Option<f32>) -> bool {
     let hit = Rect::from_min_max(pos2(x - 3.0, r.min.y), pos2(x + 3.0, r.max.y));
-    let resp = ui.interact(hit, id, Sense::drag());
+    let resp = ui.interact(hit, id, Sense::click_and_drag());
     let on = resp.hovered() || resp.dragged();
     if on {
         ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
     }
-    if resp.dragged()
+    // A double-click on the divider fits the column to its content (the name column's widest entry).
+    if resp.double_clicked() {
+        if let Some(w) = auto {
+            *value = w;
+        }
+    } else if resp.dragged()
         && let Some(p) = ui.input(|i| i.pointer.interact_pos())
     {
         *value = (p.x - base).clamp(min, max);
@@ -1373,7 +1488,17 @@ fn header_row(app: &mut FigApp, ui: &mut Ui, view: &View, coll: &Collection, st:
     // The two fixed lines, then the edges that drag the columns' widths.
     ui.painter().line_segment([pos2(name_r.max.x, r.min.y), pos2(name_r.max.x, r.max.y)], Stroke::new(1.0, t.border));
     ui.painter().line_segment([pos2(add.min.x, r.min.y), pos2(add.min.x, r.max.y)], Stroke::new(1.0, t.border));
-    column_edge(ui, Id::new("vars_name_edge"), name_r.max.x, r.min.x, r, &mut st.name_w, NAME_MIN, NAME_MAX);
+    // The name column fits itself to its widest entry on a double-click of its divider.
+    let auto_name = {
+        let tt = Tokens::get(ui.ctx());
+        let max_w: f32 = view
+            .in_collection(&coll.id)
+            .map(|v| v.name.rsplit('/').next().unwrap_or(&v.name))
+            .map(|n| ui.painter().layout_no_wrap(n.to_string(), regular(11.0), tt.text).size().x)
+            .fold(0.0, f32::max);
+        (40.0 + max_w + 12.0).clamp(NAME_MIN, NAME_MAX)
+    };
+    column_edge(ui, Id::new("vars_name_edge"), name_r.max.x, r.min.x, r, &mut st.name_w, NAME_MIN, NAME_MAX, Some(auto_name));
     for (i, m) in coll.modes.iter().enumerate() {
         let cell = cols.mode_rect(r, i);
         if cell.max.x <= modes.min.x + 3.0 || cell.max.x >= modes.max.x - 3.0 {
@@ -1382,7 +1507,7 @@ fn header_row(app: &mut FigApp, ui: &mut Ui, view: &View, coll: &Collection, st:
         // Only the column whose edge this is changes; the others keep the widths they were dragged
         // to (they used to share one width, so dragging one squeezed all of them).
         let mut w = cols.width_of(i);
-        if column_edge(ui, Id::new(("vars_mode_edge", &m.id)), cell.max.x, cell.min.x, r, &mut w, MODE_MIN, MODE_MAX)
+        if column_edge(ui, Id::new(("vars_mode_edge", &m.id)), cell.max.x, cell.min.x, r, &mut w, MODE_MIN, MODE_MAX, None)
             && (w - cols.width_of(i)).abs() > 0.01
         {
             st.set_mode_width(&m.id, w);
