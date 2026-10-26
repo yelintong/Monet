@@ -1686,7 +1686,7 @@ fn paint_row(app: &mut FigApp, ui: &mut Ui, ids: &[NodeId], i: usize, p: &Paint,
     let t = Tokens::get(ui.ctx());
     let ids = ids.to_vec();
     let cmd = if fills { "fill.set" } else { "stroke.set" };
-    row_rect(ui, 32.0, |ui| {
+    let r = row_rect(ui, 32.0, |ui| {
         let w = ui.available_width() - 52.0;
         let (r, _) = ui.allocate_exact_size(vec2(w, FIELD_H), Sense::hover());
         ui.painter().rect_filled(r, CornerRadius::same(5), t.field);

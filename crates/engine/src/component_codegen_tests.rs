@@ -83,17 +83,6 @@ fn components_take_their_properties_as_parameters() {
     for want in ["@Composable\nfun Card(", "    showDot: Boolean = true,", "    title: String = \"Hello\",", "if (showDot) {", "text = title,"] {
         assert!(kt.contains(want), "Compose has {want:?}:\n{kt}");
     }
-    let ark = code(&mut s, c, "arkui");
-    for want in [
-        "@Component\nexport struct Card {",
-        "    @Prop showDot: boolean = true",
-        "    @Prop title: string = \"Hello\"",
-        "    build() {",
-        "        if (this.showDot) {",
-        "Text(this.title)",
-    ] {
-        assert!(ark.contains(want), "ArkUI has {want:?}:\n{ark}");
-    }
     let leptos = code(&mut s, c, "leptos");
     for want in [
         "use leptos::prelude::*;\n\n#[component]\npub fn Card(\n",

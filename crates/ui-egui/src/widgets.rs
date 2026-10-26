@@ -258,6 +258,26 @@ pub fn number_field_bindable_menu(
     number_field_impl(ui, id, lead, value, suffix, width, step, binding, empty, dim, menu)
 }
 
+/// A save admitted for another document cannot make this reused field commit its cached draft.
+/// Drop only this editor's transient state, before a natural focus-loss branch can read it.
+fn cancel_retargeted_field_save(ui: &mut Ui, id: Id) {
+    let editor = id.with("te");
+    if !crate::shortcuts::take_field_save_cancellation(ui.ctx(), editor) {
+        return;
+    }
+    let select_all = select_all_id(editor);
+    ui.data_mut(|d| {
+        d.remove::<String>(id);
+        d.remove::<String>(id.with("editing"));
+        d.remove::<String>(id.with("kept"));
+        d.remove::<String>(id.with("buf"));
+        d.remove::<bool>(id.with("selectall"));
+        d.remove::<bool>(select_all);
+        d.remove::<egui::text_edit::TextEditState>(editor);
+    });
+    ui.memory_mut(|m| m.surrender_focus(editor));
+}
+
 #[allow(clippy::too_many_arguments)]
 fn number_field_impl(
     ui: &mut Ui,

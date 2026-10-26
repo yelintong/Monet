@@ -64,7 +64,7 @@ pub fn import_line(link: &CodeLink, lang: CodeLang) -> String {
     let path = &link.import_path;
     match lang {
         _ if path.is_empty() => String::new(),
-        CodeLang::React | CodeLang::ArkUi => format!("import {{ {} }} from {};", link.name.split('.').next().unwrap_or_default(), js_string(path)),
+        CodeLang::React => format!("import {{ {} }} from {};", link.name.split('.').next().unwrap_or_default(), js_string(path)),
         CodeLang::Leptos => format!("use {path}::{};", link.name.split('.').next().unwrap_or_default()),
         CodeLang::Flutter => format!("import '{}';", path.replace(['\'', '\\'], "")),
         _ => format!("import {path}"),
@@ -336,7 +336,7 @@ pub fn check(c: &Component, link: &CodeLink, lang: CodeLang) -> std::result::Res
     }
     let path = &link.import_path;
     let path_ok = match lang {
-        CodeLang::React | CodeLang::ArkUi => !path.chars().any(|ch| ch.is_control() || ch == '"' || ch == '\\'),
+        CodeLang::React => !path.chars().any(|ch| ch.is_control() || ch == '"' || ch == '\\'),
         CodeLang::Leptos => path.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == ':'),
         CodeLang::Flutter => path.chars().all(|ch| ch.is_ascii_alphanumeric() || "_./:-".contains(ch)),
         _ => path.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '.'),
@@ -344,7 +344,6 @@ pub fn check(c: &Component, link: &CodeLink, lang: CodeLang) -> std::result::Res
     if path.chars().count() > MAX_IMPORT || !path_ok {
         return Err(match lang {
             CodeLang::React => format!("importPath: a module path without quotes, up to {MAX_IMPORT} characters"),
-            CodeLang::ArkUi => format!("importPath: a module path without quotes, up to {MAX_IMPORT} characters"),
             CodeLang::Leptos => format!("importPath: a Rust module path (letters, digits, _ and ::), up to {MAX_IMPORT} characters"),
             CodeLang::Flutter => {
                 format!("importPath: a Dart import (package:acme/card.dart; letters, digits, _ . / : and -), up to {MAX_IMPORT} characters")

@@ -215,6 +215,15 @@ pub struct Document {
     /// Icon fonts carried by the document ([`IconFont`]): shapes turned into font glyphs.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub icon_fonts: Vec<IconFont>,
+    /// A board's countdown (see [`facilitation`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timer: Option<BoardTimer>,
+    /// A board's vote, running or ended.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vote: Option<Vote>,
+    /// The vote's ballots, by voter.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub votes: Ballots,
 }
 
 impl Default for Document {
@@ -255,6 +264,9 @@ impl Document {
             annotation_categories: None,
             dev_snapshots: BTreeMap::new(),
             icon_fonts: Vec::new(),
+            timer: None,
+            vote: None,
+            votes: BTreeMap::new(),
         }
     }
 

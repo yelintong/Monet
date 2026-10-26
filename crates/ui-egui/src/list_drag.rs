@@ -11,7 +11,7 @@
 //! [`ListDrag::finish_in`]: there, a drop has to say which side of a caption it belongs to, so the
 //! caller — which knows what each caption opens — decides where it lands.
 
-use egui::{AsId, Id, Pos2, Rect, Sense, Ui, pos2, vec2};
+use egui::{AsIdSalt, Id, Pos2, Rect, Sense, Ui, pos2, vec2};
 
 use crate::icons::{self, Icon};
 use crate::theme::{Tokens, regular};

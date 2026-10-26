@@ -582,6 +582,16 @@ impl FontDb {
         (0..count).filter_map(|i| Face::from_bytes(FontBytes::Shared(shared.clone()), i, None, None)).map(|f| self.add(f)).collect()
     }
 
+    /// The family and style of the face whose PostScript name is `ps` (ignoring case), loaded or
+    /// only scanned.
+    pub fn postscript_face(&self, ps: &str) -> Option<(String, String)> {
+        let is = |p: &Option<String>| p.as_deref().is_some_and(|p| p.eq_ignore_ascii_case(ps));
+        if let Some(f) = self.faces.iter().find(|f| is(&f.postscript)) {
+            return Some((f.family.clone(), f.style.clone()));
+        }
+        self.pending.values().find_map(|(display, entries)| entries.iter().find(|e| is(&e.postscript)).map(|e| (display.clone(), e.style.clone())))
+    }
+
     /// Drop every face of `family`. Returns whether the family was loaded at all.
     ///
     /// The remaining families' face indexes are rebuilt: [`best`](Self::best) takes the *first* face

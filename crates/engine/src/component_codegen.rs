@@ -326,7 +326,6 @@ const TYPES: &[&str] = &[
     "BoxShape",
     "BuildContext",
     "CaseIterable",
-    "Circle",
     "CircleShape",
     "Color",
     "Column",
@@ -342,7 +341,6 @@ const TYPES: &[&str] = &[
     "FontWeight",
     "Group",
     "HStack",
-    "HorizontalAlign",
     "Image",
     "MainAxisAlignment",
     "Modifier",
@@ -365,7 +363,6 @@ const TYPES: &[&str] = &[
     "TextStyle",
     "Unit",
     "VStack",
-    "VerticalAlign",
     "View",
     "ZStack",
 ];
@@ -678,7 +675,6 @@ pub fn definition(doc: &Document, c: &Component, lang: CodeLang) -> String {
         CodeLang::Compose => compose_definition(doc, c),
         CodeLang::Flutter => flutter_definition(doc, c),
         CodeLang::Leptos => leptos(doc, c),
-        CodeLang::ArkUi => arkui_definition(doc, c),
         _ => react(doc, c),
     }
 }

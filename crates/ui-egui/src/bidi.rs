@@ -16,43 +16,8 @@ use egui::{Color32, FontId, Galley, Id, Painter, Pos2, Rect, Response, Ui, pos2,
 /// ellipsis at the row's visual end (the left end of a right-to-left name).
 pub fn name_galley(painter: &Painter, name: &str, font: FontId, color: Color32, max_w: f32) -> Arc<Galley> {
     let max_w = max_w.max(1.0);
-    if !display::has_rtl(name) {
-        let mut job = LayoutJob::simple_singleline(name.to_string(), font, color);
-        // Truncated with an ellipsis: a name cut off with no sign of it reads as the whole name.
-        job.wrap = TextWrapping { max_width: max_w, max_rows: 1, break_anywhere: true, overflow_character: Some('…') };
-        return painter.layout_job(job);
-    }
-    let key = (name.to_string(), font.size.to_bits(), matches!(font.family, egui::FontFamily::Proportional), max_w.to_bits());
-    let cache = painter.ctx().data_mut(|d| d.get_temp_mut_or_default::<Elided>(Id::new("bidi_elided")).clone());
-    let hit = cache.0.lock().ok().and_then(|m| m.get(&key).cloned());
-    let shown = hit.unwrap_or_else(|| {
-        let fits = |v: &VisualLine| visual_galley(painter, v, &font, color).size().x <= max_w;
-        let v = display::elide(name, fits);
-        if let Ok(mut m) = cache.0.lock() {
-            if m.len() >= ELIDED_MAX {
-                m.clear();
-            }
-            m.insert(key, v.clone());
-        }
-        v
-    });
-    visual_galley(painter, &shown, &font, color)
-}
-
-/// A line in display order laid out with each cluster as its own section, so egui's shaper (which
-/// would reverse a right-to-left run once more) gets one ordered, joined cluster at a time.
-fn visual_galley(painter: &Painter, line: &VisualLine, font: &FontId, color: Color32) -> Arc<Galley> {
-    let chars: Vec<char> = line.text.chars().collect();
-    let format = TextFormat::simple(font.clone(), color);
-    let mut job = LayoutJob::default();
-    for c in &line.clusters {
-        let start = job.text.len();
-        job.text.extend(chars.get(c.shown.clone()).unwrap_or_default());
-        // Pushed as is: `LayoutJob::append` would merge it with the section before.
-        if job.text.len() > start {
-            job.sections.push(LayoutSection { leading_space: 0.0, byte_range: ByteIndex(start)..ByteIndex(job.text.len()), format: format.clone() });
-        }
-    }
+    let mut job = LayoutJob::simple_singleline(name.to_string(), font, color);
+    job.wrap = TextWrapping::truncate_at_width(max_w);
     painter.layout_job(job)
 }
 

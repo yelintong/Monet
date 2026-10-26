@@ -1979,6 +1979,8 @@ impl FigApp {
         // and the active document changes without a command (a tab, the home screen). Cheap when
         // nothing changed, so this is every frame.
         self.session.sync_icon_fonts();
+        // Setup once per frame (pass 0), not once per pass and never on a logic-only tick.
+        let stamp = (ctx.viewport_id(), ctx.cumulative_frame_nr());
         let first = !self.fonts_installed;
         if ctx.current_pass_index() == 0 && self.ui_frame_stamp != Some(stamp) {
             self.ui_frame_stamp = Some(stamp);
@@ -2094,6 +2096,9 @@ impl FigApp {
         self.end_pen_outside_design();
         tabs::relink_presents(self);
         tabs::tab_bar(self, ui);
+        // Bind the originating field/file before tabs can switch. Its widget commits only after
+        // processing this batch; delivery remains deferred until the following frame.
+        let field_save = shortcuts::prepare_field_save(self, &ctx);
         // Control/window work and this pass's physical tab click may have replaced the owner.
         // A shared field ID in that replacement must never consume the old commit marker.
         let field_save = shortcuts::revalidate_field_save(self, &ctx, field_save);
@@ -2269,6 +2274,18 @@ impl FigApp {
             crate::colorpicker::close(self);
         } else {
             self.open_picker(target, top);
+        }
+    }
+
+    fn observe_ime(&mut self, ctx: &egui::Context, focused: bool) {
+        #[cfg(test)]
+        {
+            self.ime_observations = self.ime_observations.saturating_add(1);
+        }
+        if focused {
+            shortcuts::ime_output(self, ctx);
+        } else {
+            let _ = self.ime.observe(ctx.viewport_id(), None);
         }
     }
 
