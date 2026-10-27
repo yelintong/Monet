@@ -173,6 +173,7 @@ impl<'d> Exporter<'d> {
                     f.extend([("fillPaints", arr(Vec::new())), ("effects", arr(list))]);
                 }
                 StyleKind::Grid { grids } => {
+                    self.warn_lossy_grids(grids);
                     let list = grids.iter().enumerate().map(|(i, g)| layout_grid(g, i, &none)).collect();
                     f.extend([("fillPaints", arr(Vec::new())), ("layoutGrids", arr(list))]);
                 }

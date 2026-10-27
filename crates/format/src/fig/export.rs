@@ -524,6 +524,14 @@ impl<'d> Exporter<'d> {
         }
     }
 
+    /// The file format names four patterns, so a 45° grid is written as columns and rings as the
+    /// square grid. Say so rather than let the file come back as something else.
+    fn warn_lossy_grids(&mut self, grids: &[figcraft_doc::LayoutGrid]) {
+        if grids.iter().any(|g| matches!(g.kind, GridKind::Diagonal | GridKind::Rings)) {
+            self.warn("a 45° grid is written as columns and rings as the square grid: the file format names no pattern for them");
+        }
+    }
+
     fn next_aux(&mut self) -> u32 {
         self.aux += 1;
         self.aux

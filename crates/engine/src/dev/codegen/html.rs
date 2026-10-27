@@ -22,6 +22,8 @@ fn kind_word(n: &Node) -> &str {
         NodeKind::Component { .. } | NodeKind::ComponentSet { .. } => "component",
         NodeKind::Instance { .. } => "instance",
         NodeKind::Slice => "slice",
+        // An icon is a frame holding the glyph's outline, so it reads as one in the markup.
+        NodeKind::Icon { .. } => "icon",
     }
 }
 

@@ -18,6 +18,45 @@ fn read_ui_scale<'de, D: serde::Deserializer<'de>>(d: D) -> std::result::Result<
     Ok(Value::deserialize(d)?.as_f64().and_then(clamp_ui_scale).unwrap_or(1.0))
 }
 
+/// The Variables editor's layout, remembered between openings and restarts (the panel used to
+/// reset its sizes every time it was closed). Widths are in points; the interface keeps them
+/// within its own limits, so a hand-edited value never breaks the panel.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct VariablesLayout {
+    /// The collections sidebar shows.
+    pub sidebar: bool,
+    /// Its width, dragged by its edge.
+    pub sidebar_w: f32,
+    /// The collections list's share of the sidebar's body (0..1); the groups list takes the rest.
+    pub sidebar_split: f32,
+    /// The table's name column width.
+    pub name_w: f32,
+    /// A mode column's width when it was never dragged.
+    pub mode_w: f32,
+    /// Each mode column's dragged width, by mode id.
+    pub mode_ws: BTreeMap<String, f32>,
+    /// The floating panel's size and top-left (`None`: the default size, centred).
+    pub size: Option<(f32, f32)>,
+    pub pos: Option<(f32, f32)>,
+}
+
+impl Default for VariablesLayout {
+    fn default() -> Self {
+        // Mirrors the panel's own defaults (`SIDEBAR_W`, `NAME_W`, `MODE_W`, an even split).
+        Self {
+            sidebar: true,
+            sidebar_w: 264.0,
+            sidebar_split: 0.5,
+            name_w: 240.0,
+            mode_w: 200.0,
+            mode_ws: BTreeMap::new(),
+            size: None,
+            pos: None,
+        }
+    }
+}
+
 /// App-wide preferences that commands read (nudge amounts, behaviours).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -37,6 +76,9 @@ pub struct Prefs {
     /// The height asked for the main window's pages list, dragged at its lower edge (`None`: a
     /// share of the panel; the interface keeps it within its limits).
     pub pages_height: Option<f32>,
+    /// The Variables editor's layout (sidebar width and visibility, the collections/groups split,
+    /// the table's column widths, the floating panel's size and place).
+    pub variables: VariablesLayout,
     /// The interface language: a language code ("en", "es", "pt-BR") or "system" (the OS or browser
     /// language). Languages without a catalog show English.
     pub language: String,
@@ -50,6 +92,11 @@ pub struct Prefs {
     /// [`UI_SCALE_MAX`]). The canvas zoom is separate.
     #[serde(deserialize_with = "read_ui_scale")]
     pub ui_scale: f64,
+    /// Which graphics API draws the window: `"system"` (FigCraft picks what the system offers:
+    /// Direct3D 12 or OpenGL on Windows, what the system offers elsewhere) or one API by name
+    /// (`"dx12"`, `"vulkan"`, `"gl"`, `"metal"`). The desktop app reads it when its window opens,
+    /// so a change takes effect on the next start; the browser has no API to choose.
+    pub graphics_backend: String,
     /// Files that have a path are saved by themselves a few seconds after they change (the app's
     /// timer; off: only File ▸ Save writes them).
     pub auto_save: bool,
@@ -120,10 +167,12 @@ impl Default for Prefs {
             theme: "system".into(),
             panel_widths: (240.0, 240.0),
             pages_height: None,
+            variables: VariablesLayout::default(),
             language: "system".into(),
             user_name: cmd::comment::DEFAULT_AUTHOR.into(),
             reduce_motion: false,
             ui_scale: 1.0,
+            graphics_backend: "system".into(),
             auto_save: false,
             start_on_home: false,
             invite_links: None,

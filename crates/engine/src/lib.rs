@@ -20,6 +20,7 @@ mod dev;
 mod extensions;
 pub mod fonts;
 pub mod guard;
+pub mod iconfont;
 pub mod keymap;
 pub mod measure;
 pub mod proto_run;
@@ -295,6 +296,8 @@ mod html_codegen_tests;
 mod huge_stroke_tests;
 #[cfg(test)]
 mod id_params_behaviour_tests;
+#[cfg(test)]
+mod icon_tests;
 #[cfg(test)]
 mod images_left_in_file_tests;
 #[cfg(test)]

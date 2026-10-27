@@ -64,6 +64,9 @@ impl<'d> Exporter<'d> {
         };
         let ty = match &n.kind {
             NodeKind::Page { .. } | NodeKind::Frame | NodeKind::Group | NodeKind::ComponentSet { .. } => "FRAME",
+            // `.fig` has no icon object: it is written as a frame (the icon fonts themselves travel
+            // in `.figcraft`, not here — see `crates/format/src/rest` for the import side).
+            NodeKind::Icon { .. } => "FRAME",
             NodeKind::Instance { .. } if main.is_none() => "FRAME",
             NodeKind::Section { .. } => "SECTION",
             NodeKind::Rectangle => "ROUNDED_RECTANGLE",
@@ -240,6 +243,7 @@ impl<'d> Exporter<'d> {
                 self.auto_layout(n, l, f);
             }
             if !n.grids.is_empty() {
+                self.warn_lossy_grids(&n.grids);
                 f.push(("layoutGrids", arr(n.grids.iter().enumerate().map(|(i, g)| layout_grid(g, i, &bound)).collect())));
             }
         }
