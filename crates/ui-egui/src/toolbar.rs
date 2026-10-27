@@ -247,53 +247,89 @@ fn main_toolbar(app: &mut FigApp, ui: &mut Ui, canvas: Rect, t: &Tokens, board: 
             app.run("view.design", json!({}));
         }
     } else {
-        // Mode switcher: Draw · Design · Prototype · Inspect (code).
-        let modes = [(Icon::Pencil, tr("Draw")), (Icon::Frame, tr("Design")), (Icon::Prototype, tr("Prototype")), (Icon::Code, tr("Inspect"))];
-        let active = match app.ui.right_tab {
+        // Mode switcher: Draw · Design · Animation · Inspect (code).
+        mode_switcher(app, ui, x, cy, t);
+    }
+    help_button(app, ui, canvas, rect, t);
+}
+
+/// The mode switcher from `x`: Draw · Design · Animation · Inspect (code).
+fn mode_switcher(app: &mut FigApp, ui: &mut Ui, x: f32, cy: f32, t: &Tokens) {
+    let modes = [(Icon::Pencil, tr("Draw")), (Icon::Frame, tr("Design")), (Icon::Animation, tr("Animation")), (Icon::Code, tr("Inspect"))];
+    // Animation opens the Motion timeline under the canvas; while it is open it is the mode shown.
+    let active = if app.ui.motion_open {
+        2
+    } else {
+        match app.ui.right_tab {
             crate::RightTab::Design if app.session.tool.tool == ToolId::Pencil => 0,
             crate::RightTab::Design => 1,
-            crate::RightTab::Prototype => 2,
             crate::RightTab::Inspect => 3,
-        };
-        let seg = Rect::from_min_size(pos2(x, cy - CELL / 2.0), vec2(4.0 * CELL, CELL));
-        ui.painter().rect_filled(seg, CornerRadius::same(5), t.field);
-        for (i, (icon, tip)) in modes.iter().enumerate() {
-            let r = Rect::from_min_size(pos2(seg.min.x + i as f32 * CELL, seg.min.y), vec2(CELL, CELL));
-            let resp = ui.interact(r, ui.id().with(("mode", i)), Sense::click()).on_hover_text(*tip);
-            a11y::toggle(&resp, tip, i == active);
-            if i == active {
-                // The current mode lifts with a plain white inset, no outline.
-                ui.painter().rect_filled(r.shrink(2.0), CornerRadius::same(3), t.panel);
-            } else if resp.hovered() {
-                ui.painter().rect_filled(r, CornerRadius::same(5), t.hover);
-            }
-            icons::paint(
-                ui.painter(),
-                Rect::from_center_size(r.center(), vec2(MODE_GLYPH, MODE_GLYPH)),
-                *icon,
-                if i == active { t.accent_text } else { t.icon_secondary },
-            );
-            if resp.clicked() {
-                match i {
-                    0 => {
-                        app.ui.right_tab = crate::RightTab::Design;
-                        app.run("tool.set", json!({"tool": "pencil"}));
-                    }
-                    1 => {
-                        app.ui.right_tab = crate::RightTab::Design;
-                        if app.session.tool.tool == ToolId::Pencil {
-                            app.run("tool.set", json!({"tool": "move"}));
-                        }
-                    }
-                    2 => app.ui.right_tab = crate::RightTab::Prototype,
-                    _ => app.ui.right_tab = crate::RightTab::Inspect,
-                }
-            }
+            _ => usize::MAX,
+        }
+    };
+    let seg = Rect::from_min_size(pos2(x, cy - CELL / 2.0), vec2(4.0 * CELL, CELL));
+    ui.painter().rect_filled(seg, CornerRadius::same(5), t.field);
+    for (i, (icon, tip)) in modes.iter().enumerate() {
+        let r = Rect::from_min_size(pos2(seg.min.x + i as f32 * CELL, seg.min.y), vec2(CELL, CELL));
+        let resp = ui.interact(r, ui.scope_id().with(("mode", i)), Sense::click()).on_hover_text(*tip);
+        a11y::toggle(&resp, tip, i == active);
+        if i == active {
+            // The current mode lifts with a plain white inset, no outline.
+            ui.painter().rect_filled(r.shrink(2.0), CornerRadius::same(3), t.panel);
+        } else if resp.hovered() {
+            ui.painter().rect_filled(r, CornerRadius::same(5), t.hover);
+        }
+        icons::paint(
+            ui.painter(),
+            Rect::from_center_size(r.center(), vec2(MODE_GLYPH, MODE_GLYPH)),
+            *icon,
+            if i == active { t.accent_text } else { t.icon_secondary },
+        );
+        if resp.clicked() {
+            pick_mode(app, i);
         }
     }
-    // Floating help button at the bottom right of the canvas.
-    let hr = Rect::from_center_size(pos2(canvas.max.x - 32.0, canvas.max.y - 32.0), vec2(32.0, 32.0));
-    let hresp = ui.interact(hr, ui.id().with("help"), Sense::click()).tip(tr("Help and resources"));
+}
+
+/// Mode `i` of the switcher chosen.
+fn pick_mode(app: &mut FigApp, i: usize) {
+    match i {
+        0 => {
+            crate::motion::set_open(app, false);
+            app.ui.right_tab = crate::RightTab::Design;
+            app.run("tool.set", json!({"tool": "pencil"}));
+        }
+        1 => {
+            crate::motion::set_open(app, false);
+            app.ui.right_tab = crate::RightTab::Design;
+            if app.session.tool.tool == ToolId::Pencil {
+                app.run("tool.set", json!({"tool": "move"}));
+            }
+        }
+        2 => {
+            // Animation toggles the Motion timeline. Like the other modes it ends a pen path: a
+            // path is only drawn in Design (#307).
+            let open = !app.ui.motion_open;
+            crate::motion::set_open(app, open);
+            if open && app.session.tool.tool == ToolId::Pen {
+                app.run("tool.set", json!({"tool": "move"}));
+            }
+        }
+        _ => {
+            crate::motion::set_open(app, false);
+            app.ui.right_tab = crate::RightTab::Inspect;
+        }
+    }
+}
+
+/// The floating help button at the bottom right of the canvas.
+fn help_button(app: &mut FigApp, ui: &mut Ui, canvas: Rect, pill: Rect, t: &Tokens) {
+    let mut hr = Rect::from_center_size(pos2(canvas.max.x - 32.0, canvas.max.y - 32.0), vec2(32.0, 32.0));
+    // Above the pill when they'd overlap (a narrow window).
+    if hr.intersects(pill) {
+        hr = hr.translate(vec2(0.0, -(pill.height() + 12.0)));
+    }
+    let hresp = ui.interact(hr, ui.scope_id().with("help"), Sense::click()).tip(tr("Help and resources"));
     ui.painter().circle_filled(hr.center() + vec2(0.0, 1.0), 17.0, Color32::from_black_alpha(20));
     ui.painter().circle_filled(hr.center(), 16.0, t.panel);
     ui.painter().text(hr.center(), Align2::CENTER_CENTER, "?", crate::theme::regular(15.0), t.text);

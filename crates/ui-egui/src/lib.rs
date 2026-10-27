@@ -18,6 +18,7 @@ pub mod icons;
 pub mod icons_panel;
 pub mod live;
 pub mod menus;
+pub mod motion;
 pub mod pending_open;
 pub mod popover;
 pub mod present;
@@ -331,6 +332,11 @@ pub struct UiState {
     pub right_tab: RightTab,
     /// The tab of the previous frame, to see the right panel change mode.
     pub last_right_tab: RightTab,
+    /// The Motion timeline under the canvas: open, and its playhead and selection.
+    pub motion_open: bool,
+    pub motion: motion::MotionUi,
+    /// The right panel's width before Motion mode widened it to the inspector.
+    pub motion_right_width: Option<f32>,
     pub left_tab: LeftTab,
     /// The style picker's popover, while it is open (the style list under the field).
     pub style_picker_popover: Option<popover::Popover>,
@@ -550,6 +556,9 @@ impl Default for UiState {
             right_width: PANEL_DEFAULT,
             right_tab: RightTab::Design,
             last_right_tab: RightTab::Design,
+            motion_open: false,
+            motion: motion::MotionUi::default(),
+            motion_right_width: None,
             left_tab: LeftTab::File,
             style_picker_popover: None,
             layout_settings: None,
