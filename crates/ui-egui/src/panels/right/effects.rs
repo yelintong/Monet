@@ -71,7 +71,7 @@ pub(super) fn effects(app: &mut FigApp, ui: &mut Ui, doc: &Document, sel: &[Node
         }
         drag.row(ui, i, header, header.with_max_y(ui.cursor().min.y.max(header.max.y)), || tr(e.label()).to_string());
     }
-    if let Some((from, to)) = drag.finish(ui) {
+    if let Some((from, to)) = drag.finish(ui).map(crate::list_drag::Dropped::pair) {
         app.run("effect.move", json!({"ids": ids, "from": from, "to": to}));
         move_flags(ui, FX_OPEN, list.len(), from, to);
         if let Some(crate::colorpicker::PickerTarget::Effect { index, .. }) = &mut app.ui.picker {
@@ -370,12 +370,20 @@ pub(super) fn grids(app: &mut FigApp, ui: &mut Ui, doc: &Document, sel: &[NodeId
             let w = ui.available_width() - 56.0;
             let resp = widgets::dropdown(ui, &grid_label(g), w, None);
             menu_popup(&resp).width(220.0).show(|ui| {
-                for (l, kind) in [(tr("Grid"), GridKind::Grid), (tr("Columns"), GridKind::Columns), (tr("Rows"), GridKind::Rows)] {
+                for (l, kind) in [
+                    (tr("Grid"), GridKind::Grid),
+                    (tr("Columns"), GridKind::Columns),
+                    (tr("Rows"), GridKind::Rows),
+                    (tr("45°"), GridKind::Diagonal),
+                    (tr("Rings"), GridKind::Rings),
+                ] {
                     if menu_item(ui, l, "") {
                         let fresh = match kind {
                             GridKind::Grid => LayoutGrid::default(),
                             GridKind::Columns => LayoutGrid::columns(),
                             GridKind::Rows => LayoutGrid::rows(),
+                            GridKind::Diagonal => LayoutGrid::diagonal(),
+                            GridKind::Rings => LayoutGrid::rings(),
                         };
                         app.set_props(&ids, json!({"grids": grids_with(&list, i, |x| *x = fresh)}));
                         ui.close();
@@ -396,7 +404,7 @@ pub(super) fn grids(app: &mut FigApp, ui: &mut Ui, doc: &Document, sel: &[NodeId
         }
         drag.row(ui, i, header, header.with_max_y(ui.cursor().min.y.max(header.max.y)), || grid_label(g));
     }
-    if let Some((from, to)) = drag.finish(ui) {
+    if let Some((from, to)) = drag.finish(ui).map(crate::list_drag::Dropped::pair) {
         app.run("grid.move", json!({"ids": ids, "from": from, "to": to}));
         move_flags(ui, "grid_open", list.len(), from, to);
     }
@@ -412,8 +420,12 @@ fn grid_label(g: &LayoutGrid) -> String {
         GridKind::Grid => trf("Grid ({size})", &[("size", &g.size)]),
         GridKind::Columns if auto_count(g) => tr("Auto columns").to_string(),
         GridKind::Rows if auto_count(g) => tr("Auto rows").to_string(),
+        GridKind::Diagonal if auto_count(g) => tr("Auto 45° lines").to_string(),
+        GridKind::Rings if auto_count(g) => tr("Auto rings").to_string(),
         GridKind::Columns => trn("{n} columns", g.count.max(1) as usize, &[]),
         GridKind::Rows => trn("{n} rows", g.count.max(1) as usize, &[]),
+        GridKind::Diagonal => trn("{n} lines at 45°", g.count.max(1) as usize, &[]),
+        GridKind::Rings => trn("{n} rings", g.count.max(1) as usize, &[]),
     }
 }
 

@@ -48,13 +48,42 @@ pub(super) fn overlays(app: &FigApp, painter: &egui::Painter, t: &Tokens) -> Vec
             for g in n.grids.iter().filter(|g| g.visible) {
                 let col = doc_c32(painter.ctx(), g.color);
                 for r in figcraft_layout::grid_lines(g, n.width, n.height) {
-                    let a = w * Point::new(r.x0, r.y0);
-                    let b = w * Point::new(r.x1, r.y1);
-                    let (sa, sb) = (app.to_screen(a.x, a.y), app.to_screen(b.x, b.y));
-                    if g.kind == figcraft_doc::GridKind::Grid {
-                        painter.line_segment([sa, sb], stroke(col, 1.0));
-                    } else {
-                        painter.rect_filled(Rect::from_two_pos(sa, sb), CornerRadius::ZERO, col);
+                    let to_screen = |q: Point| {
+                        let p = w * q;
+                        app.to_screen(p.x, p.y)
+                    };
+                    match r {
+                        // A one-pixel line: the square grid, or a fixed grid whose width is Auto.
+                        figcraft_layout::GridLine::Line { a, b } => {
+                            painter.line_segment([to_screen(a), to_screen(b)], stroke(col, 1.0));
+                        }
+                        // A hairline 45° line (Auto width): one pixel wide at any zoom.
+                        figcraft_layout::GridLine::SlashLine(pts) => {
+                            let v: Vec<Pos2> = pts.into_iter().map(to_screen).collect();
+                            if v.len() >= 2 {
+                                painter.add(Shape::line(v, stroke(col, 1.0)));
+                            }
+                        }
+                        // A filled column or row.
+                        figcraft_layout::GridLine::Band(rect) => {
+                            let (a, b) = (to_screen(Point::new(rect.x0, rect.y0)), to_screen(Point::new(rect.x1, rect.y1)));
+                            painter.rect_filled(Rect::from_two_pos(a, b), CornerRadius::ZERO, col);
+                        }
+                        // A filled 45° band, clipped to the frame: a convex polygon.
+                        figcraft_layout::GridLine::Slash(poly) => {
+                            let v: Vec<Pos2> = poly.into_iter().map(to_screen).collect();
+                            if v.len() >= 3 {
+                                painter.add(Shape::convex_polygon(v, col, Stroke::NONE));
+                            }
+                        }
+                        // A ring: its middle circle, `width` thick (0: a one-pixel hairline).
+                        figcraft_layout::GridLine::Ring { center, radius, width } => {
+                            let c = to_screen(center);
+                            let rim = to_screen(Point::new(center.x + radius, center.y));
+                            let r = (rim - c).length();
+                            let scale = if radius.abs() > f64::EPSILON { r / radius as f32 } else { 1.0 };
+                            painter.circle_stroke(c, r, stroke(col, if width > 0.0 { (width as f32 * scale).max(1.0) } else { 1.0 }));
+                        }
                     }
                 }
             }

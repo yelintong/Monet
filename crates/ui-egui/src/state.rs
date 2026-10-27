@@ -9,6 +9,8 @@ pub enum RightTab {
 pub enum LeftTab {
     File,
     Assets,
+    /// Icon fonts: the document's icon families and the glyphs selected layers take from them.
+    Icons,
 }
 
 /// The window's title bar.

@@ -11,12 +11,15 @@ pub mod canvas;
 pub mod cjk;
 pub mod control;
 pub mod dialogs;
+pub mod fill_rule;
 pub mod home;
 pub mod i18n;
 pub mod icons;
+pub mod icons_panel;
 pub mod live;
 pub mod menus;
 pub mod pending_open;
+pub mod popover;
 pub mod present;
 pub mod shortcuts;
 pub mod tabs;
@@ -329,6 +332,20 @@ pub struct UiState {
     /// The tab of the previous frame, to see the right panel change mode.
     pub last_right_tab: RightTab,
     pub left_tab: LeftTab,
+    /// The style picker's popover, while it is open (the style list under the field).
+    pub style_picker_popover: Option<popover::Popover>,
+    /// The Layout panel's settings popover, the button it hangs from and the anchor it keeps.
+    pub layout_settings: Option<popover::Popover>,
+    pub layout_settings_button: Option<egui::Rect>,
+    pub layout_settings_anchor: Option<f32>,
+    /// The fill rule editor: its panel, its popover, and the button that opens it.
+    pub fill_rule: Option<fill_rule::Panel>,
+    pub fill_rule_popover: Option<popover::Popover>,
+    pub fill_rule_button: Option<egui::Rect>,
+    /// The colour picker's button, for the eyedropper's release.
+    pub picker_button: Option<egui::Rect>,
+    /// The window should restart to pick up a changed graphics backend.
+    pub restart: bool,
     pub pages_open: bool,
     /// Pages panel search: open, and the case-insensitive name filter.
     pub page_search: bool,
@@ -531,6 +548,15 @@ impl Default for UiState {
             right_tab: RightTab::Design,
             last_right_tab: RightTab::Design,
             left_tab: LeftTab::File,
+            style_picker_popover: None,
+            layout_settings: None,
+            layout_settings_button: None,
+            layout_settings_anchor: None,
+            fill_rule: None,
+            fill_rule_popover: None,
+            fill_rule_button: None,
+            picker_button: None,
+            restart: false,
             pages_open: true,
             page_search: false,
             page_filter: String::new(),
@@ -729,3 +755,30 @@ mod type_settings_tests;
 
 #[cfg(test)]
 mod typography_scrub_tests;
+
+#[cfg(test)]
+mod fill_rule_tests;
+
+#[cfg(test)]
+mod graphics_pref_tests;
+
+#[cfg(test)]
+mod icon_spacing_tests;
+
+#[cfg(test)]
+mod icons_panel_tests;
+
+#[cfg(test)]
+mod layout_scroll_click_tests;
+
+#[cfg(test)]
+mod layout_settings_tests;
+
+#[cfg(test)]
+mod popover_tests;
+
+#[cfg(test)]
+mod stroke_settings_tests;
+
+#[cfg(test)]
+mod variables_view_tests;

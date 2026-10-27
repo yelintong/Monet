@@ -330,7 +330,7 @@ pub(super) fn paints(app: &mut FigApp, ui: &mut Ui, doc: &Document, sel: &[NodeI
                 let r = paint_row(app, ui, &ids, i, p, fills);
                 drag.row(ui, i, r, r, || paint_label(p));
             }
-            if let Some((from, to)) = drag.finish(ui) {
+            if let Some((from, to)) = drag.finish(ui).map(crate::list_drag::Dropped::pair) {
                 app.run(if fills { "fill.move" } else { "stroke.move" }, json!({"ids": ids, "from": from, "to": to}));
                 // An open colour picker keeps editing the paint it was on.
                 if let Some(crate::colorpicker::PickerTarget::Paint { fills: f, index, .. }) = &mut app.ui.picker

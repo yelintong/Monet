@@ -12,6 +12,22 @@ mod frame;
 mod ime;
 
 impl FigApp {
+    /// Open the colour/value picker for `target`. `top` used to anchor it under the control that
+    /// opened it; the picker now places itself, so the hint is ignored.
+    pub fn open_picker(&mut self, target: crate::colorpicker::PickerTarget, _top: Option<f32>) {
+        self.ui.picker = Some(target);
+    }
+
+    /// Clicking the control that opened the colour picker closes it again; clicking another opens
+    /// the picker for that one.
+    pub fn toggle_picker(&mut self, target: crate::colorpicker::PickerTarget, top: Option<f32>) {
+        if self.ui.picker.as_ref() == Some(&target) {
+            crate::colorpicker::close(self);
+        } else {
+            self.open_picker(target, top);
+        }
+    }
+
     /// Construct `FigApp` from a session and services, taking panel widths and pages height
     /// from preferences and initializing UI, canvas, clocks, capture/IME and transient channel
     /// state.
@@ -295,6 +311,7 @@ impl FigApp {
                         _ if self.ui.versions.open => i18n::tr("Version history"),
                         LeftTab::File => i18n::tr("Layers"),
                         LeftTab::Assets => i18n::tr("Assets"),
+                        LeftTab::Icons => i18n::tr("Icons"),
                     };
                     a11y::region(&mut self.ui.nav, ui, a11y::Region::Layers, egui::accesskit::Role::Pane, label);
                     layers::left_panel(self, ui)

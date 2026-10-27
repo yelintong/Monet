@@ -181,6 +181,22 @@ fn remember_recent(app: &mut FigApp, c: Color) {
     app.session.recent_colors.truncate(16);
 }
 
+/// The colour picker closes (its X, Escape, or another popover took over): pending edits commit
+/// and the picker goes.
+pub fn close(app: &mut FigApp) {
+    finish(app);
+    app.ui.picker = None;
+}
+
+/// Escape with the picker open closes it (the selection stays).
+pub fn close_if_open(app: &mut FigApp) -> bool {
+    if app.ui.picker.is_none() {
+        return false;
+    }
+    close(app);
+    true
+}
+
 fn finish(app: &mut FigApp) {
     if let Some(PickerTarget::PluginField { plugin, control, pending: Some(hex) }) = app.ui.picker.clone() {
         crate::plugins_ui::set_field(app, &plugin, &control, &hex);

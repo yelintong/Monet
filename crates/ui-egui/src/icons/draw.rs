@@ -1003,6 +1003,47 @@ fn draw(p: &P, icon: Icon) {
             p.dot(13.75, 13.0, 0.85);
             p.dot(7.25, 6.5, 0.85);
         }
+        Collapse => {
+            // A square folding into a smaller one: an arrow to the lower-left.
+            p.rect(3.5, 3.5, 9.0, 9.0, 0.0);
+            p.line(3.0, 7.0, 7.0, 7.0);
+            p.line(7.0, 7.0, 7.0, 11.0);
+            p.line(3.0, 7.0, 7.0, 11.0);
+        }
+        Expand => {
+            // A square growing outward: an arrow to the upper-right.
+            p.rect(3.5, 3.5, 9.0, 9.0, 0.0);
+            p.line(9.0, 3.0, 13.0, 3.0);
+            p.line(13.0, 3.0, 13.0, 7.0);
+            p.line(9.0, 3.0, 13.0, 7.0);
+        }
+        Sidebar => {
+            // A panel with a divider down its middle.
+            p.rect(3.0, 3.0, 10.0, 10.0, 0.0);
+            p.line(8.0, 3.0, 8.0, 13.0);
+        }
+        Filter => {
+            // A funnel.
+            p.poly(&[(3.0, 4.0), (13.0, 4.0), (9.0, 9.0), (9.0, 13.0), (7.0, 13.0), (7.0, 9.0)], true);
+        }
+        Variables => {
+            // Four squares rather than dots: the editor's own mark, squared off.
+            for (x, y) in [(5.0, 5.0), (11.0, 5.0), (5.0, 11.0), (11.0, 11.0)] {
+                p.fill_rect(x - 2.0, y - 2.0, x + 2.0, y + 2.0, 1.0);
+            }
+        }
+        Icons => {
+            // The em box with a shape in it: a glyph whose outline is an icon.
+            p.rect(2.5, 2.5, 13.5, 13.5, 1.5);
+            p.poly(&[(8.0, 5.0), (11.5, 11.5), (4.5, 11.5)], true);
+        }
+        FillRule => {
+            // A filled area with a hole in it: the outer box, the hole, and hatch marks between.
+            p.rect(2.5, 2.5, 13.5, 13.5, 1.0);
+            p.rect(6.5, 6.5, 9.5, 9.5, 0.0);
+            p.line(3.5, 10.5, 5.5, 12.5);
+            p.line(10.5, 3.5, 12.5, 5.5);
+        }
     }
 }
 

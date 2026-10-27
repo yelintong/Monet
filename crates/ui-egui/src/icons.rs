@@ -231,6 +231,20 @@ icons! {
     Vote,
     /// A measurement: a dimension line with arrowheads between two end ticks.
     Measure,
+    /// Collapse the Variables editor to a floating panel.
+    Collapse,
+    /// Expand the Variables editor to the full view.
+    Expand,
+    /// Toggle the Variables editor's sidebar.
+    Sidebar,
+    /// Filter variables by type.
+    Filter,
+    /// Four squares: the Variables editor (a value a name stands for, in each mode).
+    Variables,
+    /// The Icons tab: the em box with a shape in it, a glyph that draws an icon.
+    Icons,
+    /// Fill rule: a filled area with a hole in it (the hole is what the rule decides).
+    FillRule,
 }
 
 /// Points along a circular arc from angle `a0` to `a1` (radians, y down: increasing is clockwise).
