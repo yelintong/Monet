@@ -60,7 +60,7 @@ Each may be given more than once, as `--flag DIR` or `--flag=DIR`:
 - The roots must be existing folders: a missing one, or a file, stops the server at startup.
   `initialize`'s `instructions` name the folders, so the agent knows where it may work.
 - **What is covered:** everything a call does, because the engine reaches the file system through
-  one module (`crates/engine/src/file_access.rs`), and `crates/engine/clippy.toml` refuses `std::fs`
+  one module (`crates/engine/src/automation/file_access.rs`), and `crates/engine/clippy.toml` refuses `std::fs`
   anywhere else in the engine, so a command added later is covered too. That is `open_file` (and the
   `variables` file it may name), `save_file`, `export {path}`, and through `run_command` / `batch`
   every command that names a file: `file.open`, `file.openRecent` (recent files outside the roots
@@ -281,9 +281,9 @@ Or in a project's `.mcp.json`:
   `null`), so a later `style.update` doesn't overwrite the edit; `style.apply` replaces variables
   bound to what the style sets; a text style goes on text layers only. In one call, a style link
   (`fillStyle`, `textStyle`…) wins over values it sets; set a deviation in a later call, which
-  unlinks it. Names are trimmed per `/` folder part. `style.move {styles, before?, folder?, name?}`
-  reorders (and with `folder`, renames into it; `name` sets one style's exact new name),
-  `style.duplicate {style}` adds "<name> copy" right below, `style.renameFolder {folder, name}`.
+  unlinks it. Names are trimmed per `/` folder part. `style.move {styles, before?, folder?}`
+  reorders (and with `folder`, renames into it), `style.duplicate {style}` adds "<name> copy" right
+  below, `style.renameFolder {folder, name}`.
 - **Variables**: `variable.bind` refuses a variable of a type the field doesn't take (a colour on
   `width`); scopes only filter pickers. `variable.delete` / `variable.deleteCollection` unbind the
   layers using them (they keep their last value) and give aliases to them their values. An
@@ -308,14 +308,14 @@ Or in a project's `.mcp.json`:
 | Tool | What it does |
 |---|---|
 | `list_commands {filter?}` | Every command: id, label, menu, shortcut, undoable, params doc. |
-| `run_command {command, params}` | Run any command (e.g. `align.left`, `layout.add`, `component.create`, `instance.place` (drop an instance at a page point into the frame or auto layout slot under it), `component.exposeInstance` / `instance.exposed` (nested instance properties on instances), `component.makeSlot` / `instance.slotInsert` / `instance.resetSlot` (slots, below), `inspect.code` (CSS, HTML + CSS for a whole frame, React, Leptos, SwiftUI, Jetpack Compose or Flutter for a layer; components take their properties as parameters and instances are calls, see Dev Mode below), `inspect.properties` (layout, auto layout, typography, fills, strokes and effects with their style and variable names; `colorFormat`: hex, rgb, css, hsl or hsb), `inspect.assets` (layers under the selection with export settings, icons and images, each with its `kind`), `inspect.code` takes `unit: rem` and `rootFontSize` for CSS, HTML, React and Leptos, `style.create`, `variable.bind`, `variable.update` (rename, describe, scope), `variable.set` with `{alias}`, `variable.renameMode` / `variable.removeMode`, `variable.deleteCollection`, `proto.interaction.add`, `codeConnect.set` (components linked to real code, see Dev Mode below)). |
-| `batch {commands: [{command, params}], label?}` | Several commands as one undo step (`command.batch`); all-or-nothing for open documents and their document state. Failed inner commands are removed from the journal; preferences, clipboard, tool state and UI requests are not rolled back. A step can use what an earlier step returned: `{"$step": n}` anywhere in its params becomes the `id` in step n's result (zero-based), and `{"$step": n, "field": "…"}` another field of it (see Step references below). |
+| `run_command {command, params}` | Run any command (e.g. `align.left`, `layout.add`, `component.create`, `instance.place` (drop an instance at a page point into the frame or auto layout slot under it), `component.exposeInstance` / `instance.exposed` (nested instance properties on instances), `component.makeSlot` / `instance.slotInsert` / `instance.resetSlot` (slots, below), `inspect.code` (CSS, HTML + CSS for a whole frame, React, Leptos, Vue, SwiftUI, Jetpack Compose or ArkUI for a layer; components take their properties as parameters and instances are calls, see Dev Mode below), `inspect.properties` (layout, auto layout, typography, fills, strokes and effects with their style and variable names; `colorFormat`: hex, rgb, css, hsl or hsb), `inspect.assets` (layers under the selection with export settings, icons and images, each with its `kind`), `inspect.code` takes `unit: rem` and `rootFontSize` for CSS, HTML, React, Leptos and Vue, `style.create`, `variable.bind`, `variable.update` (rename, describe, scope), `variable.set` with `{alias}`, `variable.renameMode` / `variable.removeMode`, `variable.deleteCollection`, `proto.interaction.add`, `codeConnect.set` (components linked to real code, see Dev Mode below)). |
+| `batch {commands: [{command, params}], label?}` | Several commands as one undo step (`command.batch`); all-or-nothing for open documents and their document state. Failed inner commands are removed from the journal; preferences, clipboard, tool state and UI requests are not rolled back. A step can use what an earlier step returned: name it with `"as": "card"` and `{"$ref": "card"}` anywhere in a later step's params becomes the `id` in its result (`{"$step": n}` does the same by zero-based position); `"field"` takes another key or a slash path such as `ids/0` (see Step references below). |
 | `create_node {type, x, y, width, height, parent, index, name, text, path, props}` | Create a frame, rectangle, ellipse, polygon, star, line, arrow, text, vector, section, component or slice; returns `{id, node}`. |
 | `set_properties {ids, props}` | `node.set` on layers (geometry, fills, strokes, effects, corner radius, auto layout, sizing, constraints, masks (`isMask`, `maskType: alpha\|vector\|luminance`), handoff status (`devStatus: none\|readyForDev\|completed`; marking again clears "Changed"), a section's `sectionContentsHidden`, text…); returns the updated layers. |
 | `inspect_document {depth, allPages}` | The document as JSON (layer tree, styles, selection, history). |
 | `get_node {id, depth}` | One layer as JSON; `pluginData` (`{key: value}`, values as strings) when the layer or page has layer data written with `set_properties {props: {pluginData}}`. |
 | `select {ids}` | Replace the selection (`[]` deselects). |
-| `export {ids, format, scale \| size, path?, bleed?, cropMarks?, bleedMarks?, cmyk?, contentsOnly?, includeBoundingBox?, svgOutlineText?, svgIdAttribute?, svgSimplifyStroke?}` | png, jpg, svg, webp, pdf, or `fig`: the whole file as `.fig`, experimental (see Exporting `.fig` files below); `size` is `2x`, `512w` or `512h`. The image covers what the layers paint (shadows towards their offset, strokes, unclipped children, a mask group's mask; hidden layers take no room; a slice is its area with everything under it, or only the frame or group it sits in while `contentsOnly` is on); `contentsOnly: false` also draws every other layer showing in that area, `includeBoundingBox` exports the layers' own boxes; SVG: `svgOutlineText: false` keeps `<text>`, `svgIdAttribute` writes unique ids from layer names, `svgSimplifyStroke: false` writes every stroke as an outline. The same options go in export settings (`export.add` / `export.update`). PDF: frames one page each (sized in points), anything else together on one page; print options: `bleed` (points or a length like `"3mm"`, `"0.125in"`), crop and bleed marks, CMYK colour (see Exports below), also taken by `file.export`, `file.exportLayers`, `file.exportFramesPdf` and stored per export setting by `export.add` / `export.update`; `run_command` `file.exportFramesPdf {page?, path?}` writes every top-level frame of a page. Without `path`, images come back as MCP image content, SVG as text. Layers' own export settings: `run_command` with `export.add` / `export.update {index, size?, suffix?, format?}` / `export.remove` and `file.exportLayers {ids?, dir?, assets?}` (every layer once per setting, named `<layer><suffix>.<format>`, a slash in a layer name making a folder; `assets: true` exports the Inspect tab's assets instead: icons as SVG, images as PNG). |
+| `export {ids, format, scale \| size, path?, bleed?, cropMarks?, bleedMarks?, cmyk?, contentsOnly?, includeBoundingBox?, svgOutlineText?, svgIdAttribute?, svgSimplifyStroke?, vdCompat?}` | png, jpg, svg, webp, pdf, xml (an Android Vector Drawable: `svgIdAttribute` writes `android:name`, `vdCompat` is `bestEffort` (default: approximated with a warning), `exact` (left out with a warning) or `ignore` (no warnings: overlapping layer opacity dropped, even-odd fills kept as `fillType="evenOdd"`, diamond gradients left out), and the result lists `warnings` for what was changed or left out), or `fig`: the whole file as `.fig`, experimental (see Exporting `.fig` files below); `size` is `2x`, `512w` or `512h`. The image covers what the layers paint (shadows towards their offset, strokes, unclipped children, a mask group's mask; hidden layers take no room; a slice is its area with everything under it, or only the frame or group it sits in while `contentsOnly` is on); `contentsOnly: false` also draws every other layer showing in that area, `includeBoundingBox` exports the layers' own boxes; SVG: `svgOutlineText: false` keeps `<text>`, `svgIdAttribute` writes unique ids from layer names, `svgSimplifyStroke: false` writes every stroke as an outline. The same options go in export settings (`export.add` / `export.update`). PDF: frames one page each (sized in points), anything else together on one page; print options: `bleed` (points or a length like `"3mm"`, `"0.125in"`), crop and bleed marks, CMYK colour (see Exports below), also taken by `file.export`, `file.exportLayers`, `file.exportFramesPdf` and stored per export setting by `export.add` / `export.update`; `run_command` `file.exportFramesPdf {page?, path?}` writes every top-level frame of a page. Without `path`, images come back as MCP image content, SVG as text, XML as text followed by `{format, bytes, warnings}`. Layers' own export settings: `run_command` with `export.add` / `export.update {index, size?, suffix?, format?}` / `export.remove` and `file.exportLayers {ids?, dir?, assets?}` (every layer once per setting, named `<layer><suffix>.<format>`, a slash in a layer name making a folder; `assets: true` exports the Inspect tab's assets instead: icons as SVG, images as PNG). |
 | `screenshot {ids?, scale?, maxSize?, window?}` | PNG of the page (with background) or of layers, scaled to fit `maxSize` (default 1600). `window: true` captures the app window in front when attached, a window id (see Windows below) that window. |
 | `open_file {path, variables?}` / `save_file {path?}` | Open `.figcraft`, `.json` (FigCraft JSON or REST API file JSON with its variables, see below), `.fig` (best effort, see below), `.sketch` (Sketch 48 and newer, best effort), `.svg` (see Importing SVG below) or an image; save as `.figcraft`. `open_file` returns `opened` (for a file opened anew, a `summary` of `name`, `pages`, `layers` and `images`, and `warnings` or `repairs`; a file that was already open just gives its `index`) and the document's `document` outline. |
 | `undo` / `redo` | Step through history. |
@@ -690,7 +690,11 @@ the scroll position with `preserveScroll: true`; `{type: "scrollTo", dest, offse
 the layer that far from the top-left of the innermost frame scrolling it, e.g. below a fixed
 header; `delayMs` makes a mouse enter, leave, down or up trigger wait before it acts;
 `{type: "openOverlay", dest, position: "manual", offset?: [x, y]}` puts the overlay that far from
-the top-left of the layer that opens it, and right below that layer without an offset). A key trigger takes a key or a combination (`{type: "keyPress", key: "Shift+K"}`; Ctrl,
+the top-left of the layer that opens it, and right below that layer without an offset;
+`anchor: "triggerInside" | "triggerOutside"` measures any other position on the layer that opens
+the overlay instead of the screen, so `{position: "bottomLeft", anchor: "triggerOutside"}` opens a
+dropdown right under its button, left edges lined up; Figma has no such setting, and `.fig` export
+writes it as a manual offset). A key trigger takes a key or a combination (`{type: "keyPress", key: "Shift+K"}`; Ctrl,
 Alt, Shift and Cmd, all held and no others) or a controller button (`key: "Gamepad A"`; `Gamepad`
 followed by `A`, `B`, `X`, `Y`, `LB`, `RB`, `LT`, `RT`, `View`, `Menu`, `LS`, `RS`, `Up`, `Down`,
 `Left`, `Right` or `Home`: the standard layout, face buttons by position), which the player reads
@@ -1086,7 +1090,11 @@ path?}` writes this file's collections (default: all but library copies) as a lo
 response (`format: "json"`, the default) or as CSS custom properties (`format: "css"`: the default
 mode on `:root`, each other mode on `[data-<collection>="<mode>"]`, aliases as `var(--name)`, numbers
 in px unless the layers bound to them, their scopes or the variables aliasing them make them an
-opacity or a font weight, so `border-radius: var(--radius)` reads `12px`), and
+opacity or a font weight, so `border-radius: var(--radius)` reads `12px`) or as
+Dart constants for Flutter (`format: "dart"`: an `abstract final class` per collection and mode, the
+default mode's named after the collection and the others after the collection and the mode, with a
+`static const` `Color`, `double`, `String` or `bool` per variable; names become camelCase Dart
+identifiers kept apart, aliases are resolved to their value in that mode), and
 returns `{text}` (or writes `path` and returns `{path}`). `variable.import {variables}` (an object,
 JSON text or a path; `variableCollections` and `variables` under `meta` or at the top level) reads
 one back: a collection joins this file's collection of the same name
@@ -1477,31 +1485,60 @@ permissions: without it nothing is downloaded); `plugin.directory.publish {path 
 
 ### Dev Mode
 
-- **Component code:** `inspect.code {id, language: react|leptos|swiftui|compose|flutter}` on a component,
+- **Pages as React + Tailwind:** `inspect.code {id, language: "tailwind"}` writes a layer tree as a
+  React function component styled with Tailwind CSS v4 utilities and no stylesheet. Auto layout
+  becomes `flex`/`flex-col`/`gap-*`/`p-*` on the 4px spacing scale, fixed-width auto layout frames
+  and text become fluid (`w-full max-w-[960px]`; as wide as the frame: `w-full`) and a frame's
+  fixed height a minimum, per-side strokes become `border-b` and the like, and instances are
+  inlined with their overrides (component code is `language: react`), except instances whose component
+  is connected to code (`codeConnect.set`/`codeConnect.import`, React): those are their snippet, e.g.
+  `<Button variant="outline">{"See examples"}</Button>`, with each import once at the top. A design
+  system mapped to shadcn/ui this way exports pages that use the project's own components. Bound variables become theme
+  utilities (`bg-accent`, `rounded-card`, `text-muted`) that `variable.export {format: "tailwind"}`
+  declares: `@import "tailwindcss";` and an `@theme static` block (every token is emitted, also those only read through `var()`) named by namespace (`--color-*`,
+  `--radius-*`, `--text-*`, `--spacing-*`, `--font-*`; a number's namespace and unit come from what
+  layers bind it to), other modes on `[data-<collection>="<mode>"]`. With `mobile: <frame id>` (the
+  same layer names, mobile layout) the code is mobile first: the mobile frame's classes, the
+  desktop frame's that differ behind `lg:`, and layers only on desktop `hidden` plus `lg:flex`
+  (auto layout frames) or `lg:block` (other layers).
+- **Component code:** `inspect.code {id, language: react|leptos|vue|swiftui|compose|arkui}` on a component,
   a component set or a variant writes the component as a reusable unit: React (TSX) with a props
-  interface, Leptos with a `#[component]` function (`#[prop]` defaults, `view!` markup), SwiftUI
-  with a `View` struct, Compose with a `@Composable` function, Flutter with a `StatelessWidget`. Its
-  component properties are the parameters, with their defaults: variant properties become string
-  unions (React) or enums, booleans become flags around the layers they show, text properties
-  strings, instance swaps views (`React.ReactNode`, Leptos `ViewFn`, `AnyView`, a composable lambda,
-  `Widget`) and slots optional content. Every variant of a set shares one definition; in React and
-  Leptos the other variants' differences become CSS rules on `data-*` attributes. On an instance (or
-  a layer tree containing instances) each instance is a call passing only the values it changes, e.g.
-  `<Button state="Hover" label="Buy" />`, `<Button state=ButtonState::Hover label="Buy" />`,
-  `Button(state: .hover, label: "Buy")`, `Button(state = ButtonState.Hover, label = "Buy")`,
-  `Button(state: ButtonState.hover, label: "Buy")`. Names are escaped and
+  interface, Leptos with a `#[component]` function (`#[prop]` defaults, `view!` markup), Vue as a
+  single-file component (`<template>`, a `<script setup>` with `defineProps` and its defaults, a
+  `<style scoped>`; a slot layer is Vue's own `<slot>`, so it takes no prop), SwiftUI
+  with a `View` struct, Compose with a `@Composable` function, ArkUI with a `@Component` ArkTS
+  struct (`@Prop` parameters, `@BuilderParam` for swaps and slots). Its component properties are the
+  parameters, with their defaults: variant properties become string unions (React, Vue) or enums,
+  booleans become flags around the layers they show, text properties strings, instance swaps views
+  (`React.ReactNode`, Leptos `ViewFn`, `AnyView`, a composable lambda, an ArkUI builder) and slots
+  optional content.
+  Every variant of a set shares one definition; in React, Vue and Leptos the other variants'
+  differences become CSS rules on `data-*` attributes. A Vue template holds no arbitrary
+  expressions, so what React writes as a braced expression has its own spelling there: text is
+  `{{ prop }}`, a boolean property's layer carries `v-if="prop"`, and a binding is
+  `:prop="value"`. On an instance (or a layer tree containing
+  instances) each instance is a call passing only the values it changes, e.g. `<Button
+  state="Hover" label="Buy" />`, `<Button state=ButtonState::Hover label="Buy" />`,
+  `<Button state="Hover" />`, `Button(state:
+  .hover, label: "Buy")`, `Button(state = ButtonState.Hover, label = "Buy")`, `Button({ state:
+  ButtonState.Hover, label: "Buy" })`. Names are escaped and
   unique (keywords get a suffix, `default` → `defaultValue`, Rust's `type` → `type_`; Leptos names
-  are snake_case, Dart enum members lowerCamel; names that would shadow framework types get one
-  too, `Text` → `TextComponent`). `inspect.componentCode
+  are snake_case; names that would shadow framework types get one too, `Text` → `TextComponent`). `inspect.componentCode
   {id?, language?}` returns the parts: `{component, name, set, properties: [{name, param, type,
   default, value? (instances)}], definition, usage? (instances)}`.
 - **Code connect:** link a component (a variant links its set) to the code component it is built
-  as, per language (`react`, `leptos`, `swiftui`, `compose`, `flutter`): `codeConnect.set {id?, language?, importPath?,
+  as, per language (`react`, `leptos`, `vue`, `swiftui`, `compose`, `arkui`): `codeConnect.set {id?, language?, importPath?,
   name?, template?}` (undoable; fields left out keep their value; the defaults are the generated
   name and a call passing every property) → `{component, language, code, unknown}`. Templates are
   text, never executed: `{property}` (its name or parameter name) is the instance's value escaped
   for the language (React and Leptos keep the markup's braces, so `size={size}` gives
-  `size="Large"` and `disabled={disabled}` gives `disabled={true}`; Leptos imports with `use
+  `size="Large"` and `disabled={disabled}` gives `disabled={true}`; a Vue binding takes an
+  expression, so `:size={size}` gives `:size="&quot;Large&quot;"` and `:disabled={disabled}` gives
+  `:disabled="true"` — the string keeps its JS quotes as entities, and a static attribute
+  (`size={size}`) takes plain text; a
+  component swap is the component itself, `:icon={icon}` giving `:icon="Icon"`; a string that needs
+  escapes keeps them inside the value, where the attribute's own quotes become `&quot;`; Leptos
+  imports with `use
   <importPath>::<name>;`), `{property ? "a" : "b"}` inserts one of two
   strings, any other `{…}` stays as written (`unknown` lists placeholder names that aren't
   properties). Then `inspect.code` on an instance or the component returns the import line and the
@@ -1719,11 +1756,6 @@ first, the last one is on top (the Design panel lists them the other way round, 
   and adjustments, a gradient its stops and handles), and a paint, effect or grid style linked to
   the list is unlinked (the list no longer matches it). In the app, drag a row by its grip (the
   empty strip left of its fields); a line shows where it lands.
-- **Layout grid kinds:** `grid.add {grid: {kind}}` takes `grid` (the square grid), `columns`, `rows`,
-  `diagonal` (45° reference lines, drawn both ways across the frame) and `rings` (concentric circles
-  from the frame's centre). Each takes `size` (0: a one-pixel hairline), `count` (0: Auto),
-  `gutter`, `offset` and `align`. `.fig` names patterns for the first three only: a 45° grid is
-  written as `columns` and rings as the square grid, and the export's warnings say so.
 - **Variable bindings follow their items** when a list is reordered or an item removed
   (`fill.remove`, `stroke.remove`, `effect.remove`, `grid.remove`); a removed item's bindings go
   with it. Binding fields (`variable.bind {field}`): `fill` / `stroke` (the first paint's colour) or
