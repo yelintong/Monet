@@ -160,6 +160,10 @@ impl FigApp {
             self.background_tick(&ctx);
             self.logic_ticked = false;
         }
+        // The active document's icon fonts have to be font families by the time text is laid out,
+        // and the active document changes without a command (a tab, the home screen). Cheap when
+        // nothing changed, so this is every frame.
+        self.session.sync_icon_fonts();
         // Setup once per frame (pass 0), not once per pass and never on a logic-only tick.
         let stamp = (ctx.viewport_id(), ctx.cumulative_frame_nr());
         let first = !self.fonts_installed;

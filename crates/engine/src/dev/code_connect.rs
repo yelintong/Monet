@@ -37,8 +37,12 @@ const MAX_WARNINGS: usize = 50;
 
 /// The languages a component can be connected in.
 pub fn language(s: &str) -> Option<CodeLang> {
-    CodeLang::from_id(s)
-        .filter(|l| matches!(l, CodeLang::React | CodeLang::Leptos | CodeLang::Vue | CodeLang::SwiftUi | CodeLang::Compose | CodeLang::ArkUi))
+    CodeLang::from_id(s).filter(|l| {
+        matches!(
+            l,
+            CodeLang::React | CodeLang::Leptos | CodeLang::Vue | CodeLang::SwiftUi | CodeLang::Compose | CodeLang::ArkUi | CodeLang::Flutter
+        )
+    })
 }
 
 /// The layer `id`'s links are stored on: its component set, else its component (an instance's

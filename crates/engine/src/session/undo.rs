@@ -105,6 +105,9 @@ impl Session {
             return Ok(self.live_travel(true));
         }
         let Some(e) = ds.history.undo.pop() else { return Ok(false) };
+        // Icon fonts go back with the document; only a sync when they did keeps the font database
+        // from being told to drop the families of a document that is still the one on screen.
+        let icons_changed = e.doc.icon_fonts != ds.doc.icon_fonts;
         let redo = HistoryEntry { label: e.label.clone(), doc: ds.doc.clone(), selection: ds.selection.clone(), page: ds.page };
         ds.doc = e.doc;
         cmd::facilitate::keep(&redo.doc, &mut ds.doc);
@@ -115,6 +118,9 @@ impl Session {
         }
         ds.clean_selection();
         ds.revision += 1;
+        if icons_changed {
+            iconfont::sync_icon_fonts(&ds.doc);
+        }
         let (uid, doc) = (ds.uid, ds.doc.clone());
         if self.clipboard.source_doc == uid {
             self.clipboard.copied_components.retain(|id| {
@@ -142,6 +148,7 @@ impl Session {
             return Ok(self.live_travel(false));
         }
         let Some(e) = ds.history.redo.pop() else { return Ok(false) };
+        let icons_changed = e.doc.icon_fonts != ds.doc.icon_fonts;
         let undo = HistoryEntry { label: e.label.clone(), doc: ds.doc.clone(), selection: ds.selection.clone(), page: ds.page };
         ds.doc = e.doc;
         cmd::facilitate::keep(&undo.doc, &mut ds.doc);
@@ -152,6 +159,9 @@ impl Session {
         }
         ds.clean_selection();
         ds.revision += 1;
+        if icons_changed {
+            iconfont::sync_icon_fonts(&ds.doc);
+        }
         Ok(true)
     }
 

@@ -156,6 +156,11 @@ impl Session {
         let edit = changed && ds.interaction.is_none();
         ds.clean_selection();
         ds.revision += 1;
+        // A sync makes the font database hold the active document's icon fonts *instead of* what it
+        // holds, so it runs only when they changed — not on every command.
+        if changed && ds.doc.icon_fonts != bdoc.icon_fonts {
+            iconfont::sync_icon_fonts(&ds.doc);
+        }
         if edit {
             self.record(uid, spec.history.then_some(spec.label), bdoc, bsel, bpage);
         }

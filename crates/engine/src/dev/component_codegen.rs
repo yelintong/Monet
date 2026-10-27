@@ -11,7 +11,9 @@ use figcraft_doc::*;
 use serde_json::{Value, json};
 
 use crate::cmd::CommandSpec;
-use crate::codegen::{CodeLang, Ctx, Markup, arkui, class_name, compose, indent, literal, swift};
+use crate::codegen::{
+    CodeLang, Ctx, FLUTTER_IMPORT, Markup, Place, arkui, class_name, compose, flutter, flutter_indent, indent, literal, swift,
+};
 use crate::components::{prop_default_value, slot_edited, slots_of, variant_options, variant_props, variant_set};
 use crate::params::*;
 use crate::{bad, spec};
@@ -68,14 +70,14 @@ pub fn specs() -> Vec<CommandSpec> {
     vec![spec!(
         "inspect.componentCode",
         "Component code",
-        "{id? (component, set or instance; default the selection), language?: react|leptos|vue|swiftui|compose|arkui (default react)} → {component, name, set, properties: [{name, param, type, default, value? (instances)}], definition, usage? (instances; the connected snippet when the component is connected to code), connected: {importPath, name, template, import, code} | null}",
+        "{id? (component, set or instance; default the selection), language?: react|leptos|vue|swiftui|compose|arkui|flutter (default react)} → {component, name, set, properties: [{name, param, type, default, value? (instances)}], definition, usage? (instances; the connected snippet when the component is connected to code), connected: {importPath, name, template, import, code} | null}",
         false,
         |s, p| {
             let cmd = "inspect.componentCode";
             let id = targets(s, p).first().copied().ok_or_else(|| bad(cmd, "select a component or instance"))?;
             let lang = match string(p, "language") {
                 // One list of code languages, shared with codeConnect (see `code_connect::language`).
-                Some(l) => crate::code_connect::language(&l).ok_or_else(|| bad(cmd, "language: react|leptos|vue|swiftui|compose|arkui"))?,
+                Some(l) => crate::code_connect::language(&l).ok_or_else(|| bad(cmd, "language: react|leptos|vue|swiftui|compose|arkui|flutter"))?,
                 None => CodeLang::React,
             };
             let doc = s.doc()?;
@@ -138,6 +140,11 @@ pub fn code(doc: &Document, id: NodeId, lang: CodeLang) -> String {
             CodeLang::ArkUi => {
                 let mut out = String::new();
                 arkui(&Ctx::new(doc, id), id, 0, &mut out, &[]);
+                out
+            }
+            CodeLang::Flutter => {
+                let mut out = String::new();
+                flutter(&Ctx::new(doc, id), id, 0, &mut out, Place::Flow);
                 out
             }
             _ => {
@@ -533,7 +540,7 @@ pub(crate) fn value_expr(doc: &Document, c: &Component, p: &Param, value: &Value
             let i = opts.iter().position(|o| Some(o.as_str()) == value.as_str()).unwrap_or(0);
             format!("{}::{}", leptos_enum(c, p), rust_cases(opts).get(i).cloned().unwrap_or_else(|| "Unknown".into()))
         }
-        (ParamKind::Text, l) => literal(value.as_str().unwrap_or(""), l == CodeLang::Compose),
+        (ParamKind::Text, l) => literal(value.as_str().unwrap_or(""), matches!(l, CodeLang::Compose | CodeLang::Flutter)),
         (ParamKind::Variant(opts), l) => {
             let v = value.as_str().unwrap_or("");
             if l == CodeLang::Vue {
@@ -544,7 +551,11 @@ pub(crate) fn value_expr(doc: &Document, c: &Component, p: &Param, value: &Value
             }
             let swift = l == CodeLang::SwiftUi;
             let i = opts.iter().position(|o| o == v).unwrap_or(0);
-            let case = cases(opts, swift).get(i).cloned().unwrap_or_else(|| "unknown".into());
+            // Dart's enum members are lowerCamel, never a keyword (`default` → `defaultValue`).
+            let case = match l {
+                CodeLang::Flutter => dart_cases(opts).get(i).cloned().unwrap_or_else(|| "unknown".into()),
+                _ => cases(opts, swift).get(i).cloned().unwrap_or_else(|| "unknown".into()),
+            };
             if swift { format!(".{case}") } else { format!("{}.{case}", enum_name(c, p, false)) }
         }
         (ParamKind::InstanceSwap, l) => {
@@ -556,12 +567,15 @@ pub(crate) fn value_expr(doc: &Document, c: &Component, p: &Param, value: &Value
                 (Some(t), CodeLang::Leptos) => format!("|| view! {{ <{} /> }}", rust_type(&t)),
                 (None, CodeLang::Leptos) => "|| ()".into(),
                 (Some(t), CodeLang::SwiftUi) => format!("AnyView({t}())"),
+                // Dart's defaults have to be constants, so an instance swap is a widget.
+                (Some(t), CodeLang::Flutter) => format!("{t}()"),
                 // ArkUI takes a builder: `@BuilderParam` is a `() => void`.
                 (Some(t), CodeLang::ArkUi) => format!("() => {{ {t}() }}"),
                 (None, CodeLang::ArkUi) => "() => {}".into(),
                 (Some(t), _) => format!("{{ {t}() }}"),
                 (None, _) if js => "null".into(),
                 (None, CodeLang::SwiftUi) => "AnyView(EmptyView())".into(),
+                (None, CodeLang::Flutter) => "const SizedBox.shrink()".into(),
                 (None, _) => "{}".into(),
             }
         }
@@ -616,7 +630,7 @@ pub fn usage(doc: &Document, id: NodeId, lang: CodeLang, depth: usize) -> Option
 pub(crate) fn usage_with_styles(doc: &Document, id: NodeId, lang: CodeLang, depth: usize) -> Option<(String, String)> {
     let c = main_of(doc, id).and_then(|m| describe(doc, m))?;
     let values = instance_values(doc, id, &c)?;
-    let pad = if matches!(lang, CodeLang::React | CodeLang::Vue) { "  ".repeat(depth) } else { indent(depth) };
+    let pad = if matches!(lang, CodeLang::React | CodeLang::Vue | CodeLang::Flutter) { "  ".repeat(depth) } else { indent(depth) };
     // A connected component: its real snippet (its import is at the top of the code: `code`).
     if let Some(link) = crate::code_connect::link(doc, id, lang) {
         return Some((crate::code_connect::render(doc, &c, &values, link, lang, &pad), String::new()));
@@ -684,7 +698,9 @@ pub(crate) fn usage_with_styles(doc: &Document, id: NodeId, lang: CodeLang, dept
                 .collect();
             if slots.is_empty() { format!("{pad}<{t}{attrs} />\n") } else { format!("{pad}<{t}{attrs}>\n{slots}{pad}</{t}>\n") }
         }
-        CodeLang::SwiftUi => format!("{pad}{t}({})\n", args.iter().map(|(n, e, _)| format!("{n}: {e}")).collect::<Vec<_>>().join(", ")),
+        CodeLang::SwiftUi | CodeLang::Flutter => {
+            format!("{pad}{t}({})\n", args.iter().map(|(n, e, _)| format!("{n}: {e}")).collect::<Vec<_>>().join(", "))
+        }
         CodeLang::ArkUi => {
             let list = args.iter().map(|(n, e, _)| format!("{n}: {e}")).collect::<Vec<_>>().join(", ");
             // ArkTS calls take an object literal, or nothing at all.
@@ -743,6 +759,15 @@ fn slot_content(doc: &Document, slot: NodeId, lang: CodeLang, depth: usize, pref
             }
             (format!("() => {{\n{out}{}}}", indent(depth + 1)), String::new())
         }
+        CodeLang::Flutter => {
+            // A slot holds a list of widgets, so it takes however many layers the slot has.
+            let mut out = String::new();
+            for k in kids {
+                flutter(&ctx, k, depth + 1, &mut out, Place::Flow);
+                out.push_str(",\n");
+            }
+            (format!("[\n{out}{}]", flutter_indent(depth)), String::new())
+        }
         _ => {
             let mut out = String::new();
             for k in kids {
@@ -763,6 +788,7 @@ pub fn definition(doc: &Document, c: &Component, lang: CodeLang) -> String {
         CodeLang::Leptos => leptos(doc, c),
         CodeLang::Vue => vue(doc, c),
         CodeLang::ArkUi => arkui_definition(doc, c),
+        CodeLang::Flutter => flutter_definition(doc, c),
         _ => react(doc, c),
     }
 }
@@ -1056,4 +1082,71 @@ fn arkui_definition(doc: &Document, c: &Component) -> String {
     arkui(&ctx, c.comp, 2, &mut out, &[]);
     out.push_str("    }\n}\n");
     out
+}
+
+/// Enum member names for variant values in Dart: lowerCamel, unique, never a keyword (a `default`
+/// value becomes `defaultValue`).
+fn dart_cases(values: &[String]) -> Vec<String> {
+    let mut used = Vec::new();
+    values.iter().map(|v| ident(v, &mut used)).collect()
+}
+
+/// A Flutter `StatelessWidget`: variant enums, a const constructor with defaults, and the widget
+/// tree in `build`.
+fn flutter_definition(doc: &Document, c: &Component) -> String {
+    let ctx = Ctx { doc, root: c.comp, comp: Some(c), base: 2 };
+    let mut out = String::from(FLUTTER_IMPORT);
+    for p in &c.params {
+        if let ParamKind::Variant(opts) = &p.kind {
+            out.push_str(&format!("enum {} {{ {} }}\n\n", enum_name(c, p, false), dart_cases(opts).join(", ")));
+        }
+    }
+    let t = &c.type_name;
+    out.push_str(&format!("class {t} extends StatelessWidget {{\n"));
+    if c.params.is_empty() {
+        out.push_str(&format!("  const {t}({{super.key}});\n"));
+    } else {
+        out.push_str(&format!("  const {t}({{\n    super.key,\n"));
+        for p in &c.params {
+            match flutter_default(doc, c, p) {
+                Some(d) => out.push_str(&format!("    this.{} = {d},\n", p.ident)),
+                None => out.push_str(&format!("    this.{},\n", p.ident)),
+            }
+        }
+        out.push_str("  });\n\n");
+        for p in &c.params {
+            out.push_str(&format!("  final {} {};\n", flutter_type(c, p), p.ident));
+        }
+    }
+    out.push_str("\n  @override\n  Widget build(BuildContext context) {\n    return ");
+    let mut body = String::new();
+    flutter(&ctx, c.comp, 2, &mut body, Place::Flow);
+    out.push_str(body.trim_start());
+    out.push_str(";\n  }\n}\n");
+    out
+}
+
+/// A parameter's Dart type.
+fn flutter_type(c: &Component, p: &Param) -> String {
+    match &p.kind {
+        ParamKind::Variant(_) => enum_name(c, p, false),
+        ParamKind::Boolean => "bool".into(),
+        ParamKind::Text => "String".into(),
+        ParamKind::InstanceSwap => "Widget".into(),
+        // A slot holds however many layers it was filled with.
+        ParamKind::Slot => "List<Widget>?".into(),
+    }
+}
+
+/// A parameter's default as a Dart constant (`None` for a slot, which has none): Dart wants its
+/// defaults to be constants, so an instance swap is a `const` widget.
+fn flutter_default(doc: &Document, c: &Component, p: &Param) -> Option<String> {
+    match &p.kind {
+        ParamKind::Slot => None,
+        ParamKind::InstanceSwap => Some(match id_of(&p.default).and_then(|i| component_type(doc, i)) {
+            Some(t) => format!("const {t}()"),
+            None => "const SizedBox.shrink()".into(),
+        }),
+        _ => Some(value_expr(doc, c, p, &p.default, CodeLang::Flutter)),
+    }
 }
