@@ -105,10 +105,14 @@ pub fn rail(app: &mut FigApp, ui: &mut Ui) {
         let ir = Rect::from_center_size(pos2(r.center().x, y + 14.0), vec2(36.0, 28.0));
         let hit = Rect::from_min_max(pos2(r.min.x, y), pos2(r.max.x, y + 48.0));
         let resp = ui.interact(hit, ui.id().with(("rail", label)), Sense::click()).tip(label);
-        // A tab's rail button is selected while its panel is open; the Variables button is selected
-        // while the Variables editor is open (floating or full), so the rail reflects its state.
+        // The rail is a single selection: a tab is on only while its panel is shown and the
+        // Variables editor is closed; the Variables button is on while the editor is open. The
+        // editor's full view takes the panels' place, so the tabs are off then too.
+        let variables_full = app.ui.variables.as_ref().is_some_and(|e| e.presentation == crate::variables_panel::Presentation::Full);
         let active = match tab {
-            Some(tb) => tb == app.ui.left_tab && !app.ui.left_collapsed && !app.ui.versions.open,
+            Some(tb) => {
+                tb == app.ui.left_tab && !app.ui.left_collapsed && !app.ui.versions.open && !variables_full && app.ui.variables.is_none()
+            }
             None => app.ui.variables.is_some(),
         };
         if tab.is_some() {
@@ -125,6 +129,9 @@ pub fn rail(app: &mut FigApp, ui: &mut Ui) {
         if resp.clicked() {
             match tab {
                 Some(tb) => {
+                    // A tab click means "show this panel": the Variables editor closes, so the rail
+                    // keeps a single selection.
+                    app.ui.variables = None;
                     // Leaving the version history shows the tab rather than collapsing it.
                     if active {
                         app.ui.close_left_panel();
@@ -135,7 +142,14 @@ pub fn rail(app: &mut FigApp, ui: &mut Ui) {
                     app.ui.versions = Default::default();
                 }
                 None => {
-                    app.ui.variables.get_or_insert_with(Default::default);
+                    // Like the File/Assets buttons: a click opens the editor, another closes it,
+                    // so the rail's selected mark follows what the button did.
+                    if app.ui.variables.is_some() {
+                        app.ui.variables = None;
+                    } else {
+                        let layout = app.session.prefs.variables.clone();
+                        app.ui.variables = Some(crate::variables_panel::Editor::from_layout(&layout));
+                    }
                 }
             }
         }
@@ -250,7 +264,7 @@ fn pages(app: &mut FigApp, ui: &mut Ui) {
     let pointer = ui.input(|i| i.pointer.hover_pos());
     let mut move_to: Option<(NodeId, String)> = None;
     // Pages are dragged up and down the list to reorder them.
-    let mut reorder = crate::list_drag::ListDrag::in_order(ui, "pages");
+    let mut reorder = crate::list_drag::ListDrag::in_order(ui, "pages").line_inset(8.0);
     let page_key = (uid, cur);
     let scroll_to_cur = app.ui.pages_seen_page != Some(page_key);
     let mut current_row_rendered = false;
@@ -258,9 +272,12 @@ fn pages(app: &mut FigApp, ui: &mut Ui) {
     // until it is. The list keeps that room (a long one scrolls in it), so the divider is
     // always there to drag.
     let shown_rows = pages.iter().filter(|(_, name, divider)| !filtering || (!*divider && name.to_lowercase().contains(&filter))).count();
-    let content_h = shown_rows as f32 * (ROW + ui.spacing().item_spacing.y);
+    let content_h = shown_rows as f32 * ROW;
     let room_h = pages_list_height(app.ui.pages_height, content_h, ui.available_height());
     let mut moved = crate::widgets::scroll_area().id_salt("pages_list").max_height(room_h).auto_shrink([false, false]).show(ui, |ui| {
+        // Rows sit flush (their own 4 pt inset is the gap): no extra item spacing, so the list
+        // matches the Variables editor's lists.
+        ui.spacing_mut().item_spacing.y = 0.0;
         for (k, (id, name, divider)) in pages.iter().cloned().enumerate() {
             if filtering && (divider || !name.to_lowercase().contains(&filter)) {
                 continue;
@@ -281,13 +298,17 @@ fn pages(app: &mut FigApp, ui: &mut Ui) {
             }
             a11y::list_item(&resp, if divider { tr("Divider") } else { &name }, id == cur);
             let r = r.shrink2(vec2(8.0, 0.0));
+            // The highlight block: the row less 8 on each side and 4 above and below.
+            let hl = r.shrink2(vec2(0.0, 4.0));
             a11y::ring_around(ui, r, &resp);
             let renaming = app.ui.rename_page.as_ref().is_some_and(|(i, _)| *i == id);
             if divider && !renaming {
                 // A divider is a line between pages: it opens nothing and takes no layers.
                 ui.painter().line_segment([pos2(r.min.x + 10.0, r.center().y), pos2(r.max.x - 10.0, r.center().y)], Stroke::new(1.0, t.border));
-            } else if resp.hovered() || id == cur {
-                ui.painter().rect_filled(r, CornerRadius::same(5), t.hover);
+            } else if id == cur {
+                ui.painter().rect_filled(hl, CornerRadius::same(5), t.selected_row);
+            } else if resp.hovered() {
+                ui.painter().rect_filled(hl, CornerRadius::same(5), t.hover);
             }
             if dragging.is_some()
                 && id != cur
@@ -309,7 +330,7 @@ fn pages(app: &mut FigApp, ui: &mut Ui) {
                 }
             } else if !divider {
                 let font = if id == cur { semibold(11.0) } else { regular(11.0) };
-                crate::bidi::paint_name(ui.painter(), pos2(r.min.x + 10.0, r.center().y), &name, font, t.text, r.width() - 14.0);
+                crate::bidi::paint_name(ui.painter(), pos2(r.min.x + 8.0, r.center().y), &name, font, t.text, r.width() - 12.0);
             }
             if resp.clicked() && !divider {
                 select = Some(id);
@@ -911,7 +932,8 @@ fn layers(app: &mut FigApp, ui: &mut Ui) {
     let mut refused = false;
     // Only the rows in view are laid out and drawn; the rest is empty scroll space.
     crate::widgets::scroll_area().auto_shrink([false, false]).show_viewport(ui, |ui, viewport| {
-        let pitch = ROW + ui.spacing().item_spacing.y;
+        // Rows sit flush (their own 4 pt inset is the gap), matching the other lists.
+        let pitch = ROW;
         let top = ui.max_rect().top();
         let total = rows.len() as f32 * pitch;
         ui.set_height(total.max(viewport.height()));
@@ -948,6 +970,8 @@ fn layers(app: &mut FigApp, ui: &mut Ui) {
         let last = ((viewport.max.y / pitch).ceil().max(0.0) as usize).saturating_add(1).min(rows.len());
         let band = Rect::from_x_y_ranges(ui.max_rect().x_range(), (top + first as f32 * pitch)..=(top + last as f32 * pitch));
         let mut band_ui = ui.new_child(egui::UiBuilder::new().max_rect(band));
+        // Flush rows: the pitch is `ROW`, so no item spacing between the allocations.
+        band_ui.spacing_mut().item_spacing.y = 0.0;
         // Stable widget ids for a row wherever the list is scrolled.
         band_ui.skip_ahead_auto_ids(first);
         let ui = &mut band_ui;
@@ -982,6 +1006,8 @@ fn layers(app: &mut FigApp, ui: &mut Ui) {
             let is_marked = is_comp || is_icon;
             let mark_col = if is_icon { ICON } else { COMPONENT };
             let rr = r.shrink2(vec2(8.0, 0.0));
+            // The highlight block: the row less 8 on each side and 4 above and below.
+            let hl = rr.shrink2(vec2(0.0, 4.0));
             a11y::ring_around(ui, rr, &resp);
             // Over the row, its eye and padlock included (they sit on top of it).
             let over = resp.contains_pointer();
@@ -996,8 +1022,9 @@ fn layers(app: &mut FigApp, ui: &mut Ui) {
                     let at = |k: usize| r.min.y + (k as f32 - idx as f32) * pitch;
                     let x = rr.x_range();
                     // The whole run takes the tint, as one rounded block, so that a selected row
-                    // and the rows inside it read as one group instead of a stack of them.
-                    let block = Rect::from_x_y_ranges(x, at(from)..=at(to) + ROW);
+                    // and the rows inside it read as one group instead of a stack of them. It sits
+                    // 4 above the first row and 4 below the last, like a single row's block.
+                    let block = Rect::from_x_y_ranges(x, (at(from) + 4.0)..=(at(to) + ROW - 4.0));
                     ui.painter().rect_filled(block, CornerRadius::same(5), t.selected_row_child);
                     // The selected rows inside it, as bands: only the block's own corners round,
                     // so the joins between them stay straight.
@@ -1009,7 +1036,10 @@ fn layers(app: &mut FigApp, ui: &mut Ui) {
                                 k += 1;
                             }
                             let end = k - 1;
-                            let band = Rect::from_x_y_ranges(x, at(start)..=at(end) + ROW);
+                            let band = Rect::from_x_y_ranges(
+                                x,
+                                (at(start) + if start == from { 4.0 } else { 0.0 })..=(at(end) + ROW - if end == to { 4.0 } else { 0.0 }),
+                            );
                             let edge = |on: bool| if on { 5 } else { 0 };
                             let corners = CornerRadius { nw: edge(start == from), ne: edge(start == from), sw: edge(end == to), se: edge(end == to) };
                             ui.painter().rect_filled(band, corners, run_color(&t, &doc, &rows, start, end));
@@ -1019,12 +1049,8 @@ fn layers(app: &mut FigApp, ui: &mut Ui) {
                     }
                 }
             } else if over || hover == Some(row.id) {
-                ui.painter().rect_stroke(
-                    rr,
-                    CornerRadius::same(5),
-                    Stroke::new(1.0, if is_marked { mark_col } else { ACCENT }),
-                    egui::StrokeKind::Inside,
-                );
+                // Hover is a filled block, like a selection: no outline.
+                ui.painter().rect_filled(hl, CornerRadius::same(5), t.hover);
             }
             if over {
                 hovered_row = Some(row.id);

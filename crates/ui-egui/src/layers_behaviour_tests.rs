@@ -579,12 +579,13 @@ fn neighbouring_selected_layers_share_one_rounded_block() {
     let (lo, hi) = (pa.y.min(pb.y).min(pc.y), pa.y.max(pb.y).max(pc.y));
     let blocks = selection_blocks(&mut u);
     // One block covers the three neighbouring rows, not one block per row.
-    let spanning: Vec<egui::Rect> = blocks.iter().copied().filter(|r| r.min.y <= lo && r.max.y >= hi).collect();
+    // The block is inset 4 at the ends, so it starts just below the first row's top.
+    let spanning: Vec<egui::Rect> = blocks.iter().copied().filter(|r| r.min.y <= lo + 5.0 && r.max.y >= hi - 5.0).collect();
     assert_eq!(spanning.len(), 1, "one block spans the run, blocks: {blocks:?}");
     let block = spanning[0];
     // Its height runs from the first row's top to the last row's bottom (the rows' pitch is
     // the gap between their centres, so the block is that plus one row).
-    assert!((block.height() - ((hi - lo) + ROW)).abs() < 3.0, "the block runs over the whole run: {block:?}");
+    assert!((block.height() - ((hi - lo) + ROW - 8.0)).abs() < 4.0, "the block runs over the whole run, inset 4 at the ends: {block:?}");
     // Nothing paints a separate block for a single row inside the run.
     let inside = blocks.iter().filter(|r| r.height() < 2.0 * ROW && r.min.y > lo && r.max.y < hi).count();
     assert_eq!(inside, 0, "no per-row block inside the run, blocks: {blocks:?}");
@@ -625,15 +626,17 @@ fn a_selected_parent_and_the_rows_inside_it_share_one_block() {
     u.frame(vec![]);
     let t = crate::theme::Tokens::get(&u.ctx);
     let (top, last) = (u.row_at(f).y, kids.map(|k| u.row_at(k).y).into_iter().fold(f32::MIN, f32::max));
-    let want_h = (last - top) + ROW;
+    // The block is inset 4 above the first row and 4 below the last.
+    let want_h = (last - top) + ROW - 8.0;
     let rects = painted_rects(&mut u);
-    // Only the rows' own rects: the left rail's tabs wear the same two colours.
-    let rows_only = |(r, _, _): &(egui::Rect, egui::CornerRadius, egui::Color32)| r.min.x >= 60.0;
+    // Only the layer rows: the rail's tabs and the pages list above wear the same two colours.
+    // (`top` is a row centre, so the layer area starts half a row above it.)
+    let rows_only = |(r, _, _): &(egui::Rect, egui::CornerRadius, egui::Color32)| r.min.x >= 60.0 && r.min.y >= top - ROW;
     // One block carries the tint of the rows inside the selected one, over the whole group.
     let tinted: Vec<_> = rects.iter().filter(|x| rows_only(x)).filter(|(_, _, fill)| *fill == t.selected_row_child).collect();
     assert_eq!(tinted.len(), 1, "one block for the group, not one per row: {rects:?}");
     let (block, corners, _) = *tinted[0];
-    assert!((block.height() - want_h).abs() < 3.0, "the block runs over the parent and its rows: {block:?}, want {want_h}");
+    assert!((block.height() - want_h).abs() < 4.0, "the block runs over the parent and its rows: {block:?}, want {want_h}");
     assert_eq!(corners, egui::CornerRadius::same(5), "the block is rounded: {corners:?}");
     // The selected parent keeps its stronger band at the top of the block, rounding the block's
     // own corners only — the joins inside the block stay straight.
@@ -641,7 +644,7 @@ fn a_selected_parent_and_the_rows_inside_it_share_one_block() {
     assert_eq!(bands.len(), 1, "one band, for the selected parent: {rects:?}");
     let (band, band_corners, _) = *bands[0];
     assert!(
-        (band.min.y - block.min.y).abs() < 1.0 && (band.max.y - (block.min.y + ROW)).abs() < 1.0,
+        (band.min.y - block.min.y).abs() < 1.0 && (band.max.y - (block.min.y + ROW - 4.0)).abs() < 1.0,
         "the band is the parent's row at the top of the block: {band:?} in {block:?}"
     );
     assert_eq!(band_corners, egui::CornerRadius { nw: 5, ne: 5, sw: 0, se: 0 }, "the band rounds the block's top corners only: {band_corners:?}");

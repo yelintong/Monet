@@ -1079,3 +1079,21 @@ fn the_group_rows_and_headers_keep_the_forty_pixel_rhythm() {
     // once ROW_H and GROUP_H are fixed above.
     assert!((cy("space") - cy("surface") - 58.0).abs() <= 0.5, "GROUP_GAP = {}", cy("space") - cy("surface"));
 }
+
+#[test]
+fn the_editor_layout_is_remembered_across_openings() {
+    // The sizes the panel used to reset every time it was closed: `from_layout` reads them back
+    // and `layout` writes them to the preferences, so a close/reopen (or a restart) keeps them.
+    let saved = figcraft_engine::VariablesLayout {
+        sidebar: false,
+        sidebar_w: 300.0,
+        sidebar_split: 0.3,
+        name_w: 180.0,
+        mode_w: 150.0,
+        mode_ws: [("m1".to_string(), 222.0)].into_iter().collect(),
+        size: Some((900.0, 500.0)),
+        pos: Some((100.0, 120.0)),
+    };
+    let editor = crate::variables_panel::Editor::from_layout(&saved);
+    assert_eq!(editor.layout(), saved);
+}

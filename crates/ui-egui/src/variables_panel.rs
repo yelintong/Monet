@@ -103,6 +103,14 @@ impl CopiedVariable {
     }
 }
 
+/// A whole mode column copied from the table: each shown variable's value in that mode, so it can
+/// be pasted into another mode as one undo step.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct CopiedColumn {
+    /// (variable id, its value in the copied mode).
+    values: Vec<(String, VariableValue)>,
+}
+
 /// What's being renamed inline.
 #[derive(Clone, Debug, PartialEq, Hash)]
 pub(crate) enum Rename {
@@ -246,6 +254,9 @@ pub struct Editor {
     pub(crate) details: Option<String>,
     /// The group the table shows ("space" or "color/brand"); None = every variable.
     group: Option<String>,
+    /// "All variables" is the selected row (None means no row is selected, not that All is). It
+    /// highlights only itself — the groups below are not its children, so they are not bundled in.
+    selected_all: bool,
     /// The collections sidebar shows (its fold button, in the header).
     pub sidebar: bool,
     /// Its width, dragged by its edge.
@@ -276,11 +287,18 @@ pub struct Editor {
     /// The collections list's share of the sidebar's body (0..1); the groups list takes the rest.
     /// The divider between them drags it, so the two can trade height.
     pub(crate) sidebar_split: f32,
+    /// The groups whose sub-groups are folded away in the Groups list (by path).
+    pub(crate) collapsed_groups: std::collections::BTreeSet<String>,
     /// The row clicked last. It only decides where a paste goes (under it, else at the end of the
     /// table), so it lives as long as the editor is open.
     pub(crate) selected: Option<String>,
     /// The variable copied here (Cmd/Ctrl+C), waiting for a paste.
     pub(crate) copied: Option<CopiedVariable>,
+    /// The mode column selected (a click on its heading), so the whole column can be copied and
+    /// pasted like a row.
+    pub(crate) selected_mode: Option<String>,
+    /// The mode column copied here (Cmd/Ctrl+C with a column selected), waiting for a paste.
+    pub(crate) copied_column: Option<CopiedColumn>,
     /// A copy asked for from the keyboard, run by the next frame that has the shown rows (the
     /// keys are taken before the table is drawn).
     pub(crate) copy_request: bool,
@@ -308,6 +326,7 @@ impl Default for Editor {
             rename_start: false,
             details: None,
             group: None,
+            selected_all: false,
             sidebar: true,
             sidebar_w: SIDEBAR_W,
             size: None,
@@ -320,8 +339,11 @@ impl Default for Editor {
             mode_drag: None,
             group_order: std::collections::BTreeMap::new(),
             sidebar_split: 0.5,
+            collapsed_groups: Default::default(),
             selected: None,
             copied: None,
+            selected_mode: None,
+            copied_column: None,
             copy_request: false,
             paste_request: false,
             panel: None,
@@ -336,9 +358,50 @@ impl Editor {
         Editor { collection, ..Default::default() }
     }
 
+    // TEMP-VERIFY: set the selected group for screenshot verification (remove after).
+    pub(crate) fn select_group_for_verify(&mut self, g: &str) {
+        if g == "ALL" {
+            self.selected_all = true;
+            self.group = None;
+        } else {
+            self.group = Some(g.to_string());
+            self.selected_all = false;
+        }
+    }
+
     /// An editor showing a collection of enabled library `library` (id or name).
     pub fn in_library(library: String, collection: Option<String>) -> Self {
         Editor { library: Some(library), collection, ..Default::default() }
+    }
+
+    /// An editor whose sizes (sidebar, split, column widths, the floating panel's place and size)
+    /// start from the saved layout, so closing and reopening the panel keeps them.
+    pub fn from_layout(l: &figcraft_engine::VariablesLayout) -> Self {
+        Editor {
+            sidebar: l.sidebar,
+            sidebar_w: l.sidebar_w,
+            sidebar_split: l.sidebar_split,
+            name_w: l.name_w,
+            mode_w: l.mode_w,
+            mode_ws: l.mode_ws.clone(),
+            size: l.size.map(|(w, h)| vec2(w, h)),
+            pos: l.pos.map(|(x, y)| pos2(x, y)),
+            ..Default::default()
+        }
+    }
+
+    /// The layout to remember: the sizes `from_layout` reads back.
+    pub fn layout(&self) -> figcraft_engine::VariablesLayout {
+        figcraft_engine::VariablesLayout {
+            sidebar: self.sidebar,
+            sidebar_w: self.sidebar_w,
+            sidebar_split: self.sidebar_split,
+            name_w: self.name_w,
+            mode_w: self.mode_w,
+            mode_ws: self.mode_ws.clone(),
+            size: self.size.map(|s| (s.x, s.y)),
+            pos: self.pos.map(|p| (p.x, p.y)),
+        }
     }
 
     /// Mode column `id`'s width: what it was dragged to, else the default every column starts at.
@@ -419,7 +482,11 @@ pub fn keys(app: &mut FigApp, ctx: &Context) {
         return;
     }
     // Escape lets the row go (a drag cancels itself): a paste then lands at the end of the table.
-    let letting_go = app.ui.variables.as_ref().is_some_and(|st| st.selected.is_some() && st.drag.is_none() && st.mode_drag.is_none())
+    let letting_go = app
+        .ui
+        .variables
+        .as_ref()
+        .is_some_and(|st| (st.selected.is_some() || st.selected_mode.is_some()) && st.drag.is_none() && st.mode_drag.is_none())
         && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
     // A press anywhere else lets it go too: the row is the table's selection, and a click on the
     // canvas is about the canvas (Ctrl+C there copies layers, not the row). A press in the details
@@ -435,6 +502,7 @@ pub fn keys(app: &mut FigApp, ctx: &Context) {
     if letting_go || away {
         if let Some(st) = app.ui.variables.as_mut() {
             st.selected = None;
+            st.selected_mode = None;
         }
         ctx.request_repaint();
     }
@@ -458,7 +526,11 @@ pub fn keys(app: &mut FigApp, ctx: &Context) {
         let hidden = release && !paste_event && !app.ui.paste_event && !app.ui.v_pressed;
         (copying, pasting || hidden)
     });
-    let (selected, copied) = app.ui.variables.as_ref().map_or((false, false), |st| (st.selected.is_some(), st.copied.is_some()));
+    let (selected, copied) = app
+        .ui
+        .variables
+        .as_ref()
+        .map_or((false, false), |st| (st.selected.is_some() || st.selected_mode.is_some(), st.copied.is_some() || st.copied_column.is_some()));
     let (copying, pasting) = (copying && selected, pasting && copied);
     if !copying && !pasting {
         return;
@@ -520,7 +592,7 @@ pub fn full(app: &mut FigApp, ctx: &Context, panel: Rect) {
 /// The editor in `g`'s geometry; false when it was closed. One area draws both presentations, so
 /// the controls keep their ids (and the keyboard) as the panel grows into the full view.
 fn draw(app: &mut FigApp, ctx: &Context, st: &mut Editor, g: Geom) -> bool {
-    let t = Tokens::get(ctx);
+    let t = Tokens::get(ctx).ink();
     let mut open = true;
     st.panel = Some(g.panel);
     let frame = if g.floating { egui::Frame::window(&ctx.global_style()).fill(t.panel) } else { egui::Frame::NONE.fill(t.panel) }
@@ -530,9 +602,18 @@ fn draw(app: &mut FigApp, ctx: &Context, st: &mut Editor, g: Geom) -> bool {
             ui.set_width(g.size().x);
             ui.set_min_height(g.size().y);
             ui.spacing_mut().item_spacing = vec2(0.0, 0.0);
+            // Fields (search, value cells, rename) take their text colour from the style, not the
+            // tokens, so force them black here too.
+            ui.style_mut().visuals.override_text_color = Some(egui::Color32::BLACK);
             editor(app, ui, st, g, &mut open);
         });
     });
+    // Keep the sizes in the preferences: closing and reopening the panel (or restarting the app)
+    // then keeps them, instead of resetting to the defaults.
+    let layout = st.layout();
+    if app.session.prefs.variables != layout {
+        app.session.prefs.variables = layout;
+    }
     open
 }
 
@@ -553,7 +634,7 @@ fn editor(app: &mut FigApp, ui: &mut Ui, st: &mut Editor, g: Geom, open: &mut bo
     let Some((view, coll)) = found.map(|(v, c)| (v, Some(c))).or_else(|| views.first().map(|v| (v, v.collections.first().copied()))) else { return };
     st.library = view.id().map(str::to_string);
     st.collection = coll.map(|c| c.id.clone());
-    let t = Tokens::get(ui.ctx());
+    let t = Tokens::get(ui.ctx()).ink();
     let mut slots: Vec<Slot> = Vec::new();
     header(app, ui, st, g, open);
     let h = g.body_height();
@@ -648,7 +729,7 @@ fn editor(app: &mut FigApp, ui: &mut Ui, st: &mut Editor, g: Geom, open: &mut bo
             let grip = ui.painter();
             for i in 0..3 {
                 let x = p.max.x - 5.0 - i as f32 * 4.5;
-                grip.line_segment([pos2(x - 3.5, p.max.y - 5.0), pos2(x, p.max.y - 8.5)], Stroke::new(1.2, t.text_secondary));
+                grip.line_segment([pos2(x - 3.5, p.max.y - 5.0), pos2(x, p.max.y - 8.5)], Stroke::new(1.2, Tokens::get(ui.ctx()).text_secondary));
             }
         }
     }
@@ -657,7 +738,7 @@ fn editor(app: &mut FigApp, ui: &mut Ui, st: &mut Editor, g: Geom, open: &mut bo
 }
 
 fn header(app: &mut FigApp, ui: &mut Ui, st: &mut Editor, g: Geom, open: &mut bool) {
-    let t = Tokens::get(ui.ctx());
+    let t = Tokens::get(ui.ctx()).ink();
     let (r, _) = ui.allocate_exact_size(vec2(ui.available_width(), Geom::HEADER_H), Sense::hover());
     // The floating panel's handle: everything left of the buttons (they take their own presses).
     if g.floating {
@@ -757,7 +838,7 @@ fn header(app: &mut FigApp, ui: &mut Ui, st: &mut Editor, g: Geom, open: &mut bo
 
 /// The search field, with the button that filters by type joined to its right end.
 fn search_box(ui: &mut Ui, st: &mut Editor, field: Rect) {
-    let t = Tokens::get(ui.ctx());
+    let t = Tokens::get(ui.ctx()).ink();
     let filter = Rect::from_min_max(pos2(field.max.x - FILTER_W, field.min.y), field.max);
     let body = Rect::from_min_max(field.min, pos2(field.max.x - FILTER_W, field.max.y));
     ui.painter().rect_filled(body, CornerRadius { nw: 5, sw: 5, ne: 0, se: 0 }, t.field);
@@ -894,7 +975,7 @@ fn sidebar(
     coll: Option<&Collection>,
     slots: &mut Vec<Slot>,
 ) {
-    let t = Tokens::get(ui.ctx());
+    let t = Tokens::get(ui.ctx()).ink();
     // Collections: the heading with the button that makes one, then this file's and each library's.
     let (hr, _) = ui.allocate_exact_size(vec2(ui.available_width(), 34.0), Sense::hover());
     ui.painter().text(pos2(hr.min.x + 16.0, hr.center().y), Align2::LEFT_CENTER, tr("Collections"), semibold(11.0), t.text_secondary);
@@ -970,7 +1051,7 @@ fn sidebar(
 /// step; dropping past the last one puts it at the end. Library collections stay where they are.
 fn collections_list(app: &mut FigApp, ui: &mut Ui, st: &mut Editor, views: &[View]) {
     let mut local_ids: Vec<String> = Vec::new();
-    let mut coll_drag = ListDrag::in_order(ui, "vars_collections");
+    let mut coll_drag = ListDrag::in_order(ui, "vars_collections").line_inset(0.0);
     for v in views {
         if let Some((_, name)) = v.library
             && !v.collections.is_empty()
@@ -1003,7 +1084,7 @@ fn collections_list(app: &mut FigApp, ui: &mut Ui, st: &mut Editor, views: &[Vie
 
 /// A library's heading in the sidebar: its collections follow, read-only.
 fn library_title(ui: &mut Ui, name: &str) {
-    let t = Tokens::get(ui.ctx());
+    let t = Tokens::get(ui.ctx()).ink();
     ui.add_space(8.0);
     let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 26.0), Sense::hover());
     icons::paint(ui.painter(), Rect::from_center_size(pos2(r.min.x + 22.0, r.center().y), vec2(12.0, 12.0)), Icon::Library, t.icon_secondary);
@@ -1016,9 +1097,11 @@ fn library_title(ui: &mut Ui, name: &str) {
 /// collection-reorder drag (Some for this file's editable collections, None for a library's): a row
 /// registered with it drags to a new place among the collections.
 fn collection_row(app: &mut FigApp, ui: &mut Ui, view: &View, c: &Collection, st: &mut Editor, drag: Option<&mut ListDrag>, index: usize) {
-    let t = Tokens::get(ui.ctx());
-    let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 30.0), if drag.is_some() { Sense::click_and_drag() } else { Sense::click() });
-    let r = r.shrink2(vec2(8.0, 1.0));
+    let t = Tokens::get(ui.ctx()).ink();
+    let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 32.0), if drag.is_some() { Sense::click_and_drag() } else { Sense::click() });
+    let r = r.shrink2(vec2(8.0, 0.0));
+    // The highlight block: the row less 8 on each side and 4 above and below.
+    let hl = r.shrink2(vec2(0.0, 4.0));
     // A draggable collection (this file's): the row carries the drag and shows a grab cursor over it.
     if let Some(drag) = drag {
         drag.row_by(&resp, index, r, || c.name.clone());
@@ -1028,13 +1111,13 @@ fn collection_row(app: &mut FigApp, ui: &mut Ui, view: &View, c: &Collection, st
     }
     let selected = view.is(st.library.as_deref()) && st.collection.as_deref() == Some(c.id.as_str());
     if selected {
-        ui.painter().rect_filled(r, CornerRadius::same(5), t.selected_row);
+        ui.painter().rect_filled(hl, CornerRadius::same(5), t.selected_row);
     } else if resp.hovered() {
-        ui.painter().rect_filled(r, CornerRadius::same(5), t.hover);
+        ui.painter().rect_filled(hl, CornerRadius::same(5), t.hover);
     }
     let target = Rename::Collection(c.id.clone());
     let count = view.in_collection(&c.id).count();
-    ui.painter().text(pos2(r.max.x - 8.0, r.center().y), Align2::RIGHT_CENTER, count.to_string(), regular(11.0), t.text_tertiary);
+    ui.painter().text(pos2(r.max.x - 8.0, r.center().y), Align2::RIGHT_CENTER, count.to_string(), regular(11.0), Tokens::get(ui.ctx()).text_tertiary);
     let indent = if view.editable() { 8.0 } else { 26.0 };
     let name_r = Rect::from_min_max(pos2(r.min.x + indent, r.min.y + 4.0), pos2(r.max.x - 32.0, r.max.y - 4.0));
     if view.editable() && st.rename.as_ref() == Some(&target) {
@@ -1052,6 +1135,8 @@ fn collection_row(app: &mut FigApp, ui: &mut Ui, view: &View, c: &Collection, st
         }
         st.library = view.id().map(str::to_string);
         st.collection = Some(c.id.clone());
+        // The selected column belongs to the collection it was picked in.
+        st.selected_mode = None;
     }
     if view.editable() {
         if resp.double_clicked() {
@@ -1096,29 +1181,52 @@ fn groups<'a>(names: impl Iterator<Item = &'a str>) -> Vec<String> {
 /// "All variables" and the collection's groups (indented by depth): picking one filters the
 /// table; this file's groups can be renamed (every variable in them follows) or deleted.
 fn group_rows(app: &mut FigApp, ui: &mut Ui, view: &View, coll: &Collection, st: &mut Editor, slots: &mut Vec<Slot>) {
-    let t = Tokens::get(ui.ctx());
+    let t = Tokens::get(ui.ctx()).ink();
     let members: Vec<&Variable> = view.in_collection(&coll.id).collect();
     let names: Vec<&str> = members.iter().map(|v| v.name.as_str()).collect();
     let mut list = groups(names.iter().copied());
     // Show the groups in the order the user dragged them to (a session preference, as groups are
-    // derived from variable names); any not yet placed by a drag follow alphabetically.
+    // derived from variable names); any not yet placed by a drag follow alphabetically. The order is
+    // flat — a group's indentation comes from its path, not from the order — so a drop lands exactly
+    // where the insertion line is, even at a level shallower than the rows around it.
     let order = st.group_order.get(&coll.id).cloned().unwrap_or_default();
-    list.sort_by(|a, b| {
-        let pa = order.iter().position(|g| g == a);
-        let pb = order.iter().position(|g| g == b);
-        match (pa, pb) {
-            (Some(i), Some(j)) => i.cmp(&j),
-            (Some(_), None) => std::cmp::Ordering::Less,
-            (None, Some(_)) => std::cmp::Ordering::Greater,
-            (None, None) => a.cmp(b),
-        }
+    list.sort_by(|a, b| match (order.iter().position(|g| g == a), order.iter().position(|g| g == b)) {
+        (Some(i), Some(j)) => i.cmp(&j),
+        (Some(_), None) => std::cmp::Ordering::Less,
+        (None, Some(_)) => std::cmp::Ordering::Greater,
+        (None, None) => a.cmp(b),
     });
     let mut ids: Vec<String> = Vec::new();
-    let mut drag = ListDrag::in_order(ui, format!("vars_groups/{}", coll.id));
+    let mut drag = ListDrag::in_order(ui, format!("vars_groups/{}", coll.id)).line_inset(0.0);
+    // The x where a level-0 group's label (and so its insertion line) starts: level L's label is
+    // `base + L*16`, so pulling the pointer left of a deeper row's label lowers the level.
+    // The indent step, and where a top-level row's block starts: 8 pt in from the row's outer left
+    // edge (the row is already shrunk 8), then 24 pt per level. The drag's level detection uses the
+    // same numbers.
+    const INDENT: f32 = 24.0;
+    let mut base = f32::NAN;
+    // Pass 1: lay the rows out and keep each one, so the selection block can be drawn once for the
+    // whole run (a selected group and its children as ONE block) before any row's contents.
+    struct Drawn<'a> {
+        g: Option<&'a String>,
+        r: Rect,
+        resp: egui::Response,
+        level: usize,
+    }
+    let mut drawn: Vec<Drawn> = Vec::new();
     let rows = std::iter::once(None).chain(list.iter().map(Some));
     for g in rows {
-        let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 26.0), Sense::click_and_drag());
+        // A group under a collapsed one is not drawn (its ancestor's chevron folds it away).
+        if let Some(path) = g
+            && st.collapsed_groups.iter().any(|c| path.starts_with(&format!("{c}/")))
+        {
+            continue;
+        }
+        let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 32.0), Sense::click_and_drag());
         let r = r.shrink2(vec2(8.0, 0.0));
+        if base.is_nan() {
+            base = r.min.x;
+        }
         // A group row (not "All variables") carries the drag; the grab cursor hints it.
         if let Some(id) = g.cloned() {
             let idx = ids.len();
@@ -1131,26 +1239,111 @@ fn group_rows(app: &mut FigApp, ui: &mut Ui, view: &View, coll: &Collection, st:
             }
         }
         slots.push(Slot::group(r, g.cloned()));
-        let on = st.group.as_ref() == g;
+        let level = g.map_or(0, |g| g.matches('/').count() + 1);
+        drawn.push(Drawn { g, r, resp, level });
+    }
+
+    // A selected group and everything under it read as ONE block, like the Layers list: a single
+    // rounded rect over the whole run (no per-row gaps), with the selected row itself a darker band.
+    // "All variables" is a selection of its own: it highlights only its row, never bundling the
+    // groups below (they are not its children), so its mark is independent of `group`.
+    let mark = |g: Option<&String>| -> u8 {
+        if st.selected_all {
+            return if g.is_none() { 2 } else { 0 };
+        }
+        match (&st.group, g) {
+            (Some(s), Some(g)) if g == s => 2,
+            (Some(s), Some(g)) if g.starts_with(&format!("{s}/")) => 1,
+            _ => 0,
+        }
+    };
+    let marks: Vec<u8> = drawn.iter().map(|d| mark(d.g)).collect();
+    let mut i = 0;
+    while i < drawn.len() {
+        if marks[i] == 0 {
+            i += 1;
+            continue;
+        }
+        let start = i;
+        while i < drawn.len() && marks[i] != 0 {
+            i += 1;
+        }
+        let end = i - 1;
+        // A grouped run (parent + its visible children) gets a little extra room below it, so the
+        // highlight's distance to the next row is 8 rather than the 4 above it. A lone selected row
+        // keeps the symmetric 4/4.
+        let bottom_inset = if end > start { 8.0 } else { 4.0 };
+        let block = Rect::from_min_max(
+            pos2(drawn[start].r.min.x, drawn[start].r.min.y + 4.0),
+            pos2(drawn[start].r.max.x, drawn[end].r.max.y - bottom_inset),
+        );
+        ui.painter().rect_filled(block, CornerRadius::same(5), t.selected_row_child);
+        // The selected row's band; only the block's own corners round, so the joins stay straight.
+        for k in start..=end {
+            if marks[k] != 2 {
+                continue;
+            }
+            let r = drawn[k].r;
+            // The band is full-width like the run block it sits in — never indented to the row's
+            // level — so the parent and its children read as ONE highlighted block.
+            let band = Rect::from_min_max(
+                pos2(drawn[start].r.min.x, r.min.y + 4.0),
+                pos2(r.max.x, r.max.y - 4.0),
+            );
+            let edge = |on: bool| if on { 5 } else { 0 };
+            let corners = CornerRadius { nw: edge(k == start), ne: edge(k == start), sw: edge(k == end), se: edge(k == end) };
+            ui.painter().rect_filled(band, corners, t.selected_row);
+        }
+    }
+
+    // Pass 2: each row's hover block and contents.
+    for (k, d) in drawn.iter().enumerate() {
+        let g = d.g;
+        let r = d.r;
+        let resp = &d.resp;
+        let level = d.level;
+        // The row's own block (the small border): 4 pt inset above and below, starting at the
+        // level's chevron column so the chevron has no left margin inside it.
+        let x0 = base + (level.saturating_sub(1)) as f32 * INDENT;
+        let hl = Rect::from_min_max(pos2(x0, r.min.y + 4.0), pos2(r.max.x, r.max.y - 4.0));
         // A dragged row over this folder: dropping it there moves it in.
         let hot = st.drag.is_some() && ui.rect_contains_pointer(r);
-        if on {
-            ui.painter().rect_filled(r, CornerRadius::same(5), t.hover);
-        } else if resp.hovered() || hot {
-            ui.painter().rect_stroke(r, CornerRadius::same(5), Stroke::new(1.0, t.border), StrokeKind::Inside);
+        if marks[k] == 0 && (resp.hovered() || hot) {
+            ui.painter().rect_filled(hl, CornerRadius::same(5), t.hover);
         }
         if hot {
-            ui.painter().rect_stroke(r, CornerRadius::same(5), Stroke::new(1.0, t.accent), StrokeKind::Inside);
+            ui.painter().rect_stroke(hl, CornerRadius::same(5), Stroke::new(1.0, t.accent), StrokeKind::Inside);
         }
-        let depth = g.map_or(0, |g| g.matches('/').count());
-        let x = r.min.x + 20.0 + depth as f32 * 12.0;
         let label = g.map_or(tr("All variables"), |g| g.rsplit('/').next().unwrap_or(g));
         let count = names.iter().filter(|n| g.is_none_or(|g| n.starts_with(&format!("{g}/")))).count();
-        ui.painter().text(pos2(r.max.x - 8.0, r.center().y), Align2::RIGHT_CENTER, count.to_string(), regular(10.0), t.text_tertiary);
-        let name_r = Rect::from_min_max(pos2(x, r.min.y + 3.0), pos2(r.max.x - 28.0, r.max.y - 3.0));
+        ui.painter().text(pos2(r.max.x - 8.0, r.center().y), Align2::RIGHT_CENTER, count.to_string(), regular(10.0), Tokens::get(ui.ctx()).text_tertiary);
+        // The chevron: a 24 pt slot flush with the row block's left edge, the 16 pt glyph inset 4
+        // inside it; the name follows 8 pt after the glyph (4 + 16 + 8 = 28). "All variables" has no
+        // chevron, so its name sits 4 pt in.
+        let glyph = Rect::from_min_size(pos2(x0 + 4.0, r.center().y - 8.0), vec2(16.0, 16.0));
+        let slot = Rect::from_min_size(pos2(x0, r.center().y - 12.0), vec2(24.0, 24.0));
+        let text_x = if g.is_some() { x0 + 28.0 } else { x0 + 4.0 };
+        if let Some(path) = g {
+            let has_kids = list.iter().any(|c| c.starts_with(&format!("{path}/")));
+            if has_kids {
+                let open = !st.collapsed_groups.contains(path);
+                let tresp = ui.interact(slot, ui.scope_id().with(("grtri", path.as_str())), Sense::click());
+                icons::paint(ui.painter(), glyph, if open { Icon::Chevron } else { Icon::ChevronRight }, t.icon_secondary);
+                if tresp.clicked() {
+                    if open {
+                        st.collapsed_groups.insert(path.clone());
+                    } else {
+                        st.collapsed_groups.remove(path);
+                    }
+                }
+            }
+        }
+        let name_r = Rect::from_min_max(pos2(text_x, r.min.y + 3.0), pos2(r.max.x - 28.0, r.max.y - 3.0));
         let Some(g) = g else {
             ui.painter().text(name_r.left_center(), Align2::LEFT_CENTER, label, regular(11.0), t.text_secondary);
             if resp.clicked() {
+                // Selecting "All variables" highlights only this row; clear any group selection.
+                st.selected_all = true;
                 st.group = None;
             }
             continue;
@@ -1165,6 +1358,7 @@ fn group_rows(app: &mut FigApp, ui: &mut Ui, view: &View, coll: &Collection, st:
         }
         if resp.clicked() {
             st.group = Some(g.clone());
+            st.selected_all = false;
         }
         if !view.editable() {
             continue;
@@ -1172,7 +1366,7 @@ fn group_rows(app: &mut FigApp, ui: &mut Ui, view: &View, coll: &Collection, st:
         if resp.double_clicked() {
             start_rename(st, target.clone());
         }
-        crate::right::context_popup(&resp).show(|ui| {
+        crate::right::context_popup(resp).show(|ui| {
             if menu_item(ui, tr("Rename group"), "") {
                 start_rename(st, target.clone());
                 ui.close();
@@ -1192,14 +1386,243 @@ fn group_rows(app: &mut FigApp, ui: &mut Ui, view: &View, coll: &Collection, st:
         });
     }
     // A group dropped at a new place reorders the Groups list (and the table's group headers, which
-    // read the same order): remembered per collection as a view preference.
-    if let Some((from, to)) = drag.finish(ui).map(Dropped::pair)
-        && from != to
+    // read the same order): remembered per collection as a view preference. The drop follows the
+    // pointer's x — dragging left, out of a deeper row's indent, raises the level and reparents the
+    // group there (the insertion line widens to the parent level to show it).
+    let mut info: Option<GroupDrop> = None;
+    let dropped = drag.finish_leveled(ui, |rows, from, p| {
+        let d = group_drop_slot(rows, from, p, &ids, base)?;
+        let out = (d.to, d.y, d.x0, d.x1);
+        info = Some(d);
+        Some(out)
+    });
+    // Apply only on release. `finish_leveled` resolves a slot every frame just to draw the line;
+    // applying it there would rename and reorder the groups on every frame of the drag (which made
+    // the list jitter and spawn child groups over and over).
+    if dropped.is_some()
+        && let Some(d) = info
     {
-        let mut ordered = ids.clone();
-        let item = ordered.remove(from);
-        ordered.insert(to, item);
-        st.group_order.insert(coll.id.clone(), ordered);
+        apply_group_drop(app, coll, st, &ids, &members, &d);
+    }
+}
+
+/// A group drag's resolved drop: the model index it goes to (`to`), the insertion line's geometry
+/// (`y`, `x0`–`x1`), the group it attaches to (`target`, None at the very top), whether it lands
+/// after it (`after`), and the level (depth) the pointer's x selected.
+struct GroupDrop {
+    from: usize,
+    to: usize,
+    y: f32,
+    x0: f32,
+    x1: f32,
+    target: Option<usize>,
+    after: bool,
+    level: usize,
+}
+
+/// Resolve a group drag at pointer `p` into a [`GroupDrop`]: which row it lands next to, the level
+/// its x selects (a deeper row → narrower, indented line; pulling left widens it to the parent), and
+/// the insertion line's span. Returns None only outside the list: while the pointer is over it the
+/// line always shows, even right next to the dragged row itself (dropping there is a no-op).
+fn group_drop_slot(
+    rows: &[(usize, Rect)],
+    from: usize,
+    p: Pos2,
+    ids: &[String],
+    base: f32,
+) -> Option<GroupDrop> {
+    if rows.is_empty() {
+        return None;
+    }
+    let first = rows.first()?.1;
+    let last = rows.last()?.1;
+    let slack = first.height() / 2.0;
+    let area = Rect::from_min_max(pos2(first.min.x, first.min.y - slack), pos2(last.max.x, last.max.y + slack));
+    if !area.contains(p) {
+        return None;
+    }
+    // The boundary the pointer sits at: how many rows are above it. The row BELOW it is the anchor
+    // the drop is placed against.
+    let gap = rows.iter().filter(|(_, r)| r.center().y < p.y).count();
+    let bottom = gap >= rows.len();
+    let anchor_row = gap.min(rows.len() - 1);
+    let anchor = rows[anchor_row].0;
+    let anchor_id = &ids[anchor];
+    let anchor_level = anchor_id.matches('/').count() + 1;
+    // Level from the pointer's x: `base` is a top-level group's chevron column, then 24 pt per
+    // level. A group is at level 1 or deeper, and never deeper than the anchor row. Pulling left
+    // raises the level.
+    let level = ((((p.x - base) / 24.0).floor() as i32) + 1).clamp(1, anchor_level as i32) as usize;
+    // The group the drop becomes a sibling of: the anchor at its own level, or its ancestor at a
+    // shallower level. A shallower drop lands AFTER that ancestor's whole subtree — never between
+    // the ancestor and its children (that pushed the children behind the moved group, so they
+    // looked like they had jumped under it), and never right after a single child.
+    // A shallower drop lands AFTER the anchor's ancestor subtree — never between the ancestor and
+    // its children (that pushed the children behind the moved group, so they looked like they had
+    // jumped under it), and never right after a single child. Inside the subtree (a shallower level
+    // than the anchor's) or at the very bottom → after the subtree; otherwise right before the anchor.
+    let after = level < anchor_level || bottom;
+    // The line spans the row's block at level 1 (its left edge is `base`, the chevron column) and
+    // steps right 24 pt per deeper level, so it is as wide as the highlight the user sees and
+    // narrows level by level. The right edge stays at the row's right edge.
+    let x0 = base + (level - 1) as f32 * 24.0;
+    let x1 = last.max.x;
+    // The line stays at the pointer's boundary — it never runs off to a subtree end — while the
+    // item still lands after the sibling's whole subtree, which is where it belongs.
+    let y = if bottom { rows[rows.len() - 1].1.max.y } else { rows[gap].1.min.y };
+    Some(GroupDrop { from, to: anchor, y, x0, x1, target: Some(anchor), after, level })
+}
+
+/// Where in the flat group order a drop lands: right before `sib`, or right after `sib` and every
+/// group under it. A group's descendants must stay directly behind it (the order is flat, so
+/// inserting between a parent and its children visually orphans the children under the newcomer),
+/// which is why a shallower-level drop goes after the whole subtree rather than at the boundary.
+fn group_insert_index(ordered: &[String], sib: &str, after: bool) -> usize {
+    if after {
+        let prefix = format!("{sib}/");
+        ordered
+            .iter()
+            .enumerate()
+            .filter(|(_, g)| g.as_str() == sib || g.starts_with(&prefix))
+            .map(|(k, _)| k)
+            .max()
+            .map_or(ordered.len(), |k| k + 1)
+    } else {
+        ordered.iter().position(|g| g == sib).unwrap_or(ordered.len())
+    }
+}
+
+/// Whether a drop should be ignored: it would land on the dragged group itself (or inside its own
+/// subtree) at the same level or deeper — a no-op or a cycle. A shallower level is a real move out
+/// and must go through.
+fn drop_is_noop_or_cycle(old: &str, anchor: &str, level: usize) -> bool {
+    let old_level = old.matches('/').count() + 1;
+    let inside = anchor == old || anchor.starts_with(&format!("{old}/"));
+    inside && level >= old_level
+}
+
+/// Apply a resolved group drop: move group `ids[d.from]` to be a child of the parent implied by the
+/// pointer's level (an ancestor of the group it landed next to), renaming every variable under it to
+/// the new path (one undo step), then place it in the group order where the pointer asked.
+fn apply_group_drop(
+    app: &mut FigApp,
+    coll: &Collection,
+    st: &mut Editor,
+    ids: &[String],
+    members: &[&Variable],
+    d: &GroupDrop,
+) {
+    let old = match ids.get(d.from) {
+        Some(g) => g.clone(),
+        None => return,
+    };
+    let old_pref = format!("{old}/");
+    // Dropping onto itself (or into its own subtree) at its own level or deeper would be a no-op or
+    // a cycle. But a SHALLOWER level is a valid move OUT — e.g. a child dragged up to its parent's
+    // level, landing after the parent's whole subtree. That used to be swallowed by this guard,
+    // which left the group sitting exactly where it was while the line showed the parent's level.
+    if let Some(t) = d.target
+        && drop_is_noop_or_cycle(&old, &ids[t], d.level)
+    {
+        return;
+    }
+    let leaf = old.rsplit('/').next().unwrap_or(&old).to_string();
+    // Parent path: the first `level-1` segments of the group it landed next to. Level 1 (or no anchor)
+    // → "" → a top-level group.
+    let new_parent: String = match d.target {
+        None => String::new(),
+        Some(t) => {
+            let tp = &ids[t];
+            if d.level <= 1 {
+                String::new()
+            } else {
+                tp.split('/').take(d.level - 1).collect::<Vec<_>>().join("/")
+            }
+        }
+    };
+    let new_path = if new_parent.is_empty() { leaf.clone() } else { format!("{new_parent}/{leaf}") };
+    // A reparent renames the dragged group and every variable under it to the new path (one undo
+    // step). A same-level move keeps `new_path == old` and skips the rename — it only reorders.
+    if new_path != old {
+        // A name clash would otherwise leave the rename half-done; refuse up front instead of issuing
+        // a batch some of whose commands the engine rejects.
+        let taken: std::collections::HashSet<&str> = members.iter().map(|v| v.name.as_str()).collect();
+        if members
+            .iter()
+            .filter(|v| v.name == old || v.name.starts_with(&old_pref))
+            .any(|v| {
+                let suffix = if v.name == old { "" } else { &v.name[old.len()..] };
+                taken.contains(format!("{new_path}{suffix}").as_str())
+            })
+        {
+            return;
+        }
+        // Rename every variable under the dragged group to the new path (the engine also refuses a
+        // name that already exists, so this stays a single, all-or-nothing step).
+        let steps: Vec<Value> = members
+            .iter()
+            .filter(|v| v.name == old || v.name.starts_with(&old_pref))
+            .map(|v| {
+                let suffix = if v.name == old { "" } else { &v.name[old.len()..] };
+                let nn = format!("{new_path}{suffix}");
+                json!({"command": "variable.update", "params": {"variable": v.id, "name": nn}})
+            })
+            .collect();
+        if steps.is_empty() || app.run("command.batch", json!({"label": "Move group", "commands": steps})).is_none() {
+            return;
+        }
+    }
+    // Reorder the flat group list so the moved group (and its descendant groups) lands where the
+    // pointer asked — renamed along the way for a reparent, unchanged for a same-level move.
+    let mut ordered = st.group_order.get(&coll.id).cloned().unwrap_or_else(|| ids.to_vec());
+    // A group derived from a renamed variable may be missing from the stored order; append it so the
+    // target lookup below finds every visible row instead of falling through to the end.
+    for g in ids {
+        if !ordered.iter().any(|o| o == g) {
+            ordered.push(g.clone());
+        }
+    }
+    let moved: Vec<(String, String)> = ordered
+        .iter()
+        .filter(|g| **g == old || g.starts_with(&old_pref))
+        .map(|g| {
+            let suffix = if *g == old { String::new() } else { g[old.len()..].to_string() };
+            (g.clone(), format!("{new_path}{suffix}"))
+        })
+        .collect();
+    if moved.is_empty() {
+        return;
+    }
+    ordered.retain(|g| g != &old && !g.starts_with(&old_pref));
+    let at = match d.target {
+        // A drop at the very top (no anchor) goes first.
+        None => 0,
+        Some(t) => {
+            let target_level = ids[t].matches('/').count() + 1;
+            // The group the drop becomes a sibling of: the anchor, or its ancestor at a shallower
+            // level (the pointer pulled left past the anchor's indent).
+            let sib: String = if d.level >= target_level {
+                ids[t].clone()
+            } else {
+                ids[t].split('/').take(d.level).collect::<Vec<_>>().join("/")
+            };
+            // A shallower level lands after the sibling's whole subtree, not between it and its
+            // children.
+            group_insert_index(&ordered, &sib, d.after || d.level < target_level)
+        }
+    };
+    // Insert the moved groups (renamed for a reparent) back in their original relative order, so a
+    // group and its children stay clustered.
+    for (_, renamed) in moved.into_iter().rev() {
+        ordered.insert(at.min(ordered.len()), renamed);
+    }
+    st.group_order.insert(coll.id.clone(), ordered);
+    // Keep the selection on the moved group (or its descendant).
+    if let Some(g) = st.group.as_ref() {
+        if g == &old || g.starts_with(&old_pref) {
+            let suffix = if g == &old { "" } else { &g[old.len()..] };
+            st.group = Some(format!("{new_path}{suffix}"));
+        }
     }
 }
 
@@ -1244,7 +1667,7 @@ fn group_of(name: &str) -> &str {
 }
 
 fn table(app: &mut FigApp, ui: &mut Ui, view: &View, st: &mut Editor, slots: &mut Vec<Slot>) {
-    let t = Tokens::get(ui.ctx());
+    let t = Tokens::get(ui.ctx()).ink();
     // A copy or a paste asked for from the keyboard: run here, where the shown rows are in hand.
     let (copying, pasting) = (std::mem::take(&mut st.copy_request), std::mem::take(&mut st.paste_request));
     // A sidebar click this frame picked another source: shown next frame.
@@ -1294,11 +1717,22 @@ fn table(app: &mut FigApp, ui: &mut Ui, view: &View, st: &mut Editor, slots: &mu
             (None, None) => ga.cmp(gb),
         }
     });
-    if copying && let Some(v) = st.selected.as_deref().and_then(|id| view.vars.get(id)) {
-        st.copied = Some(CopiedVariable::of(v, coll));
+    if copying {
+        if let Some(mode) = st.selected_mode.clone() {
+            // A column: every shown variable's value in that mode.
+            let values: Vec<(String, VariableValue)> =
+                list.iter().filter_map(|v| v.values.get(&mode).map(|val| (v.id.clone(), val.clone()))).collect();
+            st.copied_column = Some(CopiedColumn { values });
+        } else if let Some(v) = st.selected.as_deref().and_then(|id| view.vars.get(id)) {
+            st.copied = Some(CopiedVariable::of(v, coll));
+        }
     }
     if pasting && view.editable() {
-        paste(app, view, coll, st, &list);
+        if let Some(mode) = st.selected_mode.clone() {
+            paste_column(app, &mode, st, &list);
+        } else {
+            paste(app, view, coll, st, &list);
+        }
     }
     let ta = ui.available_height();
     let scroll = ui.spacing().scroll;
@@ -1385,6 +1819,22 @@ fn table(app: &mut FigApp, ui: &mut Ui, view: &View, st: &mut Editor, slots: &mu
         });
     if hscroll_needed {
         hscroll(ui, width, &cols, st);
+    }
+}
+
+/// Pastes a copied mode column into `mode`: every variable the table shows takes the copied value,
+/// as one batch (one undo step). Variables the copy doesn't have are left alone.
+fn paste_column(app: &mut FigApp, mode: &str, st: &Editor, list: &[&Variable]) {
+    let Some(clip) = st.copied_column.as_ref() else { return };
+    let shown: std::collections::HashSet<&str> = list.iter().map(|v| v.id.as_str()).collect();
+    let steps: Vec<Value> = clip
+        .values
+        .iter()
+        .filter(|(id, _)| shown.contains(id.as_str()))
+        .map(|(id, val)| json!({"command": "variable.set", "params": {"variable": id, "mode": mode, "value": value_json(val)}}))
+        .collect();
+    if !steps.is_empty() {
+        app.run("command.batch", json!({"label": "Paste column", "commands": steps}));
     }
 }
 
@@ -1534,7 +1984,7 @@ impl Columns {
 
 /// The sideways scrollbar under the rows: it moves the mode columns only.
 fn hscroll(ui: &mut Ui, width: f32, cols: &Columns, st: &mut Editor) {
-    let t = Tokens::get(ui.ctx());
+    let t = Tokens::get(ui.ctx()).ink();
     let (r, _) = ui.allocate_exact_size(vec2(width, HSCROLL_H), Sense::hover());
     let track = Rect::from_min_max(pos2(r.min.x + cols.name + 9.0, r.center().y - 2.0), pos2(r.max.x - cols.add - 9.0, r.center().y + 2.0));
     if track.width() <= 12.0 {
@@ -1548,7 +1998,7 @@ fn hscroll(ui: &mut Ui, width: f32, cols: &Columns, st: &mut Editor) {
     let thumb = Rect::from_min_size(pos2(track.left() + (track.width() - thumb_w) * along, track.top() - 1.0), vec2(thumb_w, track.height() + 2.0));
     let resp = ui.interact(track.expand2(vec2(0.0, 4.0)), Id::new("vars_hscroll"), Sense::click_and_drag());
     let lit = resp.hovered() || resp.dragged();
-    ui.painter().rect_filled(thumb, CornerRadius::same(3), if lit { t.text_secondary } else { t.border_strong });
+    ui.painter().rect_filled(thumb, CornerRadius::same(3), if lit { Tokens::get(ui.ctx()).text_secondary } else { t.border_strong });
     if (resp.dragged() || resp.clicked())
         && let Some(p) = ui.input(|i| i.pointer.interact_pos())
     {
@@ -1582,7 +2032,7 @@ fn column_edge(ui: &mut Ui, id: Id, x: f32, base: f32, r: Rect, value: &mut f32,
 /// The line above a library's collection (or an extended one): where it comes from, and the button
 /// that extends it here.
 fn notice_row(app: &mut FigApp, ui: &mut Ui, view: &View, coll: &Collection, st: &mut Editor) {
-    let t = Tokens::get(ui.ctx());
+    let t = Tokens::get(ui.ctx()).ink();
     let mut text = match (view.library, coll.extends.as_deref().and_then(|p| view.vars.collection(p))) {
         (Some((_, name)), _) => Some(trf("From the library \"{name}\": read-only", &[("name", &name)])),
         (None, Some(parent)) => Some(trf("Extends \"{name}\": overridden values are marked", &[("name", &parent.name)])),
@@ -1609,7 +2059,7 @@ fn notice_row(app: &mut FigApp, ui: &mut Ui, view: &View, coll: &Collection, st:
 /// The width mode column `mode` fits to on a double-click of its divider: its widest value laid
 /// out the way the cell draws it, or its heading if that is wider.
 fn auto_mode_width(ui: &Ui, view: &View, coll: &Collection, mode: &Mode) -> f32 {
-    let t = Tokens::get(ui.ctx());
+    let t = Tokens::get(ui.ctx()).ink();
     let text = |s: &str| ui.painter().layout_no_wrap(s.to_string(), regular(11.0), t.text).size().x;
     let widest = view
         .in_collection(&coll.id)
@@ -1634,7 +2084,7 @@ fn auto_mode_width(ui: &Ui, view: &View, coll: &Collection, mode: &Mode) -> f32 
 }
 
 fn header_row(app: &mut FigApp, ui: &mut Ui, view: &View, coll: &Collection, st: &mut Editor, cols: &Columns, r: Rect) {
-    let t = Tokens::get(ui.ctx());
+    let t = Tokens::get(ui.ctx()).ink();
     // An extended collection has the modes of the one it extends.
     let editable = view.editable() && coll.extends.is_none();
     // Opaque: the rows scroll under it.
@@ -1671,6 +2121,10 @@ fn header_row(app: &mut FigApp, ui: &mut Ui, view: &View, coll: &Collection, st:
         if st.mode_drag.as_deref() == Some(m.id.as_str()) {
             // The column being carried: held up out of the row it is leaving.
             wide.painter().rect_filled(cell, CornerRadius::same(4), t.field);
+        } else if st.selected_mode.as_deref() == Some(m.id.as_str()) {
+            // The selected column: its heading takes the selected tint, so the whole column reads
+            // as picked (a copy or a paste then acts on it).
+            wide.painter().rect_filled(cell, CornerRadius::same(4), t.selected_row);
         } else if resp.hovered() {
             wide.painter().rect_filled(cell, CornerRadius::same(4), t.hover);
         }
@@ -1680,6 +2134,12 @@ fn header_row(app: &mut FigApp, ui: &mut Ui, view: &View, coll: &Collection, st:
         if resp.drag_started() {
             st.mode_drag = Some(m.id.clone());
         }
+        if resp.clicked() {
+            // A click selects the column and lets the row selection go: a whole column can then be
+            // copied and pasted like a row.
+            st.selected_mode = Some(m.id.clone());
+            st.selected = None;
+        }
         if resp.hovered() && st.mode_drag.is_none() {
             ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
         }
@@ -1687,6 +2147,19 @@ fn header_row(app: &mut FigApp, ui: &mut Ui, view: &View, coll: &Collection, st:
             start_rename(st, target.clone());
         }
         crate::right::context_popup(&resp).show(|ui| {
+            // A whole column, like a row: copy it here, paste it into another column.
+            if menu_item(ui, tr("Copy column"), "") {
+                st.selected_mode = Some(m.id.clone());
+                st.selected = None;
+                st.copy_request = true;
+                ui.close();
+            }
+            if st.copied_column.is_some() && menu_item(ui, tr("Paste column"), "") {
+                st.selected_mode = Some(m.id.clone());
+                st.selected = None;
+                st.paste_request = true;
+                ui.close();
+            }
             if menu_item(ui, tr("Rename mode"), "") {
                 start_rename(st, target.clone());
                 ui.close();
@@ -1752,7 +2225,7 @@ fn header_row(app: &mut FigApp, ui: &mut Ui, view: &View, coll: &Collection, st:
     // The button that adds a mode, at the table's right end where nothing scrolls.
     let add = cols.add_rect(r);
     if editable
-        && widgets::icon_button_at(ui, Id::new("vars_add_mode"), Rect::from_center_size(add.center(), vec2(40.0, 40.0)), Icon::Plus, tr("Add mode"))
+        && widgets::icon_button_at(ui, Id::new("vars_add_mode"), Rect::from_center_size(add.center(), vec2(24.0, 24.0)), Icon::Plus, tr("Add mode"))
     {
         let name = unique("Mode", |n| coll.modes.iter().any(|m| m.name == n));
         if let Some(id) = app.run("variable.addMode", json!({"collection": coll.id, "name": name})).and_then(|r| r["id"].as_str().map(str::to_string))
@@ -1806,7 +2279,7 @@ fn gap_x(cols: &Columns, r: Rect, at: usize) -> f32 {
 }
 
 fn var_row(app: &mut FigApp, ui: &mut Ui, view: &View, coll: &Collection, v: &Variable, st: &mut Editor, cols: &Columns, slots: &mut Vec<Slot>) {
-    let t = Tokens::get(ui.ctx());
+    let t = Tokens::get(ui.ctx()).ink();
     let editable = view.editable();
     let (r, resp) = ui.allocate_exact_size(vec2(cols.width, ROW_H), Sense::click_and_drag());
     slots.push(Slot::var(r, v.id.clone()));
@@ -1820,6 +2293,8 @@ fn var_row(app: &mut FigApp, ui: &mut Ui, view: &View, coll: &Collection, v: &Va
     }
     if resp.clicked() || (editable && resp.secondary_clicked()) {
         st.selected = Some(v.id.clone());
+        // A row takes over from a selected column.
+        st.selected_mode = None;
     }
     // The name column: it stays put while the modes scroll beside it.
     let name_r = cols.name_rect(r);
@@ -1880,7 +2355,7 @@ fn var_row(app: &mut FigApp, ui: &mut Ui, view: &View, coll: &Collection, v: &Va
         if widgets::icon_button_at(
             ui,
             Id::new(("vars_row_edit", &v.id)),
-            Rect::from_center_size(add_r.center(), vec2(40.0, 40.0)),
+            Rect::from_center_size(add_r.center(), vec2(24.0, 24.0)),
             Icon::Adjust,
             tr("Edit variable"),
         ) {
@@ -1930,7 +2405,7 @@ fn var_row(app: &mut FigApp, ui: &mut Ui, view: &View, coll: &Collection, v: &Va
 
 /// The type marker before a variable's name: its colour (default mode), or a type glyph.
 fn kind_glyph(ui: &Ui, vars: &Variables, v: &Variable, coll: &Collection, rect: Rect) {
-    let t = Tokens::get(ui.ctx());
+    let t = Tokens::get(ui.ctx()).ink();
     let p = ui.painter();
     match v.kind {
         VariableType::Color => {
@@ -1969,7 +2444,7 @@ fn set(app: &mut FigApp, v: &Variable, mode: &str, value: Value) {
 /// One value cell: an editor for the value, or the aliased variable's chip; the variable button
 /// on the right makes it an alias. A library's values only show.
 fn value_cell(app: &mut FigApp, ui: &mut Ui, view: &View, v: &Variable, coll: &Collection, mode: &str, rect: Rect) {
-    let t = Tokens::get(ui.ctx());
+    let t = Tokens::get(ui.ctx()).ink();
     let Some(val) = v.values.get(mode) else { return };
     let editable = view.editable();
     let id = Id::new(("var_cell", &v.id, mode));
@@ -2095,14 +2570,14 @@ fn value_cell(app: &mut FigApp, ui: &mut Ui, view: &View, v: &Variable, coll: &C
 
 /// A colour's alpha as a percentage at the right end of `body`.
 fn alpha_text(ui: &Ui, c: &figcraft_color::Color, body: Rect) {
-    let t = Tokens::get(ui.ctx());
+    let t = Tokens::get(ui.ctx()).ink();
     let pct = format!("{}%", (c.a * 100.0).round());
     ui.painter().text(pos2(body.max.x - 8.0, body.center().y), Align2::RIGHT_CENTER, pct, regular(11.0), t.text_secondary);
 }
 
 /// A value that only shows (a library's): its swatch and hex for colours, else its text.
 fn read_only_value(ui: &Ui, val: &VariableValue, body: Rect) {
-    let t = Tokens::get(ui.ctx());
+    let t = Tokens::get(ui.ctx()).ink();
     ui.painter().rect_filled(body, CornerRadius::same(5), t.field);
     let mut x = body.min.x + 8.0;
     if let VariableValue::Color(c) = val {
@@ -2122,7 +2597,7 @@ fn read_only_value(ui: &Ui, val: &VariableValue, body: Rect) {
 
 /// The bar under the table: the button that makes a variable, in the type its menu picks.
 fn bottom_bar(app: &mut FigApp, ui: &mut Ui, st: &mut Editor, view: &View, coll: &Collection) {
-    let t = Tokens::get(ui.ctx());
+    let t = Tokens::get(ui.ctx()).ink();
     let (r, _) = ui.allocate_exact_size(vec2(ui.available_width(), BOTTOM_H), Sense::hover());
     ui.painter().line_segment([pos2(r.min.x, r.min.y + 0.5), pos2(r.max.x, r.min.y + 0.5)], Stroke::new(1.0, t.border));
     let b = Rect::from_min_max(pos2(r.min.x + 8.0, r.center().y - 12.0), pos2((r.min.x + 172.0).min(r.max.x - 8.0), r.center().y + 12.0));
@@ -2215,7 +2690,7 @@ fn drag_and_drop(app: &mut FigApp, ui: &mut Ui, st: &mut Editor, slots: &[Slot])
         st.drag = None;
         return;
     }
-    let t = Tokens::get(ui.ctx());
+    let t = Tokens::get(ui.ctx()).ink();
     let target = pick_target(slots, &from, pos);
     let rows = slots.iter().filter(|s| s.var.is_some()).map(|s| s.rect).reduce(|a, b| a.union(b));
     match (&target, rows) {
@@ -2300,7 +2775,7 @@ fn details(app: &mut FigApp, ctx: &Context, vars: &Variables, st: &mut Editor) {
         st.details = None;
         return;
     };
-    let t = Tokens::get(ctx);
+    let t = Tokens::get(ctx).ink();
     let mut open = true;
     egui::Window::new(tr("Edit variable"))
         .id(Id::new("variable_details"))
@@ -2371,7 +2846,8 @@ fn details(app: &mut FigApp, ctx: &Context, vars: &Variables, st: &mut Editor) {
 
 #[cfg(test)]
 mod tests {
-    use super::groups;
+    use super::{Editor, GroupDrop, View, apply_group_drop, drop_is_noop_or_cycle, group_drop_slot, group_insert_index, groups};
+    use egui::{Pos2, Rect, pos2, vec2};
 
     #[test]
     fn groups_include_parents_once_and_sorted() {
@@ -2379,4 +2855,188 @@ mod tests {
         assert_eq!(groups(names.into_iter()), ["color", "color/brand", "space"]);
         assert!(groups(["a", "b"].into_iter()).is_empty());
     }
+
+    /// The level follows the pointer's x (pulling left raises it and widens the line), while the
+    /// line itself stays at the pointer's boundary — it never runs off to a subtree end.
+    #[test]
+    fn group_drop_level_follows_pointer_x_and_the_line_stays_at_the_pointer() {
+        // Six groups, nested three deep: color → brand → primary/secondary, plus accent and space.
+        let ids: Vec<String> = ["color", "color/brand", "color/brand/primary", "color/brand/secondary", "color/accent", "space"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        // Rows stacked from y=0, 32 px tall, x from 0; `base` is a top-level chevron's left edge.
+        let rows: Vec<(usize, Rect)> = (0..ids.len())
+            .map(|k| (k, Rect::from_min_size(pos2(0.0, k as f32 * 32.0), vec2(200.0, 32.0))))
+            .collect();
+        let base = 0.0;
+        let pt = |x: f32, y: f32| Pos2::new(x, y);
+        // Pointer at the boundary above "color/brand/secondary" (index 3) in level 3's column.
+        let on = group_drop_slot(&rows, 0, pt(base + 2.0 * 24.0 + 12.0, 2.0 * 32.0 + 20.0), &ids, base).unwrap();
+        assert_eq!((on.target, on.level), (Some(3), 3));
+        // Pulled left one column (level 2) and two (level 1): the level rises, and the line stays at
+        // the same pointer boundary in every case.
+        let up1 = group_drop_slot(&rows, 0, pt(base + 1.0 * 24.0 + 12.0, 2.0 * 32.0 + 20.0), &ids, base).unwrap();
+        assert_eq!((up1.target, up1.level), (Some(3), 2));
+        assert_eq!(up1.y, on.y, "the line stays at the pointer boundary");
+        let up2 = group_drop_slot(&rows, 0, pt(base + 12.0, 2.0 * 32.0 + 20.0), &ids, base).unwrap();
+        assert_eq!((up2.target, up2.level), (Some(3), 1));
+        assert_eq!(up2.y, on.y, "the line stays at the pointer boundary");
+        // The higher (parent) level draws a wider line: it starts further left.
+        assert!(up2.x0 < on.x0, "the parent-level line is wider (starts further left)");
+        // At the very left edge it is still level 1, starting at the level's column.
+        let left = group_drop_slot(&rows, 0, pt(0.0, 2.0 * 32.0 + 20.0), &ids, base).unwrap();
+        assert_eq!((left.level, left.x0), (1, base));
+        assert_eq!(left.x1, 200.0);
+        assert_eq!(left.y, on.y);
+        // At the very end, next to "space" (top level), the deepest x clamps to its level 1.
+        let end = group_drop_slot(&rows, 0, pt(base + 2.0 * 24.0 + 12.0, 5.0 * 32.0 + 20.0), &ids, base).unwrap();
+        assert_eq!((end.target, end.level), (Some(5), 1));
+        assert_eq!(end.y, 6.0 * 32.0);
+    }
+
+    /// The reported bug: dragging a group up to its parent's level (a shallower level) must not be
+    /// swallowed by the "dropped onto itself" guard — the anchor row can be the group itself, and
+    /// only a same-or-deeper level is a no-op/cycle. When it was swallowed the group stayed exactly
+    /// where it was while the line showed the parent's level, so the whole tree looked wrong.
+    #[test]
+    fn drop_onto_itself_at_a_shallower_level_is_a_real_move() {
+        // ar/sh (level 2) dragged to level 1 (its parent's level) — the anchor is `ar/sh` itself.
+        assert!(!drop_is_noop_or_cycle("ar/sh", "ar/sh", 1), "a shallower level is a move out");
+        // At its own level it is a no-op.
+        assert!(drop_is_noop_or_cycle("ar/sh", "ar/sh", 2));
+        // Into its own subtree at a deeper level is a cycle.
+        assert!(drop_is_noop_or_cycle("ar/sh", "ar/sh/button", 3));
+        // A descendant anchor with a shallower level is also a move out.
+        assert!(!drop_is_noop_or_cycle("ar/sh", "ar/sh/button", 1));
+        // Unrelated groups are never blocked.
+        assert!(!drop_is_noop_or_cycle("ar/sh", "space", 1));
+    }
+
+    /// End to end: a level-2 group dragged to level 1 must actually leave level 2 and land after its
+    /// parent's whole subtree. This is the reported bug — it used to stay on level 2 because the
+    /// "dropped onto itself / its own subtree" guard swallowed the drop.
+    #[test]
+    fn apply_group_drop_moves_a_level_two_group_out_to_level_one() {
+        use crate::{FigApp, NoServices};
+        use figcraft_doc::Variable;
+        use figcraft_engine::Session;
+
+        let mut app = FigApp::new(Session::new(), Box::new(NoServices));
+        app.session
+            .execute("variable.createCollection", &serde_json::json!({"name": "Theme", "modes": ["Mode 1"]}))
+            .unwrap();
+        for n in ["ar/sh/button", "ar/sh/filed", "ar/xx/yy", "space/sm"] {
+            app.session
+                .execute(
+                    "variable.create",
+                    &serde_json::json!({"collection": "Theme", "name": n, "type": "color", "value": "#FF0000"}),
+                )
+                .unwrap();
+        }
+        let doc = app.session.doc().unwrap().clone();
+        let view = View::local(&doc);
+        let coll = view.collection("Theme").unwrap();
+        let members: Vec<&Variable> = view.in_collection(&coll.id).collect();
+        let names: Vec<&str> = members.iter().map(|v| v.name.as_str()).collect();
+        let ids: Vec<String> = groups(names.into_iter());
+        // ar → sh, xx; space.
+        assert_eq!(ids, ["ar", "ar/sh", "ar/xx", "space"]);
+
+        let mut st = Editor::default();
+        // Drag `ar/sh` (index 1) to level 1. Anchor = `ar/sh` itself (the pointer sits over the
+        // dragged row) — the case that used to be swallowed.
+        let d = GroupDrop { from: 1, to: 1, y: 0.0, x0: 0.0, x1: 0.0, target: Some(1), after: true, level: 1 };
+        apply_group_drop(&mut app, coll, &mut st, &ids, &members, &d);
+
+        // The group left level 2 (its variables are now `sh/...`) and sits after `ar`'s whole
+        // subtree (after `ar/xx`), before `space` — never between `ar` and its children.
+        let doc = app.session.doc().unwrap();
+        let now: Vec<&str> = doc.variables.variables.iter().map(|v| v.name.as_str()).collect();
+        assert!(now.contains(&"sh/button"), "sh/button should exist, got {now:?}");
+        assert!(now.contains(&"sh/filed"), "sh/filed should exist, got {now:?}");
+        assert!(!now.iter().any(|n| n.starts_with("ar/sh/")), "ar/sh/* should be gone, got {now:?}");
+        assert_eq!(
+            st.group_order.get(&coll.id).cloned().unwrap_or_default(),
+            ["ar", "ar/xx", "sh", "space"],
+            "the group lands after ar's whole subtree, before space"
+        );
+    }
+
+    /// A group dragged above the first row's center must land at the very top (before it), not be
+    /// dropped on the floor — the top of the list used to be a dead zone.
+    #[test]
+    fn group_drop_above_first_row_targets_top() {
+        let ids: Vec<String> = ["color", "color/brand", "color/brand/primary", "space"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let rows: Vec<(usize, Rect)> = (0..ids.len())
+            .map(|k| (k, Rect::from_min_size(pos2(0.0, k as f32 * 32.0), vec2(200.0, 32.0))))
+            .collect();
+        let base = 0.0;
+        let top = group_drop_slot(&rows, 2, Pos2::new(base + 12.0, 2.0), &ids, base).unwrap();
+        assert_eq!((top.target, top.after), (Some(0), false));
+    }
+
+    /// At the boundary just before a deeper row, the drop can be at that row's level (a sibling): a
+    /// child of `sh` dragged to the boundary before `sh` can become `ar/<leaf>` (a sibling of `sh`),
+    /// not only stay under `sh`. This is the "can't insert before `sh`" bug.
+    #[test]
+    fn group_drop_before_a_row_allows_its_level() {
+        // ar (L1) → sh (L2) → button (L3), filed (L3).
+        let ids: Vec<String> = ["ar", "ar/sh", "ar/sh/button", "ar/sh/filed"].iter().map(|s| s.to_string()).collect();
+        let rows: Vec<(usize, Rect)> = (0..ids.len())
+            .map(|k| (k, Rect::from_min_size(pos2(0.0, k as f32 * 32.0), vec2(200.0, 32.0))))
+            .collect();
+        let base = 0.0;
+        // Drag `filed` (index 3) to the boundary just before `sh` (top half of sh's row). At sh's
+        // level the drop is level 2: it lands before `sh` (after `ar`), as `ar/<leaf>`.
+        let d = group_drop_slot(&rows, 3, Pos2::new(base + 24.0 + 12.0, 1.0 * 32.0 + 4.0), &ids, base).unwrap();
+        assert_eq!((d.target, d.after, d.level), (Some(1), false, 2));
+    }
+
+    /// The reported bug: a group dragged out to a shallower level must never land between a parent
+    /// and its own children (that pushed the children behind the moved group, so they looked like
+    /// they had jumped under it), and never right after a single child. It lands after the ancestor's
+    /// whole subtree, while the line stays at the pointer.
+    #[test]
+    fn group_drop_shallow_level_lands_after_the_whole_subtree() {
+        // ar (L1) → sh (L2) → button (L3), filed (L3), then space (L1).
+        let ids: Vec<String> = ["ar", "ar/sh", "ar/sh/button", "ar/sh/filed", "space"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let rows: Vec<(usize, Rect)> = (0..ids.len())
+            .map(|k| (k, Rect::from_min_size(pos2(0.0, k as f32 * 32.0), vec2(200.0, 32.0))))
+            .collect();
+        let base = 0.0;
+        // Drag `filed` to the boundary before `sh`, pulling left to level 1: it becomes a top-level
+        // group placed AFTER `ar`'s whole subtree — not between `ar` and `sh`, not right after a
+        // single child. The line stays at the pointer boundary (the top of `sh`).
+        let d = group_drop_slot(&rows, 3, Pos2::new(base + 12.0, 1.0 * 32.0 + 4.0), &ids, base).unwrap();
+        assert_eq!((d.target, d.level, d.after), (Some(1), 1, true));
+        assert_eq!(d.y, 1.0 * 32.0, "the line stays at the pointer boundary");
+        // The landing is after every group under `ar` (after `ar/sh/button`), before `space` — i.e.
+        // after the whole set, never after a single child.
+        let ordered: Vec<String> = ["ar", "ar/sh", "ar/sh/button", "space"].iter().map(|s| s.to_string()).collect();
+        assert_eq!(group_insert_index(&ordered, "ar", true), 3);
+        assert_eq!(group_insert_index(&ordered, "ar", false), 0);
+        assert_eq!(group_insert_index(&ordered, "ar/sh", false), 1);
+    }
+
+    /// The line shows even when the pointer is over the dragged row itself (dropping there is a
+    /// no-op, but the line must not disappear — it used to).
+    #[test]
+    fn group_drop_shows_the_line_next_to_the_dragged_row() {
+        let ids: Vec<String> = ["a", "b", "c"].iter().map(|s| s.to_string()).collect();
+        let rows: Vec<(usize, Rect)> = (0..ids.len())
+            .map(|k| (k, Rect::from_min_size(pos2(0.0, k as f32 * 32.0), vec2(200.0, 32.0))))
+            .collect();
+        let base = 0.0;
+        // Drag `b` (index 1) and hover over its own row's lower half: the slot is still Some.
+        let d = group_drop_slot(&rows, 1, Pos2::new(base + 12.0, 1.0 * 32.0 + 20.0), &ids, base);
+        assert!(d.is_some());
+    }
+
 }

@@ -1280,6 +1280,12 @@ pub fn handle(app: &mut FigApp, ctx: &Context, method: &str, p: &Value) -> Resul
                 }
                 _ => {}
             }
+            // TEMP-VERIFY: select a group, or "ALL" to select the All-variables row (test hook, remove after).
+            if let Some(name) = p.get("selectGroup").and_then(Value::as_str) {
+                if let Some(st) = app.ui.variables.as_mut() {
+                    st.select_group_for_verify(name);
+                }
+            }
             // Layers panel search: a string opens it with that filter, null closes it.
             if let Some(v) = p.get("layerFilter") {
                 app.ui.layer_search = v.is_string();

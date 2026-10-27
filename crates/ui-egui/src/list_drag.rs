@@ -159,6 +159,35 @@ impl ListDrag {
         self.rows.push((index, extent));
     }
 
+    /// Like [`ListDrag::finish`] but lets the caller choose the drop slot from the pointer. The
+    /// groups list needs this: a deeper, more indented row shows a shorter, indented insertion line,
+    /// and pulling the pointer left widens it to the parent level (and reparents the dragged group
+    /// there). The closure returns `(to, y, x0, x1)`: the model index to drop at, the line's y, and
+    /// its x-span — so the line can follow the pointer's horizontal position instead of spanning the
+    /// whole list.
+    pub fn finish_leveled(
+        self,
+        ui: &mut Ui,
+        resolve: impl FnOnce(&[(usize, Rect)], usize, Pos2) -> Option<(usize, f32, f32, f32)>,
+    ) -> Option<Dropped> {
+        let from = self.dragging?;
+        let (pos, released) = ui.input(|i| (i.pointer.latest_pos(), i.pointer.any_released()));
+        let made = pos.and_then(|p| resolve(&self.rows, from, p));
+        if let Some((_, y, x0, x1)) = &made {
+            widgets::insertion_line(ui.painter(), *x0, x1.max(*x0 + 1.0), *y);
+        }
+        if let (Some(p), Some(label)) = (pos, self.label.clone()) {
+            let t = Tokens::get(ui.ctx());
+            let galley = ui.painter().layout_no_wrap(label, regular(11.0), t.text);
+            widgets::drag_ghost(ui.ctx(), p, galley);
+        }
+        if !released {
+            return None;
+        }
+        ui.data_mut(|d| d.remove::<usize>(drag_id(self.list)));
+        made.map(|(to, _, _, _)| Dropped { from, to })
+    }
+
     /// After the rows: while dragging, the insertion line and the dragged label; on release over
     /// the list, the move (for `fill.move` and friends).
     pub fn finish(self, ui: &mut Ui) -> Option<Dropped> {

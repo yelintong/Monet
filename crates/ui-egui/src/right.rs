@@ -470,7 +470,8 @@ fn page_section(app: &mut FigApp, ui: &mut Ui, doc: &Document) {
         if r.clicked() {
             app.ui.preferences = false;
             app.ui.palette = None;
-            app.ui.variables.get_or_insert_with(Default::default);
+            let layout = app.session.prefs.variables.clone();
+            app.ui.variables.get_or_insert_with(|| crate::variables_panel::Editor::from_layout(&layout));
         }
     });
     widgets::separator(ui);

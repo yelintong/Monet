@@ -182,6 +182,12 @@ impl Tokens {
     pub fn get(ctx: &Context) -> Tokens {
         ctx.data(|d| d.get_temp::<Tokens>(tokens_id())).unwrap_or_else(Tokens::light)
     }
+
+    /// The same tokens with every text colour forced to pure black. The variables editor draws its
+    /// labels in black whatever the theme (icons, fills and borders are left alone).
+    pub fn ink(self) -> Tokens {
+        Tokens { text: Color32::BLACK, text_secondary: Color32::BLACK, text_tertiary: Color32::BLACK, ..self }
+    }
 }
 
 /// Stable id for temporary theme tokens.
