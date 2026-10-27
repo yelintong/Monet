@@ -789,7 +789,7 @@ fn header(app: &mut FigApp, ui: &mut Ui, st: &mut Editor, g: Geom, open: &mut bo
         let mut bar = ui.new_child(UiBuilder::new().max_rect(bar).layout(egui::Layout::right_to_left(egui::Align::Center)));
         let export = widgets::button(&mut bar, tr("Export…"), false, true);
         crate::right::menu_popup(&export).show(|ui| {
-            for (label, format) in [(tr("Variables JSON…"), "json"), (tr("CSS custom properties…"), "css")] {
+            for (label, format) in [(tr("Variables JSON…"), "json"), (tr("CSS custom properties…"), "css"), (tr("Dart constants for Flutter…"), "dart")] {
                 if menu_item(ui, label, "") {
                     export_dialog(app, format);
                     ui.close();

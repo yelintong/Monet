@@ -314,6 +314,8 @@ pub fn specs() -> Vec<CommandSpec> {
             }
             ok()
         }),
+        spec!("effect.copy", "Copy effect", "{id?, index? (default the top effect)}", false, effect_copy),
+        spec!("effect.paste", "Paste effect", "{ids?, index? (replace the effect there; without: add one)}", true, effect_paste),
         spec!("grid.add", "Add layout grid", "{ids?, grid? {kind: grid|columns|rows|diagonal|rings, ..}}", true, |s, p| {
             let g: LayoutGrid = parse("grid.add", p, "grid")?.unwrap_or_default();
             for id in req_targets("grid.add", s, p)? {

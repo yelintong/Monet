@@ -319,6 +319,8 @@ pub fn show(app: &mut FigApp, ctx: &Context) {
                 }
             });
             ui.add_space(8.0);
+            graphics_renderer(app, ui, &prefs.graphics_backend);
+            ui.add_space(8.0);
             ui.horizontal(|ui| {
                 ui.label(tr("Language"));
                 // Each language by its own name; System follows the OS (the browser on the web).
@@ -475,5 +477,94 @@ fn interface_size(app: &mut FigApp, ui: &mut egui::Ui, chosen: f64) {
             &[("size", &crate::ui_scale::percent(chosen as f32)), ("drawn", &crate::ui_scale::percent(app.ui.ui_scale.zoom))],
         );
         crate::widgets::label(ui, &note, t.text_secondary);
+    }
+}
+
+/// Preferences ▸ Graphics renderer: which graphics API draws the window, as a drop-down that is
+/// kept for the next start (wgpu opens with the API chosen when the window is made, so a change
+/// can't take effect in the running one). The browser draws through WebGL itself, so there the row
+/// only says so.
+fn graphics_renderer(app: &mut FigApp, ui: &mut egui::Ui, chosen: &str) {
+    let t = Tokens::get(ui.ctx());
+    if cfg!(target_arch = "wasm32") {
+        ui.label(tr("Graphics renderer"));
+        crate::widgets::label(ui, tr("Your browser draws FigCraft through WebGL."), t.text_secondary);
+        return;
+    }
+    let shown = renderers().iter().find(|(value, _)| *value == chosen).map_or(tr("System"), |(_, name)| tr(name));
+    ui.horizontal(|ui| {
+        ui.label(tr("Graphics renderer"));
+        let resp = crate::widgets::dropdown(ui, shown, 150.0, None);
+        crate::a11y::combo(&resp, tr("Graphics renderer"), shown, crate::a11y::menu_open(&resp));
+        crate::right::menu_popup(&resp).show(|ui| {
+            let focused = ui.memory(|memory| memory.focused());
+            let step = ui.input(|input| {
+                if input.key_pressed(egui::Key::ArrowDown) || (input.key_pressed(egui::Key::Tab) && !input.modifiers.shift) {
+                    1
+                } else if input.key_pressed(egui::Key::ArrowUp) || (input.key_pressed(egui::Key::Tab) && input.modifiers.shift) {
+                    -1
+                } else {
+                    0
+                }
+            });
+            let mut rows = Vec::with_capacity(renderers().len());
+            for (value, name) in renderers() {
+                let label = tr(name);
+                let selected = *value == chosen;
+                let row = crate::right::menu_row(ui, &format!("{}{label}", if selected { "✓ " } else { "    " }), "", 0.0, |_, _, _| {});
+                crate::a11y::menu_item(&row, label, "", Some(selected));
+                if row.has_focus() {
+                    ui.memory_mut(|memory| memory.set_focus_lock_filter(row.id, egui::EventFilter { tab: true, ..Default::default() }));
+                }
+                rows.push(row.id);
+                if row.clicked() {
+                    app.run("pref.graphicsBackend", json!({"backend": value}));
+                    ui.close();
+                }
+            }
+            // Spatial focus can jump to a control behind the popup when the menu overlaps the
+            // Preferences window. Once an item is focused, walk the menu's own rows instead.
+            if step != 0
+                && let Some(index) = rows.iter().position(|id| Some(*id) == focused)
+            {
+                let next = index.saturating_add_signed(step).min(rows.len() - 1);
+                ui.memory_mut(|memory| {
+                    memory.request_focus(rows[next]);
+                    memory.move_focus(egui::FocusDirection::None);
+                });
+            }
+        });
+        // The renderer is read when the window opens, so a change waits for a start: while the
+        // preference names another one than this run started with, restart with it now.
+        if app.ui.graphics_started != chosen && crate::widgets::button(ui, tr("Restart FigCraft"), true, true).clicked() {
+            app.ui.restart = true;
+            crate::windows::request_close(app, ui.ctx());
+        }
+    });
+    crate::widgets::label(ui, tr("Takes effect the next time FigCraft starts."), t.text_secondary);
+}
+
+/// The renderers Preferences ▸ Graphics renderer offers on Windows, by the preference's value and
+/// its name: the graphics APIs wgpu can use there. "system" keeps FigCraft's own choice (Direct3D
+/// 12 with OpenGL to fall back on). The names are marked for the catalog here and looked up (`tr`)
+/// where the menu shows them.
+const WINDOWS_RENDERERS: &[(&str, &str)] =
+    &[("system", tr_noop("System")), ("dx12", tr_noop("Direct3D 12")), ("vulkan", tr_noop("Vulkan")), ("gl", tr_noop("OpenGL"))];
+
+/// The renderers on macOS: Metal, and Vulkan through it.
+const MACOS_RENDERERS: &[(&str, &str)] = &[("system", tr_noop("System")), ("metal", tr_noop("Metal")), ("vulkan", tr_noop("Vulkan"))];
+
+/// The renderers elsewhere (Linux, the BSDs): Vulkan, and OpenGL through EGL.
+const OTHER_RENDERERS: &[(&str, &str)] = &[("system", tr_noop("System")), ("vulkan", tr_noop("Vulkan")), ("gl", tr_noop("OpenGL"))];
+
+/// The renderers this system offers ([`WINDOWS_RENDERERS`] on Windows, [`MACOS_RENDERERS`] on
+/// macOS, [`OTHER_RENDERERS`] elsewhere).
+pub(crate) fn renderers() -> &'static [(&'static str, &'static str)] {
+    if cfg!(target_os = "windows") {
+        WINDOWS_RENDERERS
+    } else if cfg!(target_os = "macos") {
+        MACOS_RENDERERS
+    } else {
+        OTHER_RENDERERS
     }
 }
