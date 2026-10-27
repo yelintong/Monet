@@ -52,6 +52,13 @@ pub(crate) fn toggle(app: &mut FigApp, targets: Vec<PaintTarget>, top: Option<f3
     app.toggle_picker(PickerTarget::SelectionColor { targets, selection: ds.selection.clone(), document: ds.uid }, top);
 }
 
+/// Open the picker for a selection's colours without toggling: the swatch that was clicked has
+/// already decided to open it.
+pub(crate) fn open_picker(app: &mut FigApp, targets: Vec<PaintTarget>) {
+    let Ok(ds) = app.session.ds() else { return };
+    app.open_picker(PickerTarget::SelectionColor { targets, selection: ds.selection.clone(), document: ds.uid }, None);
+}
+
 /// Draw the selection-colour groups (at least two): swatch opens the picker, hex and opacity
 /// edits, style/variable detach/apply/bind, and “select layers with this color”; disabled
 /// during an interaction.

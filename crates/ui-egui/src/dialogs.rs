@@ -45,21 +45,31 @@ const ISSUES: &str = "https://github.com/storytold/figcraft/issues";
 /// What the desktop app says when its window couldn't open with `error` (no frame was drawn: the
 /// language is the one [`i18n::set`] picked from the preferences). `backend_set`: `WGPU_BACKEND`
 /// named the graphics API, so the hint is to unset it rather than to try another one.
-pub fn window_failed(error: &str, backend_set: bool) -> String {
-    let hint = if backend_set {
-        tr("WGPU_BACKEND is set and names the graphics API to use; unsetting it lets FigCraft choose.").to_string()
-    } else if cfg!(windows) {
-        // Direct3D 12 and OpenGL are both offered, but wgpu keeps the Direct3D 12 adapter it picked
-        // even when its device then fails, so naming OpenGL alone can still help.
-        format!(
-            "{}
+pub fn window_failed(error: &str, named: Option<&str>, settings: Option<&std::path::Path>) -> String {
+    let hint = match named {
+        Some("WGPU_BACKEND") => tr("WGPU_BACKEND is set and names the graphics API to use; unsetting it lets FigCraft choose.").to_string(),
+        Some(_) => {
+            let mut text =
+                tr("The Graphics renderer preference names the graphics API to use; setting it back to System in Preferences lets FigCraft choose.")
+                    .to_string();
+            // Preferences is out of reach while the window won't open: the settings file is the way back.
+            if let Some(file) = settings {
+                text.push_str(&format!("\n\n{}", trf("Until then, remove \"graphics_backend\" from {file}.", &[("file", &file.display())])));
+            }
+            text
+        }
+        None if cfg!(windows) => {
+            // Direct3D 12 and OpenGL are both offered, but wgpu keeps the Direct3D 12 adapter it picked
+            // even when its device then fails, so naming OpenGL alone can still help.
+            format!(
+                "{}
 
 set WGPU_BACKEND=gl
 figcraft.exe",
-            tr("Updating the graphics driver often helps. To use OpenGL only, start FigCraft from a Command Prompt with:")
-        )
-    } else {
-        tr("Updating the graphics driver often helps. WGPU_BACKEND (vulkan, gl, metal) names another graphics API to try.").to_string()
+                tr("Updating the graphics driver often helps. To use OpenGL only, start FigCraft from a Command Prompt with:")
+            )
+        }
+        None => tr("Updating the graphics driver often helps. WGPU_BACKEND (vulkan, gl, metal) names another graphics API to try.").to_string(),
     };
     format!(
         "{}

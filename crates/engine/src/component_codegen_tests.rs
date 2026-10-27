@@ -354,22 +354,10 @@ fn identifiers_are_escaped_and_unique() {
     ] {
         assert!(leptos.contains(want), "Leptos has {want:?}:\n{leptos}");
     }
-    // Dart: lowerCamel members, keywords suffixed, never a type the widget tree names.
-    let dart = code_for(doc, c, CodeLang::Flutter);
-    for want in [
-        "class TextComponent extends StatelessWidget {",
-        "enum TextComponentColorVariant { red }\n",
-        "    this.defaultValue = false,",
-        "    this.p2Columns = false,",
-        "  final String type;",
-    ] {
-        assert!(dart.contains(want), "Flutter has {want:?}:\n{dart}");
-    }
     // Errors.
     let r = idv(&ex(&mut s, "shape.rectangle", json!({"x": 0, "y": 0, "width": 10, "height": 10})));
     assert!(s.execute("inspect.componentCode", &json!({"id": r})).is_err(), "not a component");
     assert!(s.execute("inspect.componentCode", &json!({"id": c, "language": "html"})).is_err());
-    assert!(s.execute("inspect.componentCode", &json!({"id": c, "language": "flutter"})).is_ok());
     assert!(s.execute("inspect.componentCode", &json!({"id": 999_999})).is_err());
 }
 

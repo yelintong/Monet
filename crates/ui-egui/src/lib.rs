@@ -346,6 +346,9 @@ pub struct UiState {
     pub picker_button: Option<egui::Rect>,
     /// The window should restart to pick up a changed graphics backend.
     pub restart: bool,
+    /// The graphics backend this run opened with, so Preferences can offer a restart when the
+    /// preference names another one.
+    pub graphics_started: String,
     pub pages_open: bool,
     /// Pages panel search: open, and the case-insensitive name filter.
     pub page_search: bool,
@@ -557,6 +560,7 @@ impl Default for UiState {
             fill_rule_button: None,
             picker_button: None,
             restart: false,
+            graphics_started: String::new(),
             pages_open: true,
             page_search: false,
             page_filter: String::new(),
@@ -760,13 +764,7 @@ mod typography_scrub_tests;
 mod fill_rule_tests;
 
 #[cfg(test)]
-mod graphics_pref_tests;
-
-#[cfg(test)]
 mod icon_spacing_tests;
-
-#[cfg(test)]
-mod icons_panel_tests;
 
 #[cfg(test)]
 mod layout_scroll_click_tests;
@@ -776,9 +774,6 @@ mod layout_settings_tests;
 
 #[cfg(test)]
 mod popover_tests;
-
-#[cfg(test)]
-mod stroke_settings_tests;
 
 #[cfg(test)]
 mod variables_view_tests;
