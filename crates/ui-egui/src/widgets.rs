@@ -333,9 +333,7 @@ fn number_field_impl(
             }
             ui.painter().galley(pos2(lead_rect.min.x + 8.0, rect.center().y - galley.size().y / 2.0), galley, t.text_secondary);
         }
-        Lead::Icon(i, _) => {
-            icons::paint(ui.painter(), Rect::from_center_size(lead_rect.center() + vec2(1.0, 0.0), vec2(14.0, 14.0)), i, t.icon_secondary)
-        }
+        Lead::Icon(i, _) => paint_slot(ui, Slot::Icon(i), lead_rect),
         Lead::None | Lead::Named(_) => {}
     }
     if lead_resp.hovered() || lead_resp.dragged() {
@@ -539,7 +537,7 @@ pub fn bound_field(ui: &mut Ui, id: Id, lead: Lead, rect: Rect, name: &str) -> O
             w
         }
         Lead::Icon(i, _) => {
-            icons::paint(ui.painter(), Rect::from_center_size(pos2(rect.min.x + 13.0, rect.center().y), vec2(14.0, 14.0)), i, t.icon_secondary);
+            paint_slot(ui, Slot::Icon(i), Rect::from_min_size(rect.min, vec2(24.0, rect.height())));
             24.0
         }
     };
@@ -625,7 +623,10 @@ pub fn multiline_field(ui: &mut Ui, id: Id, value: &str, hint: &str, rows: usize
 /// returns the typed text (on Enter / focus loss) or the option picked. The chevron is the field's
 /// trailing slot ([`Slot::Icon`]); its response anchors the menu.
 pub fn combo_field(ui: &mut Ui, id: Id, value: &str, width: f32, options: &[String]) -> Option<String> {
-    let (mut out, chev) = field(ui, FieldOpts { id, value, width, placeholder: "", name: tr("Presets"), secret: false, lead: Slot::None, trail: Slot::Icon(Icon::Chevron) });
+    let (mut out, chev) = field(
+        ui,
+        FieldOpts { id, value, width, placeholder: "", name: tr("Presets"), secret: false, lead: Slot::None, trail: Slot::Icon(Icon::Chevron) },
+    );
     if let Some(resp) = chev {
         a11y::combo(&resp, tr("Presets"), value, a11y::menu_open(&resp));
         crate::right::menu_popup(&resp).show(|ui| {
@@ -658,7 +659,9 @@ impl Slot<'_> {
     fn width(self, ui: &Ui) -> f32 {
         match self {
             Slot::None => 0.0,
-            Slot::Text(s) => (LEAD_PAD + ui.painter().layout_no_wrap(s.to_string(), regular(TEXT_PT), Color32::PLACEHOLDER).size().x).min(64.0).max(16.0),
+            Slot::Text(s) => {
+                (LEAD_PAD + ui.painter().layout_no_wrap(s.to_string(), regular(TEXT_PT), Color32::PLACEHOLDER).size().x).min(64.0).max(16.0)
+            }
             Slot::Icon(_) | Slot::Dot(_) | Slot::Custom(_) => 22.0,
         }
     }
@@ -726,6 +729,58 @@ fn paint_slot(ui: &mut Ui, slot: Slot, area: Rect) {
         }
         Slot::Custom(f) => {
             f(ui);
+        }
+    }
+}
+
+/// A search box: a leading search icon, a live single-line text input, and (while `text` is
+/// non-empty) a trailing clear icon. The leading and trailing icons share the unified [`Slot`]
+/// painting with [`field`], so a search box is the same "lead slot + input + trail slot" control
+/// as every other input — the one place the product hand-rolled an icon beside a field.
+/// `width`/`height` size the box; `focus` pulls the keyboard in on the frame it is set (the box
+/// just opened). Escape clears `text` and, when `open` is `Some`, also closes the box.
+pub fn search_field(ui: &mut Ui, id: Id, width: f32, height: f32, hint: &str, text: &mut String, focus: bool, open: Option<&mut bool>) {
+    let t = Tokens::get(ui.ctx());
+    let (fr, _) = ui.allocate_exact_size(vec2(width, height), Sense::hover());
+    // The field background is inset within `fr` (as the original hand-rolled box did); only the
+    // leading/trailing icon painting is unified through [`Slot`].
+    let field = Rect::from_min_max(fr.min + vec2(12.0, 2.0), fr.max - vec2(12.0, 6.0));
+    ui.painter().rect_filled(field, CornerRadius::same(5), t.field);
+    paint_slot(ui, Slot::Icon(Icon::Search), Rect::from_min_size(field.min, vec2(24.0, height)));
+    let te_rect = Rect::from_min_max(pos2(field.min.x + 24.0, field.center().y - 7.0), pos2(field.max.x - 6.0, field.center().y + 7.0));
+    let mut child = ui.new_child(egui::UiBuilder::new().max_rect(te_rect));
+    let r = child.add(
+        egui::TextEdit::singleline(text)
+            .id(id)
+            .frame(egui::Frame::NONE)
+            .font(regular(11.0))
+            .hint_text(hint)
+            .align(egui::Align2::LEFT_CENTER)
+            .desired_width(te_rect.width()),
+    );
+    if focus {
+        r.request_focus();
+    }
+    select_all_on_focus(ui, &r, text);
+    if r.has_focus() {
+        ui.painter().rect_stroke(field, CornerRadius::same(5), Stroke::new(1.0, crate::theme::ACCENT), egui::StrokeKind::Inside);
+    }
+    // Consume Escape so it does not bubble to global handlers; closing is opt-in via `open`.
+    if (r.has_focus() || r.lost_focus()) && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
+        if let Some(o) = open {
+            *o = false;
+        }
+        text.clear();
+    }
+    if !text.is_empty() {
+        let cr = Rect::from_center_size(pos2(field.max.x - 5.0, field.center().y), vec2(16.0, 16.0));
+        let cres = ui.interact(cr, id.with("clear"), Sense::click()).tip(tr("Clear"));
+        if cres.hovered() {
+            ui.painter().rect_filled(cr, CornerRadius::same(4), t.hover);
+        }
+        paint_slot(ui, Slot::Icon(Icon::Close), cr);
+        if cres.clicked() {
+            text.clear();
         }
     }
 }

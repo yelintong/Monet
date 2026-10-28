@@ -808,7 +808,7 @@ fn a_stretched_45_degree_or_ring_grid_computes_its_size() {
 #[test]
 fn slot_field_renders_leading_icon_and_trailing_text_without_editing() {
     use crate::icons::Icon;
-    use crate::widgets::{field, FieldOpts, Slot};
+    use crate::widgets::{FieldOpts, Slot, field};
     let u = crate::layers_drag_tests::Ui::new(figcraft_engine::Session::new());
     let mut committed = None;
     let mut had_trail = false;
@@ -837,4 +837,32 @@ fn slot_field_renders_leading_icon_and_trailing_text_without_editing() {
     out.textures_delta.clear();
     assert!(committed.is_none(), "a plain render of the slot field commits nothing");
     assert!(had_trail, "a trailing slot yields its response for anchoring a menu");
+}
+
+/// The unified search box ([`crate::widgets::search_field`]) paints its leading search icon and,
+/// while `text` is non-empty, its trailing clear icon — both through the shared [`Slot`] painting —
+/// without panicking, and leaves the text alone on a plain render.
+#[test]
+fn search_field_renders_leading_icon_and_clear_when_non_empty() {
+    use crate::widgets::search_field;
+    let u = crate::layers_drag_tests::Ui::new(figcraft_engine::Session::new());
+    let raw = egui::RawInput {
+        screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1440.0, 900.0))),
+        time: Some(0.0),
+        ..Default::default()
+    };
+    // Empty: only the leading search icon is drawn.
+    let mut empty = String::new();
+    let mut out = u.ctx.run_ui(raw.clone(), |ui| {
+        search_field(ui, Id::new("search_empty"), 200.0, 32.0, "Find", &mut empty, false, None);
+    });
+    out.textures_delta.clear();
+    assert!(empty.is_empty(), "a plain render of an empty search box leaves the text alone");
+    // Non-empty: the leading search icon and the trailing clear icon are both drawn.
+    let mut typed = String::from("cat");
+    let mut out = u.ctx.run_ui(raw, |ui| {
+        search_field(ui, Id::new("search_typed"), 200.0, 32.0, "Find", &mut typed, false, None);
+    });
+    out.textures_delta.clear();
+    assert_eq!(typed, "cat", "a plain render of a typed search box leaves the text alone");
 }
