@@ -81,6 +81,15 @@ code.
   L6 depends on egui/eframe/rfd/winit. **The UI crate is swappable.**
 - **The UI is thin**: panels read engine state and act through `app.run(id, params)` /
   `app.set_props(ids, props)`. Colours come from `theme::Tokens`.
+- **Shared UI widgets live in `crates/ui-egui/src/widgets.rs`**: `field`/`Slot` (a text input with
+  leading/trailing slots), `search_field`, `menu_row_draw`/`menu_row` (frame92 menu rows),
+  `section`/`section_header` (a titled section with a lead slot and children) and `icon`. Drag
+  primitives live in `panels/list_drag.rs`: `ListDrag` for flat item-between ordering, and
+  `DropZone`/`drop_zone` + `hold_to_expand` for nested drops. Reach for these before hand-rolling a
+  row, input, menu row or drop rule. Still local (candidates to promote when a second caller needs
+  them): `panels/frame_presets.rs`, `panels/proto_panel.rs`, `panels/proto_editor.rs`,
+  `panels/dev_mode.rs`, `panels/dev_compare.rs`, `panels/versions.rs`, `panels/vector_panel.rs`, and
+  the variables panel's x-indent group drop (`group_drop_slot`).
 - **Time goes through `chrono`** (workspace dependency). Never hand-roll UTC/calendar conversion (days-to-date algorithms, leap-year math); a crate owns only its output format string. The one exception is range extension: past the years chrono can represent, shift the date by whole 400-year Gregorian cycles (146,097 days, after which the calendar repeats), let chrono compute the month and day, and add the cycles back to the year (splitting seconds into hours, minutes and seconds is plain arithmetic).
 - **Rust only** (no handwritten JS/TS). **Never break wasm** (`cargo xtask wasm`).
 
