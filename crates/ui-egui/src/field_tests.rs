@@ -829,6 +829,7 @@ fn slot_field_renders_leading_icon_and_trailing_text_without_editing() {
                 secret: false,
                 lead: Slot::Icon(Icon::Chevron),
                 trail: Slot::Text("px"),
+                trail_suffix: "trail",
             },
         );
         committed = o;
@@ -906,4 +907,43 @@ fn menu_row_paints_label_and_reports_its_width() {
     assert!(painted.iter().any(|s| s == "Copy"), "the label is painted: {painted:?}");
     assert!(painted.iter().any(|s| s.contains("C")), "the shortcut is painted: {painted:?}");
     assert!(need > 28.0, "the row reports the width the menu must grow to: {need}");
+}
+
+/// The general section ([`crate::widgets::section`]) paints its title, runs its body, and reports
+/// no header button on a plain render.
+#[test]
+fn section_paints_title_and_runs_its_body() {
+    use crate::widgets::{SectionOpts, Slot, section};
+    fn texts(shapes: &[egui::epaint::ClippedShape]) -> Vec<String> {
+        fn walk(s: &egui::Shape, out: &mut Vec<String>) {
+            match s {
+                egui::Shape::Vec(v) => v.iter().for_each(|s| walk(s, out)),
+                egui::Shape::Text(t) => out.push(t.galley.text().to_string()),
+                _ => {}
+            }
+        }
+        let mut out = Vec::new();
+        shapes.iter().for_each(|c| walk(&c.shape, &mut out));
+        out
+    }
+    let u = crate::layers_drag_tests::Ui::new(figcraft_engine::Session::new());
+    let raw = egui::RawInput {
+        screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1440.0, 900.0))),
+        time: Some(0.0),
+        ..Default::default()
+    };
+    let mut body_ran = false;
+    let mut clicked = Some(0usize);
+    let mut out = u.ctx.run_ui(raw, |ui| {
+        clicked = section(ui, SectionOpts { title: "Clip Content", lead: Slot::None, buttons: &[], dim: false }, |ui| {
+            body_ran = true;
+            ui.label("child");
+        });
+    });
+    out.textures_delta.clear();
+    let painted = texts(&out.shapes);
+    assert!(body_ran, "the section runs its body");
+    assert!(clicked.is_none(), "a plain render clicks no header button");
+    assert!(painted.iter().any(|s| s == "Clip Content"), "the title is painted: {painted:?}");
+    assert!(painted.iter().any(|s| s == "child"), "the body is drawn under the header: {painted:?}");
 }

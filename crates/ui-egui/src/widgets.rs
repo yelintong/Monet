@@ -567,18 +567,22 @@ pub fn bound_field(ui: &mut Ui, id: Id, lead: Lead, rect: Rect, name: &str) -> O
 /// A single-line text input: see [`field`] for the unified builder (this is `field` with no
 /// leading or trailing slot).
 pub fn text_field(ui: &mut Ui, id: Id, value: &str, width: f32, placeholder: &str) -> Option<String> {
-    field(ui, FieldOpts { id, value, width, placeholder, name: placeholder, secret: false, lead: Slot::None, trail: Slot::None }).0
+    field(
+        ui,
+        FieldOpts { id, value, width, placeholder, name: placeholder, secret: false, lead: Slot::None, trail: Slot::None, trail_suffix: "trail" },
+    )
+    .0
 }
 
 /// [`text_field`] without a placeholder, named `name` for screen readers (its label is beside it).
 pub fn text_field_named(ui: &mut Ui, id: Id, value: &str, width: f32, name: &str) -> Option<String> {
-    field(ui, FieldOpts { id, value, width, placeholder: "", name, secret: false, lead: Slot::None, trail: Slot::None }).0
+    field(ui, FieldOpts { id, value, width, placeholder: "", name, secret: false, lead: Slot::None, trail: Slot::None, trail_suffix: "trail" }).0
 }
 
 /// [`text_field_named`] for a secret (a server key): it shows dots, typing included, and screen
 /// readers hear dots too.
 pub fn secret_field_named(ui: &mut Ui, id: Id, value: &str, width: f32, name: &str) -> Option<String> {
-    field(ui, FieldOpts { id, value, width, placeholder: "", name, secret: true, lead: Slot::None, trail: Slot::None }).0
+    field(ui, FieldOpts { id, value, width, placeholder: "", name, secret: true, lead: Slot::None, trail: Slot::None, trail_suffix: "trail" }).0
 }
 
 /// A multi-line text field across the panel (descriptions, notes) that commits when it loses
@@ -625,7 +629,17 @@ pub fn multiline_field(ui: &mut Ui, id: Id, value: &str, hint: &str, rows: usize
 pub fn combo_field(ui: &mut Ui, id: Id, value: &str, width: f32, options: &[String]) -> Option<String> {
     let (mut out, chev) = field(
         ui,
-        FieldOpts { id, value, width, placeholder: "", name: tr("Presets"), secret: false, lead: Slot::None, trail: Slot::Icon(Icon::Chevron) },
+        FieldOpts {
+            id,
+            value,
+            width,
+            placeholder: "",
+            name: tr("Presets"),
+            secret: false,
+            lead: Slot::None,
+            trail: Slot::Icon(Icon::Chevron),
+            trail_suffix: "menu",
+        },
     );
     if let Some(resp) = chev {
         a11y::combo(&resp, tr("Presets"), value, a11y::menu_open(&resp));
@@ -677,6 +691,9 @@ pub struct FieldOpts<'a> {
     pub secret: bool,
     pub lead: Slot<'a>,
     pub trail: Slot<'a>,
+    /// The trailing slot's response id suffix (defaults to `"trail"`). A combo keeps `"menu"`, the
+    /// id its dropdown anchor has always had.
+    pub trail_suffix: &'static str,
 }
 
 /// A single-line text input with an optional leading and trailing slot (icon, text, dot or custom
@@ -702,7 +719,7 @@ pub fn field(ui: &mut Ui, opts: FieldOpts) -> (Option<String>, Option<Response>)
     let mut trail_resp = None;
     if !matches!(opts.trail, Slot::None) {
         let tr = Rect::from_min_size(pos2(rect.max.x - trail_w, rect.min.y), vec2(trail_w, FIELD_H));
-        let resp = ui.interact(tr, opts.id.with("trail"), Sense::click());
+        let resp = ui.interact(tr, opts.id.with(opts.trail_suffix), Sense::click());
         if resp.hovered() {
             ui.painter().rect_filled(tr.shrink(2.0), CornerRadius::same(4), t.hover);
         }
@@ -1157,6 +1174,12 @@ pub fn section_header(ui: &mut Ui, title: &str, buttons: &[(Icon, &str)], dim: b
 
 /// [`section_header`], with the header's own response for a right-click menu.
 pub fn section_header_resp(ui: &mut Ui, title: &str, buttons: &[(Icon, &str)], dim: bool) -> (Option<usize>, egui::Response) {
+    section_header_impl(ui, title, Slot::None, buttons, dim)
+}
+
+/// The shared section-header body: an optional leading slot (frame29's marker), the title and the
+/// trailing icon buttons. See [`section`] for the general form with children.
+fn section_header_impl(ui: &mut Ui, title: &str, lead: Slot, buttons: &[(Icon, &str)], dim: bool) -> (Option<usize>, egui::Response) {
     let t = Tokens::get(ui.ctx());
     let w = ui.available_width();
     let (rect, resp) = ui.allocate_exact_size(vec2(w, 40.0), Sense::click());
@@ -1165,8 +1188,12 @@ pub fn section_header_resp(ui: &mut Ui, title: &str, buttons: &[(Icon, &str)], d
     if resp.hovered() && !dim {
         ui.ctx().set_cursor_icon(egui::CursorIcon::Default);
     }
+    let lead_w = lead.width(ui);
+    if lead_w > 0.0 {
+        paint_slot(ui, lead, Rect::from_min_size(pos2(rect.min.x + PAD, rect.min.y), vec2(lead_w, rect.height())));
+    }
     ui.painter().text(
-        pos2(rect.min.x + PAD, rect.center().y),
+        pos2(rect.min.x + PAD + lead_w, rect.center().y),
         Align2::LEFT_CENTER,
         title,
         regular(TEXT_PT),
@@ -1191,6 +1218,28 @@ pub fn section_header_resp(ui: &mut Ui, title: &str, buttons: &[(Icon, &str)], d
         out = buttons.iter().position(|(icon, _)| *icon == Icon::Plus);
     }
     (out, resp)
+}
+
+/// Options for [`section`].
+pub struct SectionOpts<'a> {
+    /// The section's title.
+    pub title: &'a str,
+    /// A leading slot before the title — frame29's marker, or an icon.
+    pub lead: Slot<'a>,
+    /// Trailing icon buttons; the clicked one's index is returned.
+    pub buttons: &'a [(Icon, &'a str)],
+    /// Greys the title (an empty section).
+    pub dim: bool,
+}
+
+/// A section: the frame29-style header — an optional leading marker, the title and trailing icon
+/// buttons — and, when `body` is given, its content below. The general form behind
+/// [`section_header`], for "a title and the rows it owns" (the same style in both side panels).
+/// Returns which header button was clicked.
+pub fn section(ui: &mut Ui, opts: SectionOpts, body: impl FnOnce(&mut Ui)) -> Option<usize> {
+    let (clicked, _) = section_header_impl(ui, opts.title, opts.lead, opts.buttons, opts.dim);
+    body(ui);
+    clicked
 }
 
 /// Runs `add` as the group of buttons at a row's right end: two 24 pt buttons 4 pt apart, the last
