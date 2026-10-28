@@ -286,6 +286,51 @@ fn drop_slot(rows: &[(usize, Rect)], from: usize, p: egui::Pos2, reversed: bool,
     Some((if reversed { n - 1 - at } else { at }, y))
 }
 
+/// Where a drag over a row lands: above it, inside it (as a child of it), or below it. The nested
+/// list primitive: [`ListDrag`] orders flat lists; a list whose rows hold children uses this to
+/// decide when a drop goes *into* a row rather than between rows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DropZone {
+    Above,
+    Into,
+    Below,
+}
+
+/// The zone a pointer at `rel` (0 at the row's top, 1 at its bottom) selects: the middle band
+/// (0.25..0.75) is [`DropZone::Into`] when the row can hold children, else the nearer edge wins.
+/// This is the layers panel's rule, shared so any nested list drops the same way.
+pub fn drop_zone(rel: f32, can_into: bool) -> DropZone {
+    if can_into && (0.25..0.75).contains(&rel) {
+        DropZone::Into
+    } else if rel < 0.5 {
+        DropZone::Above
+    } else {
+        DropZone::Below
+    }
+}
+
+/// Holding the pointer still over a collapsed group for `hold` seconds asks to open it, so a drop
+/// can go deeper. `id` names the hold (one per drag); `key` is what is being held over (a row's id).
+/// Returns true on the single frame the hold completes. Callers clear `id`'s temp data when the drag
+/// ends. Keeps repainting so the hold can complete without pointer movement.
+pub fn hold_to_expand<K: Copy + PartialEq + Send + Sync + 'static>(ui: &Ui, id: Id, key: K, now: f64, hold: f64) -> bool {
+    ui.ctx().request_repaint_after(std::time::Duration::from_millis(100));
+    match ui.data(|d| d.get_temp::<(K, f64)>(id)) {
+        Some((k, since)) if k == key => {
+            if now - since > hold {
+                ui.data_mut(|d| d.remove::<(K, f64)>(id));
+                true
+            } else {
+                false
+            }
+        }
+        _ => {
+            ui.data_mut(|d| d.insert_temp(id, (key, now)));
+            false
+        }
+    }
+}
+
 /// Keep per-row flags (`Id::unique((salt, index))`, e.g. an open settings section) with their rows
 /// when item `from` of a `len`-long list moves to `to`.
 pub fn move_flags(ui: &Ui, salt: &'static str, len: usize, from: usize, to: usize) {
@@ -361,6 +406,22 @@ mod tests {
         // Dropping a row where it already is stays put, however wide the area.
         assert_eq!(drop_slot(&r, 2, pos2(100.0, -20.0), false, Some(area)), None);
         assert_eq!(drop_slot(&r, 0, pos2(100.0, 120.0), false, Some(area)), None);
+    }
+
+    #[test]
+    fn the_middle_band_drops_into_a_row_that_holds_children() {
+        // A row that can hold children: the middle band goes inside, the edges above/below.
+        assert_eq!(drop_zone(0.1, true), DropZone::Above);
+        assert_eq!(drop_zone(0.3, true), DropZone::Into);
+        assert_eq!(drop_zone(0.5, true), DropZone::Into);
+        assert_eq!(drop_zone(0.7, true), DropZone::Into);
+        assert_eq!(drop_zone(0.9, true), DropZone::Below);
+        // A leaf: only above or below, split at the middle.
+        assert_eq!(drop_zone(0.3, false), DropZone::Above);
+        assert_eq!(drop_zone(0.7, false), DropZone::Below);
+        // The band is `0.25..0.75`: its lower edge is inside, its upper edge is not.
+        assert_eq!(drop_zone(0.25, true), DropZone::Into);
+        assert_eq!(drop_zone(0.75, true), DropZone::Below);
     }
 
     #[test]

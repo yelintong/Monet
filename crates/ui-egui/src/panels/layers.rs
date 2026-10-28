@@ -1164,13 +1164,11 @@ fn layers(app: &mut FigApp, ui: &mut Ui) {
                 && r.contains(p)
             {
                 let rel = (p.y - r.min.y) / r.height();
-                let into = n.kind.is_container() && !matches!(n.kind, NodeKind::Instance { .. }) && (0.25..0.75).contains(&rel);
-                let zone: i8 = if into {
-                    0
-                } else if rel < 0.5 {
-                    -1
-                } else {
-                    1
+                let can_into = n.kind.is_container() && !matches!(n.kind, NodeKind::Instance { .. });
+                let zone: i8 = match crate::list_drag::drop_zone(rel, can_into) {
+                    crate::list_drag::DropZone::Into => 0,
+                    crate::list_drag::DropZone::Above => -1,
+                    crate::list_drag::DropZone::Below => 1,
                 };
                 let y = match zone {
                     -1 => r.min.y,
@@ -1183,18 +1181,9 @@ fn layers(app: &mut FigApp, ui: &mut Ui) {
                     if row.has_kids && !app.ui.expanded.contains(&row.id) {
                         let hold_id = Id::unique("layer_drag_hold");
                         let now = ui.input(|i| i.time);
-                        match ui.data(|d| d.get_temp::<(NodeId, f64)>(hold_id)) {
-                            Some((id, since)) if id == row.id => {
-                                if now - since > 0.6 {
-                                    toggle = Some(row.id);
-                                    ui.data_mut(|d| d.remove::<(NodeId, f64)>(hold_id));
-                                }
-                            }
-                            _ => {
-                                ui.data_mut(|d| d.insert_temp(hold_id, (row.id, now)));
-                            }
+                        if crate::list_drag::hold_to_expand(ui, hold_id, row.id, now, 0.6) {
+                            toggle = Some(row.id);
                         }
-                        ui.ctx().request_repaint_after(std::time::Duration::from_millis(100));
                     }
                 } else {
                     crate::widgets::insertion_line(ui.painter(), x0, rr.max.x, y);
