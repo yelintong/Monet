@@ -394,7 +394,9 @@ impl FigApp {
         if !hidden && !narrow {
             let content = ctx.content_rect();
             let rail = 56.0_f32;
-            let top = content.min.y;
+            // The tab strip is a top panel of its own: the panels start below it, so their
+            // dividers must start there too, never running up through the status bar.
+            let top = content.min.y + crate::tabs::HEIGHT;
             let bottom = if self.ui.motion_open { content.max.y - motion::timeline::HEIGHT } else { content.max.y };
             let stroke = egui::Stroke::new(1.0, t.border);
             let p = ui.painter();
