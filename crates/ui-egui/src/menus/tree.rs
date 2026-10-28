@@ -339,37 +339,33 @@ fn need_width(ui: &Ui, w: f32) {
     }
 }
 
-pub(crate) fn item(ui: &mut Ui, label: &str, shortcut: &str, enabled: bool, checked: bool, t: &Tokens) -> bool {
-    indented_item(ui, label, shortcut, enabled, checked, 0.0, t)
+pub(crate) fn item(ui: &mut Ui, label: &str, shortcut: &str, enabled: bool, checked: bool, _t: &Tokens) -> bool {
+    indented_item(ui, label, shortcut, enabled, checked, 0.0, _t)
 }
 
-/// A menu row whose label starts `indent` pixels further in (nested layers).
-pub(super) fn indented_item(ui: &mut Ui, label: &str, shortcut: &str, enabled: bool, checked: bool, indent: f32, t: &Tokens) -> bool {
+/// A menu row whose label starts `indent` pixels further in (nested layers). The row is drawn
+/// through the shared [`crate::widgets::menu_row_draw`]; only the menu-level hover — which closes
+/// an open submenu of this level — lives here.
+pub(super) fn indented_item(ui: &mut Ui, label: &str, shortcut: &str, enabled: bool, checked: bool, indent: f32, _t: &Tokens) -> bool {
     let w = ui.available_width();
     let (r, resp) = ui.allocate_exact_size(vec2(w, 28.0), Sense::click());
-    a11y::menu_item(&resp, label, shortcut, checked.then_some(true));
-    if !enabled {
-        a11y::disabled(&resp);
-    }
-    // The keyboard's item is highlighted like the hovered one.
-    a11y::own_focus(&resp);
     let hov = plain_row_hover(ui, &resp) && enabled;
-    if hov {
-        ui.painter().rect_filled(r, CornerRadius::same(5), t.menu_hover);
-    }
-    let col = if enabled { t.menu_text } else { t.menu_dim };
-    if checked {
-        icons::paint(ui.painter(), Rect::from_center_size(pos2(r.min.x + 12.0, r.center().y), vec2(12.0, 12.0)), Icon::Check, col);
-    }
-    let galley = ui.painter().layout_no_wrap(label.to_string(), regular(12.0), col);
-    let keys = (!shortcut.is_empty())
-        .then(|| ui.painter().layout_no_wrap(pretty_shortcut(shortcut), regular(12.0), if hov { t.menu_text } else { t.menu_dim }));
-    need_width(ui, 28.0 + indent + galley.size().x + keys.as_ref().map_or(8.0, |k| 16.0 + k.size().x + 10.0));
-    let text_rect = Rect::from_min_max(pos2(r.min.x + 28.0 + indent, r.min.y), pos2(r.max.x - 8.0, r.max.y));
-    ui.painter().with_clip_rect(text_rect).galley(pos2(text_rect.min.x, r.center().y - galley.size().y / 2.0), galley, col);
-    if let Some(k) = keys {
-        ui.painter().galley(pos2(r.max.x - 10.0 - k.size().x, r.center().y - k.size().y / 2.0), k, col);
-    }
+    let need = crate::widgets::menu_row_draw(
+        ui,
+        r,
+        &resp,
+        crate::widgets::MenuRowOpts {
+            label,
+            enabled,
+            checked,
+            indent,
+            lead: crate::widgets::Slot::None,
+            trail: crate::widgets::Slot::None,
+            shortcut,
+        },
+        hov,
+    );
+    need_width(ui, need);
     resp.clicked()
 }
 

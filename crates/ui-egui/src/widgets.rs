@@ -785,6 +785,77 @@ pub fn search_field(ui: &mut Ui, id: Id, width: f32, height: f32, hint: &str, te
     }
 }
 
+/// Options for [`menu_row`].
+pub struct MenuRowOpts<'a> {
+    /// The row's label.
+    pub label: &'a str,
+    /// Whether the row can be clicked (disabled rows dim and never report a click).
+    pub enabled: bool,
+    /// Draws a check at the leading slot (and tells screen readers) when no `lead` is set.
+    pub checked: bool,
+    /// Pixels the label starts further in (nested layers).
+    pub indent: f32,
+    /// A leading slot — an icon, check or dot — drawn at the row's left. When `None` and
+    /// `checked`, a check is drawn there instead.
+    pub lead: Slot<'a>,
+    /// A trailing slot — an icon or dot — drawn at the row's right. When `None`, `shortcut` is
+    /// drawn as trailing text instead.
+    pub trail: Slot<'a>,
+    /// A trailing shortcut hint, drawn as text when `trail` is `None`.
+    pub shortcut: &'a str,
+}
+
+/// Draw a frame92-style menu row into `r` for `resp` (both allocated by the caller) and return the
+/// width the menu should grow to. `hov` is the row's highlight: the caller decides it, since it may
+/// depend on menu-level submenu state (such as `plain_row_hover`) that this helper does not own.
+/// `lead`/`trail` take a `Slot`; when they are `None`, a `checked` row draws a check at the left and
+/// a non-empty `shortcut` draws at the right.
+pub fn menu_row_draw(ui: &mut Ui, r: Rect, resp: &Response, opts: MenuRowOpts, hov: bool) -> f32 {
+    let t = Tokens::get(ui.ctx());
+    a11y::menu_item(resp, opts.label, opts.shortcut, opts.checked.then_some(true));
+    if !opts.enabled {
+        a11y::disabled(resp);
+    }
+    a11y::own_focus(resp);
+    let hov = opts.enabled && hov;
+    if hov {
+        ui.painter().rect_filled(r, CornerRadius::same(5), t.menu_hover);
+    }
+    let col = if opts.enabled { t.menu_text } else { t.menu_dim };
+    // Leading slot, or a check when checked and no lead was given.
+    if !matches!(opts.lead, Slot::None) {
+        paint_slot(ui, opts.lead, Rect::from_center_size(pos2(r.min.x + 12.0, r.center().y), vec2(24.0, 28.0)));
+    } else if opts.checked {
+        icons::paint(ui.painter(), Rect::from_center_size(pos2(r.min.x + 12.0, r.center().y), vec2(12.0, 12.0)), Icon::Check, col);
+    }
+    let galley = ui.painter().layout_no_wrap(opts.label.to_string(), regular(12.0), col);
+    let keys = (!opts.shortcut.is_empty()).then(|| {
+        ui.painter().layout_no_wrap(crate::toolbar::pretty_shortcut(opts.shortcut), regular(12.0), if hov { t.menu_text } else { t.menu_dim })
+    });
+    let need = 28.0 + opts.indent + galley.size().x + keys.as_ref().map_or(8.0, |k| 16.0 + k.size().x + 10.0);
+    // Trailing slot, or the shortcut text when no trail was given.
+    if matches!(opts.trail, Slot::None) {
+        if let Some(k) = keys {
+            ui.painter().galley(pos2(r.max.x - 10.0 - k.size().x, r.center().y - k.size().y / 2.0), k, col);
+        }
+    } else {
+        paint_slot(ui, opts.trail, Rect::from_center_size(pos2(r.max.x - 12.0, r.center().y), vec2(24.0, 28.0)));
+    }
+    let text_rect = Rect::from_min_max(pos2(r.min.x + 28.0 + opts.indent, r.min.y), pos2(r.max.x - 8.0, r.max.y));
+    ui.painter().with_clip_rect(text_rect).galley(pos2(text_rect.min.x, r.center().y - galley.size().y / 2.0), galley, col);
+    need
+}
+
+/// A menu row allocated at the current cursor — the common case, highlighted on hover or keyboard
+/// focus. Returns whether it was clicked and the width the menu should grow to.
+pub fn menu_row(ui: &mut Ui, opts: MenuRowOpts) -> (bool, f32) {
+    let w = ui.available_width();
+    let (r, resp) = ui.allocate_exact_size(vec2(w, 28.0), Sense::click());
+    let hov = resp.hovered() || resp.has_focus();
+    let need = menu_row_draw(ui, r, &resp, opts, hov);
+    (resp.clicked(), need)
+}
+
 /// [`text_field`] drawn into `edit_rect`: the field's background and slots are drawn by the
 /// caller ([`field`]); `name` names it for screen readers.
 fn text_field_edit(ui: &mut Ui, id: Id, value: &str, edit_rect: Rect, placeholder: &str, name: &str, secret: bool) -> Option<String> {

@@ -866,3 +866,44 @@ fn search_field_renders_leading_icon_and_clear_when_non_empty() {
     out.textures_delta.clear();
     assert_eq!(typed, "cat", "a plain render of a typed search box leaves the text alone");
 }
+
+/// The shared menu row ([`crate::widgets::menu_row`]) paints its label and shortcut, reports the
+/// width the menu must grow to, and never reports a click on a plain render.
+#[test]
+fn menu_row_paints_label_and_reports_its_width() {
+    use crate::widgets::{MenuRowOpts, Slot, menu_row};
+    fn texts(shapes: &[egui::epaint::ClippedShape]) -> Vec<String> {
+        fn walk(s: &egui::Shape, out: &mut Vec<String>) {
+            match s {
+                egui::Shape::Vec(v) => v.iter().for_each(|s| walk(s, out)),
+                egui::Shape::Text(t) => out.push(t.galley.text().to_string()),
+                _ => {}
+            }
+        }
+        let mut out = Vec::new();
+        shapes.iter().for_each(|c| walk(&c.shape, &mut out));
+        out
+    }
+    let u = crate::layers_drag_tests::Ui::new(figcraft_engine::Session::new());
+    let raw = egui::RawInput {
+        screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1440.0, 900.0))),
+        time: Some(0.0),
+        ..Default::default()
+    };
+    let mut clicked = true;
+    let mut need = 0.0;
+    let mut out = u.ctx.run_ui(raw, |ui| {
+        let (c, n) = menu_row(
+            ui,
+            MenuRowOpts { label: "Copy", enabled: true, checked: false, indent: 0.0, lead: Slot::None, trail: Slot::None, shortcut: "Cmd+C" },
+        );
+        clicked = c;
+        need = n;
+    });
+    out.textures_delta.clear();
+    let painted = texts(&out.shapes);
+    assert!(!clicked, "a plain render clicks nothing");
+    assert!(painted.iter().any(|s| s == "Copy"), "the label is painted: {painted:?}");
+    assert!(painted.iter().any(|s| s.contains("C")), "the shortcut is painted: {painted:?}");
+    assert!(need > 28.0, "the row reports the width the menu must grow to: {need}");
+}
