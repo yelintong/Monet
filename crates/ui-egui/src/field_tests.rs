@@ -801,3 +801,40 @@ fn a_stretched_45_degree_or_ring_grid_computes_its_size() {
         assert_eq!(u.app.session.doc().unwrap().node(f).unwrap().grids[0].gutter, 12.0, "{kind}: the gutter stays editable");
     }
 }
+
+/// The unified text field ([`crate::widgets::field`]) draws a leading icon and a trailing text slot
+/// without editing: a plain render commits nothing, and a trailing slot yields its response so a
+/// chevron can anchor a menu.
+#[test]
+fn slot_field_renders_leading_icon_and_trailing_text_without_editing() {
+    use crate::icons::Icon;
+    use crate::widgets::{field, FieldOpts, Slot};
+    let u = crate::layers_drag_tests::Ui::new(figcraft_engine::Session::new());
+    let mut committed = None;
+    let mut had_trail = false;
+    let raw = egui::RawInput {
+        screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1440.0, 900.0))),
+        time: Some(0.0),
+        ..Default::default()
+    };
+    let mut out = u.ctx.run_ui(raw, |ui| {
+        let (o, trail) = field(
+            ui,
+            FieldOpts {
+                id: Id::new("slot_field_test"),
+                value: "Hi",
+                width: 200.0,
+                placeholder: "",
+                name: "Slot field",
+                secret: false,
+                lead: Slot::Icon(Icon::Chevron),
+                trail: Slot::Text("px"),
+            },
+        );
+        committed = o;
+        had_trail = trail.is_some();
+    });
+    out.textures_delta.clear();
+    assert!(committed.is_none(), "a plain render of the slot field commits nothing");
+    assert!(had_trail, "a trailing slot yields its response for anchoring a menu");
+}

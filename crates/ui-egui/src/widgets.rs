@@ -566,22 +566,21 @@ pub fn bound_field(ui: &mut Ui, id: Id, lead: Lead, rect: Rect, name: &str) -> O
 }
 
 /// A text field that commits on Enter / focus loss. Returns the new text when committed.
+/// A single-line text input: see [`field`] for the unified builder (this is `field` with no
+/// leading or trailing slot).
 pub fn text_field(ui: &mut Ui, id: Id, value: &str, width: f32, placeholder: &str) -> Option<String> {
-    let (rect, _) = ui.allocate_exact_size(vec2(width, FIELD_H), Sense::hover());
-    text_field_in(ui, id, value, rect, placeholder, placeholder, false)
+    field(ui, FieldOpts { id, value, width, placeholder, name: placeholder, secret: false, lead: Slot::None, trail: Slot::None }).0
 }
 
 /// [`text_field`] without a placeholder, named `name` for screen readers (its label is beside it).
 pub fn text_field_named(ui: &mut Ui, id: Id, value: &str, width: f32, name: &str) -> Option<String> {
-    let (rect, _) = ui.allocate_exact_size(vec2(width, FIELD_H), Sense::hover());
-    text_field_in(ui, id, value, rect, "", name, false)
+    field(ui, FieldOpts { id, value, width, placeholder: "", name, secret: false, lead: Slot::None, trail: Slot::None }).0
 }
 
 /// [`text_field_named`] for a secret (a server key): it shows dots, typing included, and screen
 /// readers hear dots too.
 pub fn secret_field_named(ui: &mut Ui, id: Id, value: &str, width: f32, name: &str) -> Option<String> {
-    let (rect, _) = ui.allocate_exact_size(vec2(width, FIELD_H), Sense::hover());
-    text_field_in(ui, id, value, rect, "", name, true)
+    field(ui, FieldOpts { id, value, width, placeholder: "", name, secret: true, lead: Slot::None, trail: Slot::None }).0
 }
 
 /// A multi-line text field across the panel (descriptions, notes) that commits when it loses
@@ -622,44 +621,125 @@ pub fn multiline_field(ui: &mut Ui, id: Id, value: &str, hint: &str, rows: usize
 
 /// An editable field with a menu of `options` behind the chevron at its right (export sizes…).
 /// Returns the typed text (on Enter / focus loss) or the option picked.
+/// An editable field with a menu of `options` behind the chevron at its right (export sizes…):
+/// returns the typed text (on Enter / focus loss) or the option picked. The chevron is the field's
+/// trailing slot ([`Slot::Icon`]); its response anchors the menu.
 pub fn combo_field(ui: &mut Ui, id: Id, value: &str, width: f32, options: &[String]) -> Option<String> {
-    let t = Tokens::get(ui.ctx());
-    let (rect, _) = ui.allocate_exact_size(vec2(width, FIELD_H), Sense::hover());
-    let mut out = text_field_in(ui, id, value, rect, "", "", false);
-    // The chevron sits on top of the field's right end.
-    let chev = Rect::from_min_max(pos2(rect.max.x - 18.0, rect.min.y), rect.max);
-    let resp = ui.interact(chev, id.with("menu"), Sense::click());
-    a11y::combo(&resp, tr("Presets"), value, a11y::menu_open(&resp));
-    if resp.hovered() {
-        ui.painter().rect_filled(chev.shrink(2.0), CornerRadius::same(4), t.hover);
-    }
-    icons::paint(ui.painter(), Rect::from_center_size(chev.center(), vec2(12.0, 12.0)), Icon::Chevron, t.icon_secondary);
-    crate::right::menu_popup(&resp).show(|ui| {
-        for o in options {
-            if crate::right::menu_item(ui, o, "") {
-                out = Some(o.clone());
-                ui.close();
+    let (mut out, chev) = field(ui, FieldOpts { id, value, width, placeholder: "", name: tr("Presets"), secret: false, lead: Slot::None, trail: Slot::Icon(Icon::Chevron) });
+    if let Some(resp) = chev {
+        a11y::combo(&resp, tr("Presets"), value, a11y::menu_open(&resp));
+        crate::right::menu_popup(&resp).show(|ui| {
+            for o in options {
+                if crate::right::menu_item(ui, o, "") {
+                    out = Some(o.clone());
+                    ui.close();
+                }
             }
-        }
-    });
+        });
+    }
     out
 }
 
 /// [`text_field`] drawn into `rect`; `name` names it for screen readers.
-fn text_field_in(ui: &mut Ui, id: Id, value: &str, rect: Rect, placeholder: &str, name: &str, secret: bool) -> Option<String> {
+/// A slot at the leading or trailing end of a field: nothing, a short label, an icon, a colour
+/// dot, or arbitrary content drawn by `Custom`. One builder ([`field`]) then covers "icon-or-text
+/// lead" and "text-or-icon trail" without a separate function per combination.
+#[derive(Clone, Copy)]
+pub enum Slot<'a> {
+    None,
+    Text(&'a str),
+    Icon(Icon),
+    Dot(Color32),
+    Custom(&'a dyn Fn(&mut Ui)),
+}
+
+impl Slot<'_> {
+    /// The slot's width at the end of a `FIELD_H` field.
+    fn width(self, ui: &Ui) -> f32 {
+        match self {
+            Slot::None => 0.0,
+            Slot::Text(s) => (LEAD_PAD + ui.painter().layout_no_wrap(s.to_string(), regular(TEXT_PT), Color32::PLACEHOLDER).size().x).min(64.0).max(16.0),
+            Slot::Icon(_) | Slot::Dot(_) | Slot::Custom(_) => 22.0,
+        }
+    }
+}
+
+/// Options for [`field`].
+pub struct FieldOpts<'a> {
+    pub id: Id,
+    pub value: &'a str,
+    pub width: f32,
+    pub placeholder: &'a str,
+    pub name: &'a str,
+    pub secret: bool,
+    pub lead: Slot<'a>,
+    pub trail: Slot<'a>,
+}
+
+/// A single-line text input with an optional leading and trailing slot (icon, text, dot or custom
+/// content): the unified builder behind [`text_field`], [`text_field_named`],
+/// [`secret_field_named`] and [`combo_field`]. The middle is the editable text; `lead`/`trail` fill
+/// the insets. Returns the committed text and, when a trailing slot was drawn, its response (so a
+/// chevron can anchor a menu).
+pub fn field(ui: &mut Ui, opts: FieldOpts) -> (Option<String>, Option<Response>) {
+    let t = Tokens::get(ui.ctx());
+    let (rect, _) = ui.allocate_exact_size(vec2(opts.width, FIELD_H), Sense::hover());
+    let lead_w = opts.lead.width(ui);
+    let trail_w = opts.trail.width(ui);
+    let edit_rect = Rect::from_min_max(pos2(rect.min.x + lead_w, rect.min.y), pos2(rect.max.x - trail_w, rect.max.y));
+    let active = ui.data(|d| d.get_temp::<String>(opts.id.with("editing"))).is_some();
+    ui.painter().rect_filled(rect, CornerRadius::same(5), t.field);
+    if active {
+        ui.painter().rect_stroke(rect, CornerRadius::same(5), Stroke::new(1.0, crate::theme::ACCENT), StrokeKind::Inside);
+    } else if ui.rect_contains_pointer(rect) {
+        ui.painter().rect_stroke(rect, CornerRadius::same(5), Stroke::new(1.0, t.field_hover_border), StrokeKind::Inside);
+    }
+    paint_slot(ui, opts.lead, Rect::from_min_size(rect.min, vec2(lead_w, FIELD_H)));
+    let out = text_field_edit(ui, opts.id, opts.value, edit_rect, opts.placeholder, opts.name, opts.secret);
+    let mut trail_resp = None;
+    if !matches!(opts.trail, Slot::None) {
+        let tr = Rect::from_min_size(pos2(rect.max.x - trail_w, rect.min.y), vec2(trail_w, FIELD_H));
+        let resp = ui.interact(tr, opts.id.with("trail"), Sense::click());
+        if resp.hovered() {
+            ui.painter().rect_filled(tr.shrink(2.0), CornerRadius::same(4), t.hover);
+        }
+        paint_slot(ui, opts.trail, tr);
+        trail_resp = Some(resp);
+    }
+    (out, trail_resp)
+}
+
+/// Paint `slot` centred in `area` (or, for `Custom`, let it draw).
+fn paint_slot(ui: &mut Ui, slot: Slot, area: Rect) {
+    let t = Tokens::get(ui.ctx());
+    match slot {
+        Slot::None => {}
+        Slot::Text(s) => {
+            let galley = crate::bidi::name_galley(ui.painter(), s, regular(TEXT_PT), t.text_secondary, area.width());
+            ui.painter().galley(pos2(area.min.x + 8.0, area.center().y - galley.size().y / 2.0), galley, t.text_secondary);
+        }
+        Slot::Icon(i) => {
+            icons::paint(ui.painter(), Rect::from_center_size(area.center(), vec2(14.0, 14.0)), i, t.icon_secondary);
+        }
+        Slot::Dot(c) => {
+            ui.painter().circle_filled(area.center(), 4.5, c);
+        }
+        Slot::Custom(f) => {
+            f(ui);
+        }
+    }
+}
+
+/// [`text_field`] drawn into `edit_rect`: the field's background and slots are drawn by the
+/// caller ([`field`]); `name` names it for screen readers.
+fn text_field_edit(ui: &mut Ui, id: Id, value: &str, edit_rect: Rect, placeholder: &str, name: &str, secret: bool) -> Option<String> {
     cancel_retargeted_field_save(ui, id);
     let t = Tokens::get(ui.ctx());
     let editing_id = id.with("editing");
     let mut editing: Option<String> = ui.data(|d| d.get_temp(editing_id));
-    let resp = ui.interact(rect, id.with("click"), Sense::click());
+    let resp = ui.interact(edit_rect, id.with("click"), Sense::click());
     let shown = if secret { std::borrow::Cow::Owned("•".repeat(value.chars().count())) } else { std::borrow::Cow::Borrowed(value) };
     a11y::text(&resp, name, &shown);
-    ui.painter().rect_filled(rect, CornerRadius::same(5), t.field);
-    if editing.is_some() {
-        ui.painter().rect_stroke(rect, CornerRadius::same(5), Stroke::new(1.0, crate::theme::ACCENT), StrokeKind::Inside);
-    } else if resp.hovered() {
-        ui.painter().rect_stroke(rect, CornerRadius::same(5), Stroke::new(1.0, t.field_hover_border), StrokeKind::Inside);
-    }
     let started = editing.is_none() && resp.clicked();
     if started {
         editing = Some(value.to_string());
@@ -669,7 +749,7 @@ fn text_field_in(ui: &mut Ui, id: Id, value: &str, rect: Rect, placeholder: &str
     let mut out = None;
     match editing {
         Some(mut text) => {
-            let r = field_editor(ui, rect, id.with("te"), &mut text, "", secret);
+            let r = field_editor(ui, edit_rect, id.with("te"), &mut text, "", secret);
             a11y::own_focus(&r);
             keep_focus(&r, started);
             crate::shortcuts::release_field_for_save(&r);
@@ -688,8 +768,8 @@ fn text_field_in(ui: &mut Ui, id: Id, value: &str, rect: Rect, placeholder: &str
         None => {
             let (s, col) = if value.is_empty() { (placeholder, t.text_tertiary) } else { (&*shown, t.text) };
             // Long text stays inside the field.
-            let painter = ui.painter().with_clip_rect(rect.shrink2(vec2(8.0, 0.0)));
-            painter.text(pos2(rect.min.x + 8.0, rect.center().y), Align2::LEFT_CENTER, s, regular(TEXT_PT), col);
+            let painter = ui.painter().with_clip_rect(edit_rect.shrink2(vec2(8.0, 0.0)));
+            painter.text(pos2(edit_rect.min.x + 8.0, edit_rect.center().y), Align2::LEFT_CENTER, s, regular(TEXT_PT), col);
         }
     }
     out
@@ -1017,6 +1097,15 @@ pub fn icon_button(ui: &mut Ui, icon: Icon, tip: &str) -> bool {
     let (rect, _) = ui.allocate_exact_size(vec2(24.0, 24.0), Sense::hover());
     let id = ui.scope_id().with(("icon_button", tip));
     icon_button_at(ui, id, rect, icon, tip)
+}
+
+/// A non-interactive `icon` of `size` px (for slots and inline use): allocates its square and
+/// returns the response so it lays out like any widget. For a clickable icon use [`icon_button`].
+pub fn icon(ui: &mut Ui, icon: Icon, size: f32) -> Response {
+    let (rect, resp) = ui.allocate_exact_size(vec2(size, size), Sense::hover());
+    let t = Tokens::get(ui.ctx());
+    icons::paint(ui.painter(), rect, icon, t.icon_secondary);
+    resp
 }
 
 /// A bar floating at the top centre of the `canvas` area (a version preview, the focus view):
