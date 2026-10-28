@@ -294,7 +294,7 @@ impl FigApp {
             egui::Panel::left("left_rail")
                 .exact_size(56.0)
                 .resizable(false)
-                .frame(egui::Frame::NONE.fill(t.panel).stroke(egui::Stroke::new(1.0, t.border)))
+                .frame(egui::Frame::NONE.fill(t.panel))
                 .show(ui, |ui| {
                     a11y::region(&mut self.ui.nav, ui, a11y::Region::Layers, egui::accesskit::Role::Navigation, i18n::tr("Sidebar"));
                     layers::rail(self, ui)
@@ -317,7 +317,7 @@ impl FigApp {
             egui::Panel::left("left_panel")
                 .resizable(false)
                 .exact_size(left_w)
-                .frame(egui::Frame::NONE.fill(t.panel).stroke(egui::Stroke::new(1.0, t.border)))
+                .frame(egui::Frame::NONE.fill(t.panel))
                 .show(ui, |ui| {
                     let label = match self.ui.left_tab {
                         _ if self.ui.versions.open => i18n::tr("Version history"),
@@ -336,7 +336,7 @@ impl FigApp {
             egui::Panel::right("right_panel")
                 .resizable(false)
                 .exact_size(right_w)
-                .frame(egui::Frame::NONE.fill(t.panel).stroke(egui::Stroke::new(1.0, t.border)))
+                .frame(egui::Frame::NONE.fill(t.panel))
                 .show(ui, |ui| {
                     let label = match self.ui.right_tab {
                         RightTab::Design => i18n::tr("Design"),
@@ -386,6 +386,34 @@ impl FigApp {
                 let (l, r) = if name == "left" { (w, self.ui.right_width) } else { (self.ui.left_width, w) };
                 self.set_panel_widths(l, r);
                 self.panels_unsaved = true;
+            }
+        }
+        // The only persistent dividers: the rail↔panel and panel↔canvas edges on the left, the
+        // canvas↔right-panel edge, and the top edge of the docked motion timeline. No window-edge,
+        // top or bottom lines on the panels.
+        if !hidden && !narrow {
+            let content = ctx.content_rect();
+            let rail = 56.0_f32;
+            let top = content.min.y;
+            let bottom = if self.ui.motion_open { content.max.y - motion::timeline::HEIGHT } else { content.max.y };
+            let stroke = egui::Stroke::new(1.0, t.border);
+            let p = ui.painter();
+            // Rail ↔ panel (only when the panel is open too).
+            if left_open {
+                p.line_segment([egui::pos2(content.min.x + rail, top), egui::pos2(content.min.x + rail, bottom)], stroke);
+            }
+            // Left edge of the canvas: panel↔canvas when the panel is open, rail↔canvas when collapsed.
+            let canvas_left = if left_open { content.min.x + rail + left_w } else { content.min.x + rail };
+            p.line_segment([egui::pos2(canvas_left, top), egui::pos2(canvas_left, bottom)], stroke);
+            // Canvas ↔ right panel.
+            if right_open {
+                let x = content.max.x - right_w;
+                p.line_segment([egui::pos2(x, top), egui::pos2(x, bottom)], stroke);
+            }
+            // Top edge of the docked motion timeline (full width).
+            if self.ui.motion_open {
+                let y = bottom;
+                p.line_segment([egui::pos2(content.min.x, y), egui::pos2(content.max.x, y)], stroke);
             }
         }
         // Kept once the drag is over (not on every pointer move).
