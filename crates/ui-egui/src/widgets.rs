@@ -27,6 +27,9 @@ pub const PAD_RIGHT: f32 = 8.0;
 pub const GUTTER: f32 = 8.0;
 /// A field's inset before its label, and the room its value keeps at the field's end.
 const LEAD_PAD: f32 = 8.0;
+/// An icon lead's slot: the 24 pt rhythm the panel's buttons sit on. The whole slot is the scrub
+/// target — not only the 14 pt glyph drawn in it.
+const LEAD_ICON: f32 = 24.0;
 const VALUE_W: f32 = 32.0;
 /// The panel's type, in points: a caption under a field row, the labels and values in the rows, and
 /// the type of the selection above them. Two points apart, so 12 sits halfway between 10 and 14.
@@ -303,10 +306,12 @@ fn number_field_impl(
         return (None, bound_field(ui, id, lead, rect, name), None);
     }
     let mut out: Option<Edit> = None;
+    // The lead is the whole scrub target: 8 points of blank before a value with no label, the
+    // icon's 24 pt slot with one (the glyph is only 14 of those points, and all 24 drag).
     let lead_w = match lead {
-        Lead::None | Lead::Named(_) => 6.0,
+        Lead::None | Lead::Named(_) => LEAD_PAD,
         Lead::Text(s) => text_lead_width(ui, s, width),
-        Lead::Icon(..) => 24.0,
+        Lead::Icon(..) => LEAD_ICON,
     };
     let lead_rect = Rect::from_min_size(rect.min, vec2(lead_w, FIELD_H));
     let edit_rect = Rect::from_min_max(pos2(rect.min.x + lead_w, rect.min.y), rect.max);
@@ -401,13 +406,17 @@ fn number_field_impl(
             let mut te = egui::TextEdit::singleline(&mut text)
                 .id(id.with("te"))
                 .frame(egui::Frame::NONE)
+                // No margin: the value is painted at `edit_rect.min.x` and centred on the row, and
+                // the editor's own 4/2 margin would shift it right and down on the click.
+                .margin(egui::Margin::ZERO)
                 .font(regular(TEXT_PT))
                 .desired_width(edit_rect.width() - 6.0)
                 .vertical_align(egui::Align::Center);
             if let Some(c) = dim_col {
                 te = te.text_color(c);
             }
-            let mut child = ui.new_child(egui::UiBuilder::new().max_rect(edit_rect.shrink2(vec2(0.0, 4.0))));
+            // The editor sits centred on the row, exactly where the painted value was.
+            let mut child = ui.new_child(egui::UiBuilder::new().max_rect(edit_rect).layout(egui::Layout::left_to_right(egui::Align::Center)));
             let r = child.add(te);
             a11y::own_focus(&r);
             keep_focus(&r, started);
@@ -671,7 +680,8 @@ impl Slot<'_> {
             Slot::Text(s) => {
                 (LEAD_PAD + ui.painter().layout_no_wrap(s.to_string(), regular(TEXT_PT), Color32::PLACEHOLDER).size().x).min(64.0).max(16.0)
             }
-            Slot::Icon(_) | Slot::Dot(_) | Slot::Custom(_) => 22.0,
+            // The design's slot is 24 points wide whatever it holds (frame29's `Slot` frame).
+            Slot::Icon(_) | Slot::Dot(_) | Slot::Custom(_) => LEAD_ICON,
         }
     }
 }
@@ -742,10 +752,15 @@ fn paint_slot(ui: &mut Ui, slot: Slot, area: Rect) {
             ui.painter().galley(pos2(area.min.x + 8.0, area.center().y - galley.size().y / 2.0), galley, t.text_secondary);
         }
         Slot::Icon(i) => {
-            icons::paint(ui.painter(), Rect::from_center_size(area.center(), vec2(14.0, 14.0)), i, t.icon_secondary);
+            // A 16 pt glyph in the 24 pt slot, as the design's `Icon` instance is.
+            icons::paint(ui.painter(), Rect::from_center_size(area.center(), vec2(16.0, 16.0)), i, t.icon_secondary);
         }
         Slot::Dot(c) => {
-            ui.painter().circle_filled(area.center(), 4.5, c);
+            // The design's colour dot (`Field-color`): a 14 pt rounded square with a hairline,
+            // not a circle.
+            let dot = Rect::from_center_size(area.center(), vec2(14.0, 14.0));
+            ui.painter().rect_filled(dot, CornerRadius::same(3), c);
+            ui.painter().rect_stroke(dot, CornerRadius::same(3), Stroke::new(1.0, t.border), StrokeKind::Inside);
         }
         Slot::Custom(f) => {
             f(ui);
@@ -925,11 +940,15 @@ fn text_field_edit(ui: &mut Ui, id: Id, value: &str, edit_rect: Rect, placeholde
 /// its own (the field draws it), showing `hint` while empty; `password` shows dots.
 fn field_editor(ui: &mut Ui, rect: Rect, id: Id, text: &mut String, hint: &str, password: bool) -> Response {
     let t = Tokens::get(ui.ctx());
-    let mut child = ui.new_child(egui::UiBuilder::new().max_rect(rect.shrink2(vec2(8.0, 4.0))));
+    // The editor sits centred on the row, as the painted value does: its own margin would push
+    // the text right and down when the click starts editing.
+    let mut child =
+        ui.new_child(egui::UiBuilder::new().max_rect(rect.shrink2(vec2(8.0, 0.0))).layout(egui::Layout::left_to_right(egui::Align::Center)));
     let r = child.add(
         egui::TextEdit::singleline(text)
             .id(id)
             .frame(egui::Frame::NONE)
+            .margin(egui::Margin::ZERO)
             .font(regular(TEXT_PT))
             .hint_text(egui::RichText::new(hint).font(regular(TEXT_PT)).color(t.text_tertiary))
             .desired_width(rect.width() - 16.0),
@@ -1382,7 +1401,13 @@ pub fn separator(ui: &mut Ui) {
 
 /// Paint a checkerboard (transparency) in `rect`.
 pub fn checker(painter: &egui::Painter, rect: Rect, cell: f32) {
-    painter.rect_filled(rect, CornerRadius::ZERO, Color32::WHITE);
+    checker_rounded(painter, rect, cell, 0);
+}
+
+/// [`checker`] whose corners round by `radius`, so a swatch's transparent background stays inside
+/// the swatch's rounded border.
+fn checker_rounded(painter: &egui::Painter, rect: Rect, cell: f32, radius: u8) {
+    painter.rect_filled(rect, CornerRadius::same(radius), Color32::WHITE);
     let nx = (rect.width() / cell).ceil() as i32;
     let ny = (rect.height() / cell).ceil() as i32;
     for y in 0..ny {
@@ -1391,7 +1416,14 @@ pub fn checker(painter: &egui::Painter, rect: Rect, cell: f32) {
                 continue;
             }
             let r = Rect::from_min_size(pos2(rect.min.x + x as f32 * cell, rect.min.y + y as f32 * cell), vec2(cell, cell)).intersect(rect);
-            painter.rect_filled(r, CornerRadius::ZERO, Color32::from_gray(0xE6));
+            // The corner cells round their outer corner alone.
+            let cr = CornerRadius {
+                nw: if x == 0 && y == 0 { radius } else { 0 },
+                ne: if x == nx - 1 && y == 0 { radius } else { 0 },
+                sw: if x == 0 && y == ny - 1 { radius } else { 0 },
+                se: if x == nx - 1 && y == ny - 1 { radius } else { 0 },
+            };
+            painter.rect_filled(r, cr, Color32::from_gray(0xE6));
         }
     }
 }
@@ -1431,16 +1463,21 @@ pub fn paint_swatch(painter: &egui::Painter, rect: Rect, paint: &figcraft_color:
     let t = Tokens::get(painter.ctx());
     use figcraft_color::PaintKind;
     let clip = painter.with_clip_rect(rect);
-    checker(&clip, rect, rect.width() / 4.0);
+    // The swatch's own 2 pt rounding: every fill wears it, or the colour pokes out past the
+    // rounded border at the four corners.
+    let round = CornerRadius::same(2);
+    let left_round = CornerRadius { nw: 2, sw: 2, ne: 0, se: 0 };
+    let right_round = CornerRadius { nw: 0, sw: 0, ne: 2, se: 2 };
+    checker_rounded(&clip, rect, rect.width() / 4.0, 2);
     match &paint.kind {
         PaintKind::Solid { color } => {
             // Left half opaque, right half with alpha (like Figma's swatches).
             let c = crate::theme::doc_c32(painter.ctx(), color.with_alpha(color.a * paint.opacity));
             let opaque = crate::theme::doc_c32(painter.ctx(), color.with_alpha(1.0));
-            clip.rect_filled(Rect::from_min_max(rect.min, pos2(rect.center().x, rect.max.y)), CornerRadius::ZERO, opaque);
-            clip.rect_filled(Rect::from_min_max(pos2(rect.center().x, rect.min.y), rect.max), CornerRadius::ZERO, c);
+            clip.rect_filled(Rect::from_min_max(rect.min, pos2(rect.center().x, rect.max.y)), left_round, opaque);
+            clip.rect_filled(Rect::from_min_max(pos2(rect.center().x, rect.min.y), rect.max), right_round, c);
             if paint.opacity >= 0.999 && color.a >= 0.999 {
-                clip.rect_filled(rect, CornerRadius::ZERO, opaque);
+                clip.rect_filled(rect, round, opaque);
             }
         }
         PaintKind::Gradient(g) => {
@@ -1449,16 +1486,77 @@ pub fn paint_swatch(painter: &egui::Painter, rect: Rect, paint: &figcraft_color:
                 let c = crate::theme::doc_c32(painter.ctx(), g.sample(i as f32 / (n - 1) as f32));
                 let x0 = rect.min.x + rect.width() * i as f32 / n as f32;
                 let x1 = rect.min.x + rect.width() * (i + 1) as f32 / n as f32;
-                clip.rect_filled(Rect::from_min_max(pos2(x0, rect.min.y), pos2(x1, rect.max.y)), CornerRadius::ZERO, c);
+                // Only the ends round their outer corners; the seam between segments stays square.
+                let cr = if i == 0 {
+                    left_round
+                } else if i == n - 1 {
+                    right_round
+                } else {
+                    CornerRadius::ZERO
+                };
+                clip.rect_filled(Rect::from_min_max(pos2(x0, rect.min.y), pos2(x1, rect.max.y)), cr, c);
             }
         }
         PaintKind::Image(_) | PaintKind::Pattern(_) => {
             let icon = if matches!(paint.kind, PaintKind::Image(_)) { Icon::Image } else { Icon::ViewGrid };
-            clip.rect_filled(rect, CornerRadius::ZERO, Color32::from_gray(0xB3));
+            clip.rect_filled(rect, round, Color32::from_gray(0xB3));
             icons::paint(&clip, rect.shrink(2.0), icon, Color32::WHITE);
         }
     }
     painter.rect_stroke(rect, CornerRadius::same(2), Stroke::new(1.0, t.border), StrokeKind::Inside);
+}
+
+/// A colour row's value slot: an editable hex, or a label (a style, variable, gradient or image).
+pub enum ColorText<'a> {
+    Hex(&'a str),
+    Label(&'a str),
+}
+
+/// What a [`color_field`]'s user did.
+pub struct ColorField {
+    /// The dot in the lead slot: click it to open the picker.
+    pub dot: Response,
+    /// A committed hex (the value slot was editable).
+    pub hex: Option<String>,
+    /// The value slot's response, for anchoring a menu (a label row).
+    pub label: Option<Response>,
+    /// The opacity edit (live while scrubbing).
+    pub opacity: Option<FieldEdit>,
+}
+
+/// A colour row, as the design's `Field-color`: the 24 pt slot with a 14 pt dot, the value, and
+/// the opacity at the row's end (52 pt). The caller draws its own buttons after it.
+pub fn color_field(ui: &mut Ui, id: Id, paint: &figcraft_color::Paint, text: ColorText<'_>, width: f32, opacity_pct: f64) -> ColorField {
+    let t = Tokens::get(ui.ctx());
+    let (rect, _) = ui.allocate_exact_size(vec2(width, FIELD_H), Sense::hover());
+    field_shell(ui, rect, false, ui.rect_contains_pointer(rect));
+    // The dot in its 24 pt slot: a solid paint as the rounded square, anything else as a swatch.
+    let slot = Rect::from_min_size(rect.min, vec2(LEAD_ICON, FIELD_H));
+    let dot = ui.interact(slot, id.with("dot"), Sense::click());
+    match paint.solid_color() {
+        Some(c) => paint_slot(ui, Slot::Dot(crate::theme::doc_c32(ui.ctx(), c.with_alpha(paint.opacity))), slot),
+        None => paint_swatch(ui.painter(), slot.shrink(5.0), paint),
+    }
+    // The value: an editable hex, or a label the caller opens a menu from.
+    let op_w = 52.0;
+    let value_r = Rect::from_min_max(pos2(slot.max.x, rect.min.y), pos2(rect.max.x - op_w, rect.max.y));
+    let mut out = ColorField { dot, hex: None, label: None, opacity: None };
+    match text {
+        ColorText::Hex(v) => {
+            let mut child = ui.new_child(egui::UiBuilder::new().max_rect(value_r));
+            out.hex = text_field_inline(&mut child, id.with("hex"), v, value_r.shrink2(vec2(0.0, 4.0)), regular(11.0));
+        }
+        ColorText::Label(v) => {
+            ui.painter().text(pos2(value_r.min.x, rect.center().y), Align2::LEFT_CENTER, v, regular(11.0), t.text);
+            out.label = Some(ui.interact(value_r, id.with("label"), Sense::click()));
+        }
+    }
+    // The opacity at the end, on the same field (its own background is the row's).
+    let op_r = Rect::from_min_max(pos2(rect.max.x - op_w, rect.min.y), rect.max);
+    ui.painter().line_segment([pos2(op_r.min.x, rect.min.y + 4.0), pos2(op_r.min.x, rect.max.y - 4.0)], Stroke::new(1.0, t.panel));
+    let mut child = ui.new_child(egui::UiBuilder::new().max_rect(op_r));
+    out.opacity = number_field(&mut child, id.with("op"), Lead::None, Some(opacity_pct.round()), "%", op_w, 1.0);
+    out
 }
 
 /// A small checkbox with label.

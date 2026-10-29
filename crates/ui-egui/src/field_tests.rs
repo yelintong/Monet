@@ -276,6 +276,58 @@ fn scrubbing_the_label_moves_the_value_and_is_one_undo_step() {
     assert_eq!((geom(&u, a), undo_steps(&u)), before);
 }
 
+/// An icon lead's whole 24 pt slot scrubs, not only the 14 pt glyph drawn in it: a press on the
+/// slot's first point drags the value.
+#[test]
+fn an_icon_leads_whole_slot_scrubs_not_only_its_glyph() {
+    // A frame, not a rectangle: the layout section (and its gap field) shows for frame-like layers.
+    let mut s = Session::new();
+    let f = id(s.execute("frame.create", &json!({"x": 0, "y": 0, "width": 200, "height": 100})).unwrap());
+    s.execute("node.set", &json!({"ids": [f], "props": {"layout": "horizontal", "gap": 10}})).unwrap();
+    s.execute("select.set", &json!({"ids": [f]})).unwrap();
+    let mut u = Ui::new(s);
+    u.ctx.enable_accesskit();
+    u.frame(vec![]);
+    // `label` sits 12 points left of the value (the slot's middle); the slot is 24 wide, so 11
+    // more is its first point.
+    let p = label(&mut u, "Gap between items");
+    drag(&mut u, pos2(p.x - 11.0, p.y), 20.0, Modifiers::NONE);
+    let gap = u.app.session.doc().unwrap().node(f).unwrap().layout.as_ref().unwrap().gap;
+    assert_eq!(gap, 30.0, "the slot's first point scrubs");
+}
+
+/// The bounds of field `name`'s value (the SpinButton node).
+fn field_rect(u: &mut Ui, name: &str) -> egui::Rect {
+    u.frame(vec![]);
+    let out = u.frame_output(vec![]);
+    let nodes = out.platform_output.accesskit_update.expect("an AccessKit update").nodes;
+    let n = nodes.iter().map(|(_, n)| n).find(|n| n.role() == Role::SpinButton && n.label() == Some(name)).unwrap();
+    let b = n.bounds().unwrap();
+    egui::Rect::from_min_max(pos2(b.x0 as f32, b.y0 as f32), pos2(b.x1 as f32, b.y1 as f32))
+}
+
+/// The centre y of the painted `text` inside `within`.
+fn text_center_y(u: &mut Ui, text: &str, within: egui::Rect) -> f32 {
+    let shapes = u.frame_output(vec![]).shapes;
+    let mut ys: Vec<f32> =
+        painted_texts(&shapes).into_iter().filter(|(t, _, r)| t == text && within.intersects(*r)).map(|(_, _, r)| r.center().y).collect();
+    ys.sort_by(f32::total_cmp);
+    *ys.first().unwrap_or_else(|| panic!("no painted {text:?} inside {within:?}"))
+}
+
+/// Clicking into a field keeps its text where it was: the editor sits centred on the row, not
+/// four points down and right of the painted value (egui's own text-edit margin).
+#[test]
+fn the_editor_sits_where_the_painted_value_was() {
+    let (mut u, _a, _) = setup();
+    let (p, shown) = field(&mut u, "X");
+    let within = field_rect(&mut u, "X");
+    let display = text_center_y(&mut u, &shown, within);
+    click(&mut u, p);
+    let editing = text_center_y(&mut u, &shown, within);
+    assert!((display - editing).abs() < 0.6, "value {shown:?} painted at {display}, edited at {editing}");
+}
+
 #[test]
 fn the_arrow_keys_step_by_the_nudge_amounts_and_fractional_fields_by_their_own() {
     let (mut u, a, _) = setup();

@@ -242,7 +242,8 @@ fn range_fill(app: &mut FigApp, ui: &mut Ui, doc: &Document, id: NodeId, start: 
         let w = ui.available_width() - 28.0;
         let (r, _) = ui.allocate_exact_size(vec2(w, FIELD_H), Sense::hover());
         ui.painter().rect_filled(r, CornerRadius::same(5), t.field);
-        let sw = Rect::from_min_size(pos2(r.min.x + 4.0, r.center().y - 8.0), vec2(16.0, 16.0));
+        // The design's `Field-color` dot: 14×14 centred in the field's 24 pt slot.
+        let sw = Rect::from_center_size(pos2(r.min.x + 12.0, r.center().y), vec2(14.0, 14.0));
         let text_r = Rect::from_min_max(pos2(sw.max.x + 8.0, r.min.y), pos2(r.max.x - 4.0, r.max.y));
         match fills.as_ref().and_then(|f| f.first()) {
             Some(p) => {
@@ -498,7 +499,8 @@ fn paint_row(
         let w = ui.available_width() - 56.0 - if diamond.is_some() { 32.0 } else { 0.0 };
         let (r, _) = ui.allocate_exact_size(vec2(w, FIELD_H), Sense::hover());
         ui.painter().rect_filled(r, CornerRadius::same(5), t.field);
-        let sw = Rect::from_min_size(pos2(r.min.x + 4.0, r.center().y - 8.0), vec2(16.0, 16.0));
+        // The design's `Field-color` dot: 14×14 centred in the field's 24 pt slot.
+        let sw = Rect::from_center_size(pos2(r.min.x + 12.0, r.center().y), vec2(14.0, 14.0));
         let swatch = shown_color.map_or_else(|| p.clone(), Paint::solid);
         widgets::paint_swatch(ui.painter(), sw, &swatch);
         let sresp = ui.interact(sw.expand(2.0), Id::unique(("swatch", fills, i)), Sense::click());
@@ -563,7 +565,8 @@ fn paint_row(
                 child.painter().text(pos2(text_r.min.x, r.center().y), Align2::LEFT_CENTER, paint_label(p), regular(11.0), t.text);
             }
         }
-        let op_r = Rect::from_min_max(pos2(r.max.x - 48.0, r.min.y), r.max);
+        // The design's `Field-color` trail: 52 points, starting where the value's room ends.
+        let op_r = Rect::from_min_max(pos2(r.max.x - 52.0, r.min.y), r.max);
         ui.painter().line_segment([pos2(op_r.min.x, r.min.y + 4.0), pos2(op_r.min.x, r.max.y - 4.0)], Stroke::new(1.0, t.panel));
         let mut child = ui.new_child(egui::UiBuilder::new().max_rect(op_r));
         let e = widgets::number_field(

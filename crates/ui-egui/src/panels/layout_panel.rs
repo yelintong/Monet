@@ -763,7 +763,12 @@ fn gap_fields(app: &mut FigApp, ui: &mut Ui, ids: &[NodeId], l: &AutoLayout, col
         Lead::Icon(main_icon, tr("Gap between items")),
         "",
     );
-    app.field(ids, "gap", e, |v| json!(v));
+    // A typed gap is a fixed one: leave an auto gap's mode, so the field stops reading "Auto".
+    if auto_main {
+        app.field_run(e, "node.set", |v| json!({"ids": ids, "props": {"gap": v.max(0.0), "mainAlign": "min"}}));
+    } else {
+        app.field(ids, "gap", e, |v| json!(v));
+    }
     // Cross-axis gap: between lines. Its mode (Fixed / Space between) rides with `contentAlign`.
     let cross_icon = if vertical { Icon::Gap } else { Icon::DistributeV };
     let cross_label = if vertical { tr("Gap between columns") } else { tr("Gap between rows") };
@@ -790,7 +795,12 @@ fn gap_and_mode(app: &mut FigApp, ui: &mut Ui, ids: &[NodeId], l: &AutoLayout, c
     let gap_icon = if l.mode == LayoutMode::Vertical { Icon::DistributeV } else { Icon::Gap };
     let (shown, lead) = ((!auto).then_some(l.gap), Lead::Icon(gap_icon, tr("Gap between items")));
     let e = crate::variable_ui::number_field_or(app, ui, ids, "gap", Id::new("al_gap"), shown, col, tr("Auto"), lead, "");
-    app.field(ids, "gap", e, |v| json!(v));
+    // A typed gap is a fixed one: leave an auto gap's mode, so the field stops reading "Auto".
+    if auto {
+        app.field_run(e, "node.set", |v| json!({"ids": ids, "props": {"gap": v.max(0.0), "mainAlign": "min"}}));
+    } else {
+        app.field(ids, "gap", e, |v| json!(v));
+    }
 }
 
 /// The layout settings' dots button: toggles the popover, holding the button's place while it is
