@@ -67,11 +67,7 @@ impl SelItem {
     /// The layer this item belongs to.
     pub fn node(self) -> NodeId {
         match self {
-            SelItem::Layer(n)
-            | SelItem::Track(n, _)
-            | SelItem::Key(n, _, _)
-            | SelItem::Segment(n, _, _)
-            | SelItem::Clip(n, _) => n,
+            SelItem::Layer(n) | SelItem::Track(n, _) | SelItem::Key(n, _, _) | SelItem::Segment(n, _, _) | SelItem::Clip(n, _) => n,
         }
     }
 }
@@ -109,6 +105,17 @@ pub struct LayerDrag {
     pub lo: u32,
     pub hi: u32,
     pub orig: figcraft_doc::anim::motion::NodeMotion,
+}
+
+/// What an evaluated preview was built from. The canvas preview is rebuilt only when one of these
+/// changes, so the same frame keeps handing the canvas the same document.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Preview {
+    /// The document's revision, which every edit bumps.
+    pub revision: u64,
+    pub page: NodeId,
+    /// The playhead, as raw bits (a float has no `Eq`).
+    pub playhead: u64,
 }
 
 /// Timeline state kept between frames.
@@ -156,4 +163,6 @@ pub struct MotionUi {
     pub layer_drag: Option<LayerDrag>,
     /// The inspector shows the easing panel for the selected segment.
     pub easing_target: bool,
+    /// The page evaluated at the playhead and what it was built from.
+    pub preview: Option<(Preview, std::sync::Arc<figcraft_doc::Document>)>,
 }

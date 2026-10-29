@@ -89,11 +89,23 @@ enum Act {
     ClearSelection,
 }
 
-fn set_duration(app: &mut FigApp, page: NodeId, ms: u32) {
-    {
-        let Ok(doc) = app.session.doc_mut() else { return };
-        doc.timelines.entry(page).or_default().duration_ms = ms.max(100);
+/// Writes one page's timeline settings. A page that lands back on the defaults leaves the map, so
+/// a file that was never retimed keeps no entry.
+fn set_timeline(app: &mut FigApp, page: NodeId, edit: impl FnOnce(&mut TimelineSettings)) {
+    let Ok(doc) = app.session.doc_mut() else { return };
+    let mut settings = doc.timelines.get(&page).copied().unwrap_or_default();
+    edit(&mut settings);
+    let settings = settings.sanitized();
+    if settings.is_default() {
+        doc.timelines.remove(&page);
+    } else {
+        doc.timelines.insert(page, settings);
     }
+}
+
+fn set_duration(app: &mut FigApp, page: NodeId, ms: u32) {
+    let ms = ms.max(100);
+    set_timeline(app, page, |s| s.duration_ms = ms);
     app.ui.motion.playhead_ms = app.ui.motion.playhead_ms.min(ms as f64);
 }
 
@@ -190,7 +202,7 @@ pub fn panel(app: &mut FigApp, ui: &mut Ui) {
     let mut acts = body_rows(app, ui, body, header.top(), &t, page, &settings);
     acts.extend(header_row(app, ui, header, &t, &settings));
     acts.extend(ruler(app, ui, header, &t, &settings));
-    apply(app, ui, page, acts);
+    apply(app, ui, page, full, acts);
     // Border on the top edge, like the other panels.
     ui.painter().line_segment([full.left_top(), full.right_top()], Stroke::new(1.0, t.border));
 }
@@ -262,7 +274,7 @@ fn header_row(app: &mut FigApp, ui: &mut Ui, header: Rect, t: &Tokens, settings:
     }
     // Separator under the header and after the left column.
     ui.painter().line_segment([pos2(header.left(), header.bottom()), pos2(header.right(), header.bottom())], Stroke::new(1.0, t.border));
-    ui.painter().line_segment([pos2(header.left() + LEFT_W, header.bottom()), pos2(header.left() + LEFT_W, header.bottom())], Stroke::new(1.0, t.border));
+    ui.painter().line_segment([pos2(header.left() + LEFT_W, header.top()), pos2(header.left() + LEFT_W, header.bottom())], Stroke::new(1.0, t.border));
     acts
 }
 
@@ -900,7 +912,7 @@ fn sync_caches(app: &mut FigApp) {
     });
 }
 
-fn apply(app: &mut FigApp, ui: &Ui, page: NodeId, acts: Vec<Act>) {
+fn apply(app: &mut FigApp, ui: &Ui, page: NodeId, area: Rect, acts: Vec<Act>) {
     // Drop selections whose layer is no longer in the canvas/document selection, so rows that
     // vanished don't keep stale highlights.
     let live = app.session.selection();
@@ -1081,7 +1093,8 @@ fn apply(app: &mut FigApp, ui: &Ui, page: NodeId, acts: Vec<Act>) {
     // Shortcuts, only when no text field has the keyboard: Space plays, , / . step one frame.
     if ui.memory(|m| m.focused()).is_none() {
         let step = (1000.0 / settings_fps(app, page).max(1) as f64) as f64;
-        if ui.input(|i| i.key_pressed(Key::Space)) {
+        // Only while the pointer is over the timeline: Space also pans the canvas when held.
+        if ui.rect_contains_pointer(area) && ui.input(|i| i.key_pressed(Key::Space)) {
             acts2_play(app);
         }
         if ui.input(|i| i.key_pressed(Key::Comma)) {
@@ -1295,8 +1308,7 @@ fn layer_dragged(orig: &motion::NodeMotion, lo: u32, hi: u32, edge: ClipEdge, dx
 }
 
 fn set_loop(app: &mut FigApp, page: NodeId, on: bool) {
-    let Ok(doc) = app.session.doc_mut() else { return };
-    doc.timelines.entry(page).or_default().looping = on;
+    set_timeline(app, page, |s| s.looping = on);
 }
 
 /// A ruler step that gives about six ticks over `duration` ms.

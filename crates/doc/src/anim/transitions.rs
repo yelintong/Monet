@@ -183,12 +183,15 @@ fn mul(v: Vec2, sx: f64, sy: f64) -> Vec2 {
 pub fn poses(t: &Transition, p: f64, size: Vec2) -> Poses {
     let still = Pose { offset: Vec2::ZERO, alpha: 1.0 };
     let at = |v: Vec2| Pose { offset: v, alpha: 1.0 };
-    let p = if p.is_finite() { p.clamp(0.0, 1.0) } else { 1.0 };
+    // Offsets keep the overshoot a back or spring easing produces; only alpha is a real 0..1
+    // quantity, so only alpha is clamped.
+    let p = if p.is_finite() { p } else { 1.0 };
+    let alpha = p.clamp(0.0, 1.0) as f32;
     match *t {
         // SmartAnimate is rendered from interpolated layers; this is its fallback.
         Transition::Dissolve | Transition::SmartAnimate | Transition::Instant => Poses {
             from: still,
-            to: Pose { offset: Vec2::ZERO, alpha: p as f32 },
+            to: Pose { offset: Vec2::ZERO, alpha },
             to_on_top: true,
         },
         Transition::MoveIn { direction } => {
@@ -229,7 +232,8 @@ pub fn poses(t: &Transition, p: f64, size: Vec2) -> Poses {
 /// Pose of an overlay at eased progress `p` where 0 is hidden and 1 is shown, for the transition
 /// it opens with (closing plays it backwards).
 pub fn overlay_pose(t: &Transition, p: f64, overlay: Vec2) -> Pose {
-    let p = if p.is_finite() { p.clamp(0.0, 1.0) } else { 1.0 };
+    // An overlay slides in from the side, so its offset keeps the overshoot; alpha does not.
+    let p = if p.is_finite() { p } else { 1.0 };
     match *t {
         Transition::MoveIn { direction }
         | Transition::SlideIn { direction }
@@ -241,7 +245,9 @@ pub fn overlay_pose(t: &Transition, p: f64, overlay: Vec2) -> Pose {
             let off = mul(v, -(1.0 - p) * overlay.x, -(1.0 - p) * overlay.y);
             Pose { offset: off, alpha: 1.0 }
         }
-        Transition::Dissolve | Transition::SmartAnimate | Transition::Instant => Pose { offset: Vec2::ZERO, alpha: p as f32 },
+        Transition::Dissolve | Transition::SmartAnimate | Transition::Instant => {
+            Pose { offset: Vec2::ZERO, alpha: p.clamp(0.0, 1.0) as f32 }
+        }
     }
 }
 

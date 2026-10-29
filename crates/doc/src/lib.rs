@@ -1156,6 +1156,8 @@ impl Document {
             Arc::make_mut(&mut self.libraries).store = store;
         }
         self.pages.retain(|p| self.nodes.get(p).is_some_and(|n| n.is_page()) && Some(*p) != store);
+        // Timeline settings belong to a page: the settings of a page that is gone are dropped.
+        self.timelines.retain(|k, _| self.nodes.get(k).is_some_and(|n| n.is_page()));
         for (k, n) in self.nodes.iter() {
             if n.is_page() && !self.pages.contains(k) && Some(*k) != store {
                 self.pages.push(*k);

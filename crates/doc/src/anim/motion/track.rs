@@ -125,7 +125,13 @@ impl Track {
         let Some(i) = self.segment_start(t_ms) else { return Some(first.value) };
         let a = &self.keys[i];
         let Some(b) = self.keys.get(i + 1) else { return Some(a.value) };
-        let span = (b.time_ms - a.time_ms) as f32;
+        // Keys are sorted by construction, but a malformed change can still arrive unsorted or with
+        // two keys on one time. Saturate instead of letting the subtraction overflow, and hold the
+        // first key's value when the two sit on the same time instead of dividing by zero.
+        let span = b.time_ms.saturating_sub(a.time_ms) as f32;
+        if !(span > 0.0) {
+            return Some(a.value);
+        }
         let p = a.easing.ease((t_ms - a.time_ms as f64) as f32 / span);
         Some(AnimValue::lerp(&a.value, &b.value, p as f64))
     }
