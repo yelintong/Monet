@@ -12,9 +12,9 @@ mod frame;
 mod ime;
 
 impl FigApp {
-    /// Open the colour/value picker for `target`. `top` used to anchor it under the control that
-    /// opened it; the picker now places itself, so the hint is ignored.
-    pub fn open_picker(&mut self, target: crate::colorpicker::PickerTarget, _top: Option<f32>) {
+    /// Open the colour/value picker for `target`, anchored at `top` (the control that opened it).
+    pub fn open_picker(&mut self, target: crate::colorpicker::PickerTarget, top: Option<f32>) {
+        self.ui.picker_y = top;
         self.ui.picker = Some(target);
     }
 
@@ -284,8 +284,15 @@ impl FigApp {
         let right_open = (self.right_panel_shown(hidden) && !narrow) || mobile == Some(MobilePanel::Right);
         // The Motion timeline docks at the bottom of the window, full width, above both side panels.
         if !hidden && !narrow && self.ui.motion_open {
+            // Its height is ours, like the side panels' widths: the panel takes an exact size and
+            // the top edge below drags it. egui's own `resizable` kept its height in the panel's
+            // state, which the next frame's default overwrote — that is what sprang back.
+            // A shrunken window keeps a strip of canvas rather than eating it whole.
+            let tallest = (ui.available_height() - 160.0).max(motion::timeline::MIN_H);
+            let h = motion::timeline::height(&self.ui.motion).min(tallest);
+            self.ui.motion.timeline_h = h;
             egui::Panel::bottom("motion_timeline")
-                .exact_size(motion::timeline::HEIGHT)
+                .exact_size(h)
                 .resizable(false)
                 .frame(egui::Frame::NONE.fill(t.panel))
                 .show(ui, |ui| motion::timeline::panel(self, ui));
@@ -388,6 +395,14 @@ impl FigApp {
                 self.panels_unsaved = true;
             }
         }
+        // The motion timeline's top edge, full width: the side panels' edge turned sideways.
+        if self.ui.motion_open && !narrow {
+            let content = ctx.content_rect();
+            let h = motion::timeline::height(&self.ui.motion);
+            if let Some(h) = Self::timeline_edge(ui, content.max.y - h, content.x_range(), h) {
+                self.ui.motion.timeline_h = h;
+            }
+        }
         // The only persistent dividers: the rail↔panel and panel↔canvas edges on the left, the
         // canvas↔right-panel edge, and the top edge of the docked motion timeline. No window-edge,
         // top or bottom lines on the panels.
@@ -397,7 +412,7 @@ impl FigApp {
             // The tab strip is a top panel of its own: the panels start below it, so their
             // dividers must start there too, never running up through the status bar.
             let top = content.min.y + crate::tabs::HEIGHT;
-            let bottom = if self.ui.motion_open { content.max.y - motion::timeline::HEIGHT } else { content.max.y };
+            let bottom = if self.ui.motion_open { content.max.y - motion::timeline::height(&self.ui.motion) } else { content.max.y };
             let stroke = egui::Stroke::new(1.0, t.border);
             let p = ui.painter();
             // Rail ↔ panel (only when the panel is open too).
@@ -435,6 +450,9 @@ impl FigApp {
         menus::popups(self, &ctx);
         variable_ui::picker(self, &ctx);
         style_picker::show(self, &ctx);
+        fill_rule::show(self, &ctx);
+        layout_panel::show(self, &ctx);
+        right::show_stroke_settings(self, &ctx);
         self.end_unwanted_text_preview(&ctx);
         self.end_pen_outside_design();
         dialogs::show(self, &ctx);

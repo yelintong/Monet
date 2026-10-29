@@ -15,10 +15,10 @@ use crate::theme::{Tokens, regular, semibold};
 use crate::widgets::{self, Edit, FIELD_H, FieldEdit, Lead, PAD};
 use crate::{FigApp, RightTab};
 
-mod effects;
+pub(crate) mod effects;
 mod inspect;
 mod menu;
-mod paints;
+pub(crate) mod paints;
 mod stroke;
 
 pub(crate) use effects::effect_open;
@@ -28,9 +28,9 @@ pub(crate) use inspect::{inspect_section, prop_row};
 #[cfg(test)]
 pub(crate) use menu::menu_row_width;
 pub use menu::{blend_menu, context_popup, menu_check, menu_item, menu_item_beside_checks, menu_item_with, menu_popup, menu_row};
-pub(crate) use menu::{block, menu_style, row, row_rect};
+pub(crate) use menu::{block, menu_style, row, row_inset, row_rect};
 use paints::{appearance, paints, variable_modes};
-pub(crate) use stroke::{CAP_ART_W, cap_art, join_label};
+pub(crate) use stroke::{CAP_ART_W, cap_art, close_stroke_settings, join_label, show_stroke_settings};
 
 /// Common value of `f` across `ids` (None when mixed or empty).
 pub(crate) fn common<T: PartialEq + Clone>(doc: &Document, ids: &[NodeId], f: impl Fn(&Node) -> T) -> Option<T> {
@@ -99,11 +99,6 @@ impl FigApp {
 /// menu, then route the scroll area to comments, frame presets, design, prototype or inspect.
 pub fn right_panel(app: &mut FigApp, ui: &mut Ui) {
     let t = Tokens::get(ui.ctx());
-    // Motion mode replaces the right panel with the animation inspector.
-    if app.ui.motion_open {
-        crate::motion::inspector::panel(app, ui, ui.max_rect(), &t);
-        return;
-    }
     let w = ui.available_width();
     // Top bar: people (you and the others in a live session), present, share.
     let (top, _) = ui.allocate_exact_size(vec2(w, 48.0), Sense::hover());
@@ -158,6 +153,10 @@ pub fn right_panel(app: &mut FigApp, ui: &mut Ui) {
         }
         ui.painter().galley(pos2(r.min.x + 8.0, r.center().y - galley.size().y / 2.0), galley, if active { t.text } else { t.text_secondary });
         if resp.clicked() {
+            // Switching to Design or Prototype leaves Motion mode.
+            if app.ui.motion_open {
+                crate::motion::set_open(app, false);
+            }
             if app.ui.right_tab != tab {
                 crate::proto_panel::open_editor(ui.ctx(), None);
             }
@@ -216,6 +215,13 @@ pub fn right_panel(app: &mut FigApp, ui: &mut Ui) {
         }
     });
     ui.painter().line_segment([tabs.left_bottom(), tabs.right_bottom()], Stroke::new(1.0, t.border));
+    // Motion mode takes the space under the tabs: the top bar (people, present, share) and the
+    // Design / Prototype tabs stay; the layer's own header and its sections do not.
+    if app.ui.motion_open {
+        let rect = ui.available_rect_before_wrap();
+        crate::motion::inspector::panel(app, ui, rect, &t);
+        return;
+    }
     egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
         ui.spacing_mut().item_spacing = vec2(8.0, 0.0);
         if app.session.tool.tool == figcraft_engine::ToolId::Comment {
@@ -279,11 +285,11 @@ fn design(app: &mut FigApp, ui: &mut Ui) {
         crate::typography::typography(app, ui, &doc, &sel);
         widgets::separator(ui);
     }
-    paints(app, ui, &doc, &sel, true);
+    paints(app, ui, &doc, &sel, true, None);
     widgets::separator(ui);
-    paints(app, ui, &doc, &sel, false);
+    paints(app, ui, &doc, &sel, false, None);
     widgets::separator(ui);
-    effects(app, ui, &doc, &sel);
+    effects(app, ui, &doc, &sel, None);
     widgets::separator(ui);
     crate::selection_colors::section(app, ui, &doc, &sel);
     if sel.iter().all(|i| doc.node(*i).is_some_and(|n| n.kind.is_frame_like())) {
@@ -303,20 +309,22 @@ fn page_section(app: &mut FigApp, ui: &mut Ui, doc: &Document) {
         _ => figcraft_color::Color::DEFAULT_PAGE,
     };
     widgets::section_header(ui, tr("Page"), &[], false);
-    let mut open_picker = false;
+    let mut open_picker: Option<egui::Rect> = None;
     let mut new_hex = None;
     row(ui, 32.0, |ui| {
         let p = Paint::solid(bg);
-        if widgets::swatch(ui, &p, 16.0).clicked() {
-            open_picker = true;
+        let sresp = widgets::swatch(ui, &p, 16.0);
+        if sresp.clicked() {
+            open_picker = Some(sresp.rect);
         }
         if let Some(h) = widgets::text_field(ui, Id::unique("pagebg"), &bg.to_hex(), 96.0, "") {
             new_hex = Some(h);
         }
         widgets::label(ui, "100 %", t.text);
     });
-    if open_picker {
-        app.ui.picker = Some(crate::colorpicker::PickerTarget::PageBackground);
+    if let Some(rect) = open_picker {
+        app.ui.picker_button = Some(rect);
+        app.toggle_picker(crate::colorpicker::PickerTarget::PageBackground, Some(rect.min.y));
     }
     if let Some(h) = new_hex
         && let Some(c) = figcraft_color::Color::from_hex_or_name(&h)
@@ -359,7 +367,7 @@ fn page_section(app: &mut FigApp, ui: &mut Ui, doc: &Document) {
 
 /// Draw the selection header: type name (or Mixed), frame/group conversion, orientation
 /// swap and frame presets, component/mask/boolean quick actions, and instance details.
-fn header(app: &mut FigApp, ui: &mut Ui, doc: &Document, sel: &[NodeId]) {
+pub(crate) fn header(app: &mut FigApp, ui: &mut Ui, doc: &Document, sel: &[NodeId]) {
     let t = Tokens::get(ui.ctx());
     let label = match common(doc, sel, |n| n.kind.label()) {
         Some(l) if sel.len() == 1 => tr(l).to_string(),

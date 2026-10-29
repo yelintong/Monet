@@ -153,6 +153,10 @@ mod paste_image_tests;
 #[cfg(test)]
 mod pen_mode_tests;
 #[cfg(test)]
+mod motion_animation_tests;
+#[cfg(test)]
+mod motion_timeline_tests;
+#[cfg(test)]
 mod perf_tests;
 #[cfg(test)]
 mod plugin_panel_tests;
@@ -344,12 +348,20 @@ pub struct UiState {
     pub layout_settings: Option<popover::Popover>,
     pub layout_settings_button: Option<egui::Rect>,
     pub layout_settings_anchor: Option<f32>,
+    /// The stroke's advanced settings popover: the same three, and the tab it shows.
+    pub stroke_settings: Option<popover::Popover>,
+    pub stroke_settings_button: Option<egui::Rect>,
+    pub stroke_settings_anchor: Option<f32>,
+    pub stroke_tab: u8,
     /// The fill rule editor: its panel, its popover, and the button that opens it.
     pub fill_rule: Option<fill_rule::Panel>,
     pub fill_rule_popover: Option<popover::Popover>,
     pub fill_rule_button: Option<egui::Rect>,
     /// The colour picker's button, for the eyedropper's release.
     pub picker_button: Option<egui::Rect>,
+    /// The colour picker's popover, and the anchor (the control's height) it keeps.
+    pub picker_popover: Option<popover::Popover>,
+    pub picker_y: Option<f32>,
     /// The window should restart to pick up a changed graphics backend.
     pub restart: bool,
     /// The graphics backend this run opened with, so Preferences can offer a restart when the
@@ -564,10 +576,16 @@ impl Default for UiState {
             layout_settings: None,
             layout_settings_button: None,
             layout_settings_anchor: None,
+            stroke_settings: None,
+            stroke_settings_button: None,
+            stroke_settings_anchor: None,
+            stroke_tab: 0,
             fill_rule: None,
             fill_rule_popover: None,
             fill_rule_button: None,
             picker_button: None,
+            picker_popover: None,
+            picker_y: None,
             restart: false,
             graphics_started: String::new(),
             pages_open: true,
@@ -780,6 +798,9 @@ mod layout_scroll_click_tests;
 
 #[cfg(test)]
 mod layout_settings_tests;
+
+#[cfg(test)]
+mod stroke_settings_tests;
 
 #[cfg(test)]
 mod popover_tests;

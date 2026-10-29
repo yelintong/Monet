@@ -282,8 +282,8 @@ pub fn on_dark<R>(ui: &mut egui::Ui, f: impl FnOnce(&mut egui::Ui) -> R) -> R {
     r
 }
 
-/// UI fonts: Inter and the Archivo wordmark (from the craft-fonts build input) when present;
-/// otherwise egui's defaults. With
+/// UI fonts: SF Pro (Apple's system face, from the craft-fonts build input) and the Archivo
+/// wordmark when present; otherwise egui's defaults. With
 /// `system`, also system faces for scripts those lack (Hebrew, joined Arabic) so names in them show,
 /// and faces for the CJK scripts in `cjk` ([`crate::cjk`]).
 ///
@@ -292,19 +292,19 @@ pub fn on_dark<R>(ui: &mut egui::Ui, f: impl FnOnce(&mut egui::Ui) -> R) -> R {
 pub fn install_fonts(ctx: &Context, system: bool, cjk: u8) {
     let mut fonts = FontDefinitions::default();
     let find = |family: &str, style: &str| figcraft_text::CRAFT_FONTS.iter().find(|f| f.family == family && f.style == style).map(|f| f.bytes);
-    let regular = find("Inter", "Regular");
-    let semibold = find("Inter", "SemiBold").or_else(|| find("Inter", "Bold"));
+    let regular = find("SF Pro", "Regular");
+    let semibold = find("SF Pro", "SemiBold").or_else(|| find("SF Pro", "Bold"));
     if let Some(r) = regular {
-        fonts.font_data.insert("inter".into(), Arc::new(FontData::from_static(r)));
+        fonts.font_data.insert("sf-pro".into(), Arc::new(FontData::from_static(r)));
         if let Some(list) = fonts.families.get_mut(&FontFamily::Proportional) {
-            list.insert(0, "inter".into());
+            list.insert(0, "sf-pro".into());
         }
     }
     let sb_name = if let Some(sb) = semibold {
-        fonts.font_data.insert("inter-semibold".into(), Arc::new(FontData::from_static(sb)));
-        "inter-semibold"
+        fonts.font_data.insert("sf-pro-semibold".into(), Arc::new(FontData::from_static(sb)));
+        "sf-pro-semibold"
     } else {
-        "inter"
+        "sf-pro"
     };
     let mut semi: Vec<String> = Vec::new();
     if fonts.font_data.contains_key(sb_name) {
@@ -326,14 +326,14 @@ pub fn install_fonts(ctx: &Context, system: bool, cjk: u8) {
     fonts.families.insert(FontFamily::Name("brand".into()), brand);
     // CJK and other scripts from craft-fonts as fallbacks (Noto Sans CJK only with FIGCRAFT_EMBED_CJK).
     const BUILT_IN: [&str; 7] =
-        ["Inter", "BIZ UDPGothic", "Noto Sans CJK SC", "Noto Sans Arabic", "Noto Sans Hebrew", "Noto Sans Georgian", "Noto Sans Thai"];
+        ["SF Pro", "BIZ UDPGothic", "Noto Sans CJK SC", "Noto Sans Arabic", "Noto Sans Hebrew", "Noto Sans Georgian", "Noto Sans Thai"];
     let lang = crate::i18n::current().map_or("en", |l| l.code);
     // A Chinese UI draws Han in a Chinese face: the built-in Japanese one goes after the system faces.
     let late = |family: &str| family == "BIZ UDPGothic" && crate::cjk::language(lang) == crate::cjk::HAN;
     let craft = |last: bool| {
         figcraft_text::CRAFT_FONTS
             .iter()
-            .filter(move |f| f.family != "Inter" && f.style == "Regular" && BUILT_IN.contains(&f.family) && late(f.family) == last)
+            .filter(move |f| f.family != "SF Pro" && f.style == "Regular" && BUILT_IN.contains(&f.family) && late(f.family) == last)
             .map(|f| (format!("craft-{}", f.family), FontData::from_static(f.bytes)))
     };
     let mut extra: Vec<(String, FontData)> = craft(false).collect();

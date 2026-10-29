@@ -1,9 +1,11 @@
-use super::menu::{context_popup, menu_check, menu_item, menu_popup, row, row_context_menu, row_rect};
+use super::menu::{context_popup, menu_check, menu_item, menu_popup, row, row_context_menu};
 use super::*;
 
 /// Draw the effect list with add/style/type/toggle/remove/reorder, open settings, and keep an
 /// open picker and settings flags aligned when rows move or are removed.
-pub(super) fn effects(app: &mut FigApp, ui: &mut Ui, doc: &Document, sel: &[NodeId]) {
+/// `keyframe` is the layer whose motion keys these effects (Motion mode): the first drop shadow
+/// and the first layer blur then carry keyframe diamonds, as the inspector's own fields do.
+pub(crate) fn effects(app: &mut FigApp, ui: &mut Ui, doc: &Document, sel: &[NodeId], keyframe: Option<NodeId>) {
     let ids = sel.to_vec();
     let list = common(doc, sel, |n| n.effects.clone());
     let empty = list.as_ref().is_none_or(|l| l.is_empty());
@@ -23,11 +25,16 @@ pub(super) fn effects(app: &mut FigApp, ui: &mut Ui, doc: &Document, sel: &[Node
     });
     style_picker::chip(app, ui, doc, &ids, StyleSlot::Effect);
     let Some(list) = list else { return };
+    // Motion mode: the shadow and blur properties animate the first drop shadow and the first
+    // layer blur (`motion::eval`).
+    let node = keyframe.and_then(|l| doc.node(l));
+    let shadow_idx = node.and_then(|n| figcraft_doc::anim::motion::eval::first_drop_shadow(&n.effects));
+    let blur_idx = node.and_then(|n| figcraft_doc::anim::motion::eval::first_layer_blur(&n.effects));
     let mut drag = ListDrag::new(ui, "effects");
     let mut removed = None;
     for (i, e) in list.iter().enumerate().rev() {
         let mut open = effect_open(ui.ctx(), i);
-        let header = row_rect(ui, 32.0, |ui| {
+        let header = row_inset(ui, 32.0, 8.0, |ui| {
             if icons::button(ui, Icon::Effects, 24.0, open, tr("Effect settings")).clicked() {
                 open = !open;
                 ui.data_mut(|d| d.insert_temp(Id::unique((FX_OPEN, i)), open));
@@ -44,14 +51,21 @@ pub(super) fn effects(app: &mut FigApp, ui: &mut Ui, doc: &Document, sel: &[Node
                     }
                 }
             });
-            if icons::button(ui, if e.visible { Icon::Eye } else { Icon::EyeOff }, 24.0, false, tr("Toggle")).clicked() {
+            // The eye and the remove keep 4 to each other (an icon pair).
+            let mut toggled = false;
+            let remove = widgets::icon_pair(
+                ui,
+                |ui| {
+                    toggled = icons::button(ui, if e.visible { Icon::Eye } else { Icon::EyeOff }, 24.0, false, tr("Toggle")).clicked();
+                },
+                |ui| icons::button(ui, Icon::Minus, 24.0, false, tr("Remove")),
+            );
+            if toggled {
                 let mut e2 = e.clone();
                 e2.visible = !e2.visible;
                 app.run("effect.set", json!({"ids": ids, "index": i, "effect": e2}));
             }
-            if icons::button(ui, Icon::Minus, 24.0, false, tr("Remove")).clicked()
-                && app.run("effect.remove", json!({"ids": ids, "index": i})).is_some()
-            {
+            if remove.clicked() && app.run("effect.remove", json!({"ids": ids, "index": i})).is_some() {
                 removed = Some(i);
             }
         });
@@ -67,7 +81,7 @@ pub(super) fn effects(app: &mut FigApp, ui: &mut Ui, doc: &Document, sel: &[Node
             }
         });
         if open {
-            effect_settings(app, ui, &ids, i, e);
+            effect_settings(app, ui, &ids, i, e, keyframe.filter(|_| shadow_idx == Some(i)), keyframe.filter(|_| blur_idx == Some(i)));
         }
         drag.row(ui, i, header, header.with_max_y(ui.cursor().min.y.max(header.max.y)), || tr(e.label()).to_string());
     }
@@ -99,14 +113,54 @@ pub(crate) fn effect_open(ctx: &egui::Context, i: usize) -> bool {
 }
 
 /// A number field of effect `i` that can be bound to a variable (`effects/<i>/<prop>`).
-fn fx_field(app: &mut FigApp, ui: &mut Ui, ids: &[NodeId], i: usize, prop: &str, lead: Lead, value: f64, width: f32) -> Option<FieldEdit> {
-    crate::variable_ui::number_field(app, ui, ids, &format!("effects/{i}/{prop}"), Id::unique(("fx", prop, i)), lead, Some(value), "", width)
+fn fx_field(
+    app: &mut FigApp,
+    ui: &mut Ui,
+    ids: &[NodeId],
+    i: usize,
+    prop: &str,
+    lead: Lead,
+    value: f64,
+    width: f32,
+    anim: Option<(NodeId, figcraft_doc::anim::motion::AnimProperty)>,
+) -> Option<FieldEdit> {
+    let e = crate::variable_ui::number_field(app, ui, ids, &format!("effects/{i}/{prop}"), Id::unique(("fx", prop, i)), lead, Some(value), "", width)?;
+    // Motion mode: an edit keys the value at the playhead instead of changing the effect.
+    if let Some((layer, ap)) = anim
+        && let FieldEdit::Set(v) | FieldEdit::Scrub(v, _) = e
+    {
+        crate::motion::inspector::commit_anim_value(app, layer, ap, figcraft_doc::anim::motion::AnimValue::Scalar(v));
+        return None;
+    }
+    Some(e)
 }
 
 /// Draw type-specific effect fields for shadows, blurs, noise, texture and glass, using live
 /// scrub edits that stay one undo step and bindable colour fields.
-fn effect_settings(app: &mut FigApp, ui: &mut Ui, ids: &[NodeId], i: usize, e: &Effect) {
+fn effect_settings(
+    app: &mut FigApp,
+    ui: &mut Ui,
+    ids: &[NodeId],
+    i: usize,
+    e: &Effect,
+    shadow: Option<NodeId>,
+    blur: Option<NodeId>,
+) {
     let half = (ui.available_width() - PAD * 2.0 - 8.0) / 2.0;
+    let t = Tokens::get(ui.ctx());
+    // The value shown for an animatable property: the keyframed one at the playhead, else static.
+    let shown = |app: &FigApp, anim: Option<(NodeId, figcraft_doc::anim::motion::AnimProperty)>, base: f64| -> f64 {
+        let Some((layer, prop)) = anim else { return base };
+        app.session
+            .doc()
+            .ok()
+            .and_then(|d| d.node(layer))
+            .and_then(|n| figcraft_doc::anim::motion::value_at(n, prop, app.ui.motion.playhead_ms))
+            .and_then(|v| v.scalar())
+            .unwrap_or(base)
+    };
+    // A field with a diamond beside it is 32 pt narrower.
+    let w = |diamond: bool| if diamond { half - 32.0 } else { half };
     let set = |app: &mut FigApp, e2: Effect, scrub: Option<bool>| {
         let p = json!({"ids": ids, "index": i, "effect": e2});
         match scrub {
@@ -139,24 +193,49 @@ fn effect_settings(app: &mut FigApp, ui: &mut Ui, ids: &[NodeId], i: usize, e: &
         EffectKind::DropShadow(s) | EffectKind::InnerShadow(s) => {
             let inner = matches!(e.kind, EffectKind::InnerShadow(_));
             let mk = |s2: Shadow| Effect { kind: if inner { EffectKind::InnerShadow(s2) } else { EffectKind::DropShadow(s2) }, visible: e.visible };
+            // The first drop shadow is the one the shadow properties animate.
+            use figcraft_doc::anim::motion::AnimProperty as P;
+            let (sx, sy, sb, sc) =
+                (shadow.map(|l| (l, P::ShadowX)), shadow.map(|l| (l, P::ShadowY)), shadow.map(|l| (l, P::ShadowBlur)), shadow.map(|l| (l, P::ShadowColor)));
             row(ui, 32.0, |ui| {
-                let ed = fx_field(app, ui, ids, i, "offsetX", Lead::Text("X"), s.offset.0, half);
+                let ed = fx_field(app, ui, ids, i, "offsetX", Lead::Text("X"), shown(app, sx, s.offset.0), w(sx.is_some()), sx);
                 edit(app, ed, &|v| mk(Shadow { offset: (v, s.offset.1), ..s.clone() }));
-                let ed = fx_field(app, ui, ids, i, "offsetY", Lead::Text("Y"), s.offset.1, half);
+                if let Some((l, p)) = sx {
+                    crate::motion::inspector::keyframe_diamond(app, ui, l, p, &t);
+                }
+                let ed = fx_field(app, ui, ids, i, "offsetY", Lead::Text("Y"), shown(app, sy, s.offset.1), w(sy.is_some()), sy);
                 edit(app, ed, &|v| mk(Shadow { offset: (s.offset.0, v), ..s.clone() }));
+                if let Some((l, p)) = sy {
+                    crate::motion::inspector::keyframe_diamond(app, ui, l, p, &t);
+                }
             });
             row(ui, 32.0, |ui| {
-                let ed = fx_field(app, ui, ids, i, "radius", Lead::Text(tr("Blur")), s.radius, half);
+                let ed = fx_field(app, ui, ids, i, "radius", Lead::Text(tr("Blur")), shown(app, sb, s.radius), w(sb.is_some()), sb);
                 edit(app, ed, &|v| mk(Shadow { radius: v.max(0.0), ..s.clone() }));
-                let ed = fx_field(app, ui, ids, i, "spread", Lead::Text(tr("Spread")), s.spread, half);
+                if let Some((l, p)) = sb {
+                    crate::motion::inspector::keyframe_diamond(app, ui, l, p, &t);
+                }
+                let ed = fx_field(app, ui, ids, i, "spread", Lead::Text(tr("Spread")), s.spread, half, None);
                 edit(app, ed, &|v| mk(Shadow { spread: v, ..s.clone() }));
             });
             // The colour: a bound variable's chip, else swatch, hex and alpha with a variable button.
             let color_field = format!("effects/{i}/color");
+            let shown_color = sc.and_then(|(layer, prop)| {
+                app.session
+                    .doc()
+                    .ok()
+                    .and_then(|d| d.node(layer))
+                    .and_then(|n| figcraft_doc::anim::motion::value_at(n, prop, app.ui.motion.playhead_ms))
+                    .and_then(|v| v.color())
+            });
             row(ui, 32.0, |ui| {
-                crate::variable_ui::bindable(app, ui, ids, &color_field, VariableType::Color, half * 2.0 + 8.0, |app, ui| {
-                    fx_color(app, ui, ids, i, e, false, &edit_color)
+                let cw = if sc.is_some() { half * 2.0 + 8.0 - 32.0 } else { half * 2.0 + 8.0 };
+                crate::variable_ui::bindable(app, ui, ids, &color_field, VariableType::Color, cw, |app, ui| {
+                    fx_color(app, ui, ids, i, e, false, &edit_color, sc, shown_color)
                 });
+                if let Some((l, p)) = sc {
+                    crate::motion::inspector::keyframe_diamond(app, ui, l, p, &t);
+                }
             });
             if !inner {
                 row(ui, 32.0, |ui| {
@@ -185,16 +264,31 @@ fn effect_settings(app: &mut FigApp, ui: &mut Ui, ids: &[NodeId], i: usize, e: &
                     }
                 });
             });
+            // The first layer blur is the one `BlurRadius` animates.
+            let ba = blur.map(|l| (l, figcraft_doc::anim::motion::AnimProperty::BlurRadius));
             row(ui, 32.0, |ui| {
                 if b.is_progressive() {
                     // The ramp's start and end points are dragged on the canvas.
-                    let ed = fx_field(app, ui, ids, i, "startRadius", Lead::Text(tr("Start")), b.start_radius, half);
+                    let ed = fx_field(app, ui, ids, i, "startRadius", Lead::Text(tr("Start")), b.start_radius, half, None);
                     edit(app, ed, &|v| with(&|b2| b2.start_radius = v.clamp(0.0, MAX_BLUR_RADIUS)));
-                    let ed = fx_field(app, ui, ids, i, "radius", Lead::Text(tr("End")), b.radius, half);
+                    let ed = fx_field(app, ui, ids, i, "radius", Lead::Text(tr("End")), shown(app, ba, b.radius), w(ba.is_some()), ba);
                     edit(app, ed, &|v| with(&|b2| b2.radius = v.clamp(0.0, MAX_BLUR_RADIUS)));
                 } else {
-                    let ed = fx_field(app, ui, ids, i, "radius", Lead::Text(tr("Blur")), b.radius, half * 2.0 + 8.0);
+                    let ed = fx_field(
+                        app,
+                        ui,
+                        ids,
+                        i,
+                        "radius",
+                        Lead::Text(tr("Blur")),
+                        shown(app, ba, b.radius),
+                        if ba.is_some() { half * 2.0 + 8.0 - 32.0 } else { half * 2.0 + 8.0 },
+                        ba,
+                    );
                     edit(app, ed, &|v| with(&|b2| b2.radius = v.clamp(0.0, MAX_BLUR_RADIUS)));
+                }
+                if let Some((l, p)) = ba {
+                    crate::motion::inspector::keyframe_diamond(app, ui, l, p, &t);
                 }
             });
         }
@@ -237,10 +331,10 @@ fn effect_settings(app: &mut FigApp, ui: &mut Ui, ids: &[NodeId], i: usize, e: &
                 edit(app, ed, &|v| with(&|n| n.density = (v / 100.0).clamp(0.0, 1.0)));
             });
             match nz.mode {
-                NoiseMode::Mono => row(ui, 32.0, |ui| fx_color(app, ui, ids, i, e, false, &edit_color)),
+                NoiseMode::Mono => row(ui, 32.0, |ui| fx_color(app, ui, ids, i, e, false, &edit_color, None, None)),
                 NoiseMode::Duo => {
-                    row(ui, 32.0, |ui| fx_color(app, ui, ids, i, e, false, &edit_color));
-                    row(ui, 32.0, |ui| fx_color(app, ui, ids, i, e, true, &edit_color));
+                    row(ui, 32.0, |ui| fx_color(app, ui, ids, i, e, false, &edit_color, None, None));
+                    row(ui, 32.0, |ui| fx_color(app, ui, ids, i, e, true, &edit_color, None, None));
                 }
                 NoiseMode::Multi => row(ui, 32.0, |ui| {
                     let op = Some((f64::from(nz.opacity) * 100.0).round());
@@ -323,21 +417,42 @@ fn tweaked(e: &Effect, f: impl FnOnce(&mut EffectKind)) -> Effect {
 
 /// The swatch (opens the colour picker), hex and opacity of effect `i`'s colour (`secondary`: a
 /// duo noise's second colour), in the current row; `edit` applies a new one.
-fn fx_color(app: &mut FigApp, ui: &mut Ui, ids: &[NodeId], i: usize, e: &Effect, secondary: bool, edit: &ColorEdit<'_>) {
-    let Some(c) = e.color(secondary) else { return };
+fn fx_color(
+    app: &mut FigApp,
+    ui: &mut Ui,
+    ids: &[NodeId],
+    i: usize,
+    e: &Effect,
+    secondary: bool,
+    edit: &ColorEdit<'_>,
+    anim: Option<(NodeId, figcraft_doc::anim::motion::AnimProperty)>,
+    shown: Option<figcraft_color::Color>,
+) {
+    let Some(static_c) = e.color(secondary) else { return };
+    // Motion mode shows the colour at the playhead and keys edits there.
+    let c = shown.filter(|_| anim.is_some()).unwrap_or(static_c);
+    let key = |app: &mut FigApp, c: figcraft_color::Color| {
+        if let Some((layer, prop)) = anim {
+            crate::motion::inspector::commit_anim_value(app, layer, prop, figcraft_doc::anim::motion::AnimValue::Color(c));
+            true
+        } else {
+            false
+        }
+    };
     if widgets::swatch(ui, &Paint::solid(c), 16.0).clicked() {
         app.ui.picker = Some(crate::colorpicker::PickerTarget::Effect { ids: ids.to_vec(), index: i, secondary });
     }
     if let Some(h) = widgets::text_field(ui, Id::unique(("fx_c", i, secondary)), &c.to_hex(), 80.0, "")
         && let Some(nc) = figcraft_color::Color::from_hex_or_name(&h)
+        && !key(app, nc.with_alpha(c.a))
     {
         edit(app, secondary, nc.with_alpha(c.a), None);
     }
     let alpha = |v: f64| c.with_alpha((v / 100.0).clamp(0.0, 1.0) as f32);
     match widgets::number_field(ui, Id::unique(("fx_a", i, secondary)), Lead::None, Some((f64::from(c.a) * 100.0).round()), "%", 56.0, 1.0) {
-        Some(FieldEdit::Set(v)) => edit(app, secondary, alpha(v), None),
-        Some(FieldEdit::Scrub(v, done)) => edit(app, secondary, alpha(v), Some(done)),
-        None => {}
+        Some(FieldEdit::Set(v)) if !key(app, alpha(v)) => edit(app, secondary, alpha(v), None),
+        Some(FieldEdit::Scrub(v, done)) if !key(app, alpha(v)) => edit(app, secondary, alpha(v), Some(done)),
+        _ => {}
     }
 }
 
@@ -362,7 +477,7 @@ pub(super) fn grids(app: &mut FigApp, ui: &mut Ui, doc: &Document, sel: &[NodeId
     for (i, g) in list.iter().enumerate().rev() {
         let open_id = Id::unique(("grid_open", i));
         let mut open = ui.data(|d| d.get_temp::<bool>(open_id)).unwrap_or(false);
-        let header = row_rect(ui, 32.0, |ui| {
+        let header = row_inset(ui, 32.0, 8.0, |ui| {
             if icons::button(ui, Icon::Grid, 24.0, open, tr("Layout grid settings")).clicked() {
                 open = !open;
                 ui.data_mut(|d| d.insert_temp(open_id, open));
@@ -390,12 +505,20 @@ pub(super) fn grids(app: &mut FigApp, ui: &mut Ui, doc: &Document, sel: &[NodeId
                     }
                 }
             });
-            if icons::button(ui, if g.visible { Icon::Eye } else { Icon::EyeOff }, 24.0, false, tr("Toggle")).clicked() {
+            // The eye and the remove keep 4 to each other (an icon pair).
+            let mut toggled = false;
+            let remove = widgets::icon_pair(
+                ui,
+                |ui| {
+                    toggled =
+                        icons::button(ui, if g.visible { Icon::Eye } else { Icon::EyeOff }, 24.0, false, tr("Toggle")).clicked();
+                },
+                |ui| icons::button(ui, Icon::Minus, 24.0, false, tr("Remove")),
+            );
+            if toggled {
                 app.set_props(&ids, json!({"grids": grids_with(&list, i, |x| x.visible = !x.visible)}));
             }
-            if icons::button(ui, Icon::Minus, 24.0, false, tr("Remove")).clicked()
-                && app.run("grid.remove", json!({"ids": ids, "index": i})).is_some()
-            {
+            if remove.clicked() && app.run("grid.remove", json!({"ids": ids, "index": i})).is_some() {
                 removed = Some(i);
             }
         });

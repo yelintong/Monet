@@ -123,6 +123,36 @@ impl FigApp {
         (w != width).then_some(w)
     }
 
+    /// The top edge of the docked motion timeline, across `cols` at `y`: dragging it sizes the
+    /// timeline from below (`grows`: −1 — a downward drag makes it shorter), a double-click puts
+    /// back [`crate::motion::timeline::HEIGHT`]. The side panels' [`Self::panel_edge`], turned on
+    /// its side, so both edges behave the same.
+    pub(super) fn timeline_edge(ui: &mut egui::Ui, y: f32, cols: egui::Rangef, height: f32) -> Option<f32> {
+        let grab = ui.style().interaction.resize_grab_radius_side;
+        let rect = egui::Rect::from_x_y_ranges(cols, y - grab..=y + grab);
+        let id = egui::Id::unique("motion_timeline_edge");
+        let resp = ui.interact(rect, id, egui::Sense::CLICK | egui::Sense::DRAG);
+        if resp.hovered() || resp.dragged() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeVertical);
+            ui.painter().hline(cols, y, egui::Stroke::new(2.0, theme::ACCENT));
+        }
+        if resp.double_clicked() {
+            return Some(crate::motion::timeline::HEIGHT);
+        }
+        // The edge stays under the pointer where it was grabbed (also back from past a limit).
+        let at = resp.interact_pointer_pos().filter(|_| resp.dragged())?;
+        if resp.drag_started() {
+            let pressed = ui.input(|i| i.pointer.press_origin()).unwrap_or(at);
+            ui.data_mut(|d| d.insert_temp(id, pressed.y - y));
+        }
+        let grabbed: f32 = ui.data(|d| d.get_temp(id)).unwrap_or(0.0);
+        // Top edge of a bottom-anchored panel: moving the pointer down takes height away. It keeps
+        // a canvas to draw in — never more than the window less a strip of it.
+        let tallest = (ui.ctx().content_rect().height() - 200.0).max(crate::motion::timeline::MIN_H);
+        let h = (height - (at.y - grabbed - y)).clamp(crate::motion::timeline::MIN_H, tallest);
+        (h != height).then_some(h)
+    }
+
     /// Reduced motion: the preference or the system's setting.
     pub fn reduce_motion(&self) -> bool {
         self.session.prefs.reduce_motion || self.services.reduce_motion()

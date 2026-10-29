@@ -318,12 +318,7 @@ fn number_field_impl(
     // The label scrubs with the pointer; the keyboard stops at the value only.
     let lead_resp = ui.interact(lead_rect, id.with("lead"), Sense::CLICK | Sense::DRAG);
     let hovered = field_resp.hovered() || lead_resp.hovered() || editing.is_some();
-    ui.painter().rect_filled(rect, CornerRadius::same(5), t.field);
-    if editing.is_some() {
-        ui.painter().rect_stroke(rect, CornerRadius::same(5), Stroke::new(1.0, crate::theme::ACCENT), StrokeKind::Inside);
-    } else if hovered {
-        ui.painter().rect_stroke(rect, CornerRadius::same(5), Stroke::new(1.0, t.field_hover_border), StrokeKind::Inside);
-    }
+    field_shell(ui, rect, editing.is_some(), hovered);
     match lead {
         Lead::Text(s) => {
             let galley = crate::bidi::name_galley(ui.painter(), s, regular(TEXT_PT), t.text_secondary, lead_w - LEAD_PAD);
@@ -696,6 +691,19 @@ pub struct FieldOpts<'a> {
     pub trail_suffix: &'static str,
 }
 
+/// The background and border every input wears: the field fill, the accent while `editing`, a
+/// hairline while `hovered`. Shared by the text fields and the number fields so the two look the
+/// same wherever they sit side by side.
+fn field_shell(ui: &mut Ui, rect: Rect, editing: bool, hovered: bool) {
+    let t = Tokens::get(ui.ctx());
+    ui.painter().rect_filled(rect, CornerRadius::same(5), t.field);
+    if editing {
+        ui.painter().rect_stroke(rect, CornerRadius::same(5), Stroke::new(1.0, crate::theme::ACCENT), StrokeKind::Inside);
+    } else if hovered {
+        ui.painter().rect_stroke(rect, CornerRadius::same(5), Stroke::new(1.0, t.field_hover_border), StrokeKind::Inside);
+    }
+}
+
 /// A single-line text input with an optional leading and trailing slot (icon, text, dot or custom
 /// content): the unified builder behind [`text_field`], [`text_field_named`],
 /// [`secret_field_named`] and [`combo_field`]. The middle is the editable text; `lead`/`trail` fill
@@ -708,12 +716,7 @@ pub fn field(ui: &mut Ui, opts: FieldOpts) -> (Option<String>, Option<Response>)
     let trail_w = opts.trail.width(ui);
     let edit_rect = Rect::from_min_max(pos2(rect.min.x + lead_w, rect.min.y), pos2(rect.max.x - trail_w, rect.max.y));
     let active = ui.data(|d| d.get_temp::<String>(opts.id.with("editing"))).is_some();
-    ui.painter().rect_filled(rect, CornerRadius::same(5), t.field);
-    if active {
-        ui.painter().rect_stroke(rect, CornerRadius::same(5), Stroke::new(1.0, crate::theme::ACCENT), StrokeKind::Inside);
-    } else if ui.rect_contains_pointer(rect) {
-        ui.painter().rect_stroke(rect, CornerRadius::same(5), Stroke::new(1.0, t.field_hover_border), StrokeKind::Inside);
-    }
+    field_shell(ui, rect, active, ui.rect_contains_pointer(rect));
     paint_slot(ui, opts.lead, Rect::from_min_size(rect.min, vec2(lead_w, FIELD_H)));
     let out = text_field_edit(ui, opts.id, opts.value, edit_rect, opts.placeholder, opts.name, opts.secret);
     let mut trail_resp = None;
@@ -939,15 +942,9 @@ fn field_editor(ui: &mut Ui, rect: Rect, id: Id, text: &mut String, hint: &str, 
 /// what Enter does). As tall as a button and drawn like [`text_field`], so the two line up in a
 /// row. Returns the editor's response (name it for screen readers with `a11y::text`).
 pub fn text_input(ui: &mut Ui, id: Id, text: &mut String, width: f32, hint: &str) -> Response {
-    let t = Tokens::get(ui.ctx());
     let (rect, _) = ui.allocate_exact_size(vec2(width, FIELD_H), Sense::hover());
-    ui.painter().rect_filled(rect, CornerRadius::same(5), t.field);
     let r = field_editor(ui, rect, id, text, hint, false);
-    if r.has_focus() {
-        ui.painter().rect_stroke(rect, CornerRadius::same(5), Stroke::new(1.0, crate::theme::ACCENT), StrokeKind::Inside);
-    } else if ui.rect_contains_pointer(rect) {
-        ui.painter().rect_stroke(rect, CornerRadius::same(5), Stroke::new(1.0, t.field_hover_border), StrokeKind::Inside);
-    }
+    field_shell(ui, rect, r.has_focus(), ui.rect_contains_pointer(rect));
     r
 }
 
@@ -1256,22 +1253,62 @@ pub fn tight_end<R>(ui: &mut Ui, add: impl FnOnce(&mut Ui) -> R) -> R {
     add(&mut child)
 }
 
+/// Options for [`icon_button_opts`].
+pub struct IconButtonOpts<'a> {
+    pub icon: Icon,
+    /// The button's square, in points.
+    pub size: f32,
+    /// Whether it shows the selected look (an open option, a pressed toggle).
+    pub active: bool,
+    pub tip: &'a str,
+}
+
+/// An icon button: hover, pressed and selected backgrounds, the glyph at its native size, a
+/// tooltip and (when `active`) a pressed toggle for screen readers. **The one implementation**
+/// behind [`icon_button`], [`icon_button_at`] and [`crate::icons::button`].
+pub fn icon_button_opts(ui: &mut Ui, opts: IconButtonOpts) -> Response {
+    let (rect, resp) = ui.allocate_exact_size(vec2(opts.size, opts.size), Sense::click());
+    paint_icon_button(ui, rect, resp, opts)
+}
+
+/// Paint an icon button whose rect and response the caller made: the shared body of every icon
+/// button.
+fn paint_icon_button(ui: &mut Ui, rect: Rect, resp: Response, opts: IconButtonOpts) -> Response {
+    let t = Tokens::get(ui.ctx());
+    let bg = if opts.active {
+        t.selected_row
+    } else if resp.is_pointer_button_down_on() {
+        t.pressed
+    } else if resp.hovered() {
+        t.hover
+    } else {
+        Color32::TRANSPARENT
+    };
+    ui.painter().rect_filled(rect, CornerRadius::same(5), bg);
+    let col = if opts.active { t.accent_text } else { t.icon };
+    // The glyph at its native 16 px in the usual buttons, smaller in compact ones.
+    let glyph = if opts.size >= 22.0 { 16.0 } else { 12.0 };
+    icons::paint(ui.painter(), Rect::from_center_size(rect.center(), vec2(glyph, glyph)), opts.icon, col);
+    if opts.tip.is_empty() {
+        return resp;
+    }
+    let resp = crate::a11y::Tip::tip(resp, opts.tip);
+    // Shown pressed (an open option): a pressed toggle to screen readers.
+    if opts.active {
+        crate::a11y::toggle(&resp, opts.tip, true);
+    }
+    resp
+}
+
 /// An icon button at `rect` (hover highlight, tooltip); true when clicked.
 pub fn icon_button_at(ui: &mut Ui, id: Id, rect: Rect, icon: Icon, tip: &str) -> bool {
-    let t = Tokens::get(ui.ctx());
-    let resp = ui.interact(rect, id, Sense::click()).tip(tip);
-    if resp.hovered() {
-        ui.painter().rect_filled(rect, CornerRadius::same(5), t.hover);
-    }
-    icons::paint(ui.painter(), rect.shrink(5.0), icon, t.icon);
-    resp.clicked()
+    let resp = ui.interact(rect, id, Sense::click());
+    paint_icon_button(ui, rect, resp, IconButtonOpts { icon, size: rect.width(), active: false, tip }).clicked()
 }
 
 /// A 24×24 icon button laid out in place; true when clicked.
 pub fn icon_button(ui: &mut Ui, icon: Icon, tip: &str) -> bool {
-    let (rect, _) = ui.allocate_exact_size(vec2(24.0, 24.0), Sense::hover());
-    let id = ui.scope_id().with(("icon_button", tip));
-    icon_button_at(ui, id, rect, icon, tip)
+    icon_button_opts(ui, IconButtonOpts { icon, size: 24.0, active: false, tip }).clicked()
 }
 
 /// A non-interactive `icon` of `size` px (for slots and inline use): allocates its square and

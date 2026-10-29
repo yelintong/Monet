@@ -1,7 +1,7 @@
 //! The colour picker popover: paint type, saturation/brightness square, hue and alpha sliders,
 //! hex and RGB fields, gradient stops, image and pattern fills and document colours.
 
-use egui::{Align2, Color32, CornerRadius, Id, Mesh, Pos2, Rect, Sense, Stroke, StrokeKind, Ui, pos2, vec2};
+use egui::{Align2, Color32, CornerRadius, Id, Mesh, Rect, Sense, Stroke, StrokeKind, Ui, pos2, vec2};
 use figcraft_color::{
     Color, ColorStop, Gradient, GradientKind, Hsb, ImageFilters, ImageScaleMode, Paint, PaintKind, PatternAlign, PatternPaint, PatternTile,
 };
@@ -12,7 +12,8 @@ use crate::FigApp;
 use crate::a11y::Tip;
 use crate::i18n::{tr, tr_noop, trf};
 use crate::icons::{self, Icon};
-use crate::theme::{Tokens, doc_c32, regular, semibold};
+use crate::popover::{Hold, Open, Popover};
+use crate::theme::{Tokens, doc_c32, regular};
 use crate::widgets;
 
 #[derive(Clone, Debug, PartialEq)]
@@ -186,6 +187,7 @@ fn remember_recent(app: &mut FigApp, c: Color) {
 pub fn close(app: &mut FigApp) {
     finish(app);
     app.ui.picker = None;
+    app.ui.picker_popover = None;
 }
 
 /// Escape with the picker open closes it (the selection stays).
@@ -588,37 +590,28 @@ pub fn show(app: &mut FigApp, ctx: &egui::Context) {
     };
     let t = Tokens::get(ctx);
     let screen = ctx.content_rect();
-    // A plugin's colour field: beside its window, which sits where the picker otherwise would.
-    let beside = match &target {
-        PickerTarget::PluginField { plugin, .. } => crate::plugins_ui::field_window(app, ctx, plugin).map(|r| pos2(r.min.x - 248.0, r.min.y)),
-        _ => None,
+    // A plugin's colour field: beside its window; otherwise the picker's top sits on the control
+    // that opened it (its right edge on the Design panel's left one).
+    let open = match &target {
+        PickerTarget::PluginField { plugin, .. } => crate::plugins_ui::field_window(app, ctx, plugin)
+            .map_or(Open::At(pos2(screen.min.x + 8.0, 140.0)), |r| Open::Anchor(pos2(r.min.x - 8.0, r.min.y))),
+        _ => Open::Anchor(pos2(screen.max.x - app.ui.right_width, app.ui.picker_y.unwrap_or(140.0))),
     };
-    let pos = beside.unwrap_or(pos2(screen.max.x - app.ui.right_width - 260.0, 140.0));
-    let mut open = true;
-    let mut close_now = false;
-    egui::Window::new("color_picker")
-        // A fixed area id so the style picker can tell a click in here from a click outside
-        // (`Window::new` alone would key the area by `Id::unique(Some(title))`).
-        .id(window_id())
-        .title_bar(false)
-        .fixed_pos(pos)
-        .fixed_size(vec2(240.0, 0.0))
-        .frame(egui::Frame::window(&ctx.global_style()).fill(t.panel).inner_margin(egui::Margin::same(0)))
-        .open(&mut open)
-        .show(ctx, |ui| {
+    let mut pop = app
+        .ui
+        .picker_popover
+        .take()
+        .unwrap_or_else(|| Popover::new("color_picker", tr("Custom")).pad(0.0).close_on_outside(false));
+    // Presses in the panel beside it keep it (swatches and fields there switch the colour it
+    // edits); the control that opened it is held too, so pressing it again reaches its toggle.
+    let panel = Rect::from_min_max(pos2(screen.max.x - app.ui.right_width, screen.min.y), screen.max);
+    let mut held: Vec<Rect> = vec![panel];
+    held.extend(app.ui.picker_button);
+    let closed = pop.show(ctx, open, Hold { rects: &held, escape: false }, |ui| {
             ui.spacing_mut().item_spacing = vec2(8.0, 8.0);
             // The eyedropper's colour goes to this picker's paint (a stroke, an effect, a gradient stop...).
             if let Some(c) = app.session.tool.picked.take() {
                 set_color(app, &target, &mut paint, c, stop_id(), ui);
-            }
-            // Header.
-            let (hr, _) = ui.allocate_exact_size(vec2(240.0, 40.0), Sense::hover());
-            ui.painter().text(pos2(hr.min.x + 16.0, hr.center().y), Align2::LEFT_CENTER, tr("Custom"), semibold(11.0), t.text);
-            let cr = Rect::from_center_size(pos2(hr.max.x - 20.0, hr.center().y), vec2(24.0, 24.0));
-            let cresp = ui.interact(cr, Id::unique("cp_close"), Sense::click());
-            icons::paint(ui.painter(), cr.shrink(6.0), Icon::Close, t.icon);
-            if cresp.clicked() {
-                close_now = true;
             }
             // Paint type.
             if !matches!(
@@ -996,11 +989,13 @@ pub fn show(app: &mut FigApp, ctx: &egui::Context) {
             }
             ui.add_space(12.0);
         });
-    if !open || close_now || ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
-        finish(app);
-        app.ui.picker = None;
+    if closed || ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+        close(app);
+    } else if app.ui.picker.is_some() {
+        // Kept only while the picker is open: a body that closed it (the eyedropper) doesn't leave
+        // a stale place for the next picker to inherit.
+        app.ui.picker_popover = Some(pop);
     }
-    let _ = Pos2::ZERO;
 }
 
 /// Swatches wrapped in rows inset 16 points from both sides of the picker.

@@ -1,5 +1,4 @@
 use super::menu::{blend_menu, context_popup, menu_check, menu_item, menu_popup, row, row_context_menu, row_rect};
-use super::stroke::stroke_settings;
 use super::*;
 
 /// Draw visibility/blend/mask, opacity, uniform or per-corner radius, corner smoothing and
@@ -279,7 +278,9 @@ fn range_fill(app: &mut FigApp, ui: &mut Ui, doc: &Document, id: NodeId, start: 
 
 /// Draw a selected-text range fill, or the fill/stroke paint rows with add, style, reorder,
 /// stroke align/weight, per-side weights and advanced stroke settings.
-pub(super) fn paints(app: &mut FigApp, ui: &mut Ui, doc: &Document, sel: &[NodeId], fills: bool) {
+/// `keyframe` is the layer whose motion keys this list (Motion mode): the first solid paint's row
+/// then carries a keyframe diamond, as the inspector's own fields do. `None` in the Design panel.
+pub(crate) fn paints(app: &mut FigApp, ui: &mut Ui, doc: &Document, sel: &[NodeId], fills: bool, keyframe: Option<NodeId>) {
     if fills
         && let Some((id, a, b)) = figcraft_engine::textedit::selected_range(&app.session)
         && a < b
@@ -296,23 +297,43 @@ pub(super) fn paints(app: &mut FigApp, ui: &mut Ui, doc: &Document, sel: &[NodeI
     let slot = if fills { StyleSlot::Fill } else { StyleSlot::Stroke };
     // The section's right-click menu adds the copied paint (`fill.paste` / `stroke.paste`).
     let paste = if fills { tr("Paste fill") } else { tr("Paste stroke") };
-    let (clicked, header) = widgets::section_header_resp(
-        ui,
-        title,
-        &[(Icon::Styles, tr("Styles")), (Icon::Plus, if fills { tr("Add fill") } else { tr("Add stroke") })],
-        empty,
-    );
+    // Only a vector network has filled areas to set a rule on: the fill-rule button sits between
+    // Styles and Add fill.
+    let vector = if fills { crate::fill_rule::first_vector(doc, sel) } else { None };
+    let mut buttons = vec![(Icon::Styles, tr("Styles"))];
+    if vector.is_some() {
+        buttons.push((Icon::FillRule, tr("Fill rule")));
+    }
+    buttons.push((Icon::Plus, if fills { tr("Add fill") } else { tr("Add stroke") }));
+    let add_at = buttons.len() - 1;
+    let (clicked, header) = widgets::section_header_resp(ui, title, &buttons, empty);
     if let Some(i) = clicked {
-        if i == 1 {
+        if i == add_at {
             // The new paint goes on top; open its picker. A mixed selection has no one index to edit.
             if app.run(if fills { "fill.add" } else { "stroke.add" }, json!({"ids": ids})).is_some()
                 && let Some(l) = &list
             {
-                app.ui.picker = Some(crate::colorpicker::PickerTarget::Paint { fills, index: l.len(), ids: ids.clone() });
+                app.open_picker(
+                    crate::colorpicker::PickerTarget::Paint { fills, index: l.len(), ids: ids.clone() },
+                    Some(header.rect.min.y + 8.0),
+                );
             }
+        } else if vector.is_some() && i == 1 {
+            // The button toggles the panel, which opens at this section's height.
+            crate::fill_rule::toggle(app, header.rect.min.y);
         } else {
             style_picker::open(app, ui, &ids, slot);
         }
+    }
+    // Remember the fill-rule button's rect (when a vector is selected) so the panel's
+    // outside-press-close does not treat a click on it as "outside" and snap shut then reopen.
+    // Only the Fill section sets it — the Stroke section shares this function (fills = false)
+    // and would otherwise clear it. section_header_resp lays the buttons right-to-left at 24px
+    // steps from the header's right edge, so with [Styles, FillRule, Plus] the FillRule button
+    // sits 56px in from the right and 8px down.
+    if fills {
+        app.ui.fill_rule_button = vector
+            .map(|_| egui::Rect::from_min_size(egui::pos2(header.rect.max.x - 56.0, header.rect.min.y + 8.0), egui::vec2(24.0, 24.0)));
     }
     context_popup(&header).show(|ui| {
         if app.session.clipboard.paint.as_ref().is_some_and(|(f, _)| *f == fills) && menu_item(ui, paste, "") {
@@ -326,8 +347,11 @@ pub(super) fn paints(app: &mut FigApp, ui: &mut Ui, doc: &Document, sel: &[NodeI
         Some(l) => {
             // The last paint is on top: shown first. Rows drag to reorder.
             let mut drag = ListDrag::new(ui, if fills { "fills" } else { "strokes" });
+            // Only the first solid paint's colour is animatable.
+            let first_solid = l.iter().position(|p| matches!(p.kind, PaintKind::Solid { .. }));
             for (i, p) in l.iter().enumerate().rev() {
-                let r = paint_row(app, ui, &ids, i, p, fills);
+                let animated = keyframe.is_some() && first_solid == Some(i);
+                let r = paint_row(app, ui, &ids, i, p, fills, keyframe, animated);
                 drag.row(ui, i, r, r, || paint_label(p));
             }
             if let Some((from, to)) = drag.finish(ui).map(crate::list_drag::Dropped::pair) {
@@ -379,29 +403,49 @@ pub(super) fn paints(app: &mut FigApp, ui: &mut Ui, doc: &Document, sel: &[NodeI
                 weight_w,
             );
             app.field_of(&ids, "strokeWeight", e, |n| n.stroke.weight, |v| json!(v.max(0.0)));
-            if sided {
-                let sides_btn = icons::button(ui, Icon::IndependentCorners, 24.0, false, tr("Individual strokes"));
-                menu_popup(&sides_btn).show(|ui| {
-                    let w = weight.unwrap_or(1.0);
-                    for (l, v) in [
-                        (tr("All"), Value::Null),
-                        (tr("Top"), json!([w, 0.0, 0.0, 0.0])),
-                        (tr("Right"), json!([0.0, w, 0.0, 0.0])),
-                        (tr("Bottom"), json!([0.0, 0.0, w, 0.0])),
-                        (tr("Left"), json!([0.0, 0.0, 0.0, w])),
-                        (tr("Custom"), json!([w, w, w, w])),
-                    ] {
-                        if menu_item(ui, l, "") {
-                            app.set_props(&ids, json!({"strokeSides": v}));
-                            ui.close();
-                        }
+            // The advanced stroke settings (style, join, brush) open in their own popover,
+            // toggled by this button — 4 from the sided one when that is there (an icon pair).
+            // The button's rect is live every frame (the outside-press hold follows it when the
+            // panel scrolls); the anchor freezes at the opening, so the popover stays put.
+            let open = app.ui.stroke_settings.is_some();
+            let dots = |ui: &mut Ui| icons::button(ui, Icon::Dots, 24.0, open, tr("Advanced stroke"));
+            let more = if sided {
+                widgets::icon_pair(
+                    ui,
+                    |ui| {
+                        let sides_btn = icons::button(ui, Icon::IndependentCorners, 24.0, false, tr("Individual strokes"));
+                        menu_popup(&sides_btn).show(|ui| {
+                            let w = weight.unwrap_or(1.0);
+                            for (l, v) in [
+                                (tr("All"), Value::Null),
+                                (tr("Top"), json!([w, 0.0, 0.0, 0.0])),
+                                (tr("Right"), json!([0.0, w, 0.0, 0.0])),
+                                (tr("Bottom"), json!([0.0, 0.0, w, 0.0])),
+                                (tr("Left"), json!([0.0, 0.0, 0.0, w])),
+                                (tr("Custom"), json!([w, w, w, w])),
+                            ] {
+                                if menu_item(ui, l, "") {
+                                    app.set_props(&ids, json!({"strokeSides": v}));
+                                    ui.close();
+                                }
+                            }
+                        });
+                    },
+                    dots,
+                )
+            } else {
+                dots(ui)
+            };
+            app.ui.stroke_settings_button = Some(more.rect);
+            if more.clicked() {
+                app.ui.stroke_settings = match app.ui.stroke_settings.take() {
+                    Some(_) => None,
+                    None => {
+                        app.ui.stroke_settings_anchor = Some(more.rect.min.y);
+                        crate::colorpicker::close(app);
+                        Some(crate::popover::Popover::new("stroke_settings", tr("Stroke")).pad(12.0))
                     }
-                });
-            }
-            let adv_id = Id::unique("stroke_adv");
-            let open = ui.data(|d| d.get_temp::<bool>(adv_id)).unwrap_or(false);
-            if icons::button(ui, Icon::Dots, 24.0, open, tr("Advanced stroke")).clicked() {
-                ui.data_mut(|d| d.insert_temp(adv_id, !open));
+                };
             }
         });
         // Per-side weights, two to a row (like the corner radii) so a bound variable's name fits:
@@ -419,26 +463,50 @@ pub(super) fn paints(app: &mut FigApp, ui: &mut Ui, doc: &Document, sel: &[NodeI
                 });
             }
         }
-        if ui.data(|d| d.get_temp::<bool>(Id::unique("stroke_adv"))).unwrap_or(false) {
-            stroke_settings(app, ui, doc, sel);
-        }
     }
 }
 
 /// Paint `i`'s row (swatch, colour or kind, opacity, visibility, remove); returns its area.
-fn paint_row(app: &mut FigApp, ui: &mut Ui, ids: &[NodeId], i: usize, p: &Paint, fills: bool) -> Rect {
+fn paint_row(
+    app: &mut FigApp,
+    ui: &mut Ui,
+    ids: &[NodeId],
+    i: usize,
+    p: &Paint,
+    fills: bool,
+    keyframe: Option<NodeId>,
+    animated: bool,
+) -> Rect {
     let t = Tokens::get(ui.ctx());
     let ids = ids.to_vec();
     let cmd = if fills { "fill.set" } else { "stroke.set" };
+    // Motion mode: the first solid paint shows its colour at the playhead and edits write a
+    // keyframe there (`AnimProperty::FillColor` / `StrokeColor`).
+    let prop = if fills {
+        figcraft_doc::anim::motion::AnimProperty::FillColor
+    } else {
+        figcraft_doc::anim::motion::AnimProperty::StrokeColor
+    };
+    let node = keyframe.and_then(|layer| app.session.doc().ok().and_then(|d| d.node(layer).cloned()));
+    let shown_color = node
+        .as_ref()
+        .filter(|_| animated)
+        .and_then(|n| figcraft_doc::anim::motion::value_at(n, prop, app.ui.motion.playhead_ms).and_then(|v| v.color()));
+    let tracked = node.as_ref().is_some_and(|n| animated && n.motion.track(prop).is_some());
+    let diamond = keyframe.filter(|_| animated);
     let r = row_rect(ui, 32.0, |ui| {
-        let w = ui.available_width() - 56.0;
+        let w = ui.available_width() - 56.0 - if diamond.is_some() { 32.0 } else { 0.0 };
         let (r, _) = ui.allocate_exact_size(vec2(w, FIELD_H), Sense::hover());
         ui.painter().rect_filled(r, CornerRadius::same(5), t.field);
         let sw = Rect::from_min_size(pos2(r.min.x + 4.0, r.center().y - 8.0), vec2(16.0, 16.0));
-        widgets::paint_swatch(ui.painter(), sw, p);
+        let swatch = shown_color.map_or_else(|| p.clone(), Paint::solid);
+        widgets::paint_swatch(ui.painter(), sw, &swatch);
         let sresp = ui.interact(sw.expand(2.0), Id::unique(("swatch", fills, i)), Sense::click());
-        if sresp.clicked() {
-            app.ui.picker = Some(crate::colorpicker::PickerTarget::Paint { fills, index: i, ids: ids.clone() });
+        // A tracked colour is edited by the keyframe field below: the picker writes the static
+        // fill, which the animation then overrides.
+        if sresp.clicked() && !tracked {
+            app.ui.picker_button = Some(sresp.rect);
+            app.toggle_picker(crate::colorpicker::PickerTarget::Paint { fills, index: i, ids: ids.clone() }, Some(sresp.rect.min.y));
         }
         let text_r = Rect::from_min_max(pos2(sw.max.x + 8.0, r.min.y), pos2(r.max.x - 52.0, r.max.y));
         let mut child = ui.new_child(egui::UiBuilder::new().max_rect(text_r));
@@ -470,15 +538,25 @@ fn paint_row(app: &mut FigApp, ui: &mut Ui, ids: &[NodeId], i: usize, p: &Paint,
                 }
             }
             PaintKind::Solid { color } => {
+                let shown = shown_color.unwrap_or(*color);
                 if let Some(h) = widgets::text_field_inline(
                     &mut child,
                     Id::unique(("hex", fills, i)),
-                    &color.to_hex(),
+                    &shown.to_hex(),
                     text_r.shrink2(vec2(0.0, 4.0)),
                     regular(11.0),
                 ) && let Some(c) = figcraft_color::Color::from_hex_or_name(&h)
                 {
-                    app.run(cmd, json!({"ids": ids, "index": i, "color": c.to_css_hex()}));
+                    if let Some(layer) = diamond {
+                        crate::motion::inspector::commit_anim_value(
+                            app,
+                            layer,
+                            prop,
+                            figcraft_doc::anim::motion::AnimValue::Color(c.with_alpha(shown.a)),
+                        );
+                    } else {
+                        app.run(cmd, json!({"ids": ids, "index": i, "color": c.to_css_hex()}));
+                    }
                 }
             }
             _ => {
@@ -510,10 +588,21 @@ fn paint_row(app: &mut FigApp, ui: &mut Ui, ids: &[NodeId], i: usize, p: &Paint,
             }
             None => {}
         }
-        if icons::button(ui, if p.visible { Icon::Eye } else { Icon::EyeOff }, 24.0, false, tr("Toggle visibility")).clicked() {
+        // The eye and the remove keep 4 to each other (an icon pair).
+        let mut toggled = false;
+        let remove = widgets::icon_pair(
+            ui,
+            |ui| {
+                if icons::button(ui, if p.visible { Icon::Eye } else { Icon::EyeOff }, 24.0, false, tr("Toggle visibility")).clicked() {
+                    toggled = true;
+                }
+            },
+            |ui| icons::button(ui, Icon::Minus, 24.0, false, tr("Remove")),
+        );
+        if toggled {
             app.run(cmd, json!({"ids": ids, "index": i, "visible": !p.visible}));
         }
-        if icons::button(ui, Icon::Minus, 24.0, false, tr("Remove")).clicked()
+        if remove.clicked()
             && app.run(if fills { "fill.remove" } else { "stroke.remove" }, json!({"ids": ids, "index": i})).is_some()
             && let Some(crate::colorpicker::PickerTarget::Paint { fills: f, index, .. }) = &mut app.ui.picker
             && *f == fills
@@ -523,6 +612,10 @@ fn paint_row(app: &mut FigApp, ui: &mut Ui, ids: &[NodeId], i: usize, p: &Paint,
                 Some(k) => *index = k,
                 None => app.ui.picker = None,
             }
+        }
+        // Motion mode: the row keys the paint's colour at the playhead.
+        if let Some(layer) = diamond {
+            crate::motion::inspector::keyframe_diamond(app, ui, layer, prop, &t);
         }
     });
     let copy = if fills { tr("Copy fill") } else { tr("Copy stroke") };

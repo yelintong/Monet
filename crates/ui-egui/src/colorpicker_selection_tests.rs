@@ -80,7 +80,7 @@ fn wrapped_page_colour_swatches_stay_inset_inside_the_picker() {
     // The picker is the only floating window open.
     let picker = u
         .ctx
-        .memory(|m| m.areas().visible_layer_ids().into_iter().filter(|l| l.order == egui::Order::Middle).find_map(|l| m.area_rect(l.id)))
+        .memory(|m| m.areas().visible_layer_ids().into_iter().filter(|l| l.order == egui::Order::Foreground).find_map(|l| m.area_rect(l.id)))
         .expect("the picker is open");
     // A swatch is a 14 pt square with a 1 pt outline.
     let swatches: Vec<egui::Rect> = out

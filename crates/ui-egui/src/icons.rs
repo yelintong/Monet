@@ -293,32 +293,10 @@ fn triangulate(v: &[Pos2]) -> Vec<u32> {
 }
 
 /// Allocate a square icon button; returns the response. `active` paints the selected look.
+/// A thin forwarder: the implementation lives in [`crate::widgets::icon_button_opts`], so every
+/// icon button in the product draws the same way.
 pub fn button(ui: &mut egui::Ui, icon: Icon, size: f32, active: bool, tooltip: &str) -> egui::Response {
-    let t = crate::theme::Tokens::get(ui.ctx());
-    let (rect, resp) = ui.allocate_exact_size(vec2(size, size), egui::Sense::click());
-    let bg = if active {
-        t.selected_row
-    } else if resp.is_pointer_button_down_on() {
-        t.pressed
-    } else if resp.hovered() {
-        t.hover
-    } else {
-        Color32::TRANSPARENT
-    };
-    ui.painter().rect_filled(rect, egui::CornerRadius::same(5), bg);
-    let col = if active { t.accent_text } else { t.icon };
-    // The glyph at its native 16 px in the usual buttons, smaller in compact ones.
-    let glyph = if size >= 22.0 { 16.0 } else { 12.0 };
-    paint(ui.painter(), Rect::from_center_size(rect.center(), Vec2::splat(glyph)), icon, col);
-    if tooltip.is_empty() {
-        return resp;
-    }
-    let resp = crate::a11y::Tip::tip(resp, tooltip);
-    // Shown pressed (an open option): a pressed toggle to screen readers.
-    if active {
-        crate::a11y::toggle(&resp, tooltip, true);
-    }
-    resp
+    crate::widgets::icon_button_opts(ui, crate::widgets::IconButtonOpts { icon, size, active, tip: tooltip })
 }
 
 /// The mark of a file of `kind` on tabs and file rows: a pen nib for design files, a sticky note
