@@ -14,3 +14,7 @@ plans/
 _build*.log
 .cache/
 .vscode/
+
+# IDE / agent-internal files (machine-specific, never commit)
+.idea/
+.workbuddy/memory/
