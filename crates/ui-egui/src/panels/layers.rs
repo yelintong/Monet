@@ -10,7 +10,7 @@ use serde_json::json;
 use crate::a11y::{self, Region, RowInfo, Tip};
 use crate::i18n::{tr, trf, trn};
 use crate::icons::{self, Icon};
-use crate::theme::{ACCENT, COMPONENT, ICON, Tokens, regular, semibold};
+use crate::theme::{COMPONENT, ICON, Tokens, regular, semibold};
 use crate::{FigApp, LeftTab};
 
 pub const ROW: f32 = 32.0;
@@ -326,7 +326,7 @@ fn pages(app: &mut FigApp, ui: &mut Ui) {
                 // The gap between rows counts too.
                 && pointer.is_some_and(|p| resp.interact_rect.expand2(vec2(0.0, 3.0)).contains(p))
             {
-                ui.painter().rect_stroke(r, CornerRadius::same(5), Stroke::new(2.0, ACCENT), egui::StrokeKind::Inside);
+                ui.painter().rect_stroke(r, CornerRadius::same(5), Stroke::new(2.0, crate::theme::accent(ui.ctx())), egui::StrokeKind::Inside);
                 if ui.input(|i| i.pointer.any_released()) {
                     move_to = Some((id, name.clone()));
                 }
@@ -455,7 +455,7 @@ fn pages_edge(app: &mut FigApp, ui: &mut Ui, shown: f32) {
     if active {
         ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeVertical);
     }
-    let (width, colour) = if active { (2.0, ACCENT) } else { (1.0, t.border) };
+    let (width, colour) = if active { (2.0, t.accent) } else { (1.0, t.border) };
     ui.painter().line_segment([line.left_center(), line.right_center()], Stroke::new(width, colour));
     let asked = if resp.double_clicked() {
         Some(None)
@@ -1176,7 +1176,7 @@ fn layers(app: &mut FigApp, ui: &mut Ui) {
                     _ => r.center().y,
                 };
                 if zone == 0 {
-                    ui.painter().rect_stroke(rr, CornerRadius::same(5), Stroke::new(2.0, ACCENT), egui::StrokeKind::Inside);
+                    ui.painter().rect_stroke(rr, CornerRadius::same(5), Stroke::new(2.0, crate::theme::accent(ui.ctx())), egui::StrokeKind::Inside);
                     // Holding over a collapsed group or frame opens it, to drop deeper inside.
                     if row.has_kids && !app.ui.expanded.contains(&row.id) {
                         let hold_id = Id::unique("layer_drag_hold");

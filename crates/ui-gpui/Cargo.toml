@@ -1,0 +1,64 @@
+[package]
+name = "figcraft-ui-gpui"
+version = "0.11.2"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+rust-version = "1.95"
+repository = "https://github.com/storytold/figcraft"
+description = "FigCraft UI layer on GPUI (draft scaffold — not yet wired into the apps)"
+
+# NOTE: this crate is intentionally listed in the workspace root `exclude` so it does NOT
+# participate in the default `crates/*` build. Remove it from `exclude` once it compiles and
+# is ready to be wired into `apps/figcraft` / `apps/figcraft-web`.
+#
+# 阶段0 画布切片依赖：engine / doc / render（注意：不依赖 ui-egui —— 画布位图由 engine 侧的
+# `figcraft_render::render_view` 直接产出，GPUI 只负责显示，证明迁移"只动外层"。
+
+[features]
+default = []
+# GPU 渲染后端（docs/migration-egui-to-gpui.md §18 的第 1、2 步）。默认关闭，
+# 打开后才有 `gpu` 模块；主渲染路径仍是 tiny-skia（CPU），两条路可对比。
+gpu = ["dep:wgpu", "dep:pollster", "dep:bytemuck"]
+
+[dependencies]
+# GPUI — Zed's GPU-accelerated UI framework, Apache-2.0.
+gpui = "0.2"
+# FigCraft 内部 crate（path 依赖；因本 crate 被 exclude，不能用 workspace = true）。
+figcraft-engine = { path = "../engine" }
+figcraft-doc = { path = "../doc" }
+figcraft-render = { path = "../render" }
+figcraft-layout = { path = "../layout" }
+figcraft-color = { path = "../color" }
+# 字符串目录（与 ui-egui 共用一张编译期表）。
+figcraft-i18n = { path = "../i18n" }
+figcraft-geom = { path = "../geom" }
+# 文字排版代数（字体到位后重排，与原文的 JobKey.fonts 一致）。
+figcraft-text = { path = "../text" }
+# 把 RGBA 字节包成 GPUI 的 RenderImage。版本对齐 workspace 的 image 0.25。
+image = "0.25"
+log = "0.4"
+# 引擎命令参数（参考线增删改、视图缩放等）。
+serde_json = "1"
+# 变量面板的 Import/Export 文件对话框（workspace 的 apps/figcraft 已在用同一版本）。
+rfd = "0.17"
+# 控制通道的唤醒：`smol::channel` 跨线程 `try_send`，前台任务 `recv().await` 后 notify。
+# smol 已经在 gpui 的依赖图里，这里只是直接引用。
+smol = "2"
+# GPU 后端（可选）：wgpu 自带的默认后端（dx12 / vulkan / metal / gles）。
+wgpu = { version = "30", optional = true }
+pollster = { version = "0.4", optional = true }
+bytemuck = { version = "1", features = ["derive"], optional = true }
+
+[dev-dependencies]
+# 只给 GPU 后端的吞吐对照测试用（§18「保留 CPU 路径做对照」）。
+tiny-skia = "0.12"
+
+# 画布是**逐像素**的活：整页贴图 440 万像素，每次重绘都要把预乘 RGBA 转成 BGRA。
+# 未优化的 debug 构建下 tiny-skia 和这趟转换会慢 20~40 倍，一次拖拽的渲染从 6ms 涨到
+# 100ms 以上——表现就是「选框很跟手，里面的色块和文字明显落后」。
+# 所以依赖一律 -O3，本 crate 也给 1 级优化（调试信息仍在，断点照打）。
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3

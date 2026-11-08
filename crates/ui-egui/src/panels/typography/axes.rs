@@ -168,7 +168,7 @@ fn axis_slider(ui: &mut Ui, id: Id, axis: &figcraft_text::Axis, value: Option<f6
         let x = x_of(v);
         p.rect_filled(Rect::from_min_max(track.min, pos2(x, track.max.y)), CornerRadius::same(2), t.accent);
         p.circle_filled(pos2(x, track.center().y), 6.0, Color32::WHITE);
-        let ring = if resp.hovered() || resp.dragged() { crate::theme::ACCENT } else { t.border_strong };
+        let ring = if resp.hovered() || resp.dragged() { t.accent } else { t.border_strong };
         p.circle_stroke(pos2(x, track.center().y), 6.0, Stroke::new(1.0, ring));
     }
     if resp.double_clicked() {

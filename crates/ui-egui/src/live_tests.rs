@@ -354,3 +354,12 @@ fn share_popover_and_join_dialog() {
     h.frames(1);
     assert!(h.app.ui.live.join.is_none());
 }
+
+/// 目录测试原来在 `i18n/tests.rs`，但这条测的是 `live::failure_text`：搬走 i18n 时留在 ui-egui。
+#[test]
+fn a_live_failure_the_ui_knows_is_read_back_for_translation() {
+    use figcraft_engine::live::TOO_LARGE_TO_JOIN;
+    let reason = TOO_LARGE_TO_JOIN.replace("{mb}", "1024");
+    assert!(matches!(crate::live::failure_text(&reason), std::borrow::Cow::Owned(t) if t == reason));
+    assert!(matches!(crate::live::failure_text("Couldn't reach the server"), std::borrow::Cow::Borrowed(_)));
+}

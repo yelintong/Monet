@@ -76,6 +76,11 @@ pub fn invoke(app: &mut FigApp, id: &str) {
         return;
     }
     match id {
+        // Four brand accents share one command; the suffix names the colour.
+        id if id.starts_with("pref.accent.") => {
+            let accent = &id["pref.accent.".len()..];
+            app.run("pref.accent", json!({ "accent": accent }));
+        }
         // Edit ▸ Delete (and the Delete binding) with an interaction open in the Prototype tab
         // removes that interaction, not the layer (#767).
         "edit.delete" if app.ui_context.clone().is_some_and(|ctx| crate::proto_panel::delete_selected_interaction(app, &ctx)) => {}

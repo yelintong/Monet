@@ -48,8 +48,11 @@ struct Frame {
     magnified_image_pixels: bool,
     skip: Vec<NodeId>,
     solo: Option<NodeId>,
+    only: Vec<NodeId>,
     background: Option<figcraft_color::Color>,
     dots: Option<crate::Dots>,
+    /// 画布提示带（padding / spacing）：换了就要重画。
+    bands: Vec<crate::Band>,
     scale: u64,
     /// The view's top-left in device pixels (page origin × scale).
     px: (i64, i64),
@@ -161,8 +164,10 @@ impl Retained {
             && last.magnified_image_pixels == opts.magnified_image_pixels
             && last.skip == opts.skip
             && last.solo == opts.solo
+            && last.only == opts.only
             && last.background == opts.background
             && last.dots == opts.dots
+            && last.bands == opts.bands
             && last.scale == snapped.scale.to_bits()
             && last.pix.width() == snapped.width
             && last.pix.height() == snapped.height
@@ -207,8 +212,10 @@ impl Retained {
             magnified_image_pixels: opts.magnified_image_pixels,
             skip: opts.skip.clone(),
             solo: opts.solo,
+            only: opts.only.clone(),
             background: opts.background,
             dots: opts.dots,
+            bands: opts.bands.clone(),
             scale: view.scale.to_bits(),
             px,
             fonts,

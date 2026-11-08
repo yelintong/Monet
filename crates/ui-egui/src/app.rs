@@ -141,7 +141,8 @@ impl FigApp {
         self.ui.dark = dark;
         // New files take the theme's page colour (existing pages keep theirs).
         self.session.set_ui_dark(dark);
-        theme::apply_with(ctx, if dark { theme::Tokens::dark() } else { theme::Tokens::light() }, self.reduce_motion());
+        let accent = theme::Accent::from_str(&self.session.prefs.accent);
+        theme::apply_with(ctx, theme::Tokens::new(dark, accent), self.reduce_motion());
         if self.worker.is_none() {
             self.worker = Some(render_worker::Worker::new(ctx.clone()));
         }

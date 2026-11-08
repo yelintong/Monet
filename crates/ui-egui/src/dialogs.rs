@@ -319,6 +319,15 @@ pub fn show(app: &mut FigApp, ctx: &Context) {
                 }
             });
             ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                ui.label(tr("Accent"));
+                for (key, value) in [("Blue", "blue"), ("Green", "green"), ("Yellow", "yellow"), ("Pink", "pink")] {
+                    if ui.selectable_label(app.session.prefs.accent.eq_ignore_ascii_case(value), tr(key)).clicked() {
+                        app.run("pref.accent", json!({"accent": value}));
+                    }
+                }
+            });
+            ui.add_space(8.0);
             graphics_renderer(app, ui, &prefs.graphics_backend);
             ui.add_space(8.0);
             ui.horizontal(|ui| {

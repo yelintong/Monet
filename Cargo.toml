@@ -2,8 +2,12 @@
 resolver = "3"
 members = ["crates/*", "apps/*", "xtask"]
 # The plugin SDK and examples build for wasm32 in a workspace of their own (`cargo xtask plugins`).
-exclude = ["plugins"]
 # default-members = ["crates/*", "apps/figcraft", "apps/figcraft-cli", "xtask"]
+
+# `crates/ui-gpui` is a DRAFT GPUI UI backend (see docs/migration-egui-to-gpui.md). It is excluded
+# from the default build so pulling in gpui's heavy dependency tree does not break the working
+# egui build or CI. Remove it from `exclude` once it compiles and is wired into the apps.
+exclude = ["plugins"]
 
 [workspace.package]
 version = "0.11.2"
@@ -32,6 +36,7 @@ figcraft-ui-egui = { path = "crates/ui-egui" }
 figcraft-mcp = { path = "crates/mcp" }
 figcraft-collab-net = { path = "crates/collab-net" }
 figcraft-plugin = { path = "crates/plugin" }
+figcraft-i18n = { path = "crates/i18n" }
 
 # craft-libs crates all pin one rev (craftrules standards/shared-libraries.md): bump them together.
 # Which paths stored in a document may be followed (craft-libs).

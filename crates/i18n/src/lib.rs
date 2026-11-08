@@ -6,6 +6,8 @@
 //! shows its English text, so the UI never shows a raw key. Command labels are looked up by command
 //! id ([`command`]): ids, the CLI, MCP and the control channel stay English.
 
+pub mod cjk;
+
 use std::borrow::Cow;
 use std::fmt::Display;
 use std::sync::atomic::{AtomicUsize, Ordering};

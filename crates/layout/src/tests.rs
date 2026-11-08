@@ -621,3 +621,24 @@ fn grid_lines_auto_width_is_a_hairline() {
     assert_eq!(bands.len(), 4, "stretch draws bands, not hairlines: {lines:?}");
     assert!((bands[0].x0 - 0.0).abs() < 1e-9 && (bands[3].x1 - 400.0).abs() < 1e-9, "the bands fill the frame");
 }
+
+#[test]
+fn fill_children_whose_tiny_clampings_add_up_past_the_tolerance_still_settle() {
+    // 三个 Fill 子层分 300px，每个的最小值比它 100px 的份额多 5e-10：单独看都过不了
+    // 1e-9 的容差，合起来超了 —— 以前一个都不冻，分配循环原地空转永远不结束。
+    let mut d = Document::new("t");
+    let p = d.first_page().unwrap();
+    let f = d.create(p, NodeKind::Frame, "F", 0.0, 0.0, 300.0, 100.0).unwrap();
+    d.get_mut(f).unwrap().layout = Some(AutoLayout { mode: LayoutMode::Horizontal, gap: 0.0, padding: [0.0; 4], ..Default::default() });
+    let kids: Vec<NodeId> =
+        (0..3).map(|i| d.create(f, NodeKind::Rectangle, "K", 0.0, 0.0, 10.0, 20.0 + i as f64).unwrap()).collect();
+    for k in &kids {
+        let n = d.get_mut(*k).unwrap();
+        n.child_layout.sizing_h = Sizing::Fill;
+        n.child_layout.min_w = Some(100.0 + 5e-10);
+    }
+    layout_frame(&mut d, f, &NoMeasure);
+    for k in &kids {
+        assert!((pos(&d, *k).2 - 100.0).abs() < 1e-6, "{:?}", pos(&d, *k));
+    }
+}

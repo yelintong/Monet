@@ -63,7 +63,8 @@ const CANVAS_ACCENT: &str = "figcraft-canvas-accent";
 /// Remember the page colour the canvas shows. Its overlays (outlines, handles, arrows) take
 /// whichever green contrasts more with it: the bright one on a dark page, the darker on a light one.
 pub fn set_canvas_page(ctx: &Context, page: Color32) {
-    let pick = if c(BRAND).contrast(c(page)) > c(ACCENT).contrast(c(page)) { BRAND } else { ACCENT };
+    let t = Tokens::get(ctx);
+    let pick = if c(t.accent).contrast(c(page)) > c(t.accent_hover).contrast(c(page)) { t.accent } else { t.accent_hover };
     ctx.data_mut(|d| d.insert_temp(egui::Id::unique(CANVAS_ACCENT), pick));
 }
 
@@ -72,14 +73,15 @@ fn c(x: Color32) -> figcraft_color::Color {
     figcraft_color::Color::new(f32::from(x.r()) / 255.0, f32::from(x.g()) / 255.0, f32::from(x.b()) / 255.0, 1.0)
 }
 
-/// The green for overlays drawn on the page ([`set_canvas_page`]); [`ACCENT`] before a page shows.
+/// The accent for overlays drawn on the page ([`set_canvas_page`]); the current accent before a
+/// page shows.
 pub fn canvas_accent(ctx: &Context) -> Color32 {
-    ctx.data(|d| d.get_temp(egui::Id::unique(CANVAS_ACCENT))).unwrap_or(ACCENT)
+    ctx.data(|d| d.get_temp(egui::Id::unique(CANVAS_ACCENT))).unwrap_or_else(|| Tokens::get(ctx).accent)
 }
 
-/// A fill under white text: the darker green stands in for the bright one.
-pub fn under_white(c: Color32) -> Color32 {
-    if c == BRAND { ACCENT } else { c }
+/// A fill under white text: the darker accent stands in for the bright one.
+pub fn under_white(t: &Tokens, c: Color32) -> Color32 {
+    if c == t.accent { t.accent_hover } else { c }
 }
 
 pub const COMPONENT: Color32 = Color32::from_rgb(0x97, 0x47, 0xFF);
@@ -91,8 +93,120 @@ pub const DEV_READY: Color32 = Color32::from_rgb(0x08, 0x7D, 0x4F);
 pub const DEV_CHANGED: Color32 = Color32::from_rgb(0xA7, 0x5B, 0x00);
 pub const DEV_COMPLETED: Color32 = Color32::from_rgb(0x6E, 0x6E, 0x73);
 
+/// FigCraft's brand accent: blue, green, yellow or pink (Figma's `them` collection). Green is the
+/// default — it is FigCraft's existing identity.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Accent {
+    Blue,
+    Green,
+    Yellow,
+    Pink,
+}
+
+impl Accent {
+    /// Parse the preference string ("blue"/"green"/"yellow"/"pink"); anything else is Green.
+    pub fn from_str(s: &str) -> Accent {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "blue" => Accent::Blue,
+            "yellow" => Accent::Yellow,
+            "pink" => Accent::Pink,
+            _ => Accent::Green,
+        }
+    }
+
+    /// The preference string for this accent.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Accent::Blue => "blue",
+            Accent::Green => "green",
+            Accent::Yellow => "yellow",
+            Accent::Pink => "pink",
+        }
+    }
+
+    /// A human-readable label (settings control and menus).
+    pub fn label(self) -> &'static str {
+        match self {
+            Accent::Blue => "Blue",
+            Accent::Green => "Green",
+            Accent::Yellow => "Yellow",
+            Accent::Pink => "Pink",
+        }
+    }
+
+    /// The four accents, in settings/menu order.
+    pub const ALL: [Accent; 4] = [Accent::Blue, Accent::Green, Accent::Yellow, Accent::Pink];
+
+    /// `(light Color, light Color1, dark Color, dark Color1)`, from Figma's `them` collection.
+    fn palette(self) -> (Color32, Color32, Color32, Color32) {
+        match self {
+            Accent::Green => (
+                Color32::from_rgb(0x02, 0xDA, 0x96),
+                Color32::from_rgb(0x00, 0xAD, 0x78),
+                Color32::from_rgb(0x02, 0xDA, 0x96),
+                Color32::from_rgb(0x52, 0xE9, 0xB7),
+            ),
+            Accent::Blue => (
+                Color32::from_rgb(0x00, 0x88, 0xFF),
+                Color32::from_rgb(0x00, 0x7A, 0xE5),
+                Color32::from_rgb(0x00, 0x91, 0xFF),
+                Color32::from_rgb(0x00, 0x83, 0xE5),
+            ),
+            Accent::Yellow => (
+                Color32::from_rgb(0xFF, 0xCC, 0x00),
+                Color32::from_rgb(0xE5, 0xB8, 0x00),
+                Color32::from_rgb(0xFF, 0xD6, 0x00),
+                Color32::from_rgb(0xE5, 0xC1, 0x00),
+            ),
+            Accent::Pink => (
+                Color32::from_rgb(0xFF, 0x2D, 0x55),
+                Color32::from_rgb(0xFF, 0x14, 0x41),
+                Color32::from_rgb(0xFF, 0x37, 0x5F),
+                Color32::from_rgb(0xFF, 0x1F, 0x4B),
+            ),
+        }
+    }
+}
+
+/// Read ink (black or white) on a solid `fill`.
+fn ink_on(fill: Color32) -> Color32 {
+    if c(Color32::WHITE).contrast(c(fill)) >= c(Color32::BLACK).contrast(c(fill)) {
+        Color32::WHITE
+    } else {
+        Color32::BLACK
+    }
+}
+
+/// Mix `a` toward `b` by `t` (0 = `a`, 1 = `b`).
+fn toward(a: Color32, b: Color32, t: f32) -> Color32 {
+    let m = |x: u8, y: u8| (f32::from(x) + (f32::from(y) - f32::from(x)) * t).round().clamp(0.0, 255.0) as u8;
+    Color32::from_rgb(m(a.r(), b.r()), m(a.g(), b.g()), m(a.b(), b.b()))
+}
+
+/// Darken `accent` toward black until it reaches `min` contrast with `bg`.
+fn darken_to_contrast(accent: Color32, bg: Color32, min: f32) -> Color32 {
+    let mut col = accent;
+    let mut t: f32 = 0.0;
+    while t < 1.0 && c(col).contrast(c(bg)) < min {
+        t = (t + 0.1).min(1.0);
+        col = toward(accent, Color32::BLACK, t);
+    }
+    col
+}
+
+/// Lighten `accent` toward white until it reaches `min` contrast with `bg`.
+fn lighten_to_contrast(accent: Color32, bg: Color32, min: f32) -> Color32 {
+    let mut col = accent;
+    let mut t: f32 = 0.0;
+    while t < 1.0 && c(col).contrast(c(bg)) < min {
+        t = (t + 0.1).min(1.0);
+        col = toward(accent, Color32::WHITE, t);
+    }
+    col
+}
+
 impl Tokens {
-    pub fn light() -> Self {
+    fn base_light() -> Self {
         Self {
             dark: false,
             bg: Color32::from_rgb(0xFF, 0xFF, 0xFF),
@@ -136,7 +250,7 @@ impl Tokens {
         }
     }
 
-    pub fn dark() -> Self {
+    fn base_dark() -> Self {
         Self {
             dark: true,
             bg: Color32::from_rgb(0x2C, 0x2C, 0x2C),
@@ -179,6 +293,34 @@ impl Tokens {
         }
     }
 
+    /// Build the token set for a neutral mode and a brand accent.
+    pub fn new(dark: bool, accent: Accent) -> Self {
+        let mut t = if dark { Self::base_dark() } else { Self::base_light() };
+        if accent != Accent::Green {
+            let (lc, lc1, dc, dc1) = accent.palette();
+            let (color, color1) = if dark { (dc, dc1) } else { (lc, lc1) };
+            t.accent = color;
+            t.accent_hover = color1;
+            t.accent_on = ink_on(color);
+            t.accent_text = if dark { lighten_to_contrast(color, t.panel, 4.5) } else { darken_to_contrast(color, t.panel, 4.5) };
+            t.selected_row = if dark { toward(color, Color32::BLACK, 0.85) } else { toward(color, Color32::WHITE, 0.86) };
+            t.selected_row_child = if dark { toward(color, Color32::BLACK, 0.90) } else { toward(color, Color32::WHITE, 0.93) };
+            t.menu_hover = darken_to_contrast(color, Color32::WHITE, 4.5);
+            t.focus = t.accent_text;
+        }
+        t
+    }
+
+    /// Light theme with the default (green) accent.
+    pub fn light() -> Self {
+        Self::new(false, Accent::Green)
+    }
+
+    /// Dark theme with the default (green) accent.
+    pub fn dark() -> Self {
+        Self::new(true, Accent::Green)
+    }
+
     pub fn get(ctx: &Context) -> Tokens {
         ctx.data(|d| d.get_temp::<Tokens>(tokens_id())).unwrap_or_else(Tokens::light)
     }
@@ -193,6 +335,21 @@ impl Tokens {
 /// Stable id for temporary theme tokens.
 fn tokens_id() -> egui::Id {
     egui::Id::unique("figcraft_tokens")
+}
+
+/// The current accent (the brand colour) for this frame.
+pub fn accent(ctx: &Context) -> Color32 {
+    Tokens::get(ctx).accent
+}
+
+/// The accent's second step (hover / pressed).
+pub fn accent_hover(ctx: &Context) -> Color32 {
+    Tokens::get(ctx).accent_hover
+}
+
+/// Ink that reads on the accent's solid fill.
+pub fn accent_on(ctx: &Context) -> Color32 {
+    Tokens::get(ctx).accent_on
 }
 
 /// egui's default for how long hover fades and openings animate.
@@ -258,10 +415,10 @@ fn visuals(t: Tokens) -> Visuals {
     v.widgets.hovered.bg_stroke = Stroke::new(1.0, t.field_hover_border);
     v.widgets.active.bg_fill = t.pressed;
     v.widgets.active.weak_bg_fill = t.pressed;
-    v.widgets.active.bg_stroke = Stroke::new(1.0, ACCENT);
+    v.widgets.active.bg_stroke = Stroke::new(1.0, t.accent_hover);
     v.popup_shadow = egui::Shadow { offset: [0, 4], blur: 16, spread: 0, color: t.shadow };
     v.window_shadow = egui::Shadow { offset: [0, 8], blur: 24, spread: 0, color: t.shadow };
-    v.text_cursor.stroke = Stroke::new(1.0, ACCENT);
+    v.text_cursor.stroke = Stroke::new(1.0, t.accent);
     v
 }
 
@@ -479,18 +636,19 @@ mod tests {
     use super::*;
 
     #[test]
-    fn canvas_overlays_take_the_green_that_stands_out_on_the_page() {
+    fn canvas_overlays_take_the_accent_that_stands_out_on_the_page() {
         let ctx = Context::default();
-        assert_eq!(canvas_accent(&ctx), ACCENT, "before any page shows");
+        let t = Tokens::light();
+        assert_eq!(canvas_accent(&ctx), t.accent, "the current accent before any page shows");
         set_canvas_page(&ctx, Color32::from_rgb(0x1E, 0x1E, 0x1E));
-        assert_eq!(canvas_accent(&ctx), BRAND, "the bright green on a dark page");
+        assert_eq!(canvas_accent(&ctx), t.accent, "the bright accent on a dark page");
         set_canvas_page(&ctx, Color32::WHITE);
-        assert_eq!(canvas_accent(&ctx), ACCENT, "the darker green on a light page");
+        assert_eq!(canvas_accent(&ctx), t.accent_hover, "the darker accent on a light page");
         set_canvas_page(&ctx, Color32::from_rgb(0xF5, 0xF5, 0xF5));
-        assert_eq!(canvas_accent(&ctx), ACCENT);
-        // White text never sits on the bright green.
-        assert_eq!(under_white(BRAND), ACCENT);
-        assert_eq!(under_white(COMPONENT), COMPONENT);
+        assert_eq!(canvas_accent(&ctx), t.accent_hover);
+        // White text never sits on the bright accent.
+        assert_eq!(under_white(&t, t.accent), t.accent_hover);
+        assert_eq!(under_white(&t, COMPONENT), COMPONENT);
     }
 
     /// `fill` (premultiplied, maybe translucent) painted over the opaque `bg`.

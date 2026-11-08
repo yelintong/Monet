@@ -51,7 +51,12 @@ impl Session {
                     .moved_origin()
                     .unwrap_or_else(|| Point::new(b.iter().map(|c| c.x).sum::<f64>() / 4.0, b.iter().map(|c| c.y).sum::<f64>() / 4.0));
                 self.begin_interaction("Rotate")?;
-                self.tool.gesture = Gesture::Rotate { center, start_angle: (ev.p() - center).atan2(), ids };
+                self.tool.gesture = Gesture::Rotate {
+                    center,
+                    start_angle: (ev.p() - center).atan2(),
+                    ids,
+                    moved: false,
+                };
                 return Ok(());
             }
             let nodes: Vec<(NodeId, Affine, f64, f64)> =
@@ -71,12 +76,8 @@ impl Session {
         // layers in it is like the canvas (a press starts a marquee inside it) unless the frame is
         // selected; an empty frame (or a widget, or a board object such as a sticky) is picked and
         // dragged.
-        let board_background = |leaf: NodeId| {
-            !sel.contains(&leaf)
-                && doc.node(leaf).is_some_and(|n| {
-                    n.parent == Some(page) && n.kind.is_frame_like() && !n.children.is_empty() && !crate::widgets::is_widget(n) && !n.is_board_atom()
-                })
-        };
+        let board_background =
+            |leaf: NodeId| !sel.contains(&leaf) && super::frame_background(&doc, page, leaf);
         let label = label_at(&doc, page, &self.tool.labels, ev.p());
         let target = label.or_else(|| {
             self.hit(&doc, page, ev.p(), ev.tol() * 2.0)
@@ -144,7 +145,16 @@ impl Session {
                     }
                     return Err(e);
                 }
-                self.tool.gesture = Gesture::Move { start: ev.p(), ids, targets, duplicate: ev.alt, moved: false, deselect };
+                let ids2 = ids.clone();
+                self.tool.gesture = Gesture::Move {
+                    start: ev.p(),
+                    ids,
+                    live: ids2,
+                    targets,
+                    duplicate: ev.alt,
+                    moved: false,
+                    deselect,
+                };
                 self.tool.overlay.cursor = if ev.alt { Cursor::Copy } else { Cursor::Default };
             }
             None => {
@@ -293,8 +303,11 @@ impl Session {
                     Cursor::Default
                 };
                 self.tool.gesture = g.clone();
-                if let Gesture::Move { moved, .. } = &mut self.tool.gesture {
+                if let Gesture::Move { moved, live, .. } = &mut self.tool.gesture {
                     *moved = true;
+                    // Alt-drag: each event makes the copies again from the snapshot, so the layers
+                    // on the canvas are the copies (the originals stay where they were).
+                    *live = placed.clone();
                 }
                 return Ok(());
             }
@@ -306,7 +319,7 @@ impl Session {
                 }
                 return res;
             }
-            Gesture::Rotate { center, start_angle, ids } => {
+            Gesture::Rotate { center, start_angle, ids, moved } => {
                 let mut a = ((ev.p() - *center).atan2() - start_angle).to_degrees();
                 if ev.shift {
                     a = (a / 15.0).round() * 15.0;
@@ -318,10 +331,14 @@ impl Session {
                     }
                     Ok(())
                 })?;
+                // A press that has not turned yet leaves the page alone (see `ToolState::live_layers`).
+                // Set it here and return: the restore at the end of `drag` puts the press's gesture
+                // back, which would drop the flag.
+                self.tool.gesture = Gesture::Rotate { center: c, start_angle: *start_angle, ids: ids.clone(), moved: *moved || a.abs() > 1e-9 };
                 // The cursor turns with the pointer about the centre.
                 self.tool.overlay.cursor =
                     if self.refused(&ids, false) { Cursor::NotAllowed } else { Cursor::Rotate((ev.p() - c).atan2().to_degrees()) };
-                Ok(())
+                return Ok(());
             }
             Gesture::Draw { start, id, parent, targets } => {
                 let (start, id, parent, targets) = (*start, *id, *parent, targets.clone());

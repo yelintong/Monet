@@ -88,7 +88,7 @@ pub use cmd::{CommandSpec, all_commands, find_command};
 pub use figcraft_collab;
 pub use figcraft_doc as doc;
 pub use figcraft_svg::looks_like_svg;
-pub use tools::{PointerEvent, PointerKind, ToolId};
+pub use tools::{LiveDraw, PointerEvent, PointerKind, ToolId};
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -328,6 +328,8 @@ mod line_endings_tests;
 mod live_access_tests;
 #[cfg(test)]
 mod live_docs_tests;
+#[cfg(test)]
+mod live_layer_tests;
 #[cfg(test)]
 mod live_share_tests;
 #[cfg(test)]

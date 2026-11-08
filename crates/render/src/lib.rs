@@ -6,6 +6,7 @@
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
 pub mod backdrop;
+mod band;
 pub mod blur;
 pub mod boolean;
 pub mod dots;
@@ -77,6 +78,10 @@ pub struct Options {
     pub skip: Vec<NodeId>,
     /// Draw only this layer of the page, where it is (Dev Mode's focus view).
     pub solo: Option<NodeId>,
+    /// Draw **only** these layers, still walking down from the page so their frames keep clipping
+    /// them (the canvas's stand-in for layers it draws itself while they are dragged). Empty: the
+    /// whole page. Takes precedence over [`Self::solo`].
+    pub only: Vec<NodeId>,
     /// A preview (the canvas): when zoomed out, approximate what's too small on screen to see in
     /// detail, see [`lod`]. Off for everything that must be exact (exports, thumbnails); no
     /// effect in outline mode.
@@ -85,6 +90,37 @@ pub struct Options {
     /// A dot grid over the background, under the layers (a board's canvas; drawn only where the
     /// background is).
     pub dots: Option<Dots>,
+    /// 画布提示带（auto layout 的 padding / spacing）：铺在所属图层的填充**之后**、子层**之前**，
+    /// 这样子层的抗锯齿边缘是与带子混色，而不是与画框/页面底色混色（否则边界会留一条白细线）。
+    pub bands: Vec<Band>,
+}
+
+/// 一块提示带（不属于文档，只是画布上的辅助显示）。坐标是**页面坐标**。
+#[derive(Clone, Debug, PartialEq)]
+pub struct Band {
+    /// 属于哪个图层：只有画到它时才铺。
+    pub owner: NodeId,
+    /// 页面坐标 `x0 y0 x1 y1`。
+    pub rect: [f64; 4],
+    /// 底色（RGBA，未预乘）。
+    pub fill: [u8; 4],
+    /// 斜线（None：纯色带）。
+    pub stripe: Option<Stripe>,
+}
+
+/// 45°/135° 斜线的参数，长度都是**页面单位**（调用方按 zoom 从屏幕像素换算）。
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Stripe {
+    /// `+1`：线心 `x + y` 为常数；`-1`：`y - x` 为常数。
+    pub m: f32,
+    /// 线色（RGBA）。
+    pub color: [u8; 4],
+    /// 线心间距（对角方向）。
+    pub period: f64,
+    /// 线宽。
+    pub width: f64,
+    /// 图案锚点（页面坐标）：不随内容移动而滑动。
+    pub origin: [f64; 2],
 }
 
 fn new_pixmap(w: u32, h: u32) -> Option<Pixmap> {
@@ -120,20 +156,43 @@ pub(crate) fn render_number() -> u64 {
 }
 
 /// Render a page region, splitting it into horizontal bands rendered in parallel (desktop).
+/// Render a page region, splitting it into horizontal bands rendered in parallel (desktop).
 pub fn render_view(doc: &Document, page: NodeId, view: &View, opts: &Options) -> Option<Pixmap> {
     start_render();
     #[cfg(not(target_arch = "wasm32"))]
-    {
-        let threads = rayon::current_num_threads().clamp(1, 16) as u32;
+    if let Some(pool) = band_pool() {
+        let threads = pool.current_num_threads().clamp(1, 16) as u32;
         let bands = threads.min(view.height / 96).max(1);
         if bands > 1
             && view.width.saturating_mul(view.height) > 300_000
-            && let Some(p) = render_bands(doc, page, view, opts, bands)
+            && let Some(p) = pool.install(|| render_bands(doc, page, view, opts, bands))
         {
             return Some(p);
         }
     }
     render_one(doc, page, view, opts)
+}
+
+/// The stack a thread that renders needs. A level of the layer tree takes about 6.5 KB of stack in
+/// a render (6.8 KB in a debug build), so the deepest render [`MAX_EXPORT_DEPTH`] allows, pattern
+/// sources included, needs about 1.7 MB: more than the 2 MiB threads get by default once the rest
+/// of the stack is counted, and over 4x margin here. The desktop app's main thread has the same
+/// 8 MiB.
+pub const RENDER_STACK: usize = 8 << 20;
+
+/// The pool bands render on, with [`RENDER_STACK`] (rayon's own threads have 2 MiB); `None` when
+/// it can't be made (bands then render on the calling thread, in one piece).
+#[cfg(not(target_arch = "wasm32"))]
+fn band_pool() -> Option<&'static rayon::ThreadPool> {
+    static POOL: std::sync::OnceLock<Option<rayon::ThreadPool>> = std::sync::OnceLock::new();
+    POOL.get_or_init(|| {
+        rayon::ThreadPoolBuilder::new()
+            .thread_name(|i| format!("figcraft-band-{i}"))
+            .stack_size(RENDER_STACK)
+            .build()
+            .ok()
+    })
+    .as_ref()
 }
 
 /// Render `view` as `bands` horizontal bands in parallel. Bands overlap by what background blurs
@@ -208,21 +267,27 @@ fn render_one(doc: &Document, page: NodeId, view: &View, opts: &Options) -> Opti
         outline: Outline { light: bg.is_some_and(Color::is_dark), ..opts.outline },
         outlined: &opts.outlined,
         skip: &opts.skip,
+        only: &opts.only,
         lod,
         magnified_image_pixels: opts.magnified_image_pixels,
         under: None,
         time: 0.0,
         bounds: &bounds,
+        bands: &opts.bands,
+        page_xf: view.transform(),
     };
     let xf = view.transform();
     let Some(p) = doc.node(page) else { return Some(pix) };
+    // `only`: the same walk down the page as usual, stopping at what isn't wanted (so frames
+    // still clip the layers drawn). `solo` draws its layer on its own, without its ancestors.
+    if !opts.only.is_empty() {
+        draw::draw_children_of(&ctx, &mut pix, p, xf, 0);
+        return Some(pix);
+    }
     match opts.solo.filter(|id| *id != page && doc.page_of(*id) == Some(page)) {
         Some(id) => draw::draw_node(&ctx, &mut pix, id, xf * parent_transform(doc, id), 0),
-        None => {
-            for c in &p.children {
-                draw::draw_node(&ctx, &mut pix, *c, xf, 0);
-            }
-        }
+        // 页面自己的子层也走 `draw_children`：相邻同色矩形在那里并成一条路径（见 `draw`）。
+        None => draw::draw_children_of(&ctx, &mut pix, p, xf, 0),
     }
     Some(pix)
 }
@@ -242,11 +307,14 @@ fn nodes_into(doc: &Document, ids: &[NodeId], view: &View, pix: &mut Pixmap, tim
         outline: Outline::default(),
         outlined: &[],
         skip: &[],
+        only: &[],
         lod: false,
         magnified_image_pixels: false,
         under: None,
         time,
         bounds: &bounds,
+        bands: &[],
+        page_xf: view.transform(),
     };
     for id in ids {
         draw::draw_node(&ctx, pix, *id, view.transform() * parent_transform(doc, *id), 0);
@@ -520,6 +588,8 @@ mod lod_tests;
 #[cfg(test)]
 mod magnified_image_tests;
 #[cfg(test)]
+mod seam_tests;
+#[cfg(test)]
 mod paint_behaviour_tests;
 #[cfg(test)]
 mod progressive_tests;
@@ -530,6 +600,7 @@ mod retained_tests;
 #[cfg(test)]
 mod rtl_list_tests;
 #[cfg(test)]
+mod only_tests;
 mod solo_tests;
 #[cfg(test)]
 mod spread_tests;

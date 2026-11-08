@@ -130,6 +130,12 @@ pub static MENU: &[MenuItem] = &[
     m!("View/Theme", "Light", "view.themeLight"),
     m!("View/Theme", "Dark", "view.themeDark"),
     m!("View/Theme", "Follow system", "view.themeSystem"),
+    // FigCraft's own: the brand accent (not in the reference menu, so not counted by `parity`).
+    m!("View/Theme", SEP, ""),
+    m!("View/Theme/Accent", "Blue", "pref.accent.blue"),
+    m!("View/Theme/Accent", "Green", "pref.accent.green"),
+    m!("View/Theme/Accent", "Yellow", "pref.accent.yellow"),
+    m!("View/Theme/Accent", "Pink", "pref.accent.pink"),
     // Object
     m!("Object", "Frame selection", "object.frameSelection"),
     m!("Object", "Group selection", "object.group"),
@@ -250,6 +256,10 @@ pub static MENU: &[MenuItem] = &[
     m!("Plugins", "Manage plugins…", "plugins.manage"),
     m!("Plugins/Development", "Import plugin from manifest…", "plugin.import"),
     // Preferences
+    // FigCraft's own: the theme picker, first in Preferences (View ▸ Theme shares the commands).
+    m!("Preferences/Theme", "Light", "view.themeLight"),
+    m!("Preferences/Theme", "Dark", "view.themeDark"),
+    m!("Preferences/Theme", "Follow system", "view.themeSystem"),
     m!("Preferences", "Snap to geometry", "view.snapGeometry"),
     m!("Preferences", "Snap to objects", "view.snapObjects"),
     m!("Preferences", "Snap to pixel grid", "view.snapPixel"),

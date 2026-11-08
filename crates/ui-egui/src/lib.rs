@@ -8,12 +8,14 @@
 pub mod a11y;
 pub mod bidi;
 pub mod canvas;
-pub mod cjk;
+// 目录与脚本助手搬到了共享 crate `figcraft-i18n`（两个 UI 后端各持一份不叫共用）——
+// 这里 re-export，`crate::cjk::…` / `crate::i18n::…` 的调用点一行不用改。
+pub use figcraft_i18n::cjk;
 pub mod control;
 pub mod dialogs;
 pub mod fill_rule;
 pub mod home;
-pub mod i18n;
+pub use figcraft_i18n as i18n;
 pub mod icons;
 pub mod icons_panel;
 pub mod live;

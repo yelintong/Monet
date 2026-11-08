@@ -399,7 +399,7 @@ fn transform_box(
 fn pill(painter: &egui::Painter, at: Pos2, align: Align2, text: String, col: Color32) -> Rect {
     let galley = painter.layout_no_wrap(text, semibold(11.0), Color32::WHITE);
     let r = align.anchor_size(at, galley.size() + vec2(8.0, 4.0));
-    painter.rect_filled(r, CornerRadius::same(3), crate::theme::under_white(col));
+    painter.rect_filled(r, CornerRadius::same(3), crate::theme::under_white(&crate::theme::Tokens::get(painter.ctx()), col));
     painter.galley(r.min + vec2(4.0, 2.0), galley, Color32::WHITE);
     r
 }

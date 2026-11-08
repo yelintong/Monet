@@ -70,6 +70,20 @@ pub fn checked(s: &Session, id: &str) -> Option<bool> {
     if id == "view.pixelPreview" {
         return Some(v.pixel_preview);
     }
+    // The four brand accents (pref.accent.blue|green|yellow|pink) tick the chosen one.
+    if let Some(accent) = id.strip_prefix("pref.accent.") {
+        return Some(s.prefs.accent.eq_ignore_ascii_case(accent));
+    }
+    // The three themes tick the current one (View ▸ Theme and Preferences ▸ Theme share them).
+    if let Some(want) = id.strip_prefix("view.theme") {
+        let want = match want {
+            "Light" => "light",
+            "Dark" => "dark",
+            "System" => "system",
+            _ => return None,
+        };
+        return Some(s.prefs.theme.eq_ignore_ascii_case(want));
+    }
     TOGGLES.iter().find(|(k, ..)| *k == id).map(|(_, f, _)| *f(&mut v))
 }
 
@@ -370,6 +384,21 @@ pub fn specs() -> Vec<CommandSpec> {
         spec!("pref.renameDuplicates", "Rename duplicated layers", "{on?}", false, |s, p| pref(s, p, |x| &mut x.rename_duplicates)),
         spec!("pref.showDimensions", "Show dimensions on objects", "{on?}", false, |s, p| pref(s, p, |x| &mut x.show_dimensions)),
         spec!("pref.numberKeysOpacity", "Use number keys for opacity", "{on?}", false, |s, p| pref(s, p, |x| &mut x.number_keys_opacity)),
+        spec!(
+            "pref.accent",
+            "Brand accent colour",
+            "{accent: blue|green|yellow|pink; default green}  the brand accent used across the interface (buttons, selection, focus rings): one of the four Figma accents",
+            false,
+            |s, p| {
+                let accent = req_string("pref.accent", p, "accent")?;
+                let accent = accent.trim().to_ascii_lowercase();
+                if !matches!(accent.as_str(), "blue" | "green" | "yellow" | "pink") {
+                    return Err(bad("pref.accent", format!("`{accent}` is not a brand accent (blue|green|yellow|pink)")));
+                }
+                s.prefs.accent = accent;
+                Ok(json!({"accent": s.prefs.accent}))
+            }
+        ),
         spec!("pref.reduceMotion", "Reduce motion", "{on?}", false, |s, p| pref(s, p, |x| &mut x.reduce_motion)),
         spec!(
             "pref.uiScale",

@@ -106,7 +106,7 @@ fn the_pen_draws_the_handles_of_the_point_being_dragged_and_a_curved_band() {
     let press = |p: Pos2, pressed: bool| {
         vec![Event::PointerMoved(p), Event::PointerButton { pos: p, button: PointerButton::Primary, pressed, modifiers: Default::default() }]
     };
-    let accent = egui::epaint::ColorMode::Solid(crate::theme::ACCENT);
+    let accent = egui::epaint::ColorMode::Solid(crate::theme::accent(&u.ctx));
     // A handle: the line from its anchor and the dot at its end.
     let handle = |shapes: &[Shape], a: Pos2, e: Pos2| {
         let near = |p: Pos2, q: Pos2| p.distance(q) < 0.5;

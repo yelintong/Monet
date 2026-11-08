@@ -162,11 +162,14 @@ fn exports_never_use_lod() {
         outline: crate::Outline::default(),
         outlined: &[],
         skip: &[],
+        only: &[],
         lod: true,
         magnified_image_pixels: false,
         under: None,
         time: 0.0,
         bounds: &bounds,
+        bands: &[],
+        page_xf: v.transform(),
     };
     let parent = d.world_transform(p);
     crate::draw::draw_node(&ctx, &mut preview, card, v.transform() * parent, 0);

@@ -13,7 +13,7 @@ use crate::FigApp;
 use crate::a11y;
 use crate::i18n::{tr, tr_noop};
 use crate::icons::{self, Icon};
-use crate::theme::{ACCENT, Tokens, regular, semibold};
+use crate::theme::{Tokens, regular, semibold};
 use crate::widgets;
 pub mod home_recents;
 pub mod online;
@@ -387,7 +387,7 @@ fn open_files(app: &mut FigApp, ui: &mut Ui, t: &Tokens, query: &str) -> usize {
     for (i, d) in app.session.docs.iter().enumerate().filter(|(_, d)| hit(d)) {
         let detail = d.path.as_deref().unwrap_or_default();
         let row = FileRow {
-            mark: Some((icons::file_mark(d.doc.kind), ACCENT)),
+            mark: Some((icons::file_mark(d.doc.kind), t.accent)),
             name: &d.doc.name,
             ink: t.text,
             detail,

@@ -101,7 +101,7 @@ fn inspect_hover(p: &mut Presenter, painter: &egui::Painter, ctx: &egui::Context
     if let Some(id) = p.inspected.filter(|id| *id == root || l.disp.is_ancestor(root, *id))
         && let Some(b) = l.disp.world_bounds(id)
     {
-        painter.with_clip_rect(clip).rect_stroke(place.rect(b), CornerRadius::ZERO, Stroke::new(1.5, ACCENT), StrokeKind::Outside);
+        painter.with_clip_rect(clip).rect_stroke(place.rect(b), CornerRadius::ZERO, Stroke::new(1.5, crate::theme::accent(painter.ctx())), StrokeKind::Outside);
     }
 }
 

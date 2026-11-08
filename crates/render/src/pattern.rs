@@ -54,11 +54,14 @@ pub fn cell_pixmap(doc: &Document, pt: &PatternPaint, w: f64, h: f64, scale: f64
         outline: crate::Outline::default(),
         outlined: &[],
         skip: &[],
+        only: &[],
         lod: false,
         magnified_image_pixels: false,
         under: None,
         time,
         bounds: &bounds,
+        bands: &[],
+        page_xf: Affine::IDENTITY,
     };
     let unrotated = src.transform.inverse();
     nested(|| {

@@ -28,6 +28,20 @@ mod pen;
 mod pointer;
 
 use handles::DRAG_SLOP_PX;
+/// 顶层画框的「本体」：文档里它和画布一样（按下是框选），只有标题文字能选中它。
+///
+/// 自动布局的画框例外——它的本体就是设计面，点本体直接选中。
+pub(crate) fn frame_background(doc: &Document, page: NodeId, leaf: NodeId) -> bool {
+    doc.node(leaf).is_some_and(|n| {
+        n.parent == Some(page)
+            && n.kind.is_frame_like()
+            && !n.children.is_empty()
+            && n.layout.is_none()
+            && !crate::widgets::is_widget(n)
+            && !n.is_board_atom()
+    })
+}
+
 #[cfg(test)]
 pub(crate) use handles::scale_factor;
 pub use handles::{
@@ -99,7 +113,9 @@ impl ToolId {
         ToolId::Eraser,
         ToolId::Stamp,
     ];
-    pub fn id(self) -> &'static str {
+
+
+pub fn id(self) -> &'static str {
         match self {
             ToolId::Move => "move",
             ToolId::Scale => "scale",
@@ -402,6 +418,15 @@ pub(crate) struct ResizeStart {
     handle: Handle,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LiveDraw {
+    /// Only the place changes: grab the layers once, then put that bitmap down moved.
+    Translate,
+    /// The layers themselves change (a resize, a turn): grab them again every frame, or the
+    /// bitmap would be stretched out of shape.
+    Reshape,
+}
+
 #[derive(Clone, Debug, Default)]
 pub(crate) enum Gesture {
     #[default]
@@ -416,6 +441,9 @@ pub(crate) enum Gesture {
     Move {
         start: Point,
         ids: Vec<NodeId>,
+        /// What the drag actually moves, which Alt turns into copies of `ids` (new layers every
+        /// event): the canvas draws these, so it's these the render must leave out.
+        live: Vec<NodeId>,
         targets: Targets,
         duplicate: bool,
         moved: bool,
@@ -433,6 +461,8 @@ pub(crate) enum Gesture {
         center: Point,
         start_angle: f64,
         ids: Vec<NodeId>,
+        /// The pointer has turned since the press: only then is the angle (and the pixels) changing.
+        moved: bool,
     },
     Draw {
         start: Point,
@@ -574,5 +604,40 @@ pub struct ToolState {
 impl ToolState {
     pub fn busy(&self) -> bool {
         !matches!(self.gesture, Gesture::None)
+    }
+
+    /// The layers a gesture has already taken hold of: the canvas may draw them itself (and ask
+    /// the renderer to leave them out, `figcraft_render::Options::skip`) so what it draws keeps up
+    /// with the selection box instead of waiting for the next render to land.
+    ///
+    /// Empty until the drag actually changes something: a plain click changes nothing on the page,
+    /// and taking the layers out of the render for it would only cost a render.
+    ///
+    /// [`LiveDraw::Translate`] needs one grab for the whole gesture (a move only shifts the
+    /// bitmap); [`LiveDraw::Reshape`] needs a fresh one every frame (a stretch or a turn redraws
+    /// the layers themselves).
+    pub fn live_layers(&self) -> Option<(Vec<NodeId>, LiveDraw)> {
+        match &self.gesture {
+            Gesture::Move { live, moved: true, .. } if !live.is_empty() => Some((live.clone(), LiveDraw::Translate)),
+            // A multi-layer resize is mapped from the old box to the new one; both are drawn as
+            // one stand-in (the grab walks the page, so every layer keeps its own frame's clip).
+            Gesture::Resize { r, moved: true, .. } => {
+                let ids: Vec<NodeId> = r.nodes.iter().map(|n| n.0).collect();
+                (!ids.is_empty()).then_some((ids, LiveDraw::Reshape))
+            }
+            Gesture::Rotate { ids, moved: true, .. } if !ids.is_empty() => {
+                Some((ids.clone(), LiveDraw::Reshape))
+            }
+            _ => None,
+        }
+    }
+
+    /// Whether the live reshape reflows its parents and siblings: a resize does (a hugging frame
+    /// grows with the child, the layout pushes its siblings along), a turn only changes the
+    /// layer's own geometry. The canvas then draws the box layout gives the layer — the frame
+    /// that hugs it and the siblings it moves — instead of the layer on its own, so the frame
+    /// follows in the same frame instead of a render behind.
+    pub fn live_reflows(&self) -> bool {
+        matches!(self.gesture, Gesture::Resize { moved: true, .. })
     }
 }

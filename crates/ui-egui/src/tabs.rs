@@ -224,7 +224,7 @@ pub fn tab_bar(app: &mut FigApp, ui: &mut Ui) {
                 &painter,
                 Rect::from_center_size(pos2(paint_r.min.x + 18.0, paint_r.center().y), vec2(14.0, 14.0)),
                 icons::file_mark(d.doc.kind),
-                crate::theme::ACCENT.linear_multiply(progress),
+                t.accent.linear_multiply(progress),
             );
             // The unsaved-changes dot follows the name on screen, whichever way the name reads.
             let shown = crate::bidi::paint_name(
@@ -267,7 +267,7 @@ pub fn tab_bar(app: &mut FigApp, ui: &mut Ui) {
             && (rect.min.y - 12.0..=rect.max.y + 12.0).contains(&p.y)
             && let Some((_, at)) = tab_drop_position(&visible, from, p.x)
         {
-            ui.painter().line_segment([pos2(at, rect.min.y + 5.0), pos2(at, rect.max.y - 5.0)], Stroke::new(3.0, crate::theme::ACCENT));
+            ui.painter().line_segment([pos2(at, rect.min.y + 5.0), pos2(at, rect.max.y - 5.0)], Stroke::new(3.0, t.accent));
         }
         let reorder = dropped.and_then(|(from, at)| tab_drop_position(&visible, from, at).map(|(to, _)| (from, to)));
         if layout.overflow {

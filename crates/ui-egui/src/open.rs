@@ -45,11 +45,11 @@ pub(crate) fn drop_overlay(ctx: &egui::Context, rect: egui::Rect, label: &str) {
     let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::unique("drop_overlay")));
     let area = rect.shrink(4.0);
     painter.rect_filled(area, egui::CornerRadius::same(8), t.accent.gamma_multiply(0.12));
-    painter.rect_stroke(area, egui::CornerRadius::same(8), egui::Stroke::new(2.0, theme::ACCENT), egui::StrokeKind::Inside);
+    painter.rect_stroke(area, egui::CornerRadius::same(8), egui::Stroke::new(2.0, theme::accent(painter.ctx())), egui::StrokeKind::Inside);
     let galley = painter.layout_no_wrap(label.to_owned(), theme::semibold(14.0), t.text);
     let pill = egui::Rect::from_center_size(area.center(), galley.size() + egui::vec2(32.0, 16.0));
     painter.rect_filled(pill, egui::CornerRadius::same(8), t.panel);
-    painter.rect_stroke(pill, egui::CornerRadius::same(8), egui::Stroke::new(1.0, theme::ACCENT), egui::StrokeKind::Inside);
+    painter.rect_stroke(pill, egui::CornerRadius::same(8), egui::Stroke::new(1.0, theme::accent(painter.ctx())), egui::StrokeKind::Inside);
     painter.galley(pill.center() - galley.size() / 2.0, galley, t.text);
     // Hovering sends no pointer events on every platform: keep the overlay current.
     ctx.request_repaint();

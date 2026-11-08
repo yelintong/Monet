@@ -1,6 +1,6 @@
 //! Recursive scene drawing.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::hash::{Hash, Hasher};
 use std::sync::{Arc, Mutex, OnceLock};
 
@@ -28,6 +28,10 @@ pub struct Ctx<'a, 'd> {
     pub outlined: &'a [NodeId],
     /// Nodes not to draw (e.g. text being edited draws through the editor).
     pub skip: &'a [NodeId],
+    /// Draw **only** these layers, walking down from the page as usual so their ancestors still
+    /// clip, fade and isolate them. Empty: draw the page. (The canvas draws a layer being dragged
+    /// itself; this is how it gets that layer alone, clipped the way it sits.)
+    pub only: &'a [NodeId],
     /// Approximate what's too small to see in detail (canvas previews; see [`crate::lod`]).
     pub lod: bool,
     pub magnified_image_pixels: bool,
@@ -37,6 +41,10 @@ pub struct Ctx<'a, 'd> {
     pub time: f64,
     /// Paint bounds already worked out in this render.
     pub bounds: &'a Bounds<'d>,
+    /// 画布提示带（padding / spacing）：铺在所属图层的填充之后、子层之前（见 [`crate::Band`]）。
+    pub bands: &'a [crate::Band],
+    /// 页面 → 设备像素（提示带是页面坐标，直接用它画）。
+    pub page_xf: Affine,
 }
 
 /// What one render works out about layers with children, which a walk down their subtree finds:
@@ -520,6 +528,16 @@ fn draw_layer(ctx: &Ctx, pix: &mut Pixmap, n: &Node, parent_xf: Affine, depth: u
     if depth > crate::MAX_EXPORT_DEPTH || ctx.skip.contains(&id) {
         return;
     }
+    // `Options::only`: the listed layers **and everything inside them** are drawn (a container's
+    // children come with it); a layer on the way down to one is walked but paints nothing, so the
+    // layers under a clipping frame still come out with the frame's clip.
+    if !ctx.only.is_empty()
+        && !ctx.only.contains(&id)
+        && !ctx.only.iter().any(|o| ctx.doc.is_ancestor(id, *o))
+        && !ctx.only.iter().any(|o| ctx.doc.is_ancestor(*o, id))
+    {
+        return;
+    }
     let outline = ctx.outline_mode || ctx.outlined.contains(&id);
     if n.is_mask || n.opacity <= 0.0 && n.visible {
         return;
@@ -706,6 +724,22 @@ type OverFills<'a> = Option<&'a dyn Fn(&mut Pixmap)>;
 /// Fills, `over_fills`, children (clipped), strokes and text of a node, without opacity/effects.
 fn draw_content(ctx: &Ctx, pix: &mut Pixmap, n: &Node, xf: Affine, depth: usize, over_fills: OverFills) {
     let doc = ctx.doc;
+    // A layer on the way down to `Options::only` paints nothing of its own; its children still go
+    // through its clip, so a dragged layer is cut off by its frame exactly as it sits. A layer
+    // **inside** a listed one (a container's child) paints as usual.
+    let in_only = ctx.only.is_empty() || ctx.only.iter().any(|o| doc.is_ancestor(*o, n.id));
+    if !in_only {
+        if !n.children.is_empty() && !n.hides_contents() {
+            let clips = n.clip && n.kind.is_frame_like();
+            if clips {
+                let outline = node_outline(doc, n);
+                draw_children_clipped(ctx, pix, n, xf, depth, outline.as_ref().map(|(p, _)| p));
+            } else {
+                draw_children(ctx, pix, n, xf, depth);
+            }
+        }
+        return;
+    }
     let (w, h) = (n.width, n.height);
     match &n.kind {
         NodeKind::Page { .. } => {
@@ -796,6 +830,8 @@ fn draw_content(ctx: &Ctx, pix: &mut Pixmap, n: &Node, xf: Affine, depth: usize,
             if let Some(f) = over_fills {
                 f(pix);
             }
+            // 画布提示带：在子层之前铺，子层的抗锯齿边缘与带子混色（而不是与画框底色混色）。
+            paint_bands(ctx, pix, n.id);
             if !matches!(n.kind, NodeKind::BooleanOp { .. }) && !n.children.is_empty() && !n.hides_contents() {
                 if clips {
                     draw_children_clipped(ctx, pix, n, xf, depth, outline.as_ref().map(|(p, _)| p));
@@ -819,18 +855,294 @@ fn draw_content(ctx: &Ctx, pix: &mut Pixmap, n: &Node, xf: Affine, depth: usize,
     }
 }
 
+/// Draw what `n` holds (a page's children for [`crate::render_view`], a frame's otherwise), with
+/// rectangles of one plain colour that share an edge filled as one path.
+pub fn draw_children_of(ctx: &Ctx, pix: &mut Pixmap, n: &Node, xf: Affine, depth: usize) {
+    draw_children(ctx, pix, n, xf, depth);
+}
+
+/// One thing a container paints, in paint order.
+struct Step {
+    id: NodeId,
+    /// Maps the step's *parent* space to pixels.
+    xf: Affine,
+    depth: usize,
+    /// Set on a mask: the layers it clips, drawn through its alpha.
+    mask_content: Option<Vec<NodeId>>,
+}
+
 fn draw_children(ctx: &Ctx, pix: &mut Pixmap, n: &Node, xf: Affine, depth: usize) {
+    let mut steps = Vec::new();
+    steps_of(ctx, n, xf, depth + 1, &mut steps);
+    let merges = merge_plan(ctx, &steps);
+    for (i, s) in steps.iter().enumerate() {
+        if let Some(content) = &s.mask_content {
+            // Everything above the mask (until the next mask) is clipped by its alpha.
+            draw_masked(ctx, pix, s.id, content, s.xf, s.depth);
+            continue;
+        }
+        if let Some(c) = merges.plan[i] {
+            // The first of a cluster paints all of it, in paint order: nothing that paints lies
+            // between them (see `merge_plan`), so drawing them at its turn changes no pixel.
+            if merges.clusters[c].first() == Some(&i)
+                && let Some(node) = ctx.bounds.node(ctx.doc, s.id)
+                && let Some(fills) = plain_rect(ctx, node)
+            {
+                let members: Vec<(NodeId, Affine)> = merges.clusters[c].iter().filter_map(|k| steps.get(*k).map(|s| (s.id, s.xf))).collect();
+                fill_rects(ctx, pix, &members, fills);
+            }
+            continue;
+        }
+        if let Some(node) = ctx.bounds.node(ctx.doc, s.id) {
+            draw_layer(ctx, pix, node, s.xf, s.depth);
+        }
+    }
+}
+
+/// The steps of container `n`, with layers that paint nothing of their own inlined: the children of
+/// such a layer land on the same pixels as the layers painted around it, so a rectangle inside one
+/// can share an edge with one outside it (and be filled together with it).
+fn steps_of(ctx: &Ctx, n: &Node, xf: Affine, depth: usize, out: &mut Vec<Step>) {
     let kids = &n.children;
     // Each child looked up once: in a large document a lookup is a good part of a layer's cost.
     let nodes: Vec<Option<&Node>> = kids.iter().map(|c| ctx.bounds.node(ctx.doc, *c)).collect();
-    for run in Document::paint_runs_of(&nodes, n.layout.as_ref().is_some_and(|l| l.reverse_z)) {
+    let runs = Document::paint_runs_of(&nodes, n.layout.as_ref().is_some_and(|l| l.reverse_z));
+    for run in runs {
         let (Some(&c), Some(Some(cn))) = (kids.get(run.start), nodes.get(run.start)) else { continue };
         if cn.is_mask && cn.visible {
-            // Everything above the mask (until the next mask) is clipped by its alpha.
-            draw_masked(ctx, pix, c, kids.get(run.start + 1..run.end).unwrap_or(&[]), xf, depth);
-        } else {
-            draw_layer(ctx, pix, cn, xf, depth + 1);
+            out.push(Step { id: c, xf, depth, mask_content: Some(kids.get(run.start + 1..run.end).unwrap_or(&[]).to_vec()) });
+            continue;
         }
+        // `only` and the preview LOD walk the tree their own way: leave their nesting alone.
+        if run.len() == 1 && ctx.only.is_empty() && !ctx.lod && paints_nothing(ctx, cn) {
+            steps_of(ctx, cn, xf * cn.transform, depth + 1, out);
+            continue;
+        }
+        out.push(Step { id: c, xf, depth, mask_content: None });
+    }
+}
+
+/// A layer that paints nothing of its own and doesn't clip: drawing it inline changes no pixel.
+fn paints_nothing(ctx: &Ctx, n: &Node) -> bool {
+    // Outline mode draws the layer instead of its contents.
+    if ctx.outline_mode || ctx.outlined.contains(&n.id) {
+        return false;
+    }
+    if !n.visible || n.is_mask || n.opacity < 0.999 || n.clip || n.hides_contents() || n.isolates_children() {
+        return false;
+    }
+    if !matches!(n.blend, BlendMode::Normal | BlendMode::PassThrough) {
+        return false;
+    }
+    if n.has_visible_stroke() || n.effects.iter().any(|e| e.visible) {
+        return false;
+    }
+    match n.kind {
+        NodeKind::Group => true,
+        // A frame with a fill lays a backdrop where it sits in the paint order; an empty one only
+        // holds its children.
+        _ => n.kind.is_frame_like() && n.fills.is_empty(),
+    }
+}
+
+/// Which steps a container fills as one path.
+struct Merges {
+    /// The cluster each step belongs to, if any.
+    plan: Vec<Option<usize>>,
+    /// Each cluster's steps, in paint order.
+    clusters: Vec<Vec<usize>>,
+}
+
+/// Rectangles of one plain colour that meet along an edge, filled in one path.
+///
+/// Two shapes each carrying anti-aliasing cover a shared edge that falls between pixels with `a`
+/// and `1-a`; two SourceOver passes leave `c*(a+1-a-a(1-a)) + bg*a(1-a)` — a hair of the backdrop
+/// showing through, the 1px line at some zoom levels. In one path the shared edge is interior and
+/// covered once. (Skia's GPU stencil-then-cover does that by construction; filling shape by shape
+/// on the CPU is what needs the merge.)
+///
+/// Rectangles are merged across the layers painted between them only when none of those layers can
+/// paint over them: then painting them at the first one's turn changes no pixel and the paint order
+/// still holds. Anything in between that can paint blocks the merge.
+fn merge_plan(ctx: &Ctx, steps: &[Step]) -> Merges {
+    let mut cands: Vec<(usize, &[Paint], Rect)> = Vec::new();
+    for (i, s) in steps.iter().enumerate() {
+        if s.mask_content.is_some() || s.depth > crate::MAX_EXPORT_DEPTH {
+            continue;
+        }
+        let Some(n) = ctx.bounds.node(ctx.doc, s.id) else { continue };
+        let (Some(fills), Some(r)) = (plain_rect(ctx, n), world_box(ctx.doc, n)) else { continue };
+        cands.push((i, fills, r));
+    }
+    let n = cands.len();
+    let mut root: Vec<usize> = (0..n).collect();
+    // 按填充分组后再两两比较：一个容器里通常只有一两种颜色，分组把 O(n²) 压到 O(Σk²)。
+    let mut by_fill: Vec<Vec<usize>> = Vec::new();
+    for i in 0..n {
+        match by_fill.iter_mut().find(|g| cands[g[0]].1 == cands[i].1) {
+            Some(g) => g.push(i),
+            None => by_fill.push(vec![i]),
+        }
+    }
+    for group in &by_fill {
+        for (x, &a) in group.iter().enumerate() {
+            for &b in &group[x + 1..] {
+                if shares_an_edge(cands[a].2, cands[b].2) {
+                    let (ra, rb) = (find(&mut root, a), find(&mut root, b));
+                    if ra != rb {
+                        root[ra] = rb;
+                    }
+                }
+            }
+        }
+    }
+    let mut by_root: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
+    for i in 0..n {
+        let r = find(&mut root, i);
+        by_root.entry(r).or_default().push(i);
+    }
+    let mut plan: Vec<Option<usize>> = vec![None; steps.len()];
+    let mut clusters: Vec<Vec<usize>> = Vec::new();
+    for members in by_root.into_values() {
+        if members.len() < 2 {
+            continue;
+        }
+        let mut union = cands[members[0]].2;
+        for m in &members {
+            union = union.union(cands[*m].2);
+        }
+        let lo = members.iter().map(|m| cands[*m].0).min().unwrap_or(0);
+        let hi = members.iter().map(|m| cands[*m].0).max().unwrap_or(0);
+        let blocked = (lo..=hi).any(|k| {
+            if members.iter().any(|m| cands[*m].0 == k) {
+                return false;
+            }
+            match &steps[k].mask_content {
+                Some(_) => true,
+                None => occludes(ctx, steps[k].id, union),
+            }
+        });
+        if blocked {
+            continue;
+        }
+        let mut list: Vec<usize> = members.iter().map(|m| cands[*m].0).collect();
+        list.sort_unstable();
+        let at = clusters.len();
+        for s in &list {
+            plan[*s] = Some(at);
+        }
+        clusters.push(list);
+    }
+    Merges { plan, clusters }
+}
+
+fn find(root: &mut [usize], mut i: usize) -> usize {
+    while root[i] != i {
+        root[i] = root[root[i]];
+        i = root[i];
+    }
+    i
+}
+
+/// Whether layer `id` can paint over `area` (both in page coordinates). A hidden or skipped layer
+/// paints nothing and blocks nothing; one that can't be measured blocks to be safe.
+fn occludes(ctx: &Ctx, id: NodeId, area: Rect) -> bool {
+    let Some(n) = ctx.doc.node(id) else { return false };
+    if !n.visible || ctx.skip.contains(&id) {
+        return false;
+    }
+    let Some(b) = paint_bounds(ctx.doc, id) else { return true };
+    let hit = b.intersect(area);
+    hit.width() > 0.0 && hit.height() > 0.0
+}
+
+/// Two boxes meet along an edge: they touch, and their overlap along it is longer than a hair.
+/// Only then does either side's anti-aliasing leave a seam.
+fn shares_an_edge(a: Rect, b: Rect) -> bool {
+    const EPS: f64 = 1e-6;
+    let side_by_side = (a.x1 - b.x0).abs() < EPS || (b.x1 - a.x0).abs() < EPS;
+    let stacked = (a.y1 - b.y0).abs() < EPS || (b.y1 - a.y0).abs() < EPS;
+    let along_y = a.y1.min(b.y1) - a.y0.max(b.y0);
+    let along_x = a.x1.min(b.x1) - a.x0.max(b.x0);
+    (side_by_side && along_y > EPS) || (stacked && along_x > EPS)
+}
+
+/// The node's box in page coordinates, if it is still an axis-aligned rectangle there: a rotated
+/// one has no edge to share.
+fn world_box(doc: &Document, n: &Node) -> Option<Rect> {
+    let w = doc.world_transform(n.id);
+    let c = w.as_coeffs();
+    if c[1].abs() > 1e-9 || c[2].abs() > 1e-9 {
+        return None;
+    }
+    Some(figcraft_geom::transform_rect_bbox(w, n.local_rect()))
+}
+
+/// The fills of a layer that is nothing but a plain, square, unrotated rectangle: the only kind
+/// whose edge can be shared with a neighbour without either of them showing through. Anything with
+/// corners, a stroke, an effect, its own opacity or blend, or a gradient/image fill is drawn on its
+/// own (merging it would change what it paints — those paints are laid out in the shape's own box).
+fn plain_rect<'d>(ctx: &Ctx<'_, 'd>, n: &'d Node) -> Option<&'d [Paint]> {
+    if !n.visible || n.is_mask || n.clip || !n.children.is_empty() {
+        return None;
+    }
+    // Outline mode paints the outline instead of the fill; a skipped node isn't drawn at all.
+    if ctx.outline_mode || ctx.outlined.contains(&n.id) || ctx.skip.contains(&n.id) {
+        return None;
+    }
+    // Only these layers are being drawn: a neighbour that isn't one of them would be filled by the
+    // merged path all the same.
+    if !ctx.only.is_empty() {
+        return None;
+    }
+    if !matches!(n.kind, NodeKind::Rectangle) || n.corners.uniform() != Some(0.0) {
+        return None;
+    }
+    if n.has_visible_stroke() || n.effects.iter().any(|e| e.visible) {
+        return None;
+    }
+    if n.opacity != 1.0 || n.blend != BlendMode::Normal {
+        return None;
+    }
+    // Opaque only: two translucent copies overlapping would darken where they meet when drawn
+    // apart, and one path paints that place once — a merge would change what the document shows.
+    let mut solid = !n.fills.is_empty();
+    for p in &n.fills {
+        if p.blend != BlendMode::Normal || p.opacity < 1.0 {
+            solid = false;
+        }
+        match &p.kind {
+            PaintKind::Solid { color } if color.a >= 1.0 => {}
+            _ => solid = false,
+        }
+    }
+    solid.then_some(n.fills.as_slice())
+}
+
+/// Fill the rectangles of one cluster as one path so their shared edges are covered once. Each
+/// member's transform goes into the path with the transform it is drawn through (they can come from
+/// different inlined layers); the path is then filled as it is.
+fn fill_rects(ctx: &Ctx, pix: &mut Pixmap, members: &[(NodeId, Affine)], fills: &[Paint]) {
+    let mut path = BezPath::new();
+    for (id, xf) in members {
+        let Some(n) = ctx.doc.node(*id) else { continue };
+        let Some(mut p) = figcraft_doc::geometry::shape_path(n) else { continue };
+        p.apply_affine(*xf * n.transform);
+        path.extend(p.elements().iter().copied());
+    }
+    let Some(tp) = ts_path(&path) else { return };
+    // Winding: every rectangle is a closed subpath of the same orientation, so the union fills and
+    // the shared edges (interior, not outline) produce no partial coverage.
+    fill_with(pix, &tp, fills, 0.0, 0.0, Affine::IDENTITY, FillRule::Winding, ctx, None);
+}
+
+/// 铺这个图层名下的提示带（没有就什么都不做）。
+fn paint_bands(ctx: &Ctx, pix: &mut Pixmap, owner: NodeId) {
+    if ctx.bands.is_empty() {
+        return;
+    }
+    for b in ctx.bands.iter().filter(|b| b.owner == owner) {
+        crate::band::paint(ctx.page_xf, pix, b);
     }
 }
 

@@ -115,8 +115,8 @@ pub(super) fn draw(p: &mut Presenter, painter: &egui::Painter, ctx: &egui::Conte
         let (root, place, clip) = l.active(p.current);
         let a = ((p.flash_until - now) / FLASH_SECS) as f32;
         for (_, r) in hotspots(&l.disp, root, &place, clip) {
-            painter.rect_filled(r, CornerRadius::same(4), ACCENT.gamma_multiply(0.25 * a));
-            painter.rect_stroke(r, CornerRadius::same(4), Stroke::new(1.5, ACCENT.gamma_multiply(a)), StrokeKind::Outside);
+            painter.rect_filled(r, CornerRadius::same(4), crate::theme::accent(painter.ctx()).gamma_multiply(0.25 * a));
+            painter.rect_stroke(r, CornerRadius::same(4), Stroke::new(1.5, crate::theme::accent(painter.ctx()).gamma_multiply(a)), StrokeKind::Outside);
         }
         ctx.request_repaint();
     }

@@ -90,6 +90,29 @@ code.
   them): `panels/frame_presets.rs`, `panels/proto_panel.rs`, `panels/proto_editor.rs`,
   `panels/dev_mode.rs`, `panels/dev_compare.rs`, `panels/versions.rs`, `panels/vector_panel.rs`, and
   the variables panel's x-indent group drop (`group_drop_slot`).
+- **GPUI shares the same control vocabulary in `crates/ui-gpui/src/widgets/`**: `SectionHeader`
+  (one control with two style states, `Normal`/`Dim`, and pre-reserved lead/trail slots),
+  `PanelSection`/`panel_section` (the 16/8 pt inset, 8 pt gap grid composed from it), `IconButton`
+  (click + style + inner icon; the `.fig`'s red `Default` fill is debug-only and ignored), and the
+  `input` series (`Slot`, `TextField`, `text_field`, `search_field`, `combo_field`, `number_field`).
+  Ported from `FigCraft-UI-ui-vars (6).fig` and `ui-egui`'s field family — use these instead of
+  hand-rolling a GPUI section, icon button or input.
+
+### ⛔ Unified grid — permanent rule, nobody may violate it (owner, 2026-11-05)
+- **Every panel row is laid out by the unified grid in `crates/ui-gpui/src/widgets/panel_section.rs`.
+  There is exactly one way to build a row: `field_row` / `field_row_full` / `field_row_h` → passed to
+  `PanelSection::child`.**
+- **Never hand-roll a row.** No `div().flex().flex_row()…` in a panel to lay out a row of fields, and
+  **no hand-computed column widths** (`flex_none().w(col)`, ad-hoc 24 pt spacer columns, …). Column
+  widths are owned by `panel_section.rs` alone.
+- The grid is **`1fr | 1fr | 24`** — exactly **one** 24 pt column. Do **not** add a second 24
+  column: it makes both fields 12 pt narrower and shifts the row right (a real regression that
+  happened).
+- A control taller than one row (the auto-layout 3×3 alignment picker) uses
+  `field_row_h(fields, trailing, height)` — same columns, taller row. Do not route around the grid
+  with a free block; `field_block` was removed on purpose.
+- Breaking any of the above misaligns the whole right panel and counts as an unacceptable
+  regression. Read the FROZEN header of `panel_section.rs` before touching a panel.
 - **Time goes through `chrono`** (workspace dependency). Never hand-roll UTC/calendar conversion (days-to-date algorithms, leap-year math); a crate owns only its output format string. The one exception is range extension: past the years chrono can represent, shift the date by whole 400-year Gregorian cycles (146,097 days, after which the calendar repeats), let chrono compute the month and day, and add the cycles back to the year (splitting seconds into hours, minutes and seconds is plain arithmetic).
 - **Rust only** (no handwritten JS/TS). **Never break wasm** (`cargo xtask wasm`).
 

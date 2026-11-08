@@ -370,14 +370,6 @@ fn lookups_fall_back_to_english_and_fill_placeholders() {
 }
 
 #[test]
-fn a_live_failure_the_ui_knows_is_read_back_for_translation() {
-    use figcraft_engine::live::TOO_LARGE_TO_JOIN;
-    let reason = TOO_LARGE_TO_JOIN.replace("{mb}", "1024");
-    assert!(matches!(crate::live::failure_text(&reason), std::borrow::Cow::Owned(t) if t == reason));
-    assert!(matches!(crate::live::failure_text("Couldn't reach the server"), std::borrow::Cow::Borrowed(_)));
-}
-
-#[test]
 fn system_languages_pick_the_first_one_with_a_catalog() {
     let code = |pref: &str, system: Option<&str>| LANGS[resolve(pref, system)].code;
     assert_eq!(code("system", Some("fr-CA")), "fr");

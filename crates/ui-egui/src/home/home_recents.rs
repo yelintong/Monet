@@ -20,7 +20,7 @@ use crate::FigApp;
 use crate::a11y;
 use crate::i18n::{tr, tr_noop, trf, trn};
 use crate::icons::{self, Icon};
-use crate::theme::{ACCENT, Tokens, regular, semibold};
+use crate::theme::{Tokens, regular, semibold};
 use crate::widgets;
 
 /// The gap between cards, across and down.
@@ -883,7 +883,7 @@ fn card(
     let detail = widgets::elide_font(ui, &file.detail(now), w, regular(11.5));
     p.text(pos2(x, y + 9.0), Align2::LEFT_CENTER, detail, regular(11.5), t.text_secondary);
     if selected {
-        p.rect_stroke(rect, CornerRadius::same(8), Stroke::new(2.0, ACCENT), StrokeKind::Inside);
+        p.rect_stroke(rect, CornerRadius::same(8), Stroke::new(2.0, crate::theme::accent(p.ctx())), StrokeKind::Inside);
     } else {
         p.rect_stroke(rect, CornerRadius::same(8), Stroke::new(1.0, if resp.hovered() { t.border_strong } else { t.border }), StrokeKind::Inside);
         if resp.has_focus() {
