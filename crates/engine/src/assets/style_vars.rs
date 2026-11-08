@@ -8,7 +8,10 @@ use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
 
 use figcraft_color::PaintKind;
-use figcraft_doc::*;
+use figcraft_doc::{
+    CollectionId, Document, EffectKind, LetterSpacing, LineHeight, ModeId, Node, NodeId, NodeKind, Style, StyleId, StyleKind, TextStyle, VariableId,
+    VariableType, VariableValue, Variables,
+};
 
 use crate::cmd::lists::{BoundList, list_binding, stop_binding};
 
@@ -26,18 +29,26 @@ pub fn field_type(kind: &StyleKind, key: &str) -> Option<VariableType> {
             };
             ok.then_some(Color)
         }
-        (StyleKind::Effect { effects }, Some((BoundList::Effects, i, field))) => match (&effects.get(i)?.kind, field) {
-            (EffectKind::DropShadow(_) | EffectKind::InnerShadow(_), "color") => Some(Color),
-            (EffectKind::DropShadow(_) | EffectKind::InnerShadow(_), "radius" | "spread" | "offsetX" | "offsetY") => Some(Number),
-            (EffectKind::LayerBlur(_) | EffectKind::BackgroundBlur(_), "radius" | "startRadius") => Some(Number),
-            _ => None,
-        },
+        (StyleKind::Effect { effects }, Some((BoundList::Effects, i, field))) => effect_field_type(&effects.get(i)?.kind, field),
         (StyleKind::Grid { grids }, Some((BoundList::Grids, i, "size" | "count" | "gutter" | "offset"))) => grids.get(i).map(|_| Number),
         (StyleKind::Text { .. }, None) => match key {
             "fontSize" | "lineHeight" | "letterSpacing" => Some(Number),
             "fontFamily" | "fontStyle" => Some(String),
             _ => None,
         },
+        _ => None,
+    }
+}
+
+/// The type of variable an effect of `kind` takes on `field` (the last part of an
+/// `effects/<i>/<field>` key), on a layer or in an effect style; None when it has no such field.
+pub fn effect_field_type(kind: &EffectKind, field: &str) -> Option<VariableType> {
+    use VariableType::{Color, Number};
+    match (kind, field) {
+        (EffectKind::DropShadow(_) | EffectKind::InnerShadow(_), "color") => Some(Color),
+        (EffectKind::DropShadow(_) | EffectKind::InnerShadow(_), "radius" | "spread" | "offsetX" | "offsetY") => Some(Number),
+        (EffectKind::LayerBlur(_) | EffectKind::BackgroundBlur(_), "radius" | "startRadius") => Some(Number),
+        (EffectKind::Glass(_), f) if figcraft_doc::Glass::BOUND_FIELDS.contains(&f) => Some(Number),
         _ => None,
     }
 }
@@ -110,7 +121,7 @@ fn resolved(vars: &Variables, st: &Style, modes: &Modes) -> StyleKind {
             (StyleKind::Grid { grids }, Some((BoundList::Grids, i, field)), VariableValue::Number(x)) => {
                 crate::cmd::lists::set_grid_field(grids, i, field, *x);
             }
-            (StyleKind::Text { style }, None, _) => set_text_field(style, key, &val),
+            (StyleKind::Text { style, .. }, None, _) => set_text_field(style, key, &val),
             _ => {}
         }
     }
@@ -203,7 +214,7 @@ pub fn refresh(doc: &mut Document, before: Option<&Document>, only: Option<&BTre
             && was.is_none_or(|w| w.kind == n.kind)
         {
             for st in doc.styles.iter().filter(|s| !s.bound.is_empty()) {
-                if let StyleKind::Text { style } = kind_for(doc, st, id).as_ref() {
+                if let StyleKind::Text { style, .. } = kind_for(doc, st, id).as_ref() {
                     t.update_text_style(&st.id, style);
                 }
             }

@@ -3,12 +3,15 @@
 //! one. The Inspect tab shows these, and `inspect.properties` returns them.
 
 use figcraft_color::{Color, GradientKind, Hsb, Hsl, PaintKind};
-use figcraft_doc::*;
+use figcraft_doc::{
+    AutoLayout, ContentAlign, CrossAlign, DevStatus, Document, EffectKind, ExportFormat, ExportSetting, LayoutMode, MainAlign, Node, NodeId,
+    NodeKind, NoiseMode, StrokeAlign, StyleId, TextAlignH, TextData, TextDecoration, Variable,
+};
 use serde::Serialize;
 use serde_json::{Value, json};
 
 use crate::cmd::CommandSpec;
-use crate::params::*;
+use crate::params::{get, id, id_of, string, targets};
 use crate::spec;
 
 /// One group of properties ("Layout", "Typography"…).
@@ -369,7 +372,7 @@ pub fn bound_variable<'d>(doc: &'d Document, n: &Node, field: &str) -> Option<&'
         _ => &[],
     };
     let found = if forms.is_empty() { n.bound.get(field) } else { forms.iter().find_map(|k| n.bound.get(*k)) };
-    found.and_then(|v| doc.variables.get(v))
+    found.and_then(|v| doc.variables.get_by_id(v))
 }
 
 /// The variable bound to `field` on `n`, by name.
@@ -472,7 +475,7 @@ pub fn properties_with(doc: &Document, id: NodeId, fmt: ColorFormat) -> Vec<Sect
                     pct(g.refraction),
                     num(g.depth),
                     pct(g.dispersion),
-                    num(g.frost),
+                    num(g.sanitized().frost),
                     pct(g.splay)
                 ),
             ),

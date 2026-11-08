@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 
 use figcraft_color::{ImageScaleMode, PaintKind};
 use figcraft_doc::geometry::select_target;
-use figcraft_doc::*;
+use figcraft_doc::{Document, LayoutMode, Node, NodeId, NodeKind, Sizing, StrokeAlign, StrokeCap, TextAutoResize, TextData, TextPath, VectorNetwork};
 use figcraft_geom::{Affine, Point, Rect, Vec2};
 use serde::Serialize;
 use serde_json::json;
@@ -217,6 +217,7 @@ pub fn id(self) -> &'static str {
                 | ToolId::Star
                 | ToolId::Line
                 | ToolId::Arrow
+                | ToolId::BoardShape
         )
     }
 }
@@ -252,7 +253,7 @@ pub struct PointerEvent {
 }
 
 /// The pointer is still within [`DRAG_SLOP_PX`] of where it was pressed.
-fn within_slop(ev: &PointerEvent, start: Point) -> bool {
+pub(crate) fn within_slop(ev: &PointerEvent, start: Point) -> bool {
     (ev.p() - start).hypot() * ev.zoom.max(1e-6) < DRAG_SLOP_PX
 }
 
@@ -343,6 +344,9 @@ pub struct Overlay {
     pub cursor: Cursor,
     /// Pen tool: the in-progress path's anchor points and the rubber band to the pointer.
     pub pen: Vec<[f64; 2]>,
+    /// Pencil: the colour of the stroke in progress, for its preview (white over a dark page or
+    /// frame); None outside a Pencil stroke.
+    pub pen_color: Option<figcraft_color::Color>,
     pub rubber: Option<[f64; 4]>,
     /// Pen tool: the handles shaping the segments at the pen (anchor x, y, handle x, y): the last
     /// anchor's in and out handles and the one before's out handle.
@@ -352,6 +356,12 @@ pub struct Overlay {
     pub rubber_handle: Option<[f64; 2]>,
     /// Frame/section the pointer is drawing or dropping into (highlighted).
     pub drop_target: Option<NodeId>,
+    /// Boards: the object a stamp would stick to, under the stamp tool's pointer or a stamp being
+    /// dragged (highlighted).
+    pub stamp_target: Option<NodeId>,
+    /// Connector tool: the attach points (side middles, page x, y) of the object under the pointer,
+    /// and whether the connector end is at each.
+    pub attach: Vec<([f64; 2], bool)>,
     /// Auto layout insertion indicator (x0, y0, x1, y1).
     pub insert_line: Option<[f64; 4]>,
     /// The instance an Alt-drop of a component from the Assets panel would swap (highlighted).
@@ -450,6 +460,9 @@ pub(crate) enum Gesture {
         /// A Shift-press on this selected layer: it leaves the selection on release, unless the
         /// press became a drag.
         deselect: Option<NodeId>,
+        /// A press on one layer of a multi-selection that keeps the selection to drag it all: a
+        /// release without a drag selects just this layer.
+        keep: Option<NodeId>,
     },
     Resize {
         start: Point,
@@ -521,6 +534,12 @@ pub(crate) enum Gesture {
         from: bool,
         start: Point,
     },
+    /// Dragging the selected connector `id`'s path handle for `portion` (pressed at `start`).
+    Reshape {
+        id: NodeId,
+        portion: usize,
+        start: Point,
+    },
     /// The eraser: the strokes it took so far.
     Erase {
         gone: Vec<NodeId>,
@@ -559,6 +578,8 @@ pub struct PenPath {
     pub closed: bool,
     /// The path ends connected to this anchor of its own (a vector network).
     pub join: Option<usize>,
+    /// Anchors taken back by undo, the last one first to come back on redo.
+    pub undone: Vec<(Point, Vec2, Vec2)>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -581,6 +602,9 @@ pub struct ToolState {
     pub dev_mode: bool,
     /// Pen snap targets, kept while hovering (see `vectoredit::point_snap`).
     pub(crate) pen_targets: Option<crate::vectoredit::point_snap::PenTargets>,
+    /// Vector edit mode's pen: where the last press that started something new (no path being
+    /// drawn) was, and the undo depth before it, so a double-click there takes that edit back.
+    pub(crate) pen_press: Option<(Point, usize)>,
     /// The Scale tool's anchor: column and row (0 start, 1 middle, 2 end) of the point of the
     /// selection box that stays put (`tool.scaleAnchor`).
     pub scale_anchor: (u8, u8),
@@ -599,6 +623,15 @@ pub struct ToolState {
     pub pick_only: bool,
     /// The colour the eyedropper sampled for a colour picker, until the picker takes it.
     pub picked: Option<figcraft_color::Color>,
+    /// The widget layers whose hover styles show while the pointer is over them (a live preview).
+    pub(crate) widget_hover: Vec<NodeId>,
+    /// The placement crosshair: where Enter puts the next shape or frame once the arrows have
+    /// shown it (in the middle of the view) and moved it (`tool.crosshair`), in page coordinates
+    /// of the document and page in `place_on` (elsewhere it isn't shown: `Session::crosshair`).
+    /// Placing, Escape and a change of tool take it away.
+    pub place_at: Option<Point>,
+    /// The document (uid) and page the crosshair was shown on.
+    pub(crate) place_on: Option<(u64, NodeId)>,
 }
 
 impl ToolState {
