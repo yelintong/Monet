@@ -484,6 +484,12 @@ pub struct EditorState {
     pub drag: Option<ListDragState>,
     /// mode 列水平拖动：`(起始列下标, 按下 x, 当前 x)`。
     pub mode_drag: Option<(usize, f32, f32)>,
+    /// mode 列拖动时指针落在的**空隙下标**（0 = 第一列之前，`count` = 最后一列之后），由表头
+    /// 每帧按真实列几何算出来；插入线画在那里，松手时按它移动。
+    pub mode_gap: Option<usize>,
+    /// 每个 mode 列的**左缘**（窗口逻辑 x），每帧由表头写入。松手时用它自己算落缝，
+    /// 不依赖「松手那一刻恰好渲染过一帧」。
+    pub mode_cols: Vec<f32>,
     /// Name 列宽（egui `NAME_W`，可拖 120..420）。
     pub name_w: f32,
     /// Name 列宽拖动中：`(按下 x, 起始宽度)`。
@@ -519,6 +525,18 @@ pub struct EditorState {
     /// root 局部坐标，而 prepaint 在本帧构建之后才跑——所以这个 `Rc` 必须**跨帧保留**，
     /// 每帧新建一个的话读到的永远是 `None`（插入线因此一直画不出来）。
     pub root_bounds: Rc<std::cell::Cell<Option<Bounds<Pixels>>>>,
+    /// 三个列表滚动的**视口**在窗口里的矩形（同样由 prepaint 写入、跨帧保留）：变量行区的、
+    /// 侧栏集合列表的、侧栏分组列表的。
+    ///
+    /// 行拖动要靠它算出每一行真正的窗口 y：以前用「按下点 − 按下行的内容 y」反推内容原点，
+    /// 这个值**多算了指针在行内的偏移**（按下点落在行的下半部分时，整列矩形和插入线就整体
+    /// 下移最多一行），插入线因此总是画偏（用户 2026-11-08 指出）。
+    pub list_bounds: Rc<std::cell::Cell<Option<Bounds<Pixels>>>>,
+    pub coll_bounds: Rc<std::cell::Cell<Option<Bounds<Pixels>>>>,
+    pub group_bounds: Rc<std::cell::Cell<Option<Bounds<Pixels>>>>,
+    /// 侧栏两个列表的滚动句柄：行拖动的窗口几何要加上它们的滚动量。
+    pub coll_scroll: ScrollHandle,
+    pub group_scroll: ScrollHandle,
 }
 
 impl EditorState {
@@ -547,6 +565,8 @@ impl EditorState {
             menu: None,
             drag: None,
             mode_drag: None,
+            mode_gap: None,
+            mode_cols: Vec::new(),
             name_w: NAME_W,
             col_resize: None,
             mode_ws: Vec::new(),
@@ -564,6 +584,11 @@ impl EditorState {
             last_group_down: None,
             scroll: VirtualListScrollHandle::new(),
             root_bounds: Rc::new(std::cell::Cell::new(None)),
+            list_bounds: Rc::new(std::cell::Cell::new(None)),
+            coll_bounds: Rc::new(std::cell::Cell::new(None)),
+            group_bounds: Rc::new(std::cell::Cell::new(None)),
+            coll_scroll: ScrollHandle::default(),
+            group_scroll: ScrollHandle::default(),
         }
     }
 }
@@ -663,9 +688,13 @@ impl VariablesEditor {
 
     /// 拖拽中：由**根视图**用窗口坐标推进（GPUI 的元素级 `on_mouse_move` 只在指针悬停其
     /// hitbox 时触发，指针移出卡片就断；与 `motion/timeline.rs` 的 `route_global_move` 同构）。
-    /// 这里只改状态；重绘由调用方 `cx.notify()` 负责。
-    pub fn route_move(&self, at: Point<Pixels>) {
-        Self::on_move(&self.state, at);
+    /// 这里只改状态；重绘由调用方 `cx.notify()` 负责。`pressed` 是真实按键状态——窗口外松手
+    /// 后回到窗口的那一帧会带 `false` 回来，用来收尾提交（否则回窗后列宽还会跟着乱跳）。
+    pub fn route_move(&self, at: Point<Pixels>, pressed: bool) {
+        let cid = self.coll().map(|c| c.id.clone()).unwrap_or_default();
+        let mode_ids: Vec<String> =
+            self.coll().map(|c| c.modes.iter().map(|m| m.id.clone()).collect()).unwrap_or_default();
+        Self::on_move(&self.state, at, pressed, &self.cmds, &cid, &mode_ids);
     }
 
     /// 抬起 / Escape：清掉所有进行中的尺寸拖动状态。
@@ -850,6 +879,34 @@ impl VariablesEditor {
         self.cmds.push(Cmd { id, params: Some(params) });
     }
 
+    /// 把面板里所有还开着的内联输入框提交掉（值格 / 改名框）。
+    ///
+    /// GPUI 里「点别处」不会自己把焦点拿走，输入框因此永远停在编辑态、草稿一直不落库 ——
+    /// 表现就是「改了值点一下别的地方，值还是旧的」（用户 2026-11-08 指出）。输入框自己按下时
+    /// 会 `stop_propagation()`，所以这个函数只会被「点在没有输入框的地方」的按下触发。
+    fn commit_cached_edits(caches: &Rc<RefCell<RowCaches>>, window: &mut Window, cx: &mut App) {
+        let mut editors = Vec::new();
+        {
+            let c = caches.borrow();
+            editors.extend(c.value_editors.values().cloned());
+            if let Some(e) = &c.rename_field {
+                editors.push(e.clone());
+            }
+            if let Some(e) = &c.mode_rename_field {
+                editors.push(e.clone());
+            }
+            if let Some(e) = &c.collection_rename {
+                editors.push(e.clone());
+            }
+            if let Some(e) = &c.group_rename {
+                editors.push(e.clone());
+            }
+        }
+        for ed in editors {
+            ed.update(cx, |tf, cx| tf.edit().update(cx, |te, cx| te.finish_edit(window, cx)));
+        }
+    }
+
     /// 当前集合（越界时收敛到 0）。
     fn coll(&self) -> Option<&CollectionSnap> {
         let s = self.state.borrow();
@@ -924,6 +981,12 @@ impl VariablesEditor {
         // 正好铺满整张卡片、把卡片自己的圆角（`Popover` 的 `rounded(RADIUS)`）整个盖掉 —— 渲染出来
         // 就是直角。egui 的 `Frame::window` 圆角之所以露得出来，正是因为内容层不铺满底色。
         // 底色由外层卡片提供（同为 `t.panel`），这里保持透明即可。
+        let caches = self.row_caches.clone();
+        // 当前集合的 id 与模式列 id 列表：拖拽收尾（窗口外松手 / 正常松手）都要用，提前算好供
+        // `on_move` 与 `on_mouse_up` 两个闭包共用。
+        let cid = coll.as_ref().map(|c| c.id.clone()).unwrap_or_default();
+        let mode_ids: Vec<String> =
+            coll.as_ref().map(|c| c.modes.iter().map(|m| m.id.clone()).collect()).unwrap_or_default();
         let mut root = div()
             .relative()
             .w_full()
@@ -932,86 +995,48 @@ impl VariablesEditor {
             .flex_col()
             .on_mouse_down(MouseButton::Left, {
                 let st = st.clone();
-                move |_e: &MouseDownEvent, _, _| st.borrow_mut().menu = None
+                move |_e: &MouseDownEvent, window, cx| {
+                    st.borrow_mut().menu = None;
+                    // 点表格里任意**不是输入框**的地方（输入框自己 `stop_propagation`）就把正在编辑
+                    // 的值提交掉。GPUI 不会因为点别处自动移走焦点，所以「失焦提交」必须在这里显式
+                    // 触发 —— 以前完全没有这一步，值格改完点别处就一直是草稿（用户 2026-11-08 指出）。
+                    Self::commit_cached_edits(&caches, window, cx);
+                }
             })
             .on_mouse_move({
                 let st = st.clone();
-                move |e: &MouseMoveEvent, _, _| Self::on_move(&st, e.position)
+                let cmds = cmds.clone();
+                let cid = cid.clone();
+                let mode_ids = mode_ids.clone();
+                move |e: &MouseMoveEvent, _, _| {
+                    Self::on_move(&st, e.position, e.pressed_button == Some(MouseButton::Left), &cmds, &cid, &mode_ids)
+                }
             })
             .on_mouse_up(MouseButton::Left, {
                 let st = st.clone();
                 let cmds = cmds.clone();
-                let cid = coll.as_ref().map(|c| c.id.clone()).unwrap_or_default();
-                let mode_ids: Vec<String> =
-                    coll.as_ref().map(|c| c.modes.iter().map(|m| m.id.clone()).collect()).unwrap_or_default();
+                let cid = cid.clone();
+                let mode_ids = mode_ids.clone();
                 move |_e: &MouseUpEvent, _, _| {
-                    {
-                        let mut s = st.borrow_mut();
-                        s.col_resize = None;
-                        s.mode_resize = None;
-                        s.resize = None;
-                        s.sidebar_resize = None;
-                        s.split_resize = None;
-                        s.hscroll_drag = None;
-                    }
-                    let d = st.borrow_mut().drag.take();
-                    if let Some(d) = d {
-                        Self::commit_drag(&st, &d, &cmds);
-                    }
-                    // mode 列拖动：按**实际列宽**累加，越过下一列宽度就前移/后移一位。
-                    let (md, mode_ws) = {
-                        let mut s = st.borrow_mut();
-                        (s.mode_drag.take(), s.mode_ws.clone())
-                    };
-                    if let Some((from, x0, x1)) = md {
-                        let dx = x1 - x0;
-                        if !mode_ids.is_empty() && dx.abs() > 8.0 {
-                            let mut to = from;
-                            if dx > 0.0 {
-                                let mut acc = 0.0;
-                                for k in from..mode_ids.len().saturating_sub(1) {
-                                    acc += mode_ws.get(k).copied().unwrap_or(MODE_W);
-                                    if dx >= acc {
-                                        to = k + 1;
-                                    } else {
-                                        break;
-                                    }
-                                }
-                            } else {
-                                let mut acc = 0.0;
-                                for k in (0..from).rev() {
-                                    acc += mode_ws.get(k).copied().unwrap_or(MODE_W);
-                                    if -dx >= acc {
-                                        to = k;
-                                    } else {
-                                        break;
-                                    }
-                                }
-                            }
-                            if to != from {
-                                if let Some(mid) = mode_ids.get(from) {
-                                    cmds.push(Cmd {
-                                        id: "variable.moveMode",
-                                        params: Some(json!({ "collection": cid, "mode": mid, "to": to })),
-                                    });
-                                }
-                            }
-                        }
-                    }
+                    // 正常松手：结束所有拖拽并提交（与 `on_move` 在窗口外松手时的收尾共用同一函数，
+                    // 幂等 —— 两边都调也只会提交一次）。
+                    Self::end_drag(&st, &cmds, &cid, &mode_ids);
                 }
             });
 
-        root = root.child(self.header(&st, &data, full, drag_start));
+        // 布局：**侧栏占满整高**，工具条只压在右侧变量列表上方。
+        // 以前工具条（Import… / 搜索 / 全屏）横跨整张卡片、铺到侧栏顶上，侧栏的分隔线又穿进这条
+        // 横栏里，读起来像一根线和横栏连在一起；按钮也被挤在侧栏上方的空档里（用户 2026-11-08 指出）。
         let body = div().flex().flex_row().flex_1().min_h(pt(0.0)).w_full();
         let body = if sidebar {
-            body.child(self.sidebar(&st, &data, cx, body_h))
+            body.child(self.sidebar(&st, &data, cx, body_h, drag_start.clone()))
                 .child(div().flex_none().w(pt(1.0)).h_full().bg(rgba(t.border)))
         } else {
             body
         };
         // 表格在窗口里的左缘：卡片原点 + 侧栏宽度（+1pt 分隔线）。
         let table_left = f32::from(origin.x) + if sidebar { sidebar_w + 1.0 } else { 0.0 };
-        root = root.child(body.child(self.table(&st, &coll, cx, body_h, table_w, table_left)));
+        root = root.child(body.child(self.table(&st, &coll, cx, body_h, table_w, table_left, full, drag_start, sidebar)));
         root = root.child(self.bottom_bar(&st, &coll));
         root = root.child(self.menu_overlay(&st, origin));
         root = root.child(self.details_overlay(&st, cx, viewport));
@@ -1052,10 +1077,11 @@ impl VariablesEditor {
         root.into_any_element()
     }
 
-    // ── header ────────────────────────────────────────────────────────────────────────────
-    /// 第二层工具条。**标题与关闭按钮由外层通用 `Popover` 提供**（"Variables" + 计数 chip + X），
-    /// 这里不再重复画一个 "Local variables" 标题或第二个 X —— 那会叠成 80pt 的双层 header。
-    fn header(&mut self, st: &State, _data: &VariablesData, full: bool, drag_start: Option<DragStart>) -> Div {
+    // ── toolbar ───────────────────────────────────────────────────────────────────────────
+    /// 变量列表上方的工具条：**只压在这一列上**（不横跨侧栏）。标题与「收起侧栏」在侧栏自己的
+    /// 表头里（`sidebar()`），这里只剩导入 / 导出 / 搜索 / 类型过滤 / 全屏，以及侧栏收起时的
+    /// 「展开侧栏」按钮。
+    fn toolbar(&mut self, st: &State, full: bool, drag_start: Option<DragStart>, sidebar: bool) -> Div {
         let t = tokens();
         let filtered = st.borrow().hidden.iter().any(|&h| h);
         let mut h = div()
@@ -1066,51 +1092,21 @@ impl VariablesEditor {
             .flex_row()
             .items_center()
             .gap(pt(8.0))
-            .pl(pt(16.0))
+            .pl(pt(8.0))
             // 右侧给浮在右上角的 X 留出 32pt，最后一个工具按钮不会被盖住。
             .pr(pt(48.0))
             .border_b_1()
             .border_color(rgba(t.border));
-        // 侧栏显示 / 隐藏（egui `vars_sidebar`）。
-        // 标题 + 计数 chip 画进工具条（外层通用 Popover 已改成"整窗一个插槽"，
-        // 不再单独占一行标题栏）。
-        let title_group = div()
-            .flex()
-            .flex_row()
-            .items_center()
-            .gap(pt(8.0))
-            .child(div().text_size(pt(11.0)).text_color(rgba(t.text)).child("Variables"))
-            .child(
-                div()
-                    .px(pt(5.0))
-                    .h(pt(16.0))
-                    .rounded(pt(4.0))
-                    .bg(rgba(t.hover))
-                    .flex()
-                    .items_center()
-                    .text_size(pt(9.0))
-                    .text_color(rgba(t.text_secondary))
-                    .child(format!("{}", self.total())),
-            );
-        // ⛔ 整卡拖动只绑在**头部左侧**（egui `vars_drag`：标题到工具按钮之前那块），
-        // 不是整张卡片。绑整卡会让「点表格行 / 点按钮」也把窗口拖走（用户 2026-11-07）。
-        // 标题 + 侧栏开关 + 之后的空白一起放进 `left`（flex_1），整块都能拖。
-        let mut left = div()
-            .flex()
-            .flex_row()
-            .items_center()
-            .gap(pt(8.0))
-            .flex_1()
-            .min_w(pt(0.0))
-            .child(title_group)
+        // 左侧：侧栏收起时给一个「展开侧栏」按钮（egui 的 `vars_sidebar` 收起态），
+        // 其余空白是整卡拖动区（egui `vars_drag`：标题到工具按钮之前那块）。
+        let mut left = div().flex().flex_row().items_center().gap(pt(8.0)).flex_1().min_w(pt(0.0)).h_full();
+        if !sidebar {
             // 注意：`Icon::Panel` 在 icon.rs 里仍是圆点占位（未实现），用已实现的 `Icon::Panels`。
-            .child(IconButton::new(Icon::Panels).size(24.0).on_click({
+            left = left.child(IconButton::new(Icon::Panels).size(24.0).on_click({
                 let st = st.clone();
-                move |_, _, _| {
-                    let mut s = st.borrow_mut();
-                    s.sidebar = !s.sidebar;
-                }
+                move |_, _, _| st.borrow_mut().sidebar = true
             }));
+        }
         if let Some(d) = drag_start {
             left = left.cursor_grab().on_mouse_down(MouseButton::Left, move |e, w, cx| d(e, w, cx));
         }
@@ -1147,7 +1143,10 @@ impl VariablesEditor {
                 .hover(move |s| s.bg(rgba(t.hover)))
                 .on_mouse_down(MouseButton::Left, {
                     let st = st.clone();
-                    move |e: &MouseDownEvent, _, _| {
+                    move |e: &MouseDownEvent, _, cx: &mut App| {
+                        // 根容器按下时会把内联菜单收掉；开出菜单的这一下不能再冒泡过去，
+                        // 否则菜单刚设上就被清掉，看起来就是「按钮点不动」（用户 2026-11-08 指出）。
+                        cx.stop_propagation();
                         st.borrow_mut().menu = Some(Menu {
                             x: f32::from(e.position.x),
                             y: f32::from(e.position.y),
@@ -1173,7 +1172,9 @@ impl VariablesEditor {
                 .child(div().flex_none().w(pt(SEARCH_W)).child(self.search.clone()))
                 .child(IconButton::new(Icon::Eye).size(24.0).active(filtered).on_click({
                     let st = st.clone();
-                    move |e, _, _| {
+                    move |e, _, cx: &mut App| {
+                        // 同 Export…：开出菜单的这一下不冒泡到根容器（否则立刻被清掉）。
+                        cx.stop_propagation();
                         let mut s = st.borrow_mut();
                         let open = s.menu.take().is_none();
                         if open {
@@ -1280,9 +1281,9 @@ impl VariablesEditor {
     }
 
     // ── sidebar ───────────────────────────────────────────────────────────────────────────
-    fn sidebar(&self, st: &State, data: &VariablesData, cx: &mut App, body_h: f32) -> Stateful<Div> {
+    fn sidebar(&self, st: &State, data: &VariablesData, cx: &mut App, body_h: f32, drag_start: Option<DragStart>) -> Stateful<Div> {
         let t = tokens();
-        let (cur, group_sel, collapsed, library_sel, sidebar_w, split, renaming_coll, renaming_group, selected_all) = {
+        let (cur, group_sel, collapsed, library_sel, sidebar_w, split, renaming_coll, renaming_group, selected_all, count) = {
             let s = st.borrow();
             (
                 s.collection.min(data.collections.len().saturating_sub(1)),
@@ -1294,15 +1295,54 @@ impl VariablesEditor {
                 s.rename_collection.clone(),
                 s.rename_group.clone(),
                 s.selected_all,
+                data.collections.get(s.collection).map(|c| c.rows.len()).unwrap_or(0),
             )
         };
         // egui `sidebar()`：Collections 标题 34 + 独立滚动列表 + 7pt 可拖分隔条 +
         // Groups 标题 34 + 独立滚动列表。两个区各自滚动，Groups 不会被库列表挤到屏幕外。
-        let avail = (body_h - HEADER_H - BOTTOM_H).max(160.0);
+        // 侧栏现在占满整高（工具条不再压在它上面），顶部另有 34pt 自己的表头（标题 + 收起按钮）。
+        let avail = (body_h - BOTTOM_H - 34.0).max(160.0);
         let split_total = (avail - 34.0 - 7.0 - 34.0).max(80.0);
         let collections_h = (split * split_total).clamp(40.0, (split_total - 40.0).max(40.0));
         let groups_h = (split_total - collections_h).max(40.0);
         let mut col = div().id("vars-sidebar").flex_none().w(pt(sidebar_w)).h_full().flex().flex_col().bg(rgba(t.panel));
+
+        // ⓪ 侧栏自己的表头：标题 + 计数在左，**收起侧栏**的按钮在右端（trail 槽）——
+        // 照 GPUI 的 `SectionHeader`：标题贴左、按钮右对齐到 8pt 内缩。以前这个按钮挤在
+        // 横跨整卡的横栏里、正压在侧栏分隔线上（用户 2026-11-08 指出）。
+        let mut head = div()
+            .flex_none()
+            .w_full()
+            .h(pt(34.0))
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(pt(8.0))
+            .pl(pt(16.0))
+            .pr(pt(8.0))
+            .child(div().text_size(pt(11.0)).text_color(rgba(t.text)).child("Variables"))
+            .child(
+                div()
+                    .px(pt(5.0))
+                    .h(pt(16.0))
+                    .rounded(pt(4.0))
+                    .bg(rgba(t.hover))
+                    .flex()
+                    .items_center()
+                    .text_size(pt(9.0))
+                    .text_color(rgba(t.text_secondary))
+                    .child(format!("{count}")),
+            )
+            .child(div().flex_1().min_w(pt(0.0)))
+            .child(IconButton::new(Icon::Panels).id("vars-hide-sidebar").size(24.0).on_click({
+                let st = st.clone();
+                move |_, _, _| st.borrow_mut().sidebar = false
+            }));
+        // 侧栏表头也是整卡拖动区（卡片没有别的标题栏了）。
+        if let Some(d) = drag_start {
+            head = head.cursor_grab().on_mouse_down(MouseButton::Left, move |e, w, cx| d(e, w, cx));
+        }
+        col = col.child(head);
 
         // ① Collections 标题 + 新建（unique 命名，不再用时间戳）。
         col = col.child(
@@ -1322,7 +1362,16 @@ impl VariablesEditor {
         );
         // ② Collections 列表（独立滚动）。
         let coll_ids: Vec<String> = data.collections.iter().map(|c| c.id.clone()).collect();
-        let mut cl = div().id("var-collections").flex_none().w_full().h(pt(collections_h)).flex().flex_col().overflow_y_scroll();
+        let coll_scroll = st.borrow().coll_scroll.clone();
+        let mut cl = div()
+            .id("var-collections")
+            .flex_none()
+            .w_full()
+            .h(pt(collections_h))
+            .flex()
+            .flex_col()
+            .overflow_y_scroll()
+            .track_scroll(&coll_scroll);
         for (i, c) in data.collections.iter().enumerate() {
             let active = library_sel.is_none() && i == cur;
             let mut inner = div().w_full().h(pt(24.0)).flex().flex_row().items_center().pl(pt(8.0)).pr(pt(8.0)).rounded(pt(5.0));
@@ -1359,7 +1408,8 @@ impl VariablesEditor {
                             if dbl {
                                 s.rename_collection = Some(cid.clone());
                             } else {
-                                s.drag = Some(Self::begin_drag(DragList::Collections, i, &ids, e.position, &[]));
+                                let top = s.coll_bounds.get().map(|b| f32::from(b.origin.y) + f32::from(s.coll_scroll.offset().y));
+                                s.drag = Some(Self::begin_drag(DragList::Collections, i, &ids, e.position, &[], top));
                             }
                         }
                     })
@@ -1433,7 +1483,19 @@ impl VariablesEditor {
                 );
             }
         }
-        col = col.child(cl);
+        // 列表外面套 `relative`，用一块只做 prepaint 的 canvas 记下**视口**的窗口矩形：
+        // 行拖动靠它把内容坐标换算成窗口坐标（否则插入线整体偏一行）。
+        let cb = st.borrow().coll_bounds.clone();
+        let cbc = cb.clone();
+        col = col.child(
+            div()
+                .relative()
+                .flex_none()
+                .w_full()
+                .h(pt(collections_h))
+                .child(cl)
+                .child(gpui::canvas(move |bounds, _, _| cbc.set(Some(bounds)), |_, _, _, _| {}).absolute().top_0().left_0().size_full()),
+        );
 
         // ③ 7pt 可拖分隔条（egui `vars_split`）。
         col = col.child(
@@ -1459,7 +1521,16 @@ impl VariablesEditor {
         };
         let groups = coll_snap.as_ref().map(|c| c.groups.clone()).unwrap_or_default();
         let group_ids: Vec<String> = groups.clone();
-        let mut gl = div().id("var-groups").flex_none().w_full().h(pt(groups_h)).flex().flex_col().overflow_y_scroll();
+        let group_scroll = st.borrow().group_scroll.clone();
+        let mut gl = div()
+            .id("var-groups")
+            .flex_none()
+            .w_full()
+            .h(pt(groups_h))
+            .flex()
+            .flex_col()
+            .overflow_y_scroll()
+            .track_scroll(&group_scroll);
         let mut all_inner = div().w_full().h(pt(24.0)).flex().items_center().pl(pt(8.0)).rounded(pt(5.0));
         if selected_all {
             all_inner = all_inner.bg(rgba(t.selected_row));
@@ -1542,7 +1613,8 @@ impl VariablesEditor {
                             } else {
                                 s.group = Some(g_sel.clone());
                                 s.selected_all = false;
-                                s.drag = Some(Self::begin_drag(DragList::Groups, i, &ids, e.position, &[]));
+                                let top = s.group_bounds.get().map(|b| f32::from(b.origin.y) + f32::from(s.group_scroll.offset().y));
+                                s.drag = Some(Self::begin_drag(DragList::Groups, i, &ids, e.position, &[], top));
                             }
                         }
                     })
@@ -1561,7 +1633,17 @@ impl VariablesEditor {
                     .child(inner),
             );
         }
-        col = col.child(gl);
+        let gb = st.borrow().group_bounds.clone();
+        let gbc = gb.clone();
+        col = col.child(
+            div()
+                .relative()
+                .flex_none()
+                .w_full()
+                .h(pt(groups_h))
+                .child(gl)
+                .child(gpui::canvas(move |bounds, _, _| gbc.set(Some(bounds)), |_, _, _, _| {}).absolute().top_0().left_0().size_full()),
+        );
         // ⑥ 侧栏右缘 6pt 拖动柄（egui `vars_sidebar_edge`，180..420）。
         col.child(
             div()
@@ -1577,6 +1659,8 @@ impl VariablesEditor {
     }
 
     // ── table ─────────────────────────────────────────────────────────────────────────────
+    /// 右侧变量列表：**工具条 + 表头 + 行区 + 横向滚动条**都在这一列里（工具条不再横跨侧栏）。
+    #[allow(clippy::too_many_arguments)]
     fn table(
         &mut self,
         st: &State,
@@ -1585,8 +1669,13 @@ impl VariablesEditor {
         body_h: f32,
         table_w: f32,
         table_left: f32,
+        full: bool,
+        drag_start: Option<DragStart>,
+        sidebar: bool,
     ) -> Stateful<Div> {
         let t = tokens();
+        // 工具条（Import… / Export… / 搜索 / 过滤 / 全屏）：只在右侧这一列上方。
+        let toolbar = self.toolbar(st, full, drag_start, sidebar);
         let Some(c) = coll else {
             return div()
                 .id("vars-empty")
@@ -1595,6 +1684,7 @@ impl VariablesEditor {
                 .h_full()
                 .flex()
                 .flex_col()
+                .child(toolbar)
                 .child(
                     div().flex_1().w_full().flex().flex_col().items_center().justify_center().gap(pt(12.0))
                         .child(div().text_size(pt(11.0)).text_color(rgba(t.text_secondary)).child("Variables store reusable values with modes such as Light and Dark."))
@@ -1624,7 +1714,46 @@ impl VariablesEditor {
         let modes_full: f32 = mode_ws.iter().map(|w| w + 1.0).sum();
         let max_sx = (modes_full - (modes_room + 1.0)).max(0.0);
         let sx = (-f32::from(st.borrow().hscroll.offset().x)).clamp(0.0, max_sx);
-        let mut col = div().flex_1().min_h(pt(0.0)).w_full().flex().flex_col();
+        let mut col = div().flex_1().min_h(pt(0.0)).w_full().flex().flex_col().child(toolbar);
+        // 每一列（含 add 列）的**窗口 x**：0 号是第 0 列的左缘，最后一个是 add 列左缘。
+        // mode 列拖动的落缝（`mode_gap`）和插入线都按这组真实几何算，不再用「拖过整列宽」的累加。
+        let col_xs: Vec<f32> = {
+            let mut v = Vec::with_capacity(mode_ws.len() + 2);
+            let mut x = table_left + name_eff + 1.0 - sx;
+            for w in &mode_ws {
+                v.push(x);
+                x += w + 1.0;
+            }
+            v.push(x);
+            v
+        };
+        // 行区高度：工具条 + 表头 + 横向滚动条之外剩下的（这里是唯一一处算它，下面复用）。
+        let rows_h = (body_h - HEADER_H - HEAD_ROW_H - BOTTOM_H - HSCROLL_H).max(96.0);
+        // mode 列**中心**的窗口 x：落缝按「指针越过了几列的中心」算（egui `mode_gap` 同一条规则）。
+        // 写进 state，松手时直接用它算，不依赖「松手那一帧恰好渲染过」。
+        {
+            let mut s = st.borrow_mut();
+            s.mode_cols = (0..mode_ws.len()).map(|i| col_xs.get(i).copied().unwrap_or(0.0) + mode_ws.get(i).copied().unwrap_or(MODE_W) / 2.0).collect();
+        }
+        let mode_line = {
+            let dragging = st.borrow().mode_drag;
+            if let Some((_, _, px_now)) = dragging {
+                let gap = mode_gap_at(&st.borrow().mode_cols, px_now);
+                st.borrow_mut().mode_gap = Some(gap);
+                col_xs.get(gap).map(|gx| {
+                    div()
+                        .absolute()
+                        .left(pt(gx - table_left - 1.0))
+                        .top(pt(HEADER_H + 4.0))
+                        .w(pt(2.0))
+                        .h(pt(HEAD_ROW_H + rows_h - 8.0))
+                        .bg(rgba(t.accent))
+                })
+            } else {
+                st.borrow_mut().mode_gap = None;
+                None
+            }
+        };
         // 表头（底部分隔线 + 每列右缘 1px 网格线）
         let (selected_mode, has_clip_col) = {
             let s = st.borrow();
@@ -1852,8 +1981,7 @@ impl VariablesEditor {
         }
 
         // 行区（虚拟列表：只渲染可视区间内的条目，几千行也不卡）。
-        // 底部常驻 12pt 水平滚动条带（egui `HSCROLL_H`），所以行区高度要扣掉它。
-        let rows_h = (body_h - HEADER_H - HEAD_ROW_H - BOTTOM_H - HSCROLL_H).max(96.0);
+        // `rows_h` 已在上面对着表头算好（含横向滚动条让位）。
         let visible = self.visible_rows(c);
         let ids: Vec<String> = visible.iter().map(|r| r.id.clone()).collect();
 
@@ -1935,7 +2063,25 @@ impl VariablesEditor {
                 out
             })
             .h(pt(rows_h));
-            col = col.child(list);
+            // 行区外面套一层 `relative`，塞一块只做 prepaint 的 canvas 记下行区**视口**在窗口里的
+            // 矩形：行拖动要用它把内容坐标换算成窗口坐标（插入线因此才不会整体偏一行）。
+            let probe = st.borrow().list_bounds.clone();
+            let pc = probe.clone();
+            col = col.child(
+                div()
+                    .relative()
+                    .flex_none()
+                    .w_full()
+                    .h(pt(rows_h))
+                    .child(list)
+                    .child(
+                        gpui::canvas(move |bounds, _, _| pc.set(Some(bounds)), |_, _, _, _| {})
+                            .absolute()
+                            .top_0()
+                            .left_0()
+                            .size_full(),
+                    ),
+            );
         }
         // 12pt 水平滚动条带（egui `hscroll`）：只覆盖 mode 区（Name 与 add 之间）。
         let hscroll = st.borrow().hscroll.clone();
@@ -1980,15 +2126,21 @@ impl VariablesEditor {
                     .rounded(pt(2.0))
                     .bg(rgba(t.border_strong)),
             );
-        div()
+        let mut table = div()
             .id("vars-table")
+            .relative()
             .flex_1()
             .min_w(pt(0.0))
             .h_full()
             .flex()
             .flex_col()
             .child(col)
-            .child(bar)
+            .child(bar);
+        // mode 列被拖着走时，在落缝处画一条竖线（egui 的 `gap_x` 指示）。
+        if let Some(line) = mode_line {
+            table = table.child(line);
+        }
+        table
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -2042,7 +2194,10 @@ impl VariablesEditor {
                     } else if s.rename.as_deref() != Some(rid.as_str()) {
                         s.rename = None;
                         if movable {
-                            s.drag = Some(Self::begin_drag(DragList::Variables, index, &ids, e.position, tops.as_slice()));
+                            // 行区视口的窗口 y + 纵向滚动量 = 内容原点（第 0 行顶边）的窗口 y。
+                            let content_top =
+                                s.list_bounds.get().map(|b| f32::from(b.origin.y) + f32::from(s.scroll.base_handle().offset().y));
+                            s.drag = Some(Self::begin_drag(DragList::Variables, index, &ids, e.position, tops.as_slice(), content_top));
                         }
                     }
                 }
@@ -2263,7 +2418,11 @@ impl VariablesEditor {
         if let Some(e) = caches.borrow().value_editors.get(key) {
             return e.clone();
         }
+        // `set_bare(true)` = **不要那层封装的外壳**（`t.field` 底 + 圆角 + 悬停/聚焦描边）：
+        // 值格自己已经画了底框（`value_shell`），再套一层就成了双底双框。这里只保留最原初的
+        // 编辑层（`TextEdit`：光标 / 选区 / IME / 提交），也就是用户要的「最原初的输入组件」。
         let f = text_field(cx, width, initial, "", Slot::None, Slot::None);
+        f.update(cx, |tf, _| tf.set_bare(true));
         let cmds = cmds.clone();
         let vid = vid.to_string();
         let mid = mid.to_string();
@@ -2291,6 +2450,8 @@ impl VariablesEditor {
             return e.clone();
         }
         let f = number_field(cx, VALUE_FIELD_W, value, "", 1.0, Slot::None);
+        // 同文本格：外壳由值格自己的底框负责，这里只要编辑层。
+        f.update(cx, |tf, _| tf.set_bare(true));
         let cmds = cmds.clone();
         let vid = vid.to_string();
         let mid = mid.to_string();
@@ -2320,6 +2481,7 @@ impl VariablesEditor {
             return e.clone();
         }
         let f = number_field(cx, 64.0, Some(alpha as f64), "%", 1.0, Slot::None);
+        f.update(cx, |tf, _| tf.set_bare(true));
         let cmds = cmds.clone();
         let vid = vid.to_string();
         let mid = mid.to_string();
@@ -2459,7 +2621,9 @@ impl VariablesEditor {
                 );
                 d.on_mouse_down(MouseButton::Left, {
                     let st = st.clone();
-                    move |e: &MouseDownEvent, _, _| {
+                    move |e: &MouseDownEvent, _, cx: &mut App| {
+                        // 同 Create variable：开菜单的这一下不冒泡到根容器（否则马上被清掉）。
+                        cx.stop_propagation();
                         let items: Vec<MenuItem> = candidates
                             .iter()
                             .map(|(id, name)| MenuItem::new(name.clone(), "ui.setAlias", json!({ "variable": vid, "mode": mid, "alias": id })))
@@ -2538,7 +2702,11 @@ impl VariablesEditor {
                     .hover(move |s| s.bg(rgba(t.hover)))
                     .on_mouse_down(MouseButton::Left, {
                         let st = st.clone();
-                        move |e: &MouseDownEvent, _, _| {
+                        move |e: &MouseDownEvent, _, cx: &mut App| {
+                            // ⛔ 必须拦下冒泡：根容器（面板底）在按下时会 `menu = None`，
+                            // 这一下如果冒上去，菜单刚设上就被清掉 —— 表现就是「Create variable
+                            // 点不动」（用户 2026-11-08 指出）。
+                            cx.stop_propagation();
                             st.borrow_mut().menu = Some(Menu {
                                 x: f32::from(e.position.x),
                                 y: f32::from(e.position.y) - 130.0,
@@ -2667,26 +2835,27 @@ impl VariablesEditor {
 
     // ── 拖拽 ──────────────────────────────────────────────────────────────────────────────
 
-    /// 用按下点作为命中行的参考，重建整列的行矩形（`drag::calibrate` 的同构做法）。
-    /// 平面列表 `can_into = false`，所以 `resolve` 只会在 Above / Below 之间选，`gap` 即插入缝。
-    fn begin_drag(kind: DragList, from: usize, ids: &[String], hit: Point<Pixels>, tops: &[f32]) -> ListDragState {
+    /// 重建整列的行矩形（`drag::calibrate` 的同构做法）。平面列表 `can_into = false`，所以
+    /// `resolve` 只会在 Above / Below 之间选，`gap` 即插入缝。
+    ///
+    /// `content_top` 是**内容原点**（第 0 行的顶边）在窗口里的 y，已含纵向滚动量。有它就用它；
+    /// 没有（侧栏两个自己滚动的列表）才退回「按下点 − 按下行的内容 y」——
+    /// 那条老公式多算了**指针在行内的偏移**，按下点在行的下半部分时整列矩形（以及插入线）会整体
+    /// 偏下最多一行，这正是「拖行时插入线位置不对」的根因（用户 2026-11-08 指出）。
+    fn begin_drag(kind: DragList, from: usize, ids: &[String], hit: Point<Pixels>, tops: &[f32], content_top: Option<f32>) -> ListDragState {
         let h = match kind {
             DragList::Variables => ROW_H,
             _ => SIDE_ROW_H,
         };
-        // 变量表带分组间隔 / 分组标题，行不是等距的：用 `tops`（内容坐标里的真实顶边）
-        // 反推整列矩形。指针按下点的窗口 y 减去按下行的内容 y，就得到内容原点的窗口 y；
-        // 纵向滚动也因此自动抵消。侧栏两个列表是等距平铺，`tops` 为空，走原公式。
-        let from_top = tops.get(from).copied().unwrap_or(from as f32 * h);
-        let base_y = f32::from(hit.y) - from_top;
+        let base_y = match content_top {
+            Some(t) => t,
+            None => f32::from(hit.y) - tops.get(from).copied().unwrap_or(from as f32 * h),
+        };
         let rows: Vec<DragRow> = ids
             .iter()
             .enumerate()
             .map(|(i, _)| {
-                let y = match tops.get(i) {
-                    Some(t) => base_y + *t,
-                    None => f32::from(hit.y) - from as f32 * h + i as f32 * h,
-                };
+                let y = base_y + tops.get(i).copied().unwrap_or(i as f32 * h);
                 DragRow {
                     id: i as u64,
                     path: i.to_string(),
@@ -2699,7 +2868,50 @@ impl VariablesEditor {
         ListDragState { kind, from, ids: ids.to_vec(), rows, pointer: hit, target: None, armed: false }
     }
 
-    fn on_move(st: &State, pointer: Point<Pixels>) {
+    /// 拖动收尾 + 提交：**幂等**。正常松手（`on_mouse_up`）与「窗口外松手后指针回窗」
+    /// （`on_move` 收到按键已松开）都调它，两边调也只会提交一次（先调后各 `take` 都是 `None`）。
+    fn end_drag(st: &State, cmds: &Cmds, cid: &str, mode_ids: &[String]) {
+        {
+            let mut s = st.borrow_mut();
+            s.col_resize = None;
+            s.mode_resize = None;
+            s.resize = None;
+            s.sidebar_resize = None;
+            s.split_resize = None;
+            s.hscroll_drag = None;
+        }
+        let d = st.borrow_mut().drag.take();
+        if let Some(d) = d {
+            Self::commit_drag(st, &d, cmds);
+        }
+        // mode 列拖动：落点按「指针越过了几列的**中心**」算（与 egui `mode_gap` 同一条规则），
+        // 松手时用 state 里的列中心现算 —— 不再要求「松手那一帧恰好渲染过」。
+        // `variable.moveMode` 的 `to` 是「拿掉自己之后」的下标，所以往右落要减一。
+        let md = st.borrow_mut().mode_drag.take();
+        let gap = { let s = st.borrow(); mode_gap_at(&s.mode_cols, md.map(|(_, _, x1)| x1).unwrap_or(f32::NAN)) };
+        st.borrow_mut().mode_gap = None;
+        if let Some((from, _, _)) = md
+            && !mode_ids.is_empty()
+        {
+            let to = if gap > from { gap - 1 } else { gap };
+            if to != from
+                && let Some(mid) = mode_ids.get(from)
+            {
+                cmds.push(Cmd {
+                    id: "variable.moveMode",
+                    params: Some(json!({ "collection": cid, "mode": mid, "to": to })),
+                });
+            }
+        }
+    }
+
+    fn on_move(st: &State, pointer: Point<Pixels>, pressed: bool, cmds: &Cmds, cid: &str, mode_ids: &[String]) {
+        // 窗口外松手不会收到 `on_mouse_up`：下一帧 move 带「按键已松开」回来，在这里收尾提交，
+        // 否则回窗后列宽 / 模式列还会继续跟着鼠标乱跳（用户 2026-11-08 指出的监听失效）。
+        if !pressed {
+            Self::end_drag(st, cmds, cid, mode_ids);
+            return;
+        }
         let mut s = st.borrow_mut();
         // 横向滚动条：按住滑块（或轨道）拖动，按行程把指针位移换算成滚动量。
         if let Some((x0, off0, range, max_scroll)) = s.hscroll_drag {
@@ -2991,6 +3203,15 @@ impl VariablesEditor {
     }
 }
 
+/// mode 列拖动的落缝：指针越过了多少列的**中心**（`centers` 是各列的窗口中心 x）。
+/// 0 = 第一列之前，`centers.len()` = 最后一列之后。与 egui `mode_gap` 同一条规则。
+fn mode_gap_at(centers: &[f32], pointer_x: f32) -> usize {
+    if !pointer_x.is_finite() {
+        return 0;
+    }
+    centers.iter().filter(|c| pointer_x > **c).count()
+}
+
 /// egui `unique()`：重名时加 ` 2`、` 3`…（新建集合 / 变量 / mode 都用它）。
 fn unique(base: &str, taken: impl Fn(&str) -> bool) -> String {
     if !taken(base) {
@@ -3068,5 +3289,42 @@ fn kind_glyph(r: &VarRow) -> AnyElement {
             .border_1()
             .border_color(rgba(t.text_secondary))
             .into_any_element(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 落缝按「越过了几列的**中心**」算：拖过第 2 列中心才落到它后面，不再要求拖过整列宽。
+    #[test]
+    fn a_dragged_mode_column_lands_by_column_centres() {
+        // 三列：中心分别在 100 / 300 / 500。
+        let centers = [100.0, 300.0, 500.0];
+        assert_eq!(mode_gap_at(&centers, 40.0), 0, "第一列中心之前 → 最前");
+        assert_eq!(mode_gap_at(&centers, 120.0), 1, "越过第一列中心 → 第一列之后");
+        assert_eq!(mode_gap_at(&centers, 310.0), 2, "越过第二列中心 → 第二列之后");
+        assert_eq!(mode_gap_at(&centers, 900.0), 3, "最后一列之后 → 末尾");
+        // 非有限值（没有指针位置）不炸，落回最前。
+        assert_eq!(mode_gap_at(&centers, f32::NAN), 0);
+    }
+
+    /// 行拖动的行矩形按**内容原点**铺开：原点给它了，整列就不再随「按在行内哪个位置」上下漂移。
+    #[test]
+    fn row_rects_hang_from_the_content_origin_not_the_press_point() {
+        let ids: Vec<String> = (0..3).map(|i| format!("v{i}")).collect();
+        // 带分组的两行：内容是 [间隔 16, 表头 40, 行 40] …，这里只用两个顶边代表。
+        let tops = [0.0f32, 40.0, 120.0];
+        let press = Point { x: px(10.0), y: px(500.0) };
+        let d = VariablesEditor::begin_drag(DragList::Variables, 0, &ids, press, &tops, Some(400.0));
+        let ys: Vec<f32> = d.rows.iter().map(|r| f32::from(r.rect.origin.y)).collect();
+        assert_eq!(ys, vec![400.0, 440.0, 520.0], "行顶边 = 内容原点 + 内容坐标里的顶边");
+        // 按下点落在行的下半部分也不会把整列推下去（旧公式会整体 +100）。
+        let d = VariablesEditor::begin_drag(DragList::Variables, 0, &ids, Point { x: px(10.0), y: px(600.0) }, &tops, Some(400.0));
+        let ys: Vec<f32> = d.rows.iter().map(|r| f32::from(r.rect.origin.y)).collect();
+        assert_eq!(ys, vec![400.0, 440.0, 520.0]);
+        // 没有内容原点（侧栏列表还没量到）时才退回按下点推：这里按下点在 600，行 0 的顶边应仍是 600。
+        let d = VariablesEditor::begin_drag(DragList::Variables, 0, &ids, Point { x: px(10.0), y: px(600.0) }, &tops, None);
+        assert_eq!(f32::from(d.rows[0].rect.origin.y), 600.0);
     }
 }

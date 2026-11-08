@@ -437,6 +437,14 @@ impl Render for TextEdit {
                             let shift = window.modifiers().shift;
                             let alt = window.modifiers().alt;
                             mover.update(cx, |this, cx| {
+                                // 窗口外松手：没有 `on_mouse_up` 会送到这里，下一帧 move 才带
+                                // 着「按键已松开」回来。立刻结束 scrub，否则回窗后还会继续乱跳。
+                                if e.pressed_button != Some(MouseButton::Left) {
+                                    this.scrub = None;
+                                    this.scrub_x = None;
+                                    cx.notify();
+                                    return;
+                                }
                                 if this.scrub.is_none() {
                                     return;
                                 }

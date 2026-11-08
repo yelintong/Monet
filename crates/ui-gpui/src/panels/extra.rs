@@ -599,11 +599,10 @@ fn versions_body(app: &CanvasApp, cmds: &Cmds, state: &ExtraState, cx: &mut App)
 // Dev compare（egui `dev_compare.rs`）
 // ───────────────────────────────────────────────────────────────────────────────────────────────
 
-/// 叠加分割滑块的拖动几何：`STAGE_RECT` 由 stage 内的 canvas 每帧记下 stage 的 bounds，
-/// `DRAGGING` 记是否正在拖（与 timeline 同思路：指针位置是窗口坐标，减原点得局部 x）。
+/// 叠加分割滑块的拖动几何：`STAGE_RECT` 由 stage 内的 canvas 每帧记下 stage 的 bounds
+/// （指针位置是窗口坐标，减原点得局部 x）。拖动本身走 `drag_router`，不再需要 `DRAGGING` 标志。
 thread_local! {
     static STAGE_RECT: std::cell::RefCell<Option<gpui::Bounds<gpui::Pixels>>> = const { std::cell::RefCell::new(None) };
-    static DRAGGING: std::cell::RefCell<bool> = const { std::cell::RefCell::new(false) };
 }
 
 /// 节点渲染成可显示图像（与 `control.rs` 同路：`render_node` → `screen_image`）。
@@ -765,23 +764,25 @@ fn compare_body(app: &CanvasApp, cmds: &Cmds, state: &ExtraState, id: Option<fig
             let st = sstate.clone();
             let w = swake.clone();
             move |e: &MouseDownEvent, _window, _cx| {
-                DRAGGING.with(|d| *d.borrow_mut() = true);
+                // 分割条拖动走窗口级路由（`drag_router`）：按下即注册，之后由 CanvasView 根视图
+                // 的 `on_mouse_move` 接管，并自动按真实按键状态收尾——指针拖到变更列表一侧、甚至
+                // 拖出窗口都不会冻结，窗口外松手也不会残留（用户 2026-11-08 指出的监听失效）。
                 update_split(&st, e.position);
+                let st = st.clone();
+                let w2 = w.clone();
+                let w_end = w.clone();
+                crate::drag_router::begin(
+                    "dev-split",
+                    move |pos, _pressed, _window, _cx| {
+                        update_split(&st, pos);
+                        w2.wake();
+                    },
+                    move |_window, _cx| {
+                        w_end.wake();
+                    },
+                );
                 w.wake();
             }
-        })
-        .on_mouse_move({
-            let st = sstate.clone();
-            let w = swake.clone();
-            move |e: &MouseMoveEvent, _window, _cx| {
-                if DRAGGING.with(|d| *d.borrow()) {
-                    update_split(&st, e.position);
-                    w.wake();
-                }
-            }
-        })
-        .on_mouse_up(MouseButton::Left, move |_e: &MouseUpEvent, _window, _cx| {
-            DRAGGING.with(|d| *d.borrow_mut() = false);
         })
         .child(canvas(|_, _, _| (), move |b, _, _, _| {
             STAGE_RECT.with(|s| *s.borrow_mut() = Some(b.clone()));

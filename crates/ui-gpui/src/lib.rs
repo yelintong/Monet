@@ -37,6 +37,7 @@ mod theme;
 /// 通用列表 / 树拖拽件：把 egui 的 `list_drag` 原语、layers 的拖动效果与 variables groups 的
 /// 「左右改层级」整合为一套几何 + 状态机 + GPUI 视觉件，供任何面板复用。
 mod drag;
+mod drag_router;
 /// Motion (Beta) 动画系统：底部时间轴 + 右栏 inspector + easing + clip 设置浮窗。
 /// 控件全部复用 `widgets/`（template::Input 带插槽输入框 / PanelSection 统一网格 / Popover 窗口外壳）。
 mod motion;
@@ -1584,7 +1585,7 @@ impl CanvasView {
             w.press(at);
         }
     }
-    fn move_popup_drag(&mut self, at: Point<Pixels>) -> bool {
+    fn move_popup_drag(&mut self, at: Point<Pixels>, pressed: bool) -> bool {
         // 统一路由：resize（editor 按住边缘 handle）改窗口尺寸，否则整卡移动。**每次移动都直接
         // 改状态并让调用方 notify，绝不节流**：
         //   * GPUI 自己会把同一帧内的多次 `cx.notify()` 合并成一次渲染（按 vsync），所以「每个
@@ -1592,7 +1593,23 @@ impl CanvasView {
         //   * 反过来，手写的 12ms 节流会平白加一帧延迟，并且**丢掉松手前最后一次移动**——表现
         //     出来就是「窗口非常卡、完全不跟鼠标」。用户 2026-11-07 实测确认这是逻辑错误，
         //     不是渲染慢，根因就是这段节流。
-        self.active_window_mut().is_some_and(|w| w.variables_route_move(at))
+        self.active_window_mut().is_some_and(|w| w.variables_route_move(at, pressed))
+    }
+    /// 指针在**没有按住左键**的情况下移动：一律收掉卡片拖动。
+    ///
+    /// 这是「必须一直按住才拖」的保证：GPUI 在指针移出窗口后松手时不会补发 `mouse_up`，
+    /// 只靠 up 事件收尾的话，`grab` / `pending` 会留到下一次按下——于是松手之后光是移动鼠标，
+    /// 卡片就又开始跟着走（用户 2026-11-08 明确指出这个行为不对）。每次 move 带着真实的按键
+    /// 状态，就永远不会「没按住还拖」。
+    fn cancel_drag_if_not_held(&mut self, held: bool) -> bool {
+        if held {
+            return false;
+        }
+        let busy = self.window_drag_active();
+        if busy {
+            self.end_popup_drag();
+        }
+        busy
     }
     /// True while a detached window's header is held. The canvas skips its hover hit-testing
     /// during a drag (that is the expensive part that made dragging feel sticky).
@@ -1621,6 +1638,102 @@ impl CanvasView {
             // 同时清掉整卡移动（pending/grab）与 resize（editor 内部状态）。
             w.variables_end_drag();
         }
+    }
+    /// 画布级拖拽（平移 / 缩放 / 框选拖移 / 间距手柄 / padding 手柄）的**窗口级**路由。
+    ///
+    /// 这些拖拽原本只在画布元素的 `on_mouse_move` 里推进，指针移到画布外的面板、或拖出窗口
+    /// 就断；窗口外松手收不到 `on_mouse_up`，状态残留。把「继续拖拽」与「按键已松开→收尾」都搬
+    /// 到窗口根视图（覆盖整窗），指针离开画布/窗口也能连续，窗口外松手也能干净结束（用户
+    /// 2026-11-08 指出的监听失效）。返回 true 表示事件被拖拽消费，调用方应跳过 hover 处理。
+    fn route_canvas_drag(&mut self, e: &MouseMoveEvent, cx: &mut Context<Self>) -> bool {
+        let active = self.dragging
+            || self.pan.is_some()
+            || self.zoom_drag.is_some()
+            || self.app.selection_spacing.is_dragging()
+            || self.app.handles.drag.is_some();
+        if !active {
+            return false;
+        }
+        // 窗口外松手：下一帧 move 带「按键已松开」回来，在这里收尾——每一类画布拖拽都按
+        // 它们原本 `on_mouse_up` 的语义结束（缩放要 finish_zoom、框选/变换手柄要用「抬起」
+        // 语义写回、frame 拖动要发 Up），否则回窗后还会继续平移 / 拖手柄，或改动没落库。
+        if e.pressed_button != Some(MouseButton::Left) {
+            let pos = self.local(e.position);
+            let was_dragging = self.dragging;
+            self.pan = None;
+            let zoom_start = self.zoom_drag.take();
+            self.dragging = false;
+            if let Some(start) = zoom_start {
+                self.finish_zoom(start, pos, e.modifiers.alt);
+            }
+            if was_dragging {
+                self.send(PointerKind::Up, pos, &e.modifiers);
+            }
+            if self.app.selection_spacing.is_dragging() {
+                let _ = canvas::selection_spacing::input(
+                    &mut self.app,
+                    Some(pos),
+                    true,
+                    self.space,
+                    false,
+                    false,
+                    true,
+                    e.modifiers.platform || e.modifiers.control,
+                    e.modifiers.alt,
+                    e.modifiers.shift,
+                );
+            }
+            if self.app.handles.drag.is_some() {
+                let _ = canvas::handles::input(&mut self.app, pos, false, false, true, e.modifiers.shift);
+            }
+            cx.notify();
+            return true;
+        }
+        // 继续拖拽（与画布元素原处理逻辑一致，但由窗口级接管）。
+        let pos = self.local(e.position);
+        self.mods = e.modifiers;
+        self.pointer = Some(pos);
+        if let Some((p0, cx0, cy0)) = self.pan {
+            if let Ok(ds) = self.app.session.ds_mut() {
+                let z = ds.view.zoom.max(1e-6);
+                ds.view.cx = cx0 - f64::from(pos.x - p0.x) / z;
+                ds.view.cy = cy0 - f64::from(pos.y - p0.y) / z;
+                ds.revision += 1;
+            }
+            cx.notify();
+            return true;
+        }
+        if self.zoom_drag.is_some() {
+            cx.notify();
+            return true;
+        }
+        if self.dragging {
+            self.send(PointerKind::Move, pos, &e.modifiers);
+            cx.notify();
+            return true;
+        }
+        if self.app.selection_spacing.is_dragging() {
+            let _ = canvas::selection_spacing::input(
+                &mut self.app,
+                Some(pos),
+                true,
+                self.space,
+                false,
+                self.primary_down,
+                false,
+                e.modifiers.platform || e.modifiers.control,
+                e.modifiers.alt,
+                e.modifiers.shift,
+            );
+            cx.notify();
+            return true;
+        }
+        if self.app.handles.drag.is_some() {
+            let _ = canvas::handles::input(&mut self.app, pos, false, self.primary_down, false, e.modifiers.shift);
+            cx.notify();
+            return true;
+        }
+        true
     }
     /// 是否有窗口级拖拽正在进行（整卡移动 pending/dragging，或变量编辑器的 resize handle 按住）。
     /// 根 `on_mouse_move` 据此接管，使拖拽在指针移出「最初按下那个元素」后依然连续——
@@ -2062,24 +2175,16 @@ impl Render for CanvasView {
                 this.mods = e.modifiers;
                 let pos = this.local(e.position);
                 this.pointer = Some(pos);
+                // 画布级拖拽（平移 / 缩放 / 拖拽 Move / 多选间距手柄 / 变换手柄）统一在窗口级接管，
+                // 并按真实按键状态收尾：指针滑出窗口后在其外松手、收不到 `on_mouse_up` 时，下一帧
+                // move 带「按键已松开」回来，在这里结束拖拽，避免回窗后还继续平移 / 拖手柄。
+                if this.route_canvas_drag(e, cx) {
+                    return;
+                }
                 // 控件树拖动中：用全局指针重算落点（行间 / 列表外也能更新），跳过画布自身的
                 // Hover / 选中派发。几何由通用件的 `calibrate` 从命中行矩形重建。
                 if this.layer_tree.drag.is_some() {
                     this.layer_on_global_move(e.position, cx);
-                    return;
-                }
-                if let Some((p0, cx0, cy0)) = this.pan {
-                    if let Ok(ds) = this.app.session.ds_mut() {
-                        let z = ds.view.zoom.max(1e-6);
-                        ds.view.cx = cx0 - f64::from(pos.x - p0.x) / z;
-                        ds.view.cy = cy0 - f64::from(pos.y - p0.y) / z;
-                        ds.revision += 1;
-                    }
-                    cx.notify();
-                    return;
-                }
-                if this.zoom_drag.is_some() {
-                    cx.notify();
                     return;
                 }
                 if !this.dragging && this.guide_input(pos, false, false, e.modifiers.alt) {
@@ -2527,8 +2632,10 @@ impl Render for CanvasView {
                 move |e: &MouseMoveEvent, _window: &mut Window, cx: &mut App| {
                     // 卡片自身的 on_mouse_move 也要 notify：一旦根视图那层因为某种原因没接到
                     // move（如 cursor_grab 只把事件送到卡片），这里仍能驱动重绘，窗口才跟手。
+                    let held = e.pressed_button == Some(MouseButton::Left);
                     me.update(cx, |cv, cx| {
-                        if cv.move_popup_drag(e.position) {
+                        // 没按住左键的移动只能「收尾」，绝不能继续拖（用户 2026-11-08）。
+                        if cv.cancel_drag_if_not_held(held) || cv.move_popup_drag(e.position, held) {
                             cx.notify();
                         }
                     });
@@ -2781,8 +2888,9 @@ impl Render for CanvasView {
                 });
                 let drag_move = Rc::new(move |e: &MouseMoveEvent, _w: &mut Window, cx: &mut App| {
                     // 同通用窗口：卡片自身 move 也 notify，保证根视图没接到时窗口仍跟手。
+                    let held = e.pressed_button == Some(MouseButton::Left);
                     me_drag.update(cx, |cv, cx| {
-                        if cv.move_popup_drag(e.position) {
+                        if cv.cancel_drag_if_not_held(held) || cv.move_popup_drag(e.position, held) {
                             cx.notify();
                         }
                     });
@@ -2851,6 +2959,13 @@ impl Render for CanvasView {
             .children(self.layer_overlay())
             // 拖拽分隔线：move 改宽度（夹紧 240..=500），up 结束。
             .on_mouse_move(cx.listener(|this: &mut CanvasView, e: &MouseMoveEvent, window, cx| {
+                // 可复用拖拽路由器（dev 对比分割条等）：按下时在 on_mouse_down 里 `begin`，这里
+                // 接管。自动按真实按键状态收尾，覆盖「指针滑出窗口后松手」导致的监听失效。
+                if crate::drag_router::route_move(e.position, e.pressed_button == Some(MouseButton::Left), window, cx) {
+                    cx.notify();
+                    cx.stop_propagation();
+                    return;
+                }
                 // Space 在 Motion 时间轴里才播放：时间轴是窗口底部、高 motion_bar_h() 的那条。
                 let vh = f32::from(window.viewport_size().height);
                 crate::motion::timeline::set_pointer_in_bar(
@@ -2858,7 +2973,12 @@ impl Render for CanvasView {
                 );
                 // Easing 曲线手柄拖拽：同样由窗口级 move 接管（相对位移，不需要元素原点）。
                 if crate::motion::easing::drag_active() {
-                    crate::motion::easing::route_move(e.position);
+                    if e.pressed_button != Some(MouseButton::Left) {
+                        // 窗口外松手：优雅结束，避免卡死（与 motion / 弹窗拖拽同理）。
+                        crate::motion::easing::end_drag();
+                    } else {
+                        crate::motion::easing::route_move(e.position);
+                    }
                     cx.notify();
                 }
                 // Motion 时间轴拖拽延续：bar 自己的 on_mouse_move 只在指针悬停其命中框时触发，
@@ -2881,13 +3001,12 @@ impl Render for CanvasView {
                     // GPUI only delivers mouse events inside the window. If the button was
                     // released outside, no `on_mouse_up` arrives; the next move with no button
                     // held ends the drag instead of leaving the card glued to the pointer.
-                    if e.pressed_button != Some(MouseButton::Left) {
-                        this.end_popup_drag();
+                    if this.cancel_drag_if_not_held(e.pressed_button == Some(MouseButton::Left)) {
                         cx.notify();
                         cx.stop_propagation();
                         return;
                     }
-                    if this.move_popup_drag(e.position) {
+                    if this.move_popup_drag(e.position, e.pressed_button == Some(MouseButton::Left)) {
                         cx.notify();
                     }
                     cx.stop_propagation();
@@ -2895,10 +3014,21 @@ impl Render for CanvasView {
                 }
                 // 控件树拖动中：用全局指针重算落点，跳过分隔线拖动逻辑。
                 if this.layer_tree.drag.is_some() {
-                    this.layer_on_global_move(e.position, cx);
+                    if e.pressed_button != Some(MouseButton::Left) {
+                        // 窗口外松手：结束拖拽，避免残留导致回窗后继续乱拖。
+                        this.layer_drag_up(cx);
+                    } else {
+                        this.layer_on_global_move(e.position, cx);
+                    }
                     return;
                 }
                 let Some(side) = this.resizing else { return };
+                // 面板分隔条同样要处理「窗口外松手」：没按住就结束，否则回窗后还会继续改宽度。
+                if e.pressed_button != Some(MouseButton::Left) {
+                    this.resizing = None;
+                    cx.notify();
+                    return;
+                }
                 let dx = f32::from(e.position.x) - this.drag_start_x;
                 let w = match side {
                     ResizeSide::Left => this.drag_start_w + dx,
@@ -2913,7 +3043,13 @@ impl Render for CanvasView {
             }))
             .on_mouse_up(
                 MouseButton::Left,
-                cx.listener(|this: &mut CanvasView, _e: &MouseUpEvent, _window, cx| {
+                cx.listener(|this: &mut CanvasView, _e: &MouseUpEvent, window, cx| {
+                    // 可复用拖拽路由器（dev 对比分割条等）的收尾。
+                    if crate::drag_router::end(window, cx) {
+                        cx.notify();
+                        cx.stop_propagation();
+                        return;
+                    }
                     // Easing 手柄抬起：整段拖拽收成一个 undo step。
                     if crate::motion::easing::drag_active() {
                         crate::motion::easing::end_drag();

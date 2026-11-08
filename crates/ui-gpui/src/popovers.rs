@@ -439,10 +439,10 @@ impl WindowState {
     ///
     /// resize 优先且独占：一旦某个边缘/角 handle 按下（`editor.resizing()`），本次手势只改尺寸，
     /// 绝不启动整卡移动——否则按下右下角会被同时解读成「移动 + 缩放」，窗口乱跳。
-    pub(crate) fn variables_route_move(&mut self, at: Point<Pixels>) -> bool {
+    pub(crate) fn variables_route_move(&mut self, at: Point<Pixels>, pressed: bool) -> bool {
         if self.editor.as_ref().is_some_and(|e| e.resizing()) {
             if let Some(e) = &self.editor {
-                e.route_move(at);
+                e.route_move(at, pressed);
             }
             return true;
         }
@@ -451,7 +451,7 @@ impl WindowState {
         // 编辑器自己的 `on_mouse_move` 就不再触发，拖拽会当场冻结。
         if self.editor.as_ref().is_some_and(|e| e.internal_drag()) {
             if let Some(e) = &self.editor {
-                e.route_move(at);
+                e.route_move(at, pressed);
             }
             return true;
         }
@@ -548,6 +548,10 @@ impl WindowState {
     /// that never moves past the threshold must stay a click, or header buttons stop firing (GPUI
     /// matches a click's down/up by `ElementId`, and a repaint between them can shift the id).
     pub(crate) fn press(&mut self, at: Point<Pixels>) {
+        // 上一次整卡拖动如果没收到抬起（指针在窗口外松手时 GPUI 不发 up），这里先收干净：
+        // 否则 `grab` 会一直留着，卡片继续粘着指针走，看起来就是「松开鼠标后还在拖」
+        // （用户 2026-11-08 指出）。
+        self.end_drag();
         self.pending = Some(at);
     }
     /// The press point while the pointer is held but has not moved far enough to be a drag.
@@ -1182,12 +1186,12 @@ mod tests {
         w.press(Point { x: px(120.0), y: px(120.0) });
         assert!(w.variables_active(), "pending must mark the window active");
         // A 2px move stays inside the 3pt dead zone: must not latch, must not move.
-        assert!(!w.variables_route_move(Point { x: px(121.0), y: px(121.0) }), "still inside dead zone");
+        assert!(!w.variables_route_move(Point { x: px(121.0), y: px(121.0) }, true), "still inside dead zone");
         assert!(!w.dragging());
         assert!(w.pending().is_some());
         // A 100px move clears the dead zone: latches, then relocates `place`.
         let at = Point { x: px(220.0), y: px(220.0) };
-        assert!(w.variables_route_move(at), "card should move");
+        assert!(w.variables_route_move(at, true), "card should move");
         assert!(w.dragging());
         assert!(w.pending().is_none(), "start_drag consumed pending");
         let p = w.place.expect("place set");
