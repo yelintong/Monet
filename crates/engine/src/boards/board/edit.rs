@@ -1,7 +1,11 @@
 use super::connectors::connector_of;
 use super::derived::ends_now;
 use super::items::{add, add_text, shape_padding, text_of};
-use super::*;
+use super::{
+    Affine, AutoLayout, BTreeMap, BoardItem, BoardShape, Color, Connector, DocError, Document, End, INK, NodeId, NodeKind, Paint, Result, Routing,
+    Session, Sizing, StrokeCap, TextAlignH, TextAutoResize, TextData, Value, VectorNetwork, bad, cap_of, color_param, json, line_shade, num,
+    req_string, req_targets, require, routing_of, shape_of, string,
+};
 
 /// The label of connector `id`, if it has one.
 pub fn label_of(doc: &Document, id: NodeId) -> Option<NodeId> {
@@ -123,7 +127,7 @@ impl Restyle {
                 }
                 None => false,
             },
-            BoardItem::Connector(c) => self.restyle_connector(doc, id, c)?,
+            BoardItem::Connector(ref c) => self.restyle_connector(doc, id, c.clone())?,
             _ => false,
         };
         // Text sizes: shapes' and labels' text (stickies size theirs to fit).
@@ -137,6 +141,8 @@ impl Restyle {
     fn restyle_connector(&self, doc: &mut Document, id: NodeId, mut c: Connector) -> Result<bool> {
         let n = doc.get_mut(id)?;
         if let Some(r) = self.routing {
+            // A path shaped by hand is for the style it was shaped in.
+            c.path = c.path.filter(|_| c.routing == r);
             c.routing = r;
             n.board = Some(BoardItem::Connector(c));
         }

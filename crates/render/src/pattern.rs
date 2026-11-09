@@ -56,6 +56,7 @@ pub fn cell_pixmap(doc: &Document, pt: &PatternPaint, w: f64, h: f64, scale: f64
         skip: &[],
         only: &[],
         lod: false,
+        preview: false,
         magnified_image_pixels: false,
         under: None,
         time,
@@ -64,10 +65,12 @@ pub fn cell_pixmap(doc: &Document, pt: &PatternPaint, w: f64, h: f64, scale: f64
         page_xf: Affine::IDENTITY,
     };
     let unrotated = src.transform.inverse();
+    // The source is one level below the layer it fills, not a fresh render (#1082).
+    let depth = crate::draw::layer_depth() + 1;
     nested(|| {
         for (tx, ty) in &cell.tiles {
             let xf = Affine::scale_non_uniform(kx, ky) * Affine::translate((*tx, *ty)) * Affine::scale(cell.scale) * unrotated;
-            draw_node(&ctx, &mut pix, src.id, xf, 0);
+            draw_node(&ctx, &mut pix, src.id, xf, depth);
         }
         Some(())
     })?;

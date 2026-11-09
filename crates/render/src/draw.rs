@@ -34,6 +34,9 @@ pub struct Ctx<'a, 'd> {
     pub only: &'a [NodeId],
     /// Approximate what's too small to see in detail (canvas previews; see [`crate::lod`]).
     pub lod: bool,
+    /// A canvas preview at any zoom ([`crate::Options::lod`]): large images shown smaller than
+    /// their pixels draw from smaller copies (see [`crate::images::shown`]).
+    pub preview: bool,
     pub magnified_image_pixels: bool,
     /// The surfaces under the one being drawn into, when it is an isolated layer (for backdrops).
     pub under: Option<&'a Under<'a>>,
@@ -138,7 +141,7 @@ fn pixels_when_magnified(prep: Prepared, device_scale: f64) -> Prepared {
 fn fill_with(pix: &mut Pixmap, path: &tiny_skia::Path, paints: &[Paint], w: f64, h: f64, xf: Affine, rule: FillRule, ctx: &Ctx, mask: Option<&Mask>) {
     let scale = xf.determinant().abs().sqrt();
     for p in paints {
-        let Some(prep) = prepare_at(p, w, h, scale, ctx.doc, ctx.time) else { continue };
+        let Some(prep) = prepare_at(p, w, h, scale, ctx.doc, ctx.time, ctx.preview) else { continue };
         let prep = if ctx.magnified_image_pixels && matches!(p.kind, PaintKind::Image(_)) { pixels_when_magnified(prep, scale) } else { prep };
         let paint = tiny_skia::Paint { shader: prep.shader(), anti_alias: true, blend_mode: ts_blend(p.blend), ..Default::default() };
         if p.blend == BlendMode::PlusDarker {
@@ -326,7 +329,7 @@ fn node_outline_at(doc: &Document, n: &Node, depth: usize) -> Option<(BezPath, F
                     Some((p, c.bool_op.unwrap_or(*op)))
                 })
                 .collect();
-            Some((crate::boolean::fold_cached(&operands), FillRule::EvenOdd))
+            Some((crate::boolean::fold_cached(&operands)?, FillRule::EvenOdd))
         }
         NodeKind::Text(_) => {
             let (l, dy) = figcraft_text::layout_node(n)?;
@@ -515,6 +518,42 @@ fn int_rect(r: Rect, limit: (u32, u32)) -> Option<IntRect> {
 /// The most a layer reaches past the view for its effects, in device pixels.
 const MAX_EFFECT_MARGIN_PX: f64 = 2048.0;
 
+thread_local! {
+    /// How deep the layer being drawn on this thread is. A pattern fill draws its source inside the
+    /// layer's paint, which has no depth of its own: it goes on from here, so one depth cap bounds
+    /// the whole render, patterns in patterns included (#1082).
+    static LAYER_DEPTH: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// The depth of the layer being drawn on this thread (0 outside a render), or the one an
+/// exporter gave [`at_layer_depth`].
+pub fn layer_depth() -> usize {
+    LAYER_DEPTH.with(std::cell::Cell::get)
+}
+
+/// Run `f` as if a layer `depth` levels deep were drawing: what it renders (a layer drawn alone,
+/// a pattern cell) goes on from there. Exporters, which nest layers themselves, call the renderer
+/// through this so one depth cap bounds their nesting and the render's together (#1082).
+pub fn at_layer_depth<T>(depth: usize, f: impl FnOnce() -> T) -> T {
+    let _depth = LayerDepth::enter(depth);
+    f()
+}
+
+/// [`LAYER_DEPTH`] while a layer draws; the one around it again after (on unwinding too).
+struct LayerDepth(usize);
+
+impl LayerDepth {
+    fn enter(depth: usize) -> Self {
+        Self(LAYER_DEPTH.with(|d| d.replace(depth)))
+    }
+}
+
+impl Drop for LayerDepth {
+    fn drop(&mut self) {
+        LAYER_DEPTH.with(|d| d.set(self.0));
+    }
+}
+
 /// Draw node `id` onto `pix`, where `parent_xf` maps the parent's space to `pix` pixels.
 pub fn draw_node(ctx: &Ctx, pix: &mut Pixmap, id: NodeId, parent_xf: Affine, depth: usize) {
     if let Some(n) = ctx.doc.node(id) {
@@ -538,11 +577,11 @@ fn draw_layer(ctx: &Ctx, pix: &mut Pixmap, n: &Node, parent_xf: Affine, depth: u
     {
         return;
     }
+    let _depth = LayerDepth::enter(depth);
     let outline = ctx.outline_mode || ctx.outlined.contains(&id);
     if n.is_mask || n.opacity <= 0.0 && n.visible {
         return;
-    }
-    if !n.visible {
+    }    if !n.visible {
         // Outline mode can show hidden layers too (nothing of them is culled: a hidden layer
         // isn't counted in its parent's bounds).
         if outline && ctx.outline.hidden {
@@ -678,7 +717,7 @@ fn backdrop_layer(ctx: &Ctx, pix: &Pixmap, n: &Node, sh: &shadow::Outline, at: (
     let pad = backdrop::pad(n, ctx.scale);
     let p = i32::try_from(pad).unwrap_or(0);
     let back = backdrop::backdrop(pix, ctx.under, lx.saturating_sub(p), ly.saturating_sub(p), lw + pad * 2, lh + pad * 2)?;
-    backdrop::effects(n, sh, &back, pad, lw, lh, lxf, ctx.scale)
+    backdrop::effects(n, backdrop::EffectFrame { shape: sh, back: &back, pad, size: (lw, lh), xf: lxf, scale: ctx.scale })
 }
 
 /// Node `n`'s layer blur, noise and texture on its `layer`, in list order.

@@ -17,7 +17,7 @@
 use crate::widgets::icon::{Icon, draw_centred};
 use crate::widgets::{pt, rgba, tokens};
 use figcraft_color::{Paint, PaintKind};
-use gpui::{Bounds, Corners, IntoElement, Pixels, SharedString, Window, div, prelude::*};
+use gpui::{App, Bounds, Corners, IntoElement, Pixels, SharedString, Window, div, prelude::*};
 
 /// `figcraft_color::Color`（f32 通道）→ 画布/GPUI 的 `Color32`。
 pub(crate) fn color32(c: figcraft_color::Color) -> crate::canvas::geom::Color32 {
@@ -65,7 +65,7 @@ fn checker_rounded(window: &mut Window, bounds: Bounds<Pixels>, cell: f32, radiu
 }
 
 /// `ui-egui`'s `paint_swatch`: the paint itself on a checkerboard, a 2 pt rounding, a hairline.
-pub fn paint_swatch(window: &mut Window, bounds: Bounds<Pixels>, paint: &Paint) {
+pub fn paint_swatch(window: &mut Window, bounds: Bounds<Pixels>, paint: &Paint, cx: &App) {
     let t = tokens();
     let x0 = f32::from(bounds.origin.x);
     let y0 = f32::from(bounds.origin.y);
@@ -121,6 +121,7 @@ pub fn paint_swatch(window: &mut Window, bounds: Bounds<Pixels>, paint: &Paint) 
                 },
                 icon,
                 rgba(crate::canvas::geom::Color32::WHITE),
+                cx,
             );
         }
     }
@@ -187,7 +188,7 @@ impl IntoElement for Swatch {
                 f(window, cx);
             });
         }
-        el.child(gpui::canvas(|_bounds, _window, _cx| {}, move |bounds, _, window, _cx| paint_swatch(window, bounds, &self.paint)).size_full())
+        el.child(gpui::canvas(|_bounds, _window, _cx| {}, move |bounds, _, window, cx| paint_swatch(window, bounds, &self.paint, cx)).size_full())
     }
 }
 

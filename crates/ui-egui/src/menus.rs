@@ -27,7 +27,7 @@ pub use select_layer::open_select_layer;
 use select_layer::{SELECT_LAYER, select_layer_ask_id, select_layer_menu};
 #[cfg(test)]
 pub(crate) use tree::{AIM_REST, HOVER_DELAY, heading_for, in_triangle};
-use tree::{At, menu_frame, plain_row_hover, set_open, submenu_at};
+use tree::{At, SubmenuOptions, menu_frame, plain_row_hover, set_open, submenu_at};
 pub(crate) use tree::{forget_tree, item, separator, submenu};
 
 /// Commands the UI layer implements itself (dialogs and platform actions).
@@ -193,6 +193,11 @@ pub fn invoke(app: &mut FigApp, id: &str) {
         "collab.join" => crate::live::open_join(app, ""),
         // So is the server address for publishing (it carries the server key).
         "collab.publish" => crate::live::open_publish(app),
+        "edit.copyProperties" => {
+            if app.run(id, json!({})).is_some() {
+                app.toast(tr("Properties copied"));
+            }
+        }
         "edit.copy" | "edit.cut" => {
             let ids = app.session.selection();
             // For other apps: text layers' text, other layers as SVG; taken before a cut removes them.
@@ -212,11 +217,7 @@ pub fn invoke(app: &mut FigApp, id: &str) {
         }
         "edit.paste" => paste(app, None, None),
         "file.close" if app.session.ds().is_ok_and(|d| d.is_dirty() && d.branch_of.is_none()) => {
-            let save = pretty_shortcut(crate::shortcuts::shortcut("file.save").unwrap_or(""));
-            app.toast(trf(
-                "Unsaved changes: save first ({save}), or close the tab with {alt}-click to discard",
-                &[("save", &save), ("alt", &pretty_shortcut("Alt"))],
-            ));
+            crate::windows::ask_close_tab(app, app.session.active);
         }
         _ => {
             app.run(id, json!({}));
@@ -408,8 +409,12 @@ pub fn popups(app: &mut FigApp, ctx: &egui::Context) {
                 }
                 ui.add_space(6.0);
                 for top in TOP_MENUS {
-                    if submenu_at(ui, Id::unique(("menu", *top)), top, tr(top), 12.0, false, &t, |ui| menu_level(app, ui, top).then_some(()))
-                        .is_some()
+                    if submenu_at(
+                        ui,
+                        SubmenuOptions { area: Id::unique(("menu", *top)), key: top, label: tr(top), gap: 12.0, constrain: false, tokens: &t },
+                        |ui| menu_level(app, ui, top).then_some(()),
+                    )
+                    .is_some()
                     {
                         close = true;
                     }
@@ -472,6 +477,10 @@ pub fn popups(app: &mut FigApp, ctx: &egui::Context) {
                     .ok()
                     .filter(|doc| figcraft_engine::cmd::component::can_combine_variants(doc, &app.session.selection()))
                     .map(|_| i18n::command("component.combineVariants", "Combine as variants"));
+                // One layer with an image fill can be cropped (judged on the selection, as above).
+                let crop = app.session.doc().ok().is_some_and(|doc| {
+                    matches!(app.session.selection().as_slice(), [id] if doc.node(*id).and_then(figcraft_engine::cmd::image::top_image_fill).is_some())
+                });
                 let copy_link = i18n::command("edit.copyLink", "Copy link to selection");
                 let mut entries: Vec<(&str, &str)> = if has_sel {
                     vec![
@@ -494,6 +503,7 @@ pub fn popups(app: &mut FigApp, ctx: &egui::Context) {
                         (tr("Use as mask"), "object.mask"),
                         ("-", ""),
                         (tr("Add auto layout"), "layout.add"),
+                        (tr("Remove all auto layout"), "layout.removeAll"),
                         (tr("Create component"), "component.create"),
                         (tr("Detach instance"), "component.detach"),
                         ("-", ""),
@@ -534,6 +544,9 @@ pub fn popups(app: &mut FigApp, ctx: &egui::Context) {
                     && let Some(at) = entries.iter().position(|e| e.1 == "component.create")
                 {
                     entries.insert(at + 1, (label, "component.combineVariants"));
+                }
+                if crop && let Some(at) = entries.iter().position(|e| e.1 == "object.mask") {
+                    entries.insert(at + 1, (tr("Crop image"), "image.crop"));
                 }
                 // An instance's actions reach its main component: replace "Create component" with
                 // "Go to main component" (as in Figma's context menu).

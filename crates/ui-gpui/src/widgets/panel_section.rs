@@ -193,6 +193,51 @@ pub fn panel_section(title: impl Into<SharedString>) -> PanelSection {
     PanelSection::new(title)
 }
 
+/// 把若干 `FieldRow` 铺成统一网格的行容器。`PanelSection` 和「无标题的内容块」共用这一份，
+/// 免得调用方为了塞进 `Div::child` 又手抄一遍列宽。
+fn render_rows(rows: Vec<FieldRow>) -> Div {
+    let mut body = div().flex().flex_col().w_full().gap(pt(0.0));
+    for row in rows {
+        let FieldRow { fields, trailing, span, free, height } = row;
+        if let Some(el) = free {
+            body = body.child(el);
+            continue;
+        }
+        let row_h = height.unwrap_or(ROW_H);
+        let mut line =
+            dbg_frame(div().flex().flex_row().items_center().w_full().h(pt(row_h)).gap(pt(GRID_GAP)).pl(pt(PAD)).pr(pt(PAD_RIGHT)), 0x0A84FF);
+        let supplied = fields.len();
+        for f in fields {
+            line = line.child(dbg_frame(div().flex_1().min_w(pt(0.0)).h_full().flex().items_center().child(f), 0x30D158));
+        }
+        if span < 2 {
+            for _ in supplied..2 {
+                line = line.child(dbg_frame(div().flex_1().min_w(pt(0.0)).h_full(), 0x30D158));
+            }
+        }
+        // **One** 24 pt column — a separate "blank 24" plus "trailing 24" would shift every row.
+        let count = trailing.len().max(1) as f32;
+        let mut cell = div().flex_none().w(pt(SLOT * count)).h_full().flex().items_center();
+        for t in trailing {
+            cell = cell.child(t);
+        }
+        line = line.child(dbg_frame(cell, 0xBF5AF2));
+        body = body.child(line);
+    }
+    body
+}
+
+/// 一行也能独立成一个元素：右栏的 `header()` / `section()` 刻意不要区块标题，
+/// 直接把 `field_row(...)` 塞进 `Div::child`（以前 `FieldRow` 只能喂给
+/// `PanelSection::child`，于是这两处一直编译不过）。
+impl IntoElement for FieldRow {
+    type Element = Div;
+
+    fn into_element(self) -> Div {
+        render_rows(vec![self])
+    }
+}
+
 impl IntoElement for PanelSection {
     type Element = Div;
 
@@ -205,48 +250,7 @@ impl IntoElement for PanelSection {
             header = header.trail(trail);
         }
 
-        // Every row is the same line: `PAD | field 1fr | field 1fr | 24 | 24? | PAD_RIGHT`, with
-        // an 8 pt gutter between them and no vertical gap (the 32 pt row is the pitch). A row with
-        // `span = 2` gives its single element both field columns — `col * 2 + gutter`, exactly the
-        // width `ui-egui` hands a dropdown — while the 24 pt columns stay put.
-        //
-        // Debug colours (only when `FC_DEBUG_LAYOUT` is set):
-        //   blue = a row, green = a field column, orange = the 24 pt blank column, purple = trailing.
-        let mut body = div().flex().flex_col().w_full().gap(pt(0.0));
-
-        for row in self.rows {
-            let FieldRow { fields, trailing, span, free, height } = row;
-            if let Some(el) = free {
-                body = body.child(el);
-                continue;
-            }
-            let row_h = height.unwrap_or(ROW_H);
-            let mut line =
-                dbg_frame(div().flex().flex_row().items_center().w_full().h(pt(row_h)).gap(pt(GRID_GAP)).pl(pt(PAD)).pr(pt(PAD_RIGHT)), 0x0A84FF);
-            let supplied = fields.len();
-            for f in fields {
-                // A spanning row has no second field column, so its one growing cell takes
-                // `col * 2 + gutter` on its own (one fewer gutter is exactly that width).
-                line = line.child(dbg_frame(div().flex_1().min_w(pt(0.0)).h_full().flex().items_center().child(f), 0x30D158));
-            }
-            // A normal row always keeps both field columns; a one-field row leaves the second empty.
-            if span < 2 {
-                for _ in supplied..2 {
-                    line = line.child(dbg_frame(div().flex_1().min_w(pt(0.0)).h_full(), 0x30D158));
-                }
-            }
-            // **One** 24 pt column
-            // (`menu.rs::block_inset`). 之前这里先画一列「空 24」再画一列「trailing 24」，多出整整
-            // 一列 24：两列各少 12 pt、整行右移，正是所有行宽度/对齐错误的根源。
-            // 有 trailing 元素时它就是那一列；一个 24 pt 元素一个 24 pt，没有时留空。
-            let count = trailing.len().max(1) as f32;
-            let mut cell = div().flex_none().w(pt(SLOT * count)).h_full().flex().items_center();
-            for t in trailing {
-                cell = cell.child(t);
-            }
-            line = line.child(dbg_frame(cell, 0xBF5AF2));
-            body = body.child(line);
-        }
+        let body = render_rows(self.rows);
 
         // `SECTION_BOTTOM` (12 pt) is the shared control's gap between the rows and the divider
         // that `right_panel` draws after each section.

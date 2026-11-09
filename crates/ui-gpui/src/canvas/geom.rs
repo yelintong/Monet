@@ -398,7 +398,7 @@ impl Color32 {
         let parse2 = |i: usize| {
             let hi = (b[i] as char).to_digit(16)?;
             let lo = (b[i + 1] as char).to_digit(16)?;
-            Some(((hi * 16 + lo) as u8))
+            Some((hi * 16 + lo) as u8)
         };
         match b.len() {
             3 => Some(Self([parse2(0)? * 17, parse2(1)? * 17, parse2(2)? * 17, 255])),

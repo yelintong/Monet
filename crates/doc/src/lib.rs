@@ -10,6 +10,7 @@
 
 pub mod anim;
 pub mod board;
+pub mod board_route;
 pub mod colors;
 pub mod comments;
 pub mod facilitation;
@@ -29,6 +30,7 @@ pub mod vector_regions;
 
 pub use anim::*;
 pub use board::*;
+pub use board_route::{END_GAP, MAX_RUNS, RouteEnd, attach_points, attached_sides, path_handles, reshaped, route_along, route_points};
 pub use colors::*;
 pub use comments::*;
 pub use facilitation::*;
@@ -165,6 +167,26 @@ pub struct ImageData {
     pub height: u32,
 }
 
+impl ImageData {
+    /// Largest encoded image a document takes from outside: an image member of a `.fig` or
+    /// `.sketch` file, an image file a REST import reads, an image entry from a live session.
+    pub const MAX_BYTES: u64 = 256 * 1024 * 1024;
+
+    /// Whether `key` claims to be a content hash: 64 hex digits, the shape of the sha256 hex
+    /// `figcraft_format::image_hash` makes. Bytes stored under such a key must hash to it.
+    pub fn claims_content_hash(key: &str) -> bool {
+        key.len() == 64 && key.bytes().all(|b| b.is_ascii_hexdigit())
+    }
+
+    /// Whether `key` can name an image: 1–128 ASCII letters, digits, `-` and `_` (content hashes,
+    /// the svg importer's FNV keys, the REST importer's `rest-image-missing` placeholder). A key
+    /// becomes an archive member name (`images/<key>`) when the file is saved, so only these are
+    /// read back from a file or taken from a collaborator: never `/`, `.` or other path text.
+    pub fn is_valid_key(key: &str) -> bool {
+        (1..=128).contains(&key.len()) && key.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+    }
+}
+
 /// A whole design file.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Document {
@@ -230,6 +252,9 @@ pub struct Document {
     /// exported, and pages at their defaults are left out of the file.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub timelines: BTreeMap<NodeId, crate::anim::motion::TimelineSettings>,
+    /// Ended votes' results kept in the file, oldest first.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub vote_history: Vec<VoteRecord>,
 }
 
 impl Default for Document {
@@ -274,6 +299,7 @@ impl Document {
             vote: None,
             votes: BTreeMap::new(),
             timelines: BTreeMap::new(),
+            vote_history: Vec::new(),
         }
     }
 
@@ -558,6 +584,19 @@ impl Document {
         for d in self.subtree(id) {
             self.nodes.remove(&d);
             self.dirty.touch(d);
+        }
+        Ok(())
+    }
+
+    /// Remove every child of `id` with its subtree, in one pass over `id`'s child list (removing
+    /// them one by one would search that list once per child).
+    pub fn remove_children(&mut self, id: NodeId) -> DocResult<()> {
+        let kids = std::mem::take(&mut self.get_mut(id)?.children);
+        for c in kids {
+            for d in self.subtree(c) {
+                self.nodes.remove(&d);
+                self.dirty.touch(d);
+            }
         }
         Ok(())
     }
@@ -1183,7 +1222,7 @@ impl Document {
             .styles
             .iter()
             .filter_map(|s| match &s.kind {
-                StyleKind::Text { style } => Some((s.id.clone(), style.clone())),
+                StyleKind::Text { style, .. } => Some((s.id.clone(), style.clone())),
                 _ => None,
             })
             .collect();

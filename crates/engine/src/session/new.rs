@@ -1,4 +1,4 @@
-use super::*;
+use super::{Arc, Clipboard, DocState, Document, Prefs, Session, background, cmd, events, library, live, plugins, tools};
 
 impl Session {
     /// A session with one new document.
@@ -14,7 +14,9 @@ impl Session {
             docs: Vec::new(),
             active: 0,
             clipboard: Clipboard::default(),
+            default_props: Default::default(),
             prefs: Prefs::default(),
+            prefs_unsaved: false,
             tool: tools::ToolState::default(),
             ui_requests: Vec::new(),
             ui_dark: None,
@@ -28,6 +30,10 @@ impl Session {
             plugins: plugins::Runtime::default(),
             live: live::Lives::default(),
             background: background::Background::default(),
+            events: Arc::new(events::EventLog::default()),
+            pending_events: Vec::new(),
+            agent: None,
+            agent_presence: None,
         }
     }
 
@@ -84,7 +90,7 @@ impl Session {
     /// decides), so it runs after every command and after undo and redo; the interface also calls it
     /// each frame, because the active document can change without a command.
     pub fn sync_icon_fonts(&self) -> usize {
-        self.ds().map(|ds| iconfont::sync_icon_fonts(&ds.doc)).unwrap_or(0)
+        self.ds().map(|ds| crate::iconfont::sync_icon_fonts(&ds.doc)).unwrap_or(0)
     }
 
     /// Files new to the session start with the View toggles the preferences keep.

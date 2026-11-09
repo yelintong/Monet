@@ -39,9 +39,9 @@ pub mod swatch;
 pub mod variable;
 
 pub use color_field::{ColorField, ColorText, paint_label};
-pub use dropdown::{DropLead, Dropdown, dropdown, dropdown_lead};
+pub use dropdown::{DropLead, Dropdown, MenuAnchor, dropdown, dropdown_lead, menu_anchor, set_active_menu};
 pub use menu::{MenuRow, color_picker, menu_popup, popup_backdrop};
-pub use menu_aim::{AimAction, MENU_AIM_REST, MENU_HOVER_DELAY, MenuAim, toward};
+pub use menu_aim::{AimAction, MENU_AIM_ENABLED, MENU_AIM_REST, MENU_HOVER_DELAY, MenuAim, toward};
 pub use menu_popup::{Menu, RectAlign, Width, at_point, menu, menu_surface, point_anchor};
 pub use swatch::{Swatch, checker, paint_name, paint_swatch, swatch};
 pub use variable::{Bound, bound_field, variable_button};

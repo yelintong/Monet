@@ -334,7 +334,7 @@ pub fn read_proto(doc: &Document, ids: &[NodeId], page: Option<NodeId>) -> Proto
                         Action::OpenOverlay { dest, .. } => format!("Open overlay {}", node_name(doc, *dest)),
                         Action::SwapOverlay { dest } => format!("Swap overlay to {}", node_name(doc, *dest)),
                         Action::ChangeTo { dest } => format!("Change to {}", node_name(doc, *dest)),
-                        Action::OpenUrl { url } if !url.is_empty() => format!("Open link {url}"),
+                        Action::OpenUrl { url, .. } if !url.is_empty() => format!("Open link {url}"),
                         other => other.label().to_string(),
                     };
                     parts.push(label.clone());

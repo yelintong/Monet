@@ -6,30 +6,44 @@
 //   - 调试边框（FC_DEBUG_LAYOUT）一律按「字形墨盒」绘制，不得退回行盒（ascent+descent）。
 //   - 小标题（sublabels / sublabels2）字形上方保留 pt(4.0) 留白，不得删除。
 //   - 统一网格（segmented、sublabels2 空列、field 行）一律 w_full + flex_1，禁止手算列宽。
+//
+// 2026-11-08 用户确认 P0-1 落地蓝图（上一轮交付的对比报告，本轮「继续」）后授权本次解冻：
+// 第 3 步要求给标签条补 Home / Sun / Moon / Play / Win* / LiveDisconnected 共 8 个变体，
+// 并按上游 #1729 的 20/32/12/26pt 图标规范使用。本次**只新增枚举变体与其绘制分支**，
+// 三条不变量、既有 70 个变体的绘制与所有控件行为一律未动。
+//
+// 2026-11-08 二次解冻（用户指令原文）：
+//   「还有你当前这个 SVG 的渲染东西有 bug，我建议你也去抄一下 kit」
+//   前置约束：「注意我是让你抄它的，不是让你把整个库搬过来」
+//   → 按外部组件库 `gpui-kit` 的 Icon 公开契约（IconName → SVG 资源路径 → `.text_color()`）
+//     在**本地**实现，不引入 gpui-kit / gpui_component 依赖。
 // ============================================================================
-//! FigCraft's icon set, drawn in code as filled vector glyphs.
+//! FigCraft's icon set, rendered as real SVG assets through GPUI's SVG pipeline.
 //!
-//! GPUI 0.2.1 has no SVG-string element and no icon font, and its `Path` is an atlas-backed triangle
-//! fan, so each glyph is composed from filled triangles. The grid is the 16×16 design box; `size`
-//! scales it. Callers pass an `Icon` and a colour; the element draws whatever it knows and falls
-//! back to a neutral dot for the rest.
+//! GPUI 0.2.1 **does** have an SVG element (`svg()` / `Svg`) and `Window::paint_svg()`; the old
+//! header claimed otherwise. The previous implementation hand-built every glyph out of filled
+//! triangles via `PathBuilder::fill()`: circles were 16/22-segment polygons, diagonal strokes
+//! were two triangles with visible seams, and `PathBuilder` curve fills are broken on 0.2.1
+//! (see `canvas/painter.rs`). That is the rendering bug this module fixes.
+//!
+//! Contract copied from `gpui-kit`'s `Icon` (implementation, not the crate):
+//! - `IconName`-like enum → a stable asset path `icons/<kebab-name>.svg`;
+//! - the bytes come from an `AssetSource` registered with `Application::with_assets()`
+//!   (kit's `.data(include_bytes!(...))` / `.path(...)` equivalence);
+//! - colour is applied with `.text_color()` (kit's `.text_color(cx.theme().red)`), i.e. GPUI
+//!   renders the SVG into an alpha mask and tints it with the given `Hsla`;
+//! - size is `.with_size(px(n))` over a 16x16 viewBox (here `.w().h().flex_none()`).
+//!
+//! The geometry table below is ported from `ui-egui/src/icons/draw.rs` on a 16x16 grid. It is
+//! unchanged: the helpers now emit SVG primitives in grid units instead of pixel triangles.
+//! `ox/oy/s` are kept (0, 0, 16) so every match arm stays byte-for-byte the same.
+
+use std::{borrow::Cow, sync::OnceLock};
 
 use gpui::{
-    App, Bounds, Element, ElementId, GlobalElementId, InspectorElementId, IntoElement, LayoutId, PathBuilder, Pixels, Point, Style, Window, px,
+    App, AssetSource, Bounds, Hsla, IntoElement, Pixels, Point, Result, SharedString,
+    TransformationMatrix, Window, prelude::*, px, svg,
 };
-
-/// 让旧的 `push_triangle` 调用继续可用：`Path` 的手写三角面路径在 0.2.1 里 bounds 从 (0,0) 起算，
-/// 常被剔除而**画不出来**；改走仓库里已验证可用的 `PathBuilder::fill()` + `add_polygon`。
-trait TriPush {
-    fn push_triangle(&mut self, xy: (Point<Pixels>, Point<Pixels>, Point<Pixels>), st: (Point<f32>, Point<f32>, Point<f32>));
-}
-
-impl TriPush for PathBuilder {
-    fn push_triangle(&mut self, xy: (Point<Pixels>, Point<Pixels>, Point<Pixels>), _st: (Point<f32>, Point<f32>, Point<f32>)) {
-        self.add_polygon(&[xy.0, xy.1, xy.2], true);
-    }
-}
-use gpui::{DefiniteLength, Length, Size};
 
 /// Every icon FigCraft's UI can show. The names mirror `crates/ui-egui/src/icons.rs` so the two
 /// front-ends share one vocabulary; glyphs are drawn for the common ones and fall back otherwise.
@@ -59,6 +73,8 @@ pub enum Icon {
     Ellipse,
     /// Outlined rectangle (a `Frame` / `Group` node kind).
     Frame,
+    /// A frame outline with four inward arrowheads — "fit to contents" (`object.resizeToFit`).
+    FitContents,
     /// The letter "T" (a `Text` node kind).
     Text,
     /// Filled diamond (a `Component` / `ComponentSet` node kind).
@@ -153,88 +169,349 @@ pub enum Icon {
     Intersect,
     /// Two rings only (boolean `Exclude`).
     Exclude,
+    // ── 标签条（上游 `ui-egui/src/tabs.rs`，P0-1）──────────────────────────────────────────
+    /// Home tab: a house.
+    Home,
+    /// Light/dark theme toggle: the sun (shown in dark theme).
+    Sun,
+    /// Light/dark theme toggle: the moon (shown in light theme).
+    Moon,
+    /// A presentation tab's play triangle.
+    Play,
+    /// Frameless title bar: minimise.
+    WinMinimize,
+    /// Frameless title bar: maximise.
+    WinMaximize,
+    /// Frameless title bar: restore.
+    WinRestore,
+    /// A live session whose connection dropped.
+    LiveDisconnected,
 }
 
-/// An icon drawn as a filled vector glyph.
-pub struct IconGlyph {
+impl Icon {
+    /// 全部图标，按枚举声明顺序（kit `IconName` 的等价物）。
+    /// 图标资源表、`AssetSource::list()`、单测都以这张表为准。
+    pub const ALL: &'static [Icon] = &[
+        Icon::Plus,
+        Icon::Minus,
+        Icon::Close,
+        Icon::Check,
+        Icon::ChevronDown,
+        Icon::ChevronUp,
+        Icon::ChevronLeft,
+        Icon::ChevronRight,
+        Icon::Search,
+        Icon::Dot,
+        Icon::Variable,
+        Icon::LinkOn,
+        Icon::LinkOff,
+        Icon::Section,
+        Icon::Panel,
+        Icon::Menu,
+        Icon::Settings,
+        Icon::Trash,
+        Icon::Rectangle,
+        Icon::Ellipse,
+        Icon::Frame,
+        Icon::FitContents,
+        Icon::Text,
+        Icon::Component,
+        Icon::Instance,
+        Icon::Page,
+        Icon::Image,
+        Icon::ViewGrid,
+        Icon::Detach,
+        Icon::AlignLeft,
+        Icon::AlignHCenter,
+        Icon::AlignRight,
+        Icon::AlignTop,
+        Icon::AlignVCenter,
+        Icon::AlignBottom,
+        Icon::DistributeH,
+        Icon::Rotate,
+        Icon::FlipH,
+        Icon::FlipV,
+        Icon::Angle,
+        Icon::AbsolutePosition,
+        Icon::Move,
+        Icon::Hand,
+        Icon::Scale,
+        Icon::Slice,
+        Icon::Line,
+        Icon::Arrow,
+        Icon::Polygon,
+        Icon::Star,
+        Icon::Pen,
+        Icon::Pencil,
+        Icon::ShapeBuilder,
+        Icon::TextOnPath,
+        Icon::Comment,
+        Icon::Actions,
+        Icon::Panels,
+        Icon::Eye,
+        Icon::Animation,
+        Icon::Code,
+        Icon::Group,
+        Icon::Vector,
+        Icon::ComponentSet,
+        Icon::IconKind,
+        Icon::Slot,
+        Icon::Lock,
+        Icon::Unlock,
+        Icon::EyeOff,
+        Icon::Union,
+        Icon::Subtract,
+        Icon::Intersect,
+        Icon::Exclude,
+        Icon::Home,
+        Icon::Sun,
+        Icon::Moon,
+        Icon::Play,
+        Icon::WinMinimize,
+        Icon::WinMaximize,
+        Icon::WinRestore,
+        Icon::LiveDisconnected,
+    ];
+
+    /// 资源名（kebab-case，对应 `icons/<name>.svg`）。
+    pub fn asset_name(self) -> &'static str {
+        match self {
+            Icon::Plus => "plus",
+            Icon::Minus => "minus",
+            Icon::Close => "close",
+            Icon::Check => "check",
+            Icon::ChevronDown => "chevron-down",
+            Icon::ChevronUp => "chevron-up",
+            Icon::ChevronLeft => "chevron-left",
+            Icon::ChevronRight => "chevron-right",
+            Icon::Search => "search",
+            Icon::Dot => "dot",
+            Icon::Variable => "variable",
+            Icon::LinkOn => "link-on",
+            Icon::LinkOff => "link-off",
+            Icon::Section => "section",
+            Icon::Panel => "panel",
+            Icon::Menu => "menu",
+            Icon::Settings => "settings",
+            Icon::Trash => "trash",
+            Icon::Rectangle => "rectangle",
+            Icon::Ellipse => "ellipse",
+            Icon::Frame => "frame",
+            Icon::FitContents => "fit-contents",
+            Icon::Text => "text",
+            Icon::Component => "component",
+            Icon::Instance => "instance",
+            Icon::Page => "page",
+            Icon::Image => "image",
+            Icon::ViewGrid => "view-grid",
+            Icon::Detach => "detach",
+            Icon::AlignLeft => "align-left",
+            Icon::AlignHCenter => "align-h-center",
+            Icon::AlignRight => "align-right",
+            Icon::AlignTop => "align-top",
+            Icon::AlignVCenter => "align-v-center",
+            Icon::AlignBottom => "align-bottom",
+            Icon::DistributeH => "distribute-h",
+            Icon::Rotate => "rotate",
+            Icon::FlipH => "flip-h",
+            Icon::FlipV => "flip-v",
+            Icon::Angle => "angle",
+            Icon::AbsolutePosition => "absolute-position",
+            Icon::Move => "move",
+            Icon::Hand => "hand",
+            Icon::Scale => "scale",
+            Icon::Slice => "slice",
+            Icon::Line => "line",
+            Icon::Arrow => "arrow",
+            Icon::Polygon => "polygon",
+            Icon::Star => "star",
+            Icon::Pen => "pen",
+            Icon::Pencil => "pencil",
+            Icon::ShapeBuilder => "shape-builder",
+            Icon::TextOnPath => "text-on-path",
+            Icon::Comment => "comment",
+            Icon::Actions => "actions",
+            Icon::Panels => "panels",
+            Icon::Eye => "eye",
+            Icon::Animation => "animation",
+            Icon::Code => "code",
+            Icon::Group => "group",
+            Icon::Vector => "vector",
+            Icon::ComponentSet => "component-set",
+            Icon::IconKind => "icon-kind",
+            Icon::Slot => "slot",
+            Icon::Lock => "lock",
+            Icon::Unlock => "unlock",
+            Icon::EyeOff => "eye-off",
+            Icon::Union => "union",
+            Icon::Subtract => "subtract",
+            Icon::Intersect => "intersect",
+            Icon::Exclude => "exclude",
+            Icon::Home => "home",
+            Icon::Sun => "sun",
+            Icon::Moon => "moon",
+            Icon::Play => "play",
+            Icon::WinMinimize => "win-minimize",
+            Icon::WinMaximize => "win-maximize",
+            Icon::WinRestore => "win-restore",
+            Icon::LiveDisconnected => "live-disconnected",
+        }
+    }
+
+    /// kit `Icon::empty().path("icons/my-brand-logo.svg")` 的等价物：图标 → 资源路径。
+    pub fn asset_path(self) -> SharedString {
+        let asset = &table()[self as usize];
+        debug_assert_eq!(asset.icon, self, "Icon 判别值与资源表顺序不一致");
+        asset.path.clone()
+    }
+}
+
+/// 一个图标的静态资源（路径 + 生成好的 SVG 字节）。
+struct IconAsset {
     icon: Icon,
-    color: gpui::Rgba,
-    size: f32,
+    name: &'static str,
+    path: SharedString,
+    svg: Vec<u8>,
 }
 
-impl IconGlyph {
-    /// A `size`×`size` glyph in `color`.
-    pub fn new(icon: Icon, color: impl Into<gpui::Rgba>, size: f32) -> Self {
-        Self { icon, color: color.into(), size }
-    }
+/// 只在首次访问时把 79 个图标编译成 SVG；之后 `AssetSource::load()` 零拷贝返回。
+static TABLE: OnceLock<Vec<IconAsset>> = OnceLock::new();
+
+fn table() -> &'static Vec<IconAsset> {
+    TABLE.get_or_init(|| {
+        Icon::ALL
+            .iter()
+            .map(|&icon| {
+                let name = icon.asset_name();
+                let path = SharedString::from(format!("icons/{name}.svg"));
+                let svg = svg_canvas(icon).to_svg().into_bytes();
+                IconAsset { icon, name, path, svg }
+            })
+            .collect()
+    })
 }
 
-impl Element for IconGlyph {
-    type RequestLayoutState = ();
-    type PrepaintState = ();
+/// 本地 `AssetSource`：把 `icons/<name>.svg` 映射到内存里的 SVG 字节。
+///
+/// 这就是 kit 里 `.data(include_bytes!("search.svg"))` / `.path("icons/...")` 背后的机制。
+/// GPUI 的默认资源源是 `()`（什么都不加载），所以**必须**在 `Application` 上注册本类型，
+/// 否则 `svg()` 会静默不画。项目里的 `img(ImageSource::Render(...))` 不经过 `AssetSource`，
+/// 不受影响。
+pub struct IconAssets;
 
-    fn id(&self) -> Option<ElementId> {
-        None
-    }
-
-    fn source_location(&self) -> Option<&'static std::panic::Location<'static>> {
-        None
-    }
-
-    fn request_layout(
-        &mut self,
-        _gid: Option<&GlobalElementId>,
-        _iid: Option<&InspectorElementId>,
-        window: &mut Window,
-        cx: &mut App,
-    ) -> (LayoutId, ()) {
-        let s = px(self.size);
-        let style = Style {
-            size: Size { width: Length::Definite(DefiniteLength::from(s)), height: Length::Definite(DefiniteLength::from(s)) },
-            ..Style::default()
+impl AssetSource for IconAssets {
+    fn load(&self, path: &str) -> Result<Option<Cow<'static, [u8]>>> {
+        let Some(name) = path
+            .strip_prefix("icons/")
+            .and_then(|rest| rest.strip_suffix(".svg"))
+        else {
+            return Ok(None);
         };
-        (window.request_layout(style, std::iter::empty(), cx), ())
+        Ok(table()
+            .iter()
+            .find(|a| a.name == name)
+            .map(|a| Cow::Borrowed(a.svg.as_slice())))
     }
 
-    fn prepaint(
-        &mut self,
-        _gid: Option<&GlobalElementId>,
-        _iid: Option<&InspectorElementId>,
-        _bounds: Bounds<Pixels>,
-        _rl: &mut Self::RequestLayoutState,
-        _window: &mut Window,
-        _cx: &mut App,
-    ) {
-    }
-
-    fn paint(
-        &mut self,
-        _gid: Option<&GlobalElementId>,
-        _iid: Option<&InspectorElementId>,
-        bounds: Bounds<Pixels>,
-        _rl: &mut Self::RequestLayoutState,
-        _pp: &mut Self::PrepaintState,
-        window: &mut Window,
-        _cx: &mut App,
-    ) {
-        draw(window, bounds, self.icon, self.color);
+    fn list(&self, path: &str) -> Result<Vec<SharedString>> {
+        if path.is_empty() || path == "icons" || path == "icons/" {
+            Ok(table().iter().map(|a| a.path.clone()).collect())
+        } else {
+            Ok(Vec::new())
+        }
     }
 }
 
-impl IntoElement for IconGlyph {
-    type Element = Self;
-    fn into_element(self) -> Self::Element {
-        self
+/// 16x16 viewBox 的矢量图元收集器。坐标都是设计网格单位（0..16）。
+#[derive(Default)]
+struct SvgCanvas {
+    shapes: Vec<String>,
+}
+
+impl SvgCanvas {
+    fn polygon(&mut self, pts: &[(f32, f32)]) {
+        if pts.len() < 3 {
+            return;
+        }
+        let d = pts
+            .iter()
+            .enumerate()
+            .map(|(i, (x, y))| format!("{}{:.3} {:.3}", if i == 0 { "M" } else { "L" }, x, y))
+            .collect::<Vec<_>>()
+            .join(" ");
+        self.shapes.push(format!("<path d=\"{d} Z\"/>"));
+    }
+
+    fn line(&mut self, x0: f32, y0: f32, x1: f32, y1: f32, w: f32) {
+        self.polyline(&[(x0, y0), (x1, y1)], false, w);
+    }
+
+    fn polyline(&mut self, pts: &[(f32, f32)], closed: bool, w: f32) {
+        if pts.len() < 2 {
+            return;
+        }
+        let mut d = String::new();
+        for (i, (x, y)) in pts.iter().enumerate() {
+            d.push_str(&format!("{}{:.3} {:.3} ", if i == 0 { "M" } else { "L" }, x, y));
+        }
+        if closed {
+            d.push('Z');
+        }
+        // Round caps/joins replace the two-triangle strokes: no seams, no polygonal corners.
+        self.shapes.push(format!(
+            "<path d=\"{d}\" fill=\"none\" stroke=\"#000\" stroke-width=\"{w:.3}\" stroke-linecap=\"round\" stroke-linejoin=\"round\"/>"
+        ));
+    }
+
+    fn disc(&mut self, cx: f32, cy: f32, r: f32) {
+        self.shapes
+            .push(format!("<circle cx=\"{cx:.3}\" cy=\"{cy:.3}\" r=\"{:.3}\"/>", r.max(0.0)));
+    }
+
+    fn ring(&mut self, cx: f32, cy: f32, r: f32, w: f32) {
+        self.shapes.push(format!(
+            "<circle cx=\"{cx:.3}\" cy=\"{cy:.3}\" r=\"{:.3}\" fill=\"none\" stroke=\"#000\" stroke-width=\"{w:.3}\"/>",
+            r.max(0.0)
+        ));
+    }
+
+    fn rect(&mut self, x0: f32, y0: f32, x1: f32, y1: f32) {
+        let (x, w) = ordered(x0, x1);
+        let (y, h) = ordered(y0, y1);
+        self.shapes.push(format!(
+            "<rect x=\"{x:.3}\" y=\"{y:.3}\" width=\"{w:.3}\" height=\"{h:.3}\"/>"
+        ));
+    }
+
+    fn outline_rect(&mut self, x0: f32, y0: f32, x1: f32, y1: f32, w: f32) {
+        let (x, wd) = ordered(x0, x1);
+        let (y, h) = ordered(y0, y1);
+        self.shapes.push(format!(
+            "<rect x=\"{x:.3}\" y=\"{y:.3}\" width=\"{wd:.3}\" height=\"{h:.3}\" fill=\"none\" stroke=\"#000\" stroke-width=\"{w:.3}\"/>"
+        ));
+    }
+
+    fn to_svg(self) -> String {
+        // GPUI's SvgRenderer keeps only the alpha channel, so the ink colour here is irrelevant;
+        // `.text_color()` / `paint_svg(color)` supplies the actual tint.
+        format!(
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"16\" height=\"16\" viewBox=\"0 0 16 16\" fill=\"#000\" stroke=\"none\">{}</svg>",
+            self.shapes.join("")
+        )
     }
 }
 
-/// Paint `icon` centred in `bounds` with `color`.
-fn draw(window: &mut Window, bounds: Bounds<Pixels>, icon: Icon, color: gpui::Rgba) {
-    let o = bounds.origin;
-    let ox = f32::from(o.x);
-    let oy = f32::from(o.y);
-    let s: f32 = bounds.size.width.into();
-    let mut p = PathBuilder::fill();
+fn ordered(a: f32, b: f32) -> (f32, f32) {
+    if a <= b { (a, b - a) } else { (b, a - b) }
+}
+
+/// 把一个图标的几何表翻译成 SVG 图元。`ox/oy/s` 固定为 (0, 0, 16)：设计网格直接就是
+/// viewBox 单位，下面 380 行 match 分支与 ui-egui 图标表保持一致。
+fn svg_canvas(icon: Icon) -> SvgCanvas {
+    let ox = 0.0_f32;
+    let oy = 0.0_f32;
+    let s = 16.0_f32;
+    let mut p = SvgCanvas::default();
     match icon {
         Icon::Plus => {
             thick_line(&mut p, ox, oy, s, 8.0, 3.0, 8.0, 13.0, 2.0);
@@ -288,6 +565,15 @@ fn draw(window: &mut Window, bounds: Bounds<Pixels>, icon: Icon, color: gpui::Rg
         }
         Icon::Frame => {
             outline_rect(&mut p, ox, oy, s, 3.0, 3.0, 13.0, 13.0, 2.0);
+        }
+        Icon::FitContents => {
+            // A frame outline with four inward-pointing arrowheads (shrink the frame to
+            // wrap its children). Mirrors egui `Icon::FitContents` → `object.resizeToFit`.
+            outline_rect(&mut p, ox, oy, s, 2.5, 2.5, 13.5, 13.5, 1.3);
+            tri(&mut p, ox, oy, s, 2.5, 5.5, 5.5, 2.5, 5.5, 5.5); // top-left → centre
+            tri(&mut p, ox, oy, s, 13.5, 5.5, 10.5, 2.5, 10.5, 5.5); // top-right → centre
+            tri(&mut p, ox, oy, s, 2.5, 10.5, 5.5, 13.5, 5.5, 10.5); // bottom-left → centre
+            tri(&mut p, ox, oy, s, 13.5, 10.5, 10.5, 13.5, 10.5, 10.5); // bottom-right → centre
         }
         Icon::Text => {
             thick_line(&mut p, ox, oy, s, 8.0, 3.0, 8.0, 13.0, 2.0);
@@ -566,137 +852,127 @@ fn draw(window: &mut Window, bounds: Bounds<Pixels>, icon: Icon, color: gpui::Rg
             ring(&mut p, ox, oy, s, 6.0, 8.0, r, 1.4, 20);
             ring(&mut p, ox, oy, s, 10.0, 8.0, r, 1.4, 20);
         }
+        // ── 标签条（P0-1）：与上面同一套 16 单位网格与原语 ────────────────────────────────
+        Icon::Home => {
+            poly_fill(&mut p, ox, oy, s, &[(1.5, 8.0), (8.0, 2.0), (14.5, 8.0)]);
+            outline_rect(&mut p, ox, oy, s, 3.5, 8.0, 12.5, 14.0, 1.6);
+            rect(&mut p, ox, oy, s, 7.0, 10.5, 9.0, 14.0);
+        }
+        Icon::Sun => {
+            disc(&mut p, ox, oy, s, 8.0, 8.0, 3.4);
+            for i in 0..8 {
+                let a = i as f32 * std::f32::consts::TAU / 8.0;
+                let (c, sn) = (a.cos(), a.sin());
+                thick_line(&mut p, ox, oy, s, 8.0 + c * 5.2, 8.0 + sn * 5.2, 8.0 + c * 7.0, 8.0 + sn * 7.0, 1.5);
+            }
+        }
+        Icon::Moon => {
+            // Outer crescent + the short inner edge; a subtractive shape made of two arcs.
+            arc(&mut p, ox, oy, s, 8.0, 8.0, 5.4, 0.42 * std::f32::consts::PI, 1.58 * std::f32::consts::PI, 2.0, 22);
+            arc(&mut p, ox, oy, s, 11.2, 8.0, 4.4, 0.60 * std::f32::consts::PI, 1.40 * std::f32::consts::PI, 1.4, 16);
+        }
+        Icon::Play => {
+            poly_fill(&mut p, ox, oy, s, &[(4.5, 2.5), (4.5, 13.5), (13.5, 8.0)]);
+        }
+        Icon::WinMinimize => {
+            thick_line(&mut p, ox, oy, s, 3.0, 8.0, 13.0, 8.0, 1.6);
+        }
+        Icon::WinMaximize => {
+            outline_rect(&mut p, ox, oy, s, 3.0, 3.0, 13.0, 13.0, 1.6);
+        }
+        Icon::WinRestore => {
+            outline_rect(&mut p, ox, oy, s, 3.0, 5.5, 10.5, 13.0, 1.5);
+            thick_line(&mut p, ox, oy, s, 5.5, 5.5, 5.5, 3.0, 1.5);
+            thick_line(&mut p, ox, oy, s, 5.5, 3.0, 13.0, 3.0, 1.5);
+            thick_line(&mut p, ox, oy, s, 13.0, 3.0, 13.0, 10.5, 1.5);
+            thick_line(&mut p, ox, oy, s, 10.5, 10.5, 13.0, 10.5, 1.5);
+        }
+        Icon::LiveDisconnected => {
+            ring(&mut p, ox, oy, s, 8.0, 8.0, 5.0, 1.6, 22);
+            thick_line(&mut p, ox, oy, s, 4.0, 12.0, 12.0, 4.0, 2.0);
+        }
     }
-    if let Ok(path) = p.build() {
-        window.paint_path(path, color);
-    }
+    p
 }
 
 /// Paint `icon` centred in `bounds`, scaled to the shorter side. The entry point for callers that
-/// draw outside an `IconGlyph` element (a swatch's image/pattern glyph).
-pub(crate) fn draw_centred(window: &mut Window, bounds: Bounds<Pixels>, icon: Icon, color: gpui::Rgba) {
+/// draw directly into a `canvas` paint closure (a swatch's image/pattern glyph), which is why it
+/// goes through `Window::paint_svg` instead of the `svg()` element.
+pub(crate) fn draw_centred(
+    window: &mut Window,
+    bounds: Bounds<Pixels>,
+    icon: Icon,
+    color: gpui::Rgba,
+    cx: &App,
+) {
     let w: f32 = bounds.size.width.into();
     let h: f32 = bounds.size.height.into();
     let side = w.min(h).max(1.0);
     let ox = f32::from(bounds.origin.x) + (w - side) / 2.0;
     let oy = f32::from(bounds.origin.y) + (h - side) / 2.0;
-    let square = Bounds { origin: Point::new(px(ox), px(oy)), size: gpui::size(px(side), px(side)) };
-    draw(window, square, icon, color);
+    let square = Bounds {
+        origin: Point::new(px(ox), px(oy)),
+        size: gpui::size(px(side), px(side)),
+    };
+    let _ = window.paint_svg(
+        square,
+        icon.asset_path(),
+        TransformationMatrix::unit(),
+        Hsla::from(color),
+        cx,
+    );
 }
 
-/// Add a filled triangle `(x0,y0) (x1,y1) (x2,y2)` (local 0..16, scaled by `s`) as one triangle.
-fn tri(p: &mut PathBuilder, ox: f32, oy: f32, s: f32, x0: f32, y0: f32, x1: f32, y1: f32, x2: f32, y2: f32) {
+// ── 绘制原语：签名与旧版一致，输出从「像素三角形」换成「SVG 图元」──────────────────
+fn tri(p: &mut SvgCanvas, ox: f32, oy: f32, s: f32, x0: f32, y0: f32, x1: f32, y1: f32, x2: f32, y2: f32) {
     let k = s / 16.0;
-    let a = Point::new(px(ox + x0 * k), px(oy + y0 * k));
-    let b = Point::new(px(ox + x1 * k), px(oy + y1 * k));
-    let c = Point::new(px(ox + x2 * k), px(oy + y2 * k));
-    let z = Point::new(0.0_f32, 0.0_f32);
-    p.push_triangle((a, b, c), (z, z, z));
+    p.polygon(&[(ox + x0 * k, oy + y0 * k), (ox + x1 * k, oy + y1 * k), (ox + x2 * k, oy + y2 * k)]);
 }
 
-/// Add a thick segment `p0→p1` (local 0..16 box, scaled by `s`, offset by `o`) as two triangles.
-fn thick_line(p: &mut PathBuilder, ox: f32, oy: f32, s: f32, x0: f32, y0: f32, x1: f32, y1: f32, w: f32) {
+fn thick_line(p: &mut SvgCanvas, ox: f32, oy: f32, s: f32, x0: f32, y0: f32, x1: f32, y1: f32, w: f32) {
     let k = s / 16.0;
-    let ax = ox + x0 * k;
-    let ay = oy + y0 * k;
-    let bx = ox + x1 * k;
-    let by = oy + y1 * k;
-    let dx = bx - ax;
-    let dy = by - ay;
-    let len = (dx * dx + dy * dy).sqrt().max(1.0);
-    let nx = -dy / len * (w * k / 2.0);
-    let ny = dx / len * (w * k / 2.0);
-    let c = Point::new(px(bx + nx), px(by + ny));
-    let d = Point::new(px(bx - nx), px(by - ny));
-    let e = Point::new(px(ax + nx), px(ay + ny));
-    let f = Point::new(px(ax - nx), px(ay - ny));
-    let z = Point::new(0.0_f32, 0.0_f32);
-    p.push_triangle((e, c, d), (z, z, z));
-    p.push_triangle((e, d, f), (z, z, z));
+    p.line(ox + x0 * k, oy + y0 * k, ox + x1 * k, oy + y1 * k, w * k);
 }
 
-/// Add a filled disc centred at `(cx,cy)` radius `r` (local 0..16, scaled by `s`) as a triangle fan.
-fn disc(p: &mut PathBuilder, ox: f32, oy: f32, s: f32, cx: f32, cy: f32, r: f32) {
+fn disc(p: &mut SvgCanvas, ox: f32, oy: f32, s: f32, cx: f32, cy: f32, r: f32) {
     let k = s / 16.0;
-    let cxp = ox + cx * k;
-    let cyp = oy + cy * k;
+    p.disc(ox + cx * k, oy + cy * k, r * k);
+}
+
+fn rect(p: &mut SvgCanvas, ox: f32, oy: f32, s: f32, x0: f32, y0: f32, x1: f32, y1: f32) {
+    let k = s / 16.0;
+    p.rect(ox + x0 * k, oy + y0 * k, ox + x1 * k, oy + y1 * k);
+}
+
+fn outline_rect(p: &mut SvgCanvas, ox: f32, oy: f32, s: f32, x0: f32, y0: f32, x1: f32, y1: f32, w: f32) {
+    let k = s / 16.0;
+    p.outline_rect(ox + x0 * k, oy + y0 * k, ox + x1 * k, oy + y1 * k, w * k);
+}
+
+fn diamond(p: &mut SvgCanvas, ox: f32, oy: f32, s: f32, cx: f32, cy: f32, r: f32) {
+    let k = s / 16.0;
+    let (x, y) = (ox + cx * k, oy + cy * k);
     let rr = r * k;
-    let n = 16;
-    let z = Point::new(0.0_f32, 0.0_f32);
-    let c = Point::new(px(cxp), px(cyp));
-    for i in 0..n {
-        let a0 = (i as f32 / n as f32) * std::f32::consts::TAU;
-        let a1 = ((i + 1) as f32 / n as f32) * std::f32::consts::TAU;
-        let p0 = Point::new(px(cxp + rr * a0.cos()), px(cyp + rr * a0.sin()));
-        let p1 = Point::new(px(cxp + rr * a1.cos()), px(cyp + rr * a1.sin()));
-        p.push_triangle((c, p0, p1), (z, z, z));
-    }
+    p.polygon(&[(x, y - rr), (x + rr, y), (x, y + rr), (x - rr, y)]);
 }
 
-/// Add a filled axis-aligned rectangle `[x0,y0]..[x1,y1]` (local 0..16, scaled by `s`) as two triangles.
-fn rect(p: &mut PathBuilder, ox: f32, oy: f32, s: f32, x0: f32, y0: f32, x1: f32, y1: f32) {
+fn outline_diamond(p: &mut SvgCanvas, ox: f32, oy: f32, s: f32, cx: f32, cy: f32, r: f32, w: f32) {
     let k = s / 16.0;
-    let ax = ox + x0 * k;
-    let ay = oy + y0 * k;
-    let bx = ox + x1 * k;
-    let by = oy + y1 * k;
-    let z = Point::new(0.0_f32, 0.0_f32);
-    p.push_triangle((Point::new(px(ax), px(ay)), Point::new(px(bx), px(ay)), Point::new(px(bx), px(by))), (z, z, z));
-    p.push_triangle((Point::new(px(ax), px(ay)), Point::new(px(bx), px(by)), Point::new(px(ax), px(by))), (z, z, z));
+    let (x, y) = (ox + cx * k, oy + cy * k);
+    let rr = r * k;
+    p.polyline(&[(x, y - rr), (x + rr, y), (x, y + rr), (x - rr, y)], true, w * k);
 }
 
-/// Add an outlined axis-aligned rectangle `[x0,y0]..[x1,y1]` from four thick segments.
-fn outline_rect(p: &mut PathBuilder, ox: f32, oy: f32, s: f32, x0: f32, y0: f32, x1: f32, y1: f32, w: f32) {
-    thick_line(p, ox, oy, s, x0, y0, x1, y0, w);
-    thick_line(p, ox, oy, s, x1, y0, x1, y1, w);
-    thick_line(p, ox, oy, s, x1, y1, x0, y1, w);
-    thick_line(p, ox, oy, s, x0, y1, x0, y0, w);
-}
-
-/// Add a filled diamond centred at `(cx,cy)` with half-extent `r` (local 0..16, scaled by `s`).
-fn diamond(p: &mut PathBuilder, ox: f32, oy: f32, s: f32, cx: f32, cy: f32, r: f32) {
+fn poly_fill(p: &mut SvgCanvas, ox: f32, oy: f32, s: f32, pts: &[(f32, f32)]) {
     let k = s / 16.0;
-    let top = Point::new(px(ox + cx * k), px(oy + (cy - r) * k));
-    let right = Point::new(px(ox + (cx + r) * k), px(oy + cy * k));
-    let bot = Point::new(px(ox + cx * k), px(oy + (cy + r) * k));
-    let left = Point::new(px(ox + (cx - r) * k), px(oy + cy * k));
-    let z = Point::new(0.0_f32, 0.0_f32);
-    p.push_triangle((top, right, bot), (z, z, z));
-    p.push_triangle((top, bot, left), (z, z, z));
+    let v: Vec<(f32, f32)> = pts.iter().map(|&(x, y)| (ox + x * k, oy + y * k)).collect();
+    p.polygon(&v);
 }
 
-/// Add an outlined diamond (four thick segments around the diamond).
-fn outline_diamond(p: &mut PathBuilder, ox: f32, oy: f32, s: f32, cx: f32, cy: f32, r: f32, w: f32) {
-    let top = (cx, cy - r);
-    let right = (cx + r, cy);
-    let bot = (cx, cy + r);
-    let left = (cx - r, cy);
-    thick_line(p, ox, oy, s, top.0, top.1, right.0, right.1, w);
-    thick_line(p, ox, oy, s, right.0, right.1, bot.0, bot.1, w);
-    thick_line(p, ox, oy, s, bot.0, bot.1, left.0, left.1, w);
-    thick_line(p, ox, oy, s, left.0, left.1, top.0, top.1, w);
-}
-
-/// Add a filled polygon through `pts` (local 0..16, scaled by `s`) as one path.
-fn poly_fill(p: &mut PathBuilder, ox: f32, oy: f32, s: f32, pts: &[(f32, f32)]) {
+fn stroke_path(p: &mut SvgCanvas, ox: f32, oy: f32, s: f32, pts: &[(f32, f32)], closed: bool, w: f32) {
     let k = s / 16.0;
-    let v: Vec<Point<Pixels>> = pts.iter().map(|&(x, y)| Point::new(px(ox + x * k), px(oy + y * k))).collect();
-    if v.len() >= 3 {
-        p.add_polygon(&v, true);
-    }
-}
-
-/// Add a stroked polyline through `pts` as chained thick segments (`P::poly` in the original).
-fn stroke_path(p: &mut PathBuilder, ox: f32, oy: f32, s: f32, pts: &[(f32, f32)], closed: bool, w: f32) {
-    for pair in pts.windows(2) {
-        thick_line(p, ox, oy, s, pair[0].0, pair[0].1, pair[1].0, pair[1].1, w);
-    }
-    if closed
-        && pts.len() > 2
-        && let (Some(a), Some(b)) = (pts.first(), pts.last())
-    {
-        thick_line(p, ox, oy, s, b.0, b.1, a.0, a.1, w);
-    }
+    let v: Vec<(f32, f32)> = pts.iter().map(|&(x, y)| (ox + x * k, oy + y * k)).collect();
+    p.polyline(&v, closed, w * k);
 }
 
 /// The points along an arc (grid units), `n` segments from `a0` to `a1` radians.
@@ -709,18 +985,93 @@ fn arc_pts(cx: f32, cy: f32, r: f32, a0: f32, a1: f32, n: usize) -> Vec<(f32, f3
         .collect()
 }
 
-/// Add a stroked arc as `n` thick segments (a filled path builder has no stroked curves).
 #[allow(clippy::too_many_arguments)]
-fn arc(p: &mut PathBuilder, ox: f32, oy: f32, s: f32, cx: f32, cy: f32, r: f32, a0: f32, a1: f32, w: f32, n: usize) {
-    stroke_path(p, ox, oy, s, &arc_pts(cx, cy, r, a0, a1, n), false, w);
+fn arc(p: &mut SvgCanvas, ox: f32, oy: f32, s: f32, cx: f32, cy: f32, r: f32, a0: f32, a1: f32, w: f32, n: usize) {
+    let pts = arc_pts(cx, cy, r, a0, a1, n);
+    stroke_path(p, ox, oy, s, &pts, false, w);
 }
 
-/// Add a whole outlined circle.
-fn ring(p: &mut PathBuilder, ox: f32, oy: f32, s: f32, cx: f32, cy: f32, r: f32, w: f32, n: usize) {
-    arc(p, ox, oy, s, cx, cy, r, 0.0, std::f32::consts::TAU, w, n);
+/// A true SVG circle replaces the 22-segment polygonal ring.
+fn ring(p: &mut SvgCanvas, ox: f32, oy: f32, s: f32, cx: f32, cy: f32, r: f32, w: f32, _n: usize) {
+    let k = s / 16.0;
+    p.ring(ox + cx * k, oy + cy * k, r * k, w * k);
 }
 
 /// Draw `icon` in `color` at `size` px, as an element.
+///
+/// kit 契约：`Icon::new(name).with_size(px(20.)).text_color(theme.red)` →
+/// `svg().path("icons/<name>.svg").w().h().flex_none().text_color(...)`.
+/// 调用点（`icon::paint(icon, rgba(t.icon), 14.0)`）一行都不用改。
 pub fn paint(icon: Icon, color: impl Into<gpui::Rgba>, size: f32) -> impl IntoElement {
-    IconGlyph::new(icon, color, size)
+    let rgba: gpui::Rgba = color.into();
+    svg()
+        .path(icon.asset_path())
+        .w(px(size))
+        .h(px(size))
+        .flex_none()
+        .text_color(Hsla::from(rgba))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashSet;
+
+    #[test]
+    fn every_icon_emits_a_well_formed_svg() {
+        let t = table();
+        assert_eq!(t.len(), Icon::ALL.len());
+        assert_eq!(t.len(), 79, "Icon 变体数变了：请同步 ALL / asset_name / 本断言");
+        let mut names = HashSet::new();
+        for a in t {
+            assert!(names.insert(a.name), "duplicate asset name {}", a.name);
+            let s = std::str::from_utf8(&a.svg).expect("svg is utf8");
+            assert!(s.starts_with("<svg "), "{}: {}", a.name, s);
+            assert!(s.ends_with("</svg>"), "{}", a.name);
+            assert!(s.contains("viewBox=\"0 0 16 16\""), "{}", a.name);
+            assert!(!s.contains("NaN") && !s.contains("inf"), "{}: {}", a.name, s);
+            assert!(
+                s.contains("<path") || s.contains("<circle") || s.contains("<rect"),
+                "{} has no shapes: {}",
+                a.name,
+                s
+            );
+        }
+    }
+
+    #[test]
+    fn asset_source_resolves_every_icon_path() {
+        let assets = IconAssets;
+        for a in table() {
+            assert_eq!(a.icon.asset_path(), a.path);
+            let got = assets.load(&a.path).unwrap().expect("load");
+            assert_eq!(&*got, a.svg.as_slice(), "{}", a.name);
+        }
+        assert!(assets.load("icons/not-a-real-icon.svg").unwrap().is_none());
+        assert!(assets.load("other/x.svg").unwrap().is_none());
+        assert_eq!(assets.list("icons").unwrap().len(), Icon::ALL.len());
+        assert!(assets.list("other").unwrap().is_empty());
+    }
+
+    /// GPUI 的 `SvgRenderer` 用 usvg 0.45.1 把 SVG 渲成 alpha mask；解析失败时 `paint_svg`
+    /// 只 `log_err()` 然后静默不画。这里用同一个解析器把 79 个图标全部过一遍。
+    #[test]
+    fn every_icon_svg_parses_with_gpui_s_usvg() {
+        for a in table() {
+            let parsed = usvg::Tree::from_data(&a.svg, &usvg::Options::default());
+            assert!(parsed.is_ok(), "{}: {:?}", a.name, parsed.err());
+            let tree = parsed.unwrap();
+            assert_eq!(tree.size().width(), 16.0, "{} viewBox width", a.name);
+            assert_eq!(tree.size().height(), 16.0, "{} viewBox height", a.name);
+        }
+    }
+
+    #[test]
+    fn common_glyphs_use_real_svg_primitives() {
+        let svg = |i: Icon| String::from_utf8(svg_canvas(i).to_svg().into_bytes()).unwrap();
+        assert!(svg(Icon::WinMaximize).contains("<rect"), "maximise is a real outline rect");
+        let ring = svg(Icon::LiveDisconnected);
+        assert!(ring.contains("<circle") && ring.contains("fill=\"none\""), "ring is a circle, not 22 triangles");
+        assert!(!svg(Icon::Plus).contains("<circle"), "plus stays two strokes");
+    }
 }

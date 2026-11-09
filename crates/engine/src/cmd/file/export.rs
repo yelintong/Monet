@@ -1,6 +1,7 @@
 use super::load::{ext, write};
 use super::save::thumbnail;
 use super::*;
+use crate::params::f64_of;
 
 /// Encode `ids` (or the page) in `format` at `scale`.
 pub fn export_bytes(doc: &Document, ids: &[NodeId], format: ExportFormat, scale: f64) -> Result<Vec<u8>> {
@@ -75,12 +76,14 @@ pub fn copy_png(doc: &Document, ids: &[NodeId]) -> Option<figcraft_render::Pixma
 
 pub(super) fn export(s: &mut Session, p: &Value) -> Result<Value> {
     let cmd = "file.export";
-    let fig = match string(p, "format") {
-        Some(f) => f.eq_ignore_ascii_case("fig"),
-        None => string(p, "path").is_some_and(|pp| ext(&pp) == "fig"),
+    let whole_file = match string(p, "format") {
+        Some(f) => f.to_ascii_lowercase(),
+        None => string(p, "path").map(|pp| ext(&pp)).unwrap_or_default(),
     };
-    if fig {
-        return export_fig(s, p);
+    match whole_file.as_str() {
+        "fig" => return export_fig(s, p),
+        "penpot" => return export_penpot(s, p),
+        _ => {}
     }
     let doc = s.doc()?;
     let mut ids = targets(s, p);
@@ -127,6 +130,21 @@ pub(super) fn export_fig(s: &mut Session, p: &Value) -> Result<Value> {
     }
 }
 
+fn export_penpot(s: &mut Session, p: &Value) -> Result<Value> {
+    let (bytes, warnings) = penpot_bytes(s.doc()?)?;
+    match string(p, "path") {
+        Some(path) => {
+            write(&path, &bytes)?;
+            Ok(json!({"path": path, "bytes": bytes.len(), "format": "penpot", "warnings": warnings}))
+        }
+        None => Ok(json!({"format": "penpot", "data": base64::engine::general_purpose::STANDARD.encode(&bytes), "warnings": warnings})),
+    }
+}
+
+pub fn penpot_bytes(doc: &Document) -> Result<(Vec<u8>, Vec<String>)> {
+    figcraft_format::penpot::export(doc).map_err(|e| EngineError::Other(e.to_string()))
+}
+
 /// `doc` as a `.fig` file (with a thumbnail) and the warnings about what was left out.
 pub fn fig_bytes(doc: &Document) -> Result<(Vec<u8>, Vec<String>)> {
     figcraft_format::fig::export(doc, thumbnail(doc).as_deref()).map_err(|e| EngineError::Other(e.to_string()))
@@ -142,7 +160,8 @@ pub fn export_scale(doc: &Document, ids: &[NodeId], setting: &ExportSetting) -> 
     export_area(doc, ids, setting).map_or(1.0, |b| setting.size.scale_for(b.width(), b.height()))
 }
 
-/// `e` with the `size` ("2x", "512w", "512h" or `{by, value}`), `suffix` and `format` that `p` sets.
+/// `e` with the `size` ("2x", "512w", "512h" or `{by, value}`), `suffix`, `format` and the
+/// format options (`quality`, `vdCompat`, PDF print options, the SVG flags) that `p` sets.
 pub(in crate::cmd) fn export_setting(cmd: &str, mut e: ExportSetting, p: &Value) -> Result<ExportSetting> {
     if let Some(size) = size_param(cmd, p)? {
         e.size = size;
@@ -155,6 +174,12 @@ pub(in crate::cmd) fn export_setting(cmd: &str, mut e: ExportSetting, p: &Value)
     }
     if let Some(c) = vd_compat_param(cmd, p)? {
         e.vd_compat = c;
+    }
+    if let Some(c) = color_profile_param(cmd, p)? {
+        e.color_profile = c;
+    }
+    if let Some(q) = quality_param(cmd, p)? {
+        e.quality = q;
     }
     e.print = print_param(cmd, p, e.print)?;
     for (key, slot) in [
@@ -170,6 +195,16 @@ pub(in crate::cmd) fn export_setting(cmd: &str, mut e: ExportSetting, p: &Value)
         }
     }
     Ok(e)
+}
+
+/// The JPG `quality` `p` passes: a whole number from 1 to 100 (anything else is an error).
+fn quality_param(cmd: &str, p: &Value) -> Result<Option<u8>> {
+    let Some(v) = get(p, "quality") else { return Ok(None) };
+    let q = if v.is_boolean() { None } else { f64_of(v) };
+    match q.filter(|q| q.fract() == 0.0 && (1.0..=100.0).contains(q)) {
+        Some(q) => Ok(Some(q as u8)),
+        None => Err(bad(cmd, "quality: a whole number from 1 to 100 (JPG)")),
+    }
 }
 
 /// Whether `p` sets any PDF print option.
@@ -310,10 +345,16 @@ pub(super) fn export_layers(s: &mut Session, p: &Value) -> Result<Value> {
     let print = has_print_param(p).then(|| print_param(cmd, p, PrintSettings::default())).transpose()?;
     // And a compatibility mode for every Android Vector Drawable.
     let compat = vd_compat_param(cmd, p)?;
+    // And a color profile for every PNG, JPG and WebP.
+    let profile = color_profile_param(cmd, p)?;
     let mut files = Vec::with_capacity(jobs.len());
     for job in &jobs {
-        let setting =
-            ExportSetting { print: print.unwrap_or(job.setting.print), vd_compat: compat.unwrap_or(job.setting.vd_compat), ..job.setting.clone() };
+        let setting = ExportSetting {
+            print: print.unwrap_or(job.setting.print),
+            vd_compat: compat.unwrap_or(job.setting.vd_compat),
+            color_profile: profile.unwrap_or(job.setting.color_profile),
+            ..job.setting.clone()
+        };
         let scale = export_scale(doc, &[job.id], &setting);
         let (bytes, warnings) = export_file(doc, &[job.id], &setting, scale)?;
         let mut f = json!({"name": job.file, "id": job.id, "bytes": bytes.len()});

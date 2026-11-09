@@ -1,7 +1,7 @@
 //! Where something dropped at a page point lands: the frame under the point (or the page) and, in
 //! an auto layout frame, the child slot by pointer position plus the insertion line to draw.
 
-use figcraft_doc::*;
+use figcraft_doc::{Document, LayoutMode, NodeId, NodeKind};
 use figcraft_geom::Point;
 use serde::Serialize;
 
@@ -154,7 +154,9 @@ pub fn drop_parent(doc: &Document, page: NodeId, p: Point, exclude: &[NodeId]) -
             return None;
         }
         let n = doc.node(id)?;
-        if !n.visible || n.locked {
+        // Board objects (stickies, shapes with text, tables, stamps) never take other layers in: a
+        // drop on one goes to what is under it.
+        if !n.visible || n.locked || n.is_board_atom() {
             return None;
         }
         let container = n.kind.is_frame_like() || matches!(n.kind, NodeKind::Section { .. });

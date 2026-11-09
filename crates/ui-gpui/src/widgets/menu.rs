@@ -11,6 +11,11 @@
 // （已抽到独立行为文件 `widgets/menu_aim.rs`，主菜单与右键菜单共用）。本次只新增能力，
 // 上面三条不变量与既有行控件行为一律未动；移植来源为本项目 `ui-egui/src/menus/tree.rs`
 // 与 `ui-egui/src/menu_aim_tests.rs`。
+//
+// 2026-11-08 用户指出「弹出的菜单是有防溢出能力的，为什么有些项还是溢出了」：
+// `menu_popup` 从未把视口尺寸和真实内容高度交给 `Menu`，`fit_vertical` / 内部滚动 /
+// 水平贴边整条链路一直是关着的，调用方只能用粗糙的估计值手工夹一下。本次新增
+// `menu_popup_in`（带视口），把防溢出真正接到控件上；`menu_popup` 保持无视口的旧行为。
 // ============================================================================
 //! Popover menus + colour picker for the GPUI frontend.
 //!
@@ -21,7 +26,7 @@
 use crate::canvas::geom::Color32;
 use crate::widgets::input::text_field::TextField;
 use crate::widgets::{pt, rgba, tokens};
-use gpui::{AnyElement, App, Bounds, Entity, MouseButton, MouseDownEvent, Pixels, Point, SharedString, Window, div, point, prelude::*, px, size};
+use gpui::{AnyElement, App, Bounds, Entity, MouseButton, MouseDownEvent, Pixels, Point, SharedString, Window, div, prelude::*};
 use std::rc::Rc;
 
 /// One row of a popover menu: a label, an optional right-aligned trailing text (shortcut), an
@@ -75,6 +80,39 @@ pub fn menu_popup(
     on_pick: Rc<dyn Fn(&str, &mut Window, &mut App)>,
     dismiss: Rc<dyn Fn(&mut Window, &mut App)>,
 ) -> AnyElement {
+    menu_popup_in(anchor, width_override, rows, on_pick, dismiss, 0.0, 0.0)
+}
+
+/// 菜单防溢出要用的两个测量值：**真实内容高度**（不含卡片 padding）与**最宽行估算宽**。
+/// 抽成纯函数，好让「行 28pt / 分隔行 9pt」这条规则有数值断言守着——以前手工估计时
+/// 分隔符和卡片 8pt padding 都漏算，靠近屏幕底部时最后几项就溢出去了。
+pub(crate) fn menu_metrics(rows: &[MenuRow]) -> (f32, f32) {
+    let rows_h = rows.len() as f32 * 28.0
+        + rows.iter().filter(|r| r.separator_before).count() as f32 * 9.0;
+    let content_w = rows
+        .iter()
+        .map(|r| {
+            let label: f32 = r.label.chars().map(|c| if c.is_ascii() { 6.5 } else { 11.0 }).sum();
+            let trail: f32 = r.trail.as_ref().map(|s| s.chars().count() as f32 * 6.5 + 12.0).unwrap_or(0.0);
+            label + trail + if r.checked.is_some() { 28.0 } else { 8.0 } + 10.0
+        })
+        .fold(0.0f32, f32::max);
+    (rows_h, content_w)
+}
+
+/// 带**视口**的版本：把 `vw/vh` 和真实内容高度交给通用 `Menu`，启用它自带的
+/// 上下防溢出 / 内部滚动 / 水平贴边（`fit_vertical` + `fit_rows`）。
+/// 旧路径没传这些，于是 `rows_h` 一直是 0、`Menu::show` 的整条防溢出链路从不生效——
+/// 项多或靠近屏幕底部时菜单照样溢出（用户 2026-11-08）。
+pub fn menu_popup_in(
+    anchor: Bounds<Pixels>,
+    width_override: Option<f32>,
+    rows: Vec<MenuRow>,
+    on_pick: Rc<dyn Fn(&str, &mut Window, &mut App)>,
+    dismiss: Rc<dyn Fn(&mut Window, &mut App)>,
+    vw: f32,
+    vh: f32,
+) -> AnyElement {
     let t = tokens();
     // `MENU_ROW_H = 28`（`ui-egui/src/menus/tree.rs:351` 的 `allocate_exact_size(vec2(w, 28.0))`）。
     // 原为 24，与 egui 的 28 不一致 —— 2026-11-05 用户规定外框规格时一并纠正。
@@ -86,6 +124,10 @@ pub fn menu_popup(
     // 参差不齐（「项没填充满宽度」就是这个）。不加宽度时它是 flex 子项，靠 `align-items:
     // stretch` 撑满卡片内容盒，行再 `w_full` 就正好填满。
     let mut col = div().flex().flex_col();
+
+    // 交给通用 `Menu` 做防溢出用的两个测量值（真实内容高度 / 最宽行估算宽）。
+    // 以前这里根本没传，`rows_h` 默认 0，`fit_vertical` 于是从不滚动、也不上移。
+    let (rows_h, content_w) = menu_metrics(&rows);
 
     // 这个菜单里**有**可勾选的行才留 28pt 勾选列；一条都没有就不留（否则左边白空一条缩进）。
     let has_check = rows.iter().any(|r| r.checked.is_some());
@@ -131,8 +173,12 @@ pub fn menu_popup(
         col = col.child(row);
     }
     // The rows go on the one shared `Menu` control; no second popup chrome here.
+    // `viewport` + `content` 才把控件自带的防溢出接通：顶部夹紧、水平贴边、装不下时
+    // 内部滚动（`Menu::show` → `fit_vertical` / `fit_rows`）。
     crate::widgets::menu(anchor)
         .width(crate::widgets::Width::Min(width))
+        .viewport(vw, vh)
+        .content(content_w, rows_h, 28.0)
         .show(|| col.into_any_element())
         .unwrap_or_else(|| div().into_any_element())
 }
@@ -373,3 +419,38 @@ pub fn popup_backdrop(dismiss: Rc<dyn Fn(&mut Window, &mut App)>) -> AnyElement 
 }
 
 // 子菜单「安全三角」/ 瞄准意图已抽到独立行为文件 `widgets/menu_aim.rs`（通用，任何菜单共用）。
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn separators_count_toward_the_height_the_overflow_guard_uses() {
+        let rows = vec![
+            MenuRow::new("Fit"),
+            MenuRow::new("Fill").separator(),
+            MenuRow::new("100%").checked(Some(true)),
+        ];
+        let (rows_h, content_w) = menu_metrics(&rows);
+        // 3×28 + 一条分隔行 9（my(4)+1+my(4)）。旧的手工估计只有 rows*28+16，
+        // 既漏了分隔行、又把卡片 padding 当成了行数，靠近屏幕底部时最后几项会溢出。
+        assert_eq!(rows_h, 3.0 * 28.0 + 9.0);
+        assert!(content_w > 0.0, "最宽行必须有内容宽，否则卡片会被压到 16pt、文字全被裁掉");
+    }
+
+    #[test]
+    fn a_long_label_widens_the_content_estimate() {
+        let short = menu_metrics(&[MenuRow::new("Fit")]).1;
+        let long = menu_metrics(&[MenuRow::new("Zoom to selection 100%")]).1;
+        assert!(long > short, "长标签要能把卡片撑宽，不然会被 overflow_hidden 裁掉");
+        // 中文按全角 11pt 估宽，不该被当成 6.5pt 的窄 ASCII。
+        let cn = menu_metrics(&[MenuRow::new("显示所有类型")]).1;
+        let en = menu_metrics(&[MenuRow::new("Show all")]).1;
+        assert!(cn > en, "中文按全角估宽：{cn} 应大于 {en}");
+    }
+
+    #[test]
+    fn an_empty_menu_has_no_height() {
+        assert_eq!(menu_metrics(&[]).0, 0.0);
+    }
+}

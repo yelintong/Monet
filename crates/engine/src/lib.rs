@@ -17,6 +17,7 @@ pub mod catalog;
 pub mod cmd;
 mod content;
 mod dev;
+pub mod events;
 mod extensions;
 pub mod fonts;
 pub mod guard;
@@ -39,6 +40,7 @@ pub use automation::file_access;
 pub use automation::inspect;
 pub use automation::params;
 pub use boards::board;
+pub use boards::board_grid;
 pub use boards::board_table;
 pub use boards::board_templates;
 pub use canvas::al_keys;
@@ -76,12 +78,14 @@ pub use selection::rename;
 pub use selection::selection_colors;
 pub use selection::selection_reorder;
 pub use selection::selection_spacing;
+pub use sharing::agent;
 pub use sharing::background;
 pub use sharing::branches;
 pub use sharing::collab;
 pub use sharing::invite_links;
 pub use sharing::live;
 pub use sharing::online;
+pub use sharing::team;
 
 pub use batch::{BatchScope, BatchStep};
 pub use cmd::{CommandSpec, all_commands, find_command};
@@ -107,7 +111,8 @@ mod view_state;
 pub use derived::{changed_nodes, normalize};
 pub use doc_state::{DocState, History, HistoryEntry, Interaction, PREVIEW_READ_ONLY, Preedit, TextEdit, VersionPreview};
 pub use error::{EngineError, Result, bad};
-pub use prefs::{Clipboard, MAX_RECENT_ACTIONS, Prefs, UI_SCALE_MAX, UI_SCALE_MIN, UiRequest, VariablesLayout, clamp_ui_scale};
+pub use prefs::{Clipboard, DefaultProps, MAX_RECENT_ACTIONS, Prefs, UI_SCALE_MAX, UI_SCALE_MIN, UI_SCALE_SIZES, UiRequest, VariablesLayout, clamp_ui_scale};
+pub use session::Forward;
 pub use view_state::ViewState;
 
 /// The editing session: open documents, the current tool, clipboard and prefs.
@@ -115,7 +120,12 @@ pub struct Session {
     pub docs: Vec<DocState>,
     pub active: usize,
     pub clipboard: Clipboard,
+    /// Edit ▸ Set default properties: what new shapes and text drawn with the tools take.
+    pub default_props: DefaultProps,
     pub prefs: Prefs,
+    /// A command changed a preference that is kept at once (not only when the app quits): the app
+    /// saves the preferences and clears this.
+    pub prefs_unsaved: bool,
     pub tool: tools::ToolState,
     pub ui_requests: Vec<UiRequest>,
     /// The interface's theme once the UI knows it ([`Session::set_ui_dark`]): new files get the
@@ -144,6 +154,15 @@ pub struct Session {
     pub live: live::Lives,
     /// Commands the UI runs without waiting on a server ([`Session::start_background`]).
     pub background: background::Background,
+    /// Live agent events (comment changes), shared with the control channel's `events.poll`.
+    pub events: Arc<events::EventLog>,
+    /// Events recorded inside a group: (kind, document, path, data).
+    pending_events: Vec<(String, String, Option<String>, Value)>,
+    /// The AI agent the running command is for ([`Session::execute_as`]), as comments are signed
+    /// (`"Claude (agent)"`); `None` for the user.
+    pub agent: Option<String>,
+    /// Where an attached AI agent last worked ([`Session::agent_presence_at`]): display only.
+    pub agent_presence: Option<agent::AgentPresence>,
 }
 
 impl Default for Session {
@@ -154,6 +173,8 @@ impl Default for Session {
 
 #[cfg(test)]
 mod a11y_keys_tests;
+#[cfg(test)]
+mod agent_presence_tests;
 #[cfg(test)]
 mod al_behaviour_tests;
 #[cfg(test)]
@@ -173,21 +194,37 @@ mod arc_fields_tests;
 #[cfg(test)]
 mod arc_handles_tests;
 #[cfg(test)]
+mod auto_layout_move_tests;
+#[cfg(test)]
 mod autosave_tests;
+#[cfg(test)]
+mod batch_continue_events_tests;
 #[cfg(test)]
 mod batch_rollback_tests;
 #[cfg(test)]
 mod batch_step_ref_tests;
 #[cfg(test)]
+mod batch_undo_snapshot_tests;
+#[cfg(test)]
 mod binding_lists_tests;
 #[cfg(test)]
+mod board_connected_tests;
+#[cfg(test)]
 mod board_connector_tests;
+#[cfg(test)]
+mod board_grid_tests;
+#[cfg(test)]
+mod board_reshape_tests;
+#[cfg(test)]
+mod board_table_paste_tests;
 #[cfg(test)]
 mod board_tables_tests;
 #[cfg(test)]
 mod board_tests;
 #[cfg(test)]
 mod board_tools_tests;
+#[cfg(test)]
+mod boolean_cap_tests;
 #[cfg(test)]
 mod booleans_tests;
 #[cfg(test)]
@@ -213,13 +250,23 @@ mod collab_tests;
 #[cfg(test)]
 mod collab_undo_tests;
 #[cfg(test)]
+mod comment_agent_tests;
+#[cfg(test)]
+mod comment_link_tests;
+#[cfg(test)]
+mod comment_mentions_tests;
+#[cfg(test)]
 mod comments_polish_tests;
 #[cfg(test)]
 mod component_codegen_tests;
 #[cfg(test)]
+mod component_cycle_tests;
+#[cfg(test)]
 mod components_behaviour_tests;
 #[cfg(test)]
 mod components_scale_tests;
+#[cfg(test)]
+mod connector_anywhere_tests;
 #[cfg(test)]
 mod convert_container_tests;
 #[cfg(test)]
@@ -227,7 +274,11 @@ mod cursor_tests;
 #[cfg(test)]
 mod dark_page_text_tests;
 #[cfg(test)]
+mod dash_cap_tests;
+#[cfg(test)]
 mod datafill_tests;
+#[cfg(test)]
+mod default_props_tests;
 #[cfg(test)]
 mod design_paste_tests;
 #[cfg(test)]
@@ -245,27 +296,41 @@ mod devmode_behaviour_tests;
 #[cfg(test)]
 mod devmode_tail_tests;
 #[cfg(test)]
+mod doc_list_paths_tests;
+#[cfg(test)]
 mod doc_urls_tests;
 #[cfg(test)]
 mod double_click_tests;
 #[cfg(test)]
 mod draw_tools_tests;
 #[cfg(test)]
+mod duplicate_map_tests;
+#[cfg(test)]
 mod duplicate_spacing_tests;
 #[cfg(test)]
 mod effects_tests;
 #[cfg(test)]
+mod events_tests;
+#[cfg(test)]
 mod export_behaviour_tests;
+#[cfg(test)]
+mod export_bench_tests;
 #[cfg(test)]
 mod export_depth_tests;
 #[cfg(test)]
+mod export_profile_tests;
+#[cfg(test)]
 mod extended_chain_tests;
+#[cfg(test)]
+mod eyedropper_create_tests;
 #[cfg(test)]
 mod facilitate_tests;
 #[cfg(test)]
 mod fig_export_assets_tests;
 #[cfg(test)]
 mod fig_export_tests;
+#[cfg(test)]
+mod fig_font_names_tests;
 #[cfg(test)]
 mod fig_import_tests;
 #[cfg(test)]
@@ -287,6 +352,10 @@ mod gesture_preview_tests;
 #[cfg(test)]
 mod gradient_shorthand_tests;
 #[cfg(test)]
+mod group_panic_tests;
+#[cfg(test)]
+mod guide_snap_tests;
+#[cfg(test)]
 mod hide_publishing_tests;
 #[cfg(test)]
 mod history_behaviour_tests;
@@ -299,13 +368,21 @@ mod id_params_behaviour_tests;
 #[cfg(test)]
 mod icon_tests;
 #[cfg(test)]
+mod image_crop_tests;
+#[cfg(test)]
+mod image_readable_tests;
+#[cfg(test)]
 mod images_left_in_file_tests;
 #[cfg(test)]
 mod import_export_tests;
 #[cfg(test)]
+mod import_ids_tests;
+#[cfg(test)]
 mod import_journal_tests;
 #[cfg(test)]
 mod inspect_behaviour_tests;
+#[cfg(test)]
+mod inspect_fields_tests;
 #[cfg(test)]
 mod instance_modes_tests;
 #[cfg(test)]
@@ -315,7 +392,15 @@ mod interaction_rollback_tests;
 #[cfg(test)]
 mod invite_links_tests;
 #[cfg(test)]
+mod jam_open_tests;
+#[cfg(test)]
+mod jpg_export_tests;
+#[cfg(test)]
 mod keymap_tests;
+#[cfg(test)]
+mod layout_suggest_tests;
+#[cfg(test)]
+mod library_beacon_tests;
 #[cfg(test)]
 mod library_path_tests;
 #[cfg(test)]
@@ -331,6 +416,8 @@ mod live_docs_tests;
 #[cfg(test)]
 mod live_layer_tests;
 #[cfg(test)]
+mod live_peer_cap_tests;
+#[cfg(test)]
 mod live_share_tests;
 #[cfg(test)]
 mod live_signal_tests;
@@ -345,9 +432,17 @@ mod measure_tests;
 #[cfg(test)]
 mod menu_gaps_tests;
 #[cfg(test)]
+mod move_shortcut_tests;
+#[cfg(test)]
+mod moved_by_tests;
+#[cfg(test)]
 mod nested_override_tests;
 #[cfg(test)]
+mod node_find_tests;
+#[cfg(test)]
 mod node_set_refusals_tests;
+#[cfg(test)]
+mod normalize_guard_tests;
 #[cfg(test)]
 mod online_tests;
 #[cfg(test)]
@@ -369,13 +464,27 @@ mod paint_tests;
 #[cfg(test)]
 mod panels_behaviour_tests;
 #[cfg(test)]
+mod paste_missing_image_tests;
+#[cfg(test)]
+mod path_read_caps_tests;
+#[cfg(test)]
 mod pdf_print_tests;
 #[cfg(test)]
 mod pen_end_tests;
 #[cfg(test)]
 mod pen_overlay_tests;
 #[cfg(test)]
+mod pen_undo_tests;
+#[cfg(test)]
+mod pen_vector_edit_tests;
+#[cfg(test)]
+mod penpot_export_tests;
+#[cfg(test)]
 mod pixel_preview_tests;
+#[cfg(test)]
+mod place_crosshair_tests;
+#[cfg(test)]
+mod placed_image_size_tests;
 #[cfg(test)]
 mod playground_tests;
 #[cfg(test)]
@@ -388,6 +497,8 @@ mod plugin_panels_tests;
 pub(crate) mod plugins_tests;
 #[cfg(test)]
 mod progressive_blur_tests;
+#[cfg(test)]
+mod prop_order_tests;
 #[cfg(test)]
 mod property_copy_tests;
 #[cfg(test)]
@@ -427,6 +538,8 @@ mod save_format_tests;
 #[cfg(test)]
 mod scale_tool_tests;
 #[cfg(test)]
+mod scaled_instance_tests;
+#[cfg(test)]
 mod section_contents_tests;
 #[cfg(test)]
 mod section_tests;
@@ -451,6 +564,10 @@ mod sketch_import_tests;
 #[cfg(test)]
 mod slot_tests;
 #[cfg(test)]
+mod stored_ids_tests;
+#[cfg(test)]
+mod stroke_cap_error_tests;
+#[cfg(test)]
 mod stroke_style_tests;
 #[cfg(test)]
 mod style_tests;
@@ -471,6 +588,8 @@ mod text_behaviour_tests;
 #[cfg(test)]
 mod text_fill_tests;
 #[cfg(test)]
+mod text_link_tests;
+#[cfg(test)]
 mod text_metrics_local_tests;
 #[cfg(test)]
 mod text_motion_tests;
@@ -478,6 +597,8 @@ mod text_motion_tests;
 mod text_style_picker_tests;
 #[cfg(test)]
 mod text_tail_tests;
+#[cfg(test)]
+mod text_weight_step_tests;
 #[cfg(test)]
 mod textfit_tests;
 #[cfg(test)]
@@ -487,9 +608,15 @@ mod tiff_tests;
 #[cfg(test)]
 mod transform_behaviour_tests;
 #[cfg(test)]
+mod unknown_params_tests;
+#[cfg(test)]
+mod variable_props_tests;
+#[cfg(test)]
 mod variable_tests;
 #[cfg(test)]
 mod variables_behaviour_tests;
+#[cfg(test)]
+mod variables_colour_tests;
 #[cfg(test)]
 mod variables_editor_tests;
 #[cfg(test)]
@@ -517,9 +644,17 @@ mod version_tests;
 #[cfg(test)]
 mod view_behaviour_tests;
 #[cfg(test)]
+mod vote_history_tests;
+#[cfg(test)]
 mod vue_codegen_tests;
 #[cfg(test)]
+mod widget_hover_tests;
+#[cfg(test)]
 mod widget_input_tests;
+#[cfg(test)]
+mod widget_panel_tests;
+#[cfg(test)]
+mod widget_shapes_tests;
 #[cfg(test)]
 mod widgets_tests;
 

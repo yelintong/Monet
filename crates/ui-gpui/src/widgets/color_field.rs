@@ -180,7 +180,7 @@ impl IntoElement for ColorField {
         let paint = self.paint.clone();
         let swatch = div()
             .size(pt(SWATCH_W))
-            .child(gpui::canvas(|_bounds, _window, _cx| {}, move |bounds, _, window, _cx| paint_swatch(window, bounds, &paint)).size_full());
+            .child(gpui::canvas(|_bounds, _window, _cx| {}, move |bounds, _, window, cx| paint_swatch(window, bounds, &paint, cx)).size_full());
         let mut lead = div().size_full().flex().items_center().justify_center().child(swatch);
         if !bound {
             if let Some(f) = self.on_swatch {

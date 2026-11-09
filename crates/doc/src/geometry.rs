@@ -45,6 +45,16 @@ pub fn stroke_geometry(n: &Node) -> Option<BezPath> {
     }
 }
 
+/// A vector's `network` as the layer draws it: rounded points drawn in with the layer's corner
+/// `smoothing` (see [`VectorNetwork::rounded_smoothed`](crate::VectorNetwork::rounded_smoothed)),
+/// or the network itself when no point is rounded.
+pub fn drawn_network(network: &crate::VectorNetwork, smoothing: f64) -> std::borrow::Cow<'_, crate::VectorNetwork> {
+    match network.rounded_smoothed(smoothing) {
+        Some(r) => std::borrow::Cow::Owned(r),
+        None => std::borrow::Cow::Borrowed(network),
+    }
+}
+
 /// Whether the shape's path is closed (fills apply).
 pub fn is_closed(n: &Node) -> bool {
     match &n.kind {

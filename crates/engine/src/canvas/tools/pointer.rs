@@ -1,5 +1,8 @@
 use super::handles::{handle_at, label_at, locked_in, on_corner_square, resize_cursor, selected_end_at};
-use super::*;
+use super::{
+    Cursor, Document, Gesture, NodeId, NodeKind, Overlay, PenCursor, Point, PointerEvent, PointerKind, Rect, Result, Session, ToolId, at_45_degrees,
+    frame_at, json, select_target,
+};
 
 impl Session {
     /// The pointer left the canvas: what hovering there showed goes (the distances Alt or Dev Mode
@@ -8,8 +11,27 @@ impl Session {
         if !self.tool.busy() {
             self.tool.overlay.guides.clear();
             self.tool.overlay.measure_box = None;
+            self.tool.overlay.stamp_target = None;
         }
         self.vector_pointer_left();
+        self.follow_widget_hover(Vec::new());
+    }
+
+    /// Show the hover styles of the widget layers `ids` the pointer is over (none: end them), unless
+    /// another live preview (a hovered font, say) is showing.
+    fn follow_widget_hover(&mut self, ids: Vec<NodeId>) {
+        let ours = !self.tool.widget_hover.is_empty() && crate::textpreview::active(self);
+        if ids.is_empty() {
+            if ours {
+                crate::textpreview::end(self);
+            }
+            self.tool.widget_hover.clear();
+            return;
+        }
+        if ours && self.tool.widget_hover == ids || !ours && crate::textpreview::active(self) {
+            return;
+        }
+        self.tool.widget_hover = if self.widget_hover(&ids).unwrap_or(false) { ids } else { Vec::new() };
     }
 
     /// What a marquee starting at page point `p` selects inside: the top-level frame it starts in
@@ -53,6 +75,10 @@ impl Session {
         }
         if !matches!(t, ToolId::Move | ToolId::Scale | ToolId::Hand) && self.ds().is_ok_and(|d| d.vector_edit.is_some()) {
             let _ = crate::vectoredit::end(self);
+        }
+        // The placement crosshair goes with a change of tool, not with the same tool chosen again.
+        if self.tool.tool != t {
+            self.tool.place_at = None;
         }
         self.tool.tool = t;
         self.tool.gesture = Gesture::None;
@@ -134,6 +160,8 @@ impl Session {
                 ToolId::TextOnPath => self.text_on_path_down(ev),
                 ToolId::Pen => self.pen_down(ev),
                 ToolId::Pencil => {
+                    // The preview draws in the colour the stroke will have (#1741).
+                    self.tool.overlay.pen_color = self.pencil_color_at(ev.p()).ok();
                     self.tool.gesture = Gesture::Pencil { points: vec![ev.p()], pressure: vec![ev.pressure] };
                     Ok(())
                 }
@@ -191,6 +219,7 @@ impl Session {
             cursor = Cursor::Text;
         }
         let mut hover = None;
+        let mut widget_hover = Vec::new();
         let mut guides = Vec::new();
         let mut measure_box = None;
         let arc_hover = if self.arc_handles_shown() { crate::arc_handles::hit(&doc, &sel, ev.p(), ev.zoom).map(|(_, h)| h) } else { None };
@@ -211,6 +240,7 @@ impl Session {
                 if leaf.and_then(|l| crate::widgets::target_at(&doc, l, ev.p())).is_some() {
                     cursor = Cursor::Pointer;
                 }
+                widget_hover = leaf.map(|l| crate::widgets::hovered_at(&doc, l, ev.p())).unwrap_or_default();
                 // 画框本体的悬停只在「按下去真能选中它」时才算：顶层非自动布局 frame 的本体
                 // 和画布一样（按下是框选），悬它显示描边会骗人——那种框只认标题。
                 hover = label_at(&doc, page, &self.tool.labels, ev.p()).or_else(|| {
@@ -241,7 +271,9 @@ impl Session {
                 }
             }
         }
-        if tool == ToolId::Move && !self.tool.dev_mode && crate::board::end_handle_at(&doc, &sel, ev.p(), ev.zoom).is_some() {
+        let on_handle =
+            crate::board::end_handle_at(&doc, &sel, ev.p(), ev.zoom).is_some() || crate::board::path_handle_at(&doc, &sel, ev.p(), ev.zoom).is_some();
+        if tool == ToolId::Move && !self.tool.dev_mode && on_handle {
             cursor = Cursor::Grab;
         }
         self.tool.overlay.measure_box = measure_box;
@@ -259,6 +291,13 @@ impl Session {
             }
         }
         self.tool.overlay.guides = guides;
+        if tool == ToolId::Connector {
+            self.connector_hover(ev);
+        }
+        // The stamp tool: the object a click would stick the stamp to (as `board.stamp` finds it).
+        self.tool.overlay.stamp_target =
+            (tool == ToolId::Stamp && crate::board::is_board(&doc)).then(|| crate::board::stamp_target(&doc, page, ev.p(), None)).flatten();
+        self.follow_widget_hover(widget_hover);
         let ds = self.ds_mut()?;
         if ds.hover != hover {
             ds.hover = hover;

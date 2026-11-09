@@ -2,7 +2,7 @@
 //! deleting, cutting and joining. Pure functions on a [`VectorNetwork`]; the session wrappers in
 //! `vectoredit.rs` re-fit the node afterwards.
 
-use figcraft_doc::*;
+use figcraft_doc::{HandleMirroring, Region, Segment, VectorNetwork, Vertex, WindingRule};
 use figcraft_geom::kurbo::{CubicBez, ParamCurve, ParamCurveNearest};
 use figcraft_geom::{Affine, Point, Vec2};
 
@@ -19,13 +19,19 @@ pub fn move_vertices(net: &mut VectorNetwork, idx: &[usize], d: Vec2) {
     if !finite(d) {
         return;
     }
-    let mut seen = std::collections::BTreeSet::new();
-    for i in idx {
-        if seen.insert(*i)
-            && let Some(v) = net.vertices.get_mut(*i)
-        {
+    let seen: std::collections::BTreeSet<usize> = idx.iter().copied().filter(|i| *i < net.vertices.len()).collect();
+    for i in &seen {
+        if let Some(v) = net.vertices.get_mut(*i) {
             v.x += d.x;
             v.y += d.y;
+        }
+    }
+    if seen.len() == net.vertices.len() {
+        let translate = Affine::translate(d);
+        for region in &mut net.regions {
+            if let Some(frame) = &mut region.paint_space {
+                frame.transform = translate * frame.transform;
+            }
         }
     }
 }
@@ -62,6 +68,13 @@ pub fn transform_vertices(net: &mut VectorNetwork, idx: &[usize], m: Affine) {
                 s.ta = t;
             } else {
                 s.tb = t;
+            }
+        }
+    }
+    if set.len() == net.vertices.len() {
+        for region in &mut net.regions {
+            if let Some(frame) = &mut region.paint_space {
+                frame.transform = m * frame.transform;
             }
         }
     }
@@ -586,7 +599,7 @@ pub fn part(net: &VectorNetwork, verts: &[usize]) -> VectorNetwork {
         let loops: Vec<Vec<usize>> =
             r.loops.iter().map(|l| l.iter().filter_map(|i| smap.get(*i).copied().flatten()).collect::<Vec<_>>()).filter(|l| !l.is_empty()).collect();
         if !loops.is_empty() {
-            out.regions.push(Region { loops, winding: r.winding });
+            out.regions.push(Region { loops, ..r.clone() });
         }
     }
     reopen_loops(&mut out);
@@ -645,10 +658,30 @@ pub fn connect(net: &mut VectorNetwork, a: usize, b: usize, ta: (f64, f64), tb: 
     net.segments.push(Segment { a, b, ta: finite_t(ta), tb: finite_t(tb) });
     let si = net.segments.len() - 1;
     if ends && let Some(mut lp) = path_between(net, b, a, si) {
-        let unfilled = !net.regions.iter().any(|r| r.loops.iter().flatten().any(|s| lp.contains(s)));
-        if unfilled {
+        let filled = net.regions.iter().any(|r| r.loops.iter().flatten().any(|s| lp.contains(s)));
+        if filled {
+            // A loop broken open at these ends (a point of it deleted, say) closes through the new
+            // segment, so the fill follows it instead of a straight line across the gap (#1951). The
+            // segment goes in at the gap, in the loop's own order, so the loop keeps its direction: a
+            // hole wound against its outline stays a hole whichever end was clicked first. Only a
+            // loop the segment makes one continuous chain is closed; one listed out of walking order
+            // is left as it was.
+            let segs = &net.segments;
+            let shares = |x: usize, y: usize| segs.get(x).zip(segs.get(y)).is_some_and(|(p, q)| p.a == q.a || p.a == q.b || p.b == q.a || p.b == q.b);
+            for l in net.regions.iter_mut().flat_map(|r| r.loops.iter_mut()) {
+                if l.len() == lp.len() && l.iter().all(|s| lp.contains(s)) {
+                    let gap = (1..l.len()).find(|&k| l.get(k - 1).zip(l.get(k)).is_some_and(|(&x, &y)| !shares(x, y))).unwrap_or(l.len());
+                    let mut closed = l.clone();
+                    closed.insert(gap, si);
+                    let n = closed.len();
+                    if (0..n).all(|k| closed.get(k).zip(closed.get((k + 1) % n)).is_some_and(|(&x, &y)| shares(x, y))) {
+                        *l = closed;
+                    }
+                }
+            }
+        } else {
             lp.insert(0, si);
-            net.regions.push(Region { loops: vec![lp], winding: WindingRule::NonZero });
+            net.regions.push(Region { loops: vec![lp], winding: WindingRule::NonZero, fills: None, ..Default::default() });
         }
     }
     Some(si)
@@ -863,6 +896,14 @@ mod tests {
     }
 
     #[test]
+    fn split_part_keeps_region_paint_metadata() {
+        let mut n = square();
+        n.regions[0].fills = Some(vec![figcraft_color::Paint::solid(figcraft_color::Color::BLACK)]);
+        let part = part(&n, &[0, 1, 2, 3]);
+        assert_eq!(part.regions[0].fills, n.regions[0].fills);
+    }
+
+    #[test]
     fn handles_follow_mirroring() {
         let mut n = open_line();
         set_mirroring(&mut n, &[1], HandleMirroring::AngleAndLength);
@@ -899,7 +940,7 @@ mod tests {
         // Triangle closed 0→2: its loop [2, 1, 0] walks segment 1 backwards.
         let mut n = VectorNetwork::from_points(&[Point::new(0.0, 0.0), Point::new(100.0, 0.0), Point::new(100.0, 100.0)], false);
         n.segments.push(Segment::line(0, 2));
-        n.regions.push(Region { loops: vec![vec![2, 1, 0]], winding: WindingRule::NonZero });
+        n.regions.push(Region { loops: vec![vec![2, 1, 0]], winding: WindingRule::NonZero, fills: None, ..Default::default() });
         let p = Point::new(25.0, 10.0);
         assert!(n.fill_contains(p));
         for (seg, lp) in [(1, vec![2, 1, 0]), (2, vec![2, 1, 0]), (1, vec![0, 1, 2])] {
@@ -974,6 +1015,49 @@ mod tests {
         assert_eq!(n.regions.len(), 1);
         assert!(connect(&mut n, 1, 1, (0.0, 0.0), (0.0, 0.0)).is_none());
         assert!(connect(&mut n, 1, 99, (0.0, 0.0), (0.0, 0.0)).is_none());
+    }
+
+    #[test]
+    fn connecting_the_ends_of_a_hole_keeps_its_winding() {
+        // A ring: the hole's loop walks the other way round from the outline's, so the non-zero
+        // rule leaves it empty.
+        let mut n = square();
+        for (x, y) in [(25.0, 25.0), (75.0, 25.0), (75.0, 75.0), (25.0, 75.0)] {
+            n.vertices.push(Vertex::new(x, y));
+        }
+        for (a, b) in [(4, 5), (5, 6), (6, 7), (7, 4)] {
+            n.segments.push(Segment::line(a, b));
+        }
+        n.regions[0].loops.push(vec![7, 6, 5, 4]);
+        let (hole, ring, cut) = (Point::new(40.0, 60.0), Point::new(10.0, 50.0), Point::new(70.0, 30.0));
+        assert!(!n.fill_contains(hole) && n.fill_contains(ring) && !n.fill_contains(cut), "a ring to start with");
+        // Delete a corner of the hole (the path opens; its fill closes across the gap, so the cut-off
+        // corner is filled), then connect the two open ends again, either end first: the hole is a
+        // triangle, still empty.
+        let at = |m: &VectorNetwork, (x, y): (f64, f64)| m.vertices.iter().position(|v| v.x == x && v.y == y).unwrap();
+        for (first, second) in [((25.0, 25.0), (75.0, 75.0)), ((75.0, 75.0), (25.0, 25.0))] {
+            let mut m = n.clone();
+            delete_vertices(&mut m, &[5], false);
+            assert!(!m.fill_contains(hole) && m.fill_contains(cut), "opened: {:?}", m.regions);
+            let (a, b) = (at(&m, first), at(&m, second));
+            connect(&mut m, a, b, (0.0, 0.0), (0.0, 0.0)).unwrap();
+            let loops = &m.regions[0].loops;
+            assert_eq!((m.regions.len(), loops.len(), loops[1].len()), (1, 2, 3), "{first:?} first: {:?}", m.regions);
+            assert!(!m.fill_contains(hole), "{first:?} first: the hole is filled, {loops:?}");
+            assert!(m.fill_contains(ring) && m.fill_contains(cut), "{first:?} first: the ring is filled");
+        }
+    }
+
+    #[test]
+    fn connecting_leaves_a_loop_out_of_walking_order_alone() {
+        // The open chain A-B-C-D-E with its loop listed out of walking order: no place for the new
+        // segment makes it one continuous chain, so the loop is left as it was, and no region is added.
+        let pts = [Point::new(0.0, 0.0), Point::new(100.0, 0.0), Point::new(100.0, 100.0), Point::new(0.0, 100.0), Point::new(-50.0, 50.0)];
+        let mut n = VectorNetwork::from_points(&pts, false);
+        n.regions.push(Region { loops: vec![vec![0, 2, 1, 3]], winding: WindingRule::NonZero, fills: None, ..Default::default() });
+        let s = connect(&mut n, 0, 4, (0.0, 0.0), (0.0, 0.0)).unwrap();
+        assert_eq!(n.regions.len(), 1);
+        assert_eq!(n.regions[0].loops, vec![vec![0, 2, 1, 3]], "left as it was, without segment {s}");
     }
 
     #[test]

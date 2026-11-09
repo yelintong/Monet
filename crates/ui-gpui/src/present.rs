@@ -14,7 +14,7 @@ use crate::canvas::render_worker::screen_image;
 use crate::widgets::{Icon, IconButton, pt, rgba, tokens};
 use figcraft_doc::{Document, NodeId};
 use figcraft_doc::proto::{Action, Transition};
-use gpui::{App, Div, ImageSource, MouseButton, SharedString, Stateful, div, img, prelude::*, px};
+use gpui::{Div, ImageSource, MouseButton, SharedString, Stateful, div, img, prelude::*, px};
 use std::time::Instant;
 
 /// 一次演示的运行时状态。

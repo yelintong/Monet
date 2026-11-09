@@ -36,8 +36,8 @@ pub use text_input::{TextAlign, TextInput};
 use crate::canvas::geom::Color32;
 use crate::widgets::icon::{Icon, paint as paint_icon};
 use crate::widgets::input::text_input::centred_line_origin;
-use crate::widgets::{ICON, TEXT_NUDGE, TEXT_PT, pt, rgba, tokens};
-use gpui::{AnyElement, Bounds, Corners, Edges, Hsla, Pixels, SharedString, TextRun, Window, canvas, div, point, prelude::*, px, size};
+use crate::widgets::{ICON, TEXT_PT, pt, rgba, tokens};
+use gpui::{AnyElement, Bounds, Edges, SharedString, TextRun, canvas, div, point, prelude::*, px, size};
 use std::rc::Rc;
 
 /// A slot at the leading or trailing end of a field: nothing, a short label, an icon, a colour dot,

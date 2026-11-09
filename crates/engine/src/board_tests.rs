@@ -140,6 +140,27 @@ fn shapes_carry_text_and_change_outline() {
     assert!(s.execute("board.shape", &json!({"shape": "blob", "x": 0, "y": 0})).is_err());
 }
 
+/// Every shape is placed, takes text inside its outline, turns into any other and back by undo.
+#[test]
+fn every_shape_places_and_changes_with_undo() {
+    let mut s = board();
+    let err = s.execute("board.shape", &json!({"shape": "blob", "x": 0, "y": 0})).unwrap_err().to_string();
+    assert!(err.contains("internalStorage"), "the error lists every shape: {err}");
+    for b in BoardShape::ALL {
+        let r = s.execute("board.shape", &json!({"shape": b.id(), "x": 0, "y": 0, "text": "Step"})).unwrap();
+        let sh = id(&r, "id");
+        let n = node(&s, sh);
+        assert_eq!(n.board, Some(BoardItem::Shape { shape: b }));
+        let NodeKind::Vector { network } = node(&s, n.children[0]).kind else { panic!("{}: no outline", b.id()) };
+        assert!(!network.segments.is_empty(), "{}", b.id());
+        let other = if b == BoardShape::Star { BoardShape::Hexagon } else { BoardShape::Star };
+        s.execute("board.setStyle", &json!({"ids": [sh], "shape": other.id()})).unwrap();
+        assert_eq!(node(&s, sh).board, Some(BoardItem::Shape { shape: other }));
+        s.undo().unwrap();
+        assert_eq!(node(&s, sh).board, Some(BoardItem::Shape { shape: b }));
+    }
+}
+
 #[test]
 fn connectors_follow_what_they_join_and_undo_with_it() {
     let mut s = board();
@@ -147,7 +168,7 @@ fn connectors_follow_what_they_join_and_undo_with_it() {
     let b = id(&s.execute("board.sticky", &json!({"x": 400, "y": 0})).unwrap(), "id");
     let c = id(&s.execute("board.connector", &json!({"from": a, "to": b, "style": "straight", "label": "then"})).unwrap(), "id");
     let pts = drawn(&s, c);
-    assert!(near(pts[0], Point::new(200.0, 100.0)) && near(pts[1], Point::new(400.0, 100.0)), "{pts:?}");
+    assert!(near(pts[0], Point::new(204.0, 100.0)) && near(pts[1], Point::new(396.0, 100.0)), "{pts:?}");
     assert_eq!(node(&s, c).stroke.cap_end, StrokeCap::TriangleArrow);
     // Its label sits at the middle.
     let label = crate::board::label_of(s.doc().unwrap(), c).unwrap();
@@ -157,19 +178,19 @@ fn connectors_follow_what_they_join_and_undo_with_it() {
     s.execute("board.setStyle", &json!({"ids": [c], "style": "elbow"})).unwrap();
     s.execute("transform.move", &json!({"ids": [b], "dx": 0, "dy": 300})).unwrap();
     let pts = drawn(&s, c);
-    assert!(near(pts[0], Point::new(200.0, 100.0)) && near(*pts.last().unwrap(), Point::new(400.0, 400.0)), "{pts:?}");
+    assert!(near(pts[0], Point::new(204.0, 100.0)) && near(*pts.last().unwrap(), Point::new(396.0, 400.0)), "{pts:?}");
     assert!(pts.windows(2).all(|w| w[0].x == w[1].x || w[0].y == w[1].y), "right angles: {pts:?}");
     // Undo takes the move back and the route with it.
     s.execute("edit.undo", &json!({})).unwrap();
-    assert!(near(*drawn(&s, c).last().unwrap(), Point::new(400.0, 100.0)));
+    assert!(near(*drawn(&s, c).last().unwrap(), Point::new(396.0, 100.0)));
     // A deleted end stays where it was, as a point.
     s.execute("edit.delete", &json!({"ids": [b]})).unwrap();
     assert!(matches!(connector(&s, c).to, End::Point { .. }));
-    assert!(near(*drawn(&s, c).last().unwrap(), Point::new(400.0, 100.0)));
+    assert!(near(*drawn(&s, c).last().unwrap(), Point::new(396.0, 100.0)));
     // A connector moved on its own takes its free end along; the attached one stays.
     s.execute("transform.move", &json!({"ids": [c], "dx": 0, "dy": 50})).unwrap();
-    assert!(matches!(connector(&s, c).to, End::Point { x, y } if x == 400.0 && y == 150.0), "{:?}", connector(&s, c));
-    assert!(near(drawn(&s, c)[0], Point::new(200.0, 100.0)));
+    assert!(matches!(connector(&s, c).to, End::Point { x, y } if x == 396.0 && y == 150.0), "{:?}", connector(&s, c));
+    assert!(near(drawn(&s, c)[0], Point::new(204.0, 100.0)));
     // Deleting the connector takes its label.
     s.execute("edit.delete", &json!({"ids": [c]})).unwrap();
     assert!(!s.doc().unwrap().contains(label));
@@ -180,12 +201,17 @@ fn connectors_follow_what_they_join_and_undo_with_it() {
 fn routes_are_the_same_for_the_same_document() {
     let mut s = board();
     let a = id(&s.execute("board.shape", &json!({"x": 0, "y": 0})).unwrap(), "id");
-    let c = Connector { from: End::Node { node: a, side: Side::Bottom }, to: End::Point { x: 300.0, y: 500.0 }, routing: Routing::Elbow };
+    let c = Connector {
+        from: End::Node { node: a, side: Side::Bottom, at: None },
+        to: End::Point { x: 300.0, y: 500.0 },
+        routing: Routing::Elbow,
+        path: None,
+    };
     let doc = s.doc().unwrap();
     let r = route(doc, &c).unwrap();
     assert_eq!(r, route(&doc.clone(), &c).unwrap());
-    // Down out of the bottom, across halfway, down into the point.
-    assert_eq!(r, vec![Point::new(80.0, 160.0), Point::new(80.0, 330.0), Point::new(300.0, 330.0), Point::new(300.0, 500.0)]);
+    // Down out of the bottom (END_GAP below it), across halfway, down into the point.
+    assert_eq!(r, vec![Point::new(80.0, 164.0), Point::new(80.0, 332.0), Point::new(300.0, 332.0), Point::new(300.0, 500.0)]);
 }
 
 #[test]
@@ -194,7 +220,7 @@ fn stamps_and_ink_and_the_eraser() {
     s.prefs.user_name = "Grace".into();
     let st = id(&s.execute("board.stamp", &json!({"x": 100, "y": 100, "stamp": "heart"})).unwrap(), "id");
     let n = node(&s, st);
-    assert_eq!(n.board, Some(BoardItem::Stamp { stamp: Stamp::Heart, author: "Grace".into() }));
+    assert_eq!(n.board, Some(BoardItem::Stamp { stamp: Stamp::Heart, author: "Grace".into(), on: None }), "on the empty board: on nothing");
     assert_eq!(s.doc().unwrap().world_bounds(st).unwrap().center(), Point::new(100.0, 100.0));
     assert!(!n.children.is_empty());
     // Marker and highlighter strokes through the tools; the eraser takes what it touches.
@@ -217,6 +243,58 @@ fn stamps_and_ink_and_the_eraser() {
     assert_eq!(s.doc().unwrap().nodes().filter(|n| n.board == Some(BoardItem::Ink)).count(), 1, "the marker stroke is gone");
     assert_eq!(s.undo_depth().0, undo + 1, "one step");
     assert_eq!(s.tool.tool, ToolId::Eraser);
+}
+
+/// A stamp sticks to the object it lands on and moves with it (as the incumbent's stamps do); one
+/// dragged onto another object sticks to that one, one dragged off sticks to nothing, and one
+/// whose object is deleted stays where it is.
+#[test]
+fn stamps_stick_to_what_they_land_on() {
+    let mut s = board();
+    let a = id(&s.execute("board.sticky", &json!({"x": 0, "y": 0})).unwrap(), "id");
+    let b = id(&s.execute("board.sticky", &json!({"x": 400, "y": 0})).unwrap(), "id");
+    let on = |s: &Session, st: NodeId| match node(s, st).board {
+        Some(BoardItem::Stamp { on, .. }) => on,
+        other => panic!("not a stamp: {other:?}"),
+    };
+    let centre = |s: &Session, st: NodeId| s.doc().unwrap().world_bounds(st).unwrap().center();
+    let mv = |s: &mut Session, ids: &[NodeId], dx: f64, dy: f64| {
+        s.execute("transform.move", &json!({"ids": ids, "dx": dx, "dy": dy})).unwrap();
+    };
+    let st = id(&s.execute("board.stamp", &json!({"x": 50, "y": 50, "stamp": "heart"})).unwrap(), "id");
+    assert_eq!(on(&s, st), Some(a));
+    // The sticky moves, the stamp with it; both moved together, once; undo takes both back.
+    mv(&mut s, &[a], 30.0, 200.0);
+    assert_eq!(centre(&s, st), Point::new(80.0, 250.0));
+    mv(&mut s, &[a, st], 10.0, 0.0);
+    assert_eq!((centre(&s, st), on(&s, st)), (Point::new(90.0, 250.0), Some(a)));
+    s.execute("edit.undo", &json!({})).unwrap();
+    assert_eq!(centre(&s, st), Point::new(80.0, 250.0));
+    // Dragged onto the other sticky, it sticks to that one.
+    mv(&mut s, &[st], 370.0, -200.0);
+    assert_eq!(on(&s, st), Some(b));
+    mv(&mut s, &[b], 0.0, 100.0);
+    assert_eq!(centre(&s, st), Point::new(450.0, 150.0));
+    mv(&mut s, &[a], 0.0, 300.0);
+    assert_eq!(centre(&s, st), Point::new(450.0, 150.0), "the first sticky doesn't take it along any more");
+    // Its sticky deleted, it stays where it is, on nothing; dragged off everything, on nothing.
+    s.execute("edit.delete", &json!({"ids": [b]})).unwrap();
+    assert_eq!((on(&s, st), centre(&s, st)), (None, Point::new(450.0, 150.0)));
+    let other = id(&s.execute("board.stamp", &json!({"x": 130, "y": 600, "stamp": "star"})).unwrap(), "id");
+    assert_eq!(on(&s, other), Some(a));
+    mv(&mut s, &[other], 0.0, 1000.0);
+    assert_eq!(on(&s, other), None);
+    // One that sits inside its sticky (dropped into it before stickies stopped taking layers in)
+    // moves with it once, as its child.
+    let inside = id(&s.execute("board.stamp", &json!({"x": 100, "y": 600, "stamp": "check"})).unwrap(), "id");
+    assert_eq!(on(&s, inside), Some(a));
+    s.doc_mut().unwrap().reparent(inside, a, None).unwrap();
+    let was = centre(&s, inside);
+    mv(&mut s, &[a], 40.0, 0.0);
+    assert_eq!(centre(&s, inside), Point::new(was.x + 40.0, was.y), "moved once");
+    // A file from before stamps stuck opens with its stamps on nothing.
+    let old: BoardItem = serde_json::from_value(json!({"type": "stamp", "stamp": "heart", "author": "Grace"})).unwrap();
+    assert_eq!(old, BoardItem::Stamp { stamp: Stamp::Heart, author: "Grace".into(), on: None });
 }
 
 #[test]
@@ -260,7 +338,7 @@ fn boards_sync_in_live_sessions() {
     let doc = room.server.document();
     let NodeKind::Vector { network } = &doc.node(c).unwrap().kind else { panic!("not a vector") };
     let end = doc.world_transform(c) * network.vertices.last().unwrap().point();
-    assert_eq!(end, Point::new(400.0, 350.0), "to the moved sticky's facing side");
+    assert_eq!(end, Point::new(396.0, 350.0), "to END_GAP before the moved sticky's facing side");
     assert_eq!(doc.node(a).unwrap().fills[0].solid_color(), board_color("violet"));
 }
 
@@ -332,7 +410,9 @@ fn a_press_on_a_stickys_background_picks_and_drags_it() {
     s.pointer(&PointerEvent::at(PointerKind::Up, 100.0, 450.0, 1.0)).unwrap();
     assert_eq!(s.selection(), vec![a]);
     assert_eq!(node(&s, a).transform.translation().y, 300.0);
-    assert!(near(drawn(&s, c)[0], Point::new(200.0, 400.0)), "the connector followed the drag: {:?}", drawn(&s, c));
+    // Its own connector's start, END_GAP outside its edge, is no snap target for it (#1916).
+    assert_eq!(node(&s, a).transform.translation().x, 0.0, "not nudged sideways by its own connector");
+    assert!(near(drawn(&s, c)[0], Point::new(204.0, 400.0)), "the connector followed the drag: {:?}", drawn(&s, c));
 }
 
 #[test]

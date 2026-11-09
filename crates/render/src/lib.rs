@@ -24,7 +24,7 @@ pub mod retained;
 pub mod shadow;
 
 pub use dots::Dots;
-pub use draw::{node_outline, paint_bounds, stroke_fill, subtree_outline, ts_path};
+pub use draw::{at_layer_depth, layer_depth, node_outline, paint_bounds, stroke_fill, subtree_outline, ts_path};
 pub use export_depth::{ExportDepthError, MAX_EXPORT_DEPTH, check_export_depth};
 pub use retained::{Retained, Work};
 pub use tiny_skia::{FillRule, Pixmap};
@@ -203,40 +203,59 @@ fn band_pool() -> Option<&'static rayon::ThreadPool> {
 fn render_bands(doc: &Document, page: NodeId, view: &View, opts: &Options, bands: u32) -> Option<Pixmap> {
     use rayon::prelude::*;
     let band_h = view.height.div_ceil(bands.max(1));
-    let overlap = backdrop_reach(max_backdrop_blur(doc), view.scale).ceil();
-    if !overlap.is_finite() || overlap > f64::from(band_h) {
-        return None;
-    }
-    let overlap = overlap as u32;
-    let s = view.scale.max(1e-9);
+    let overlap = band_overlap(doc, view, band_h)?;
     let parts: Vec<(u32, Option<Pixmap>)> = (0..bands)
         .into_par_iter()
         .map(|i| {
             let y0 = i * band_h;
-            let h = band_h.min(view.height.saturating_sub(y0)).max(1);
-            let top = y0.saturating_sub(overlap);
-            let bottom = (y0 + h + overlap).min(view.height).max(y0 + h);
-            let v = View { origin: (view.origin.0, view.origin.1 + f64::from(top) / s), scale: view.scale, width: view.width, height: bottom - top };
-            let part = render_one(doc, page, &v, opts);
-            let own = tiny_skia::IntRect::from_xywh(0, (y0 - top) as i32, view.width.clamp(1, 16_384), h);
-            (y0, if overlap == 0 { part } else { part.zip(own).and_then(|(p, r)| p.clone_rect(r)) })
+            (y0, render_band(doc, page, view, opts, y0, band_h, overlap))
         })
         .collect();
     let mut out = new_pixmap(view.width, view.height)?;
-    let row = out.width() as usize * 4;
     for (y0, part) in parts {
-        let Some(part) = part else { continue };
-        // Bands are as wide as the view: their rows go straight into place.
-        let start = y0 as usize * row;
-        let dst = out.data_mut();
-        let n = part.data().len().min(dst.len().saturating_sub(start));
-        if part.width() == view.width.clamp(1, 16_384)
-            && let (Some(d), Some(s)) = (dst.get_mut(start..start + n), part.data().get(..n))
-        {
-            d.copy_from_slice(s);
+        if let Some(part) = part {
+            put_band(&mut out, y0, &part);
         }
     }
     Some(out)
+}
+
+/// How many rows bands of `band_h` rows of `view` overlap (what background blurs read); `None`
+/// when that is more than a band.
+pub(crate) fn band_overlap(doc: &Document, view: &View, band_h: u32) -> Option<u32> {
+    let overlap = backdrop_reach(max_backdrop_blur(doc), view.scale).ceil();
+    (overlap.is_finite() && overlap <= f64::from(band_h)).then_some(overlap as u32)
+}
+
+/// The rows `y0 .. y0 + band_h` of `view` (fewer at the bottom), rendered with `overlap` rows
+/// more each way and cut back to their own.
+pub(crate) fn render_band(doc: &Document, page: NodeId, view: &View, opts: &Options, y0: u32, band_h: u32, overlap: u32) -> Option<Pixmap> {
+    let s = view.scale.max(1e-9);
+    let h = band_h.min(view.height.saturating_sub(y0)).max(1);
+    let top = y0.saturating_sub(overlap);
+    let bottom = (y0 + h + overlap).min(view.height).max(y0 + h);
+    let v = View { origin: (view.origin.0, view.origin.1 + f64::from(top) / s), scale: view.scale, width: view.width, height: bottom - top };
+    let part = render_one(doc, page, &v, opts);
+    if overlap == 0 {
+        return part;
+    }
+    let own = tiny_skia::IntRect::from_xywh(0, (y0 - top) as i32, view.width.clamp(1, 16_384), h);
+    part.zip(own).and_then(|(p, r)| p.clone_rect(r))
+}
+
+/// Copy a band's rows into `out` at row `y0` (bands are as wide as the view: their rows go
+/// straight into place).
+pub(crate) fn put_band(out: &mut Pixmap, y0: u32, part: &Pixmap) {
+    let row = out.width() as usize * 4;
+    let start = y0 as usize * row;
+    let width = out.width();
+    let dst = out.data_mut();
+    let n = part.data().len().min(dst.len().saturating_sub(start));
+    if part.width() == width
+        && let (Some(d), Some(s)) = (dst.get_mut(start..start + n), part.data().get(..n))
+    {
+        d.copy_from_slice(s);
+    }
 }
 
 /// Render a page region on the calling thread.
@@ -269,6 +288,7 @@ fn render_one(doc: &Document, page: NodeId, view: &View, opts: &Options) -> Opti
         skip: &opts.skip,
         only: &opts.only,
         lod,
+        preview: opts.lod,
         magnified_image_pixels: opts.magnified_image_pixels,
         under: None,
         time: 0.0,
@@ -309,6 +329,7 @@ fn nodes_into(doc: &Document, ids: &[NodeId], view: &View, pix: &mut Pixmap, tim
         skip: &[],
         only: &[],
         lod: false,
+        preview: false,
         magnified_image_pixels: false,
         under: None,
         time,
@@ -316,8 +337,10 @@ fn nodes_into(doc: &Document, ids: &[NodeId], view: &View, pix: &mut Pixmap, tim
         bands: &[],
         page_xf: view.transform(),
     };
+    // 0, but inside an exporter's [`draw::at_layer_depth`] its depth: one cap for both (#1082).
+    let depth = draw::layer_depth();
     for id in ids {
-        draw::draw_node(&ctx, pix, *id, view.transform() * parent_transform(doc, *id), 0);
+        draw::draw_node(&ctx, pix, *id, view.transform() * parent_transform(doc, *id), depth);
     }
 }
 
@@ -520,13 +543,18 @@ pub fn encode_webp(p: &Pixmap) -> Result<Vec<u8>, String> {
 /// `cICP` code points; Display P3 JPEG and WebP files embed the ICC profile (untagged files are read
 /// as sRGB). SVG, PDF and Vector Drawable are not pixel formats: an error.
 pub fn encode_export(p: &Pixmap, format: ExportFormat, profile: ColorProfile) -> Result<Vec<u8>, String> {
+    encode_export_with(p, format, profile, figcraft_doc::ExportSetting::DEFAULT_QUALITY)
+}
+
+/// [`encode_export`] with the JPEG `quality` (1-100); the other formats ignore it.
+pub fn encode_export_with(p: &Pixmap, format: ExportFormat, profile: ColorProfile, quality: u8) -> Result<Vec<u8>, String> {
     let icc = (!profile.is_srgb()).then(|| profile.icc());
     match format {
         ExportFormat::Png => {
             let png = png_with(p, icc)?;
             Ok(if profile.is_srgb() { png_insert_chunk(png, b"sRGB", &[0]) } else { png_insert_chunk(png, b"cICP", &profile.cicp()) })
         }
-        ExportFormat::Jpg => jpeg_with(p, Color::WHITE, 90, icc),
+        ExportFormat::Jpg => jpeg_with(p, Color::WHITE, quality, Some(profile.icc())),
         ExportFormat::Webp => webp_with(p, icc),
         ExportFormat::Svg | ExportFormat::Pdf | ExportFormat::VectorDrawable => Err(format!("{} is not a pixel format", format.label())),
     }
@@ -601,6 +629,7 @@ mod retained_tests;
 mod rtl_list_tests;
 #[cfg(test)]
 mod only_tests;
+#[cfg(test)]
 mod solo_tests;
 #[cfg(test)]
 mod spread_tests;

@@ -209,6 +209,7 @@ fn cell_of(vars: &figcraft_doc::Variables, val: Option<&figcraft_doc::VariableVa
             let name = vars.get(id).map(|v| v.name.clone()).unwrap_or_else(|| format!("→ {id}"));
             VarCell::Alias(name)
         }
+        _ => VarCell::Empty,
     }
 }
 
