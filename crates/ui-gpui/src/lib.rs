@@ -621,6 +621,9 @@ pub struct CanvasView {
 
     extra_state: panels::extra::ExtraState,
 
+    /// B3: the board bar's shape grid is open (the shape button toggles it).
+    board_shape_open: std::rc::Rc<std::cell::RefCell<bool>>,
+
     /// 当前打开的通用对话框（A19）。所有对话框共用 `dialogs::DialogState`，这里只存「有没有、
     /// 是哪一个」，控件状态由它自己保留。
 
@@ -847,6 +850,8 @@ impl CanvasView {
             extra: None,
 
             extra_state,
+
+            board_shape_open: std::rc::Rc::new(std::cell::RefCell::new(false)),
 
             dialog: None,
 
@@ -4701,7 +4706,7 @@ impl Render for CanvasView {
         }
 
         // B3: the board selection's bar (colours first), above the selected board objects.
-        if let Some(bar) = board_bar::bar(&self.app, self.fields.queue()) {
+        if let Some(bar) = board_bar::bar(&self.app, self.fields.queue(), &self.board_shape_open) {
             layers.push(bar);
         }
 
