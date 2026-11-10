@@ -1910,6 +1910,7 @@ status = "draft — needs native review"
 "Your name in comments" = "Your name in comments"
 "Interface size" = "Interface size"
 "Compare with" = "Compare with"
+"Duration" = "Duration"
 [commands]
 "align.bottom" = "Onder uitlijnen"
 "align.hcenter" = "Horizontale middens uitlijnen"

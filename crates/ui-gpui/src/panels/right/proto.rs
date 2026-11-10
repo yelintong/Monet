@@ -292,7 +292,7 @@ fn editor_rows(f: &RightFields, it: &InteractionRow, i: usize, cx: &mut App, n: 
                 paint_color: None,
             },
         );
-        out.push(sublabel_row(tr("Delay (ms)")));
+        out.push(sublabel_row(tr("Delay")));
         out.push(field_row_full(field));
     } else if gesture_delay {
         let field = f.row_field(
@@ -311,7 +311,7 @@ fn editor_rows(f: &RightFields, it: &InteractionRow, i: usize, cx: &mut App, n: 
                 paint_color: None,
             },
         );
-        out.push(sublabel_row(tr("Delay (ms)")));
+        out.push(sublabel_row(tr("Delay")));
         out.push(field_row_full(field));
     }
 
@@ -376,7 +376,7 @@ fn editor_rows(f: &RightFields, it: &InteractionRow, i: usize, cx: &mut App, n: 
         .collect();
     out.push(field_row_full(pick_dropdown(f, it.easing.clone(), 0.0, erows)));
 
-    out.push(sublabel_row(tr("Duration (ms)")));
+    out.push(sublabel_row(tr("Duration")));
     let dur = f.row_field(
         cx,
         slot(n),

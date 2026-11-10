@@ -1921,6 +1921,7 @@ name = "Русский"
 "Variables store reusable values with modes such as Light and Dark." = "Variables store reusable values with modes such as Light and Dark."
 "Your name in comments" = "Your name in comments"
 "Compare with" = "Compare with"
+"Duration" = "Duration"
 [commands]
 "align.bottom" = "Выровнять по нижнему краю"
 "align.hcenter" = "Выровнять центры по горизонтали"

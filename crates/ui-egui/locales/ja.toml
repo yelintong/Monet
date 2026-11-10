@@ -1894,6 +1894,7 @@ status = "draft — needs native review"
 "Missing fonts" = "Missing fonts"
 "Convert to frame" = "Convert to frame"
 "Convert to section" = "Convert to section"
+"Duration" = "Duration"
 [commands]
 "align.bottom" = "下揃え"
 "align.hcenter" = "水平方向の中央揃え"

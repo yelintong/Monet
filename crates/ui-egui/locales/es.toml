@@ -1951,6 +1951,7 @@ status = "draft — needs native review"
 "Updates" = "Updates"
 "Variables store reusable values with modes such as Light and Dark." = "Variables store reusable values with modes such as Light and Dark."
 "Your name in comments" = "Your name in comments"
+"Duration" = "Duration"
 [commands]
 "align.bottom" = "Alinear abajo"
 "align.hcenter" = "Alinear centros horizontales"

@@ -67,7 +67,7 @@ fn copy_as() -> Item {
         ("edit.copyAsCss", tr("Copy as CSS")),
         ("edit.copyAsSvg", tr("Copy as SVG")),
         ("edit.copyAsPng", tr("Copy as PNG")),
-        ("edit.copyLink", tr("Copy link to selection")),
+        ("edit.copyLink", tr("Copy link")),
     ]
     .into_iter()
     .map(|(id, label)| cmd(id, label))

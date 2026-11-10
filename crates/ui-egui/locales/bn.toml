@@ -1916,6 +1916,7 @@ status = "draft — needs native review"
 "Your name in comments" = "Your name in comments"
 "Interface size" = "Interface size"
 "Compare with" = "Compare with"
+"Duration" = "Duration"
 [commands]
 "board.addConnected" = "সংযুক্ত আকার যোগ করুন"
 "board.connector" = "সংযোগকারী"

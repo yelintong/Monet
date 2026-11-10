@@ -1875,6 +1875,7 @@ status = "draft — needs native review"
 "Convert to frame" = "Convert to frame"
 "Convert to section" = "Convert to section"
 "Compare with" = "Compare with"
+"Duration" = "Duration"
 [commands]
 "align.bottom" = "Ratakan bawah"
 "align.hcenter" = "Ratakan tengah horizontal"

@@ -1828,6 +1828,7 @@ status = "draft — needs native review"
 "Missing fonts" = "缺少字体"
 "Convert to frame" = "转换为画框"
 "Convert to section" = "转换为区块"
+"Duration" = "Duration"
 [commands]
 "align.bottom" = "底部对齐"
 "align.hcenter" = "水平居中对齐"

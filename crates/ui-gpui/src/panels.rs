@@ -1988,7 +1988,7 @@ pub(crate) fn animation_bar() -> Div {
                 .flex_row()
                 .items_center()
                 .px(pt(16.0))
-                .child(div().text_size(pt(11.0)).text_color(rgba(t.text)).child(tr("Animations"))),
+                .child(div().text_size(pt(11.0)).text_color(rgba(t.text)).child(tr("Animation"))),
         )
         .child(div().flex_1().w_full())
 }

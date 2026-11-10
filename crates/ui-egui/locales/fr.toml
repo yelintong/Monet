@@ -1911,6 +1911,7 @@ status = "draft — needs native review"
 "Variables store reusable values with modes such as Light and Dark." = "Variables store reusable values with modes such as Light and Dark."
 "Your name in comments" = "Your name in comments"
 "Missing fonts" = "Missing fonts"
+"Duration" = "Duration"
 [commands]
 "align.bottom" = "Aligner en bas"
 "align.hcenter" = "Aligner les centres horizontalement"

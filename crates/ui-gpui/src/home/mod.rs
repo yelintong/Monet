@@ -78,7 +78,7 @@ pub(crate) fn body(app: &CanvasApp, cmds: &Cmds, state: &ExtraState) -> Div {
             let mut row = div().flex().flex_row().gap(pt(12.0));
             row = row.child(action_card(Icon::Frame, tr("New design file"), tr("Start from a blank canvas"), "file.new", cmds));
             row = row.child(action_card(Icon::Rectangle, tr("New board"), tr("Sticky notes, shapes and connectors"), "file.newBoard", cmds));
-            row = row.child(action_card(Icon::ViewGrid, tr("New from template"), tr("Pick a starter template"), "file.newFromTemplate", cmds));
+            row = row.child(action_card(Icon::ViewGrid, tr("Start from a template"), tr("Start from a template"), "file.newFromTemplate", cmds));
             main = main.child(row);
         }
         1 => {

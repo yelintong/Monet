@@ -1599,7 +1599,7 @@ impl VariablesEditor {
                 .flex_col()
                 .child(
                     div().flex_1().w_full().flex().flex_col().items_center().justify_center().gap(pt(12.0))
-                        .child(div().text_size(pt(11.0)).text_color(rgba(t.text_secondary)).child(tr("Variables store reusable values with modes such as Light and Dark.")))
+                        .child(div().text_size(pt(11.0)).text_color(rgba(t.text_secondary)).child(tr("Variables store reusable values (colours, numbers, strings, booleans) with modes such as Light and Dark.")))
                         .child(IconButton::new(Icon::Plus).id("vars-add-collection-empty").size(24.0).on_click({
                             let cmds = self.cmds.clone();
                             move |_, _, _| cmds.push(Cmd { id: "variable.createCollection", params: Some(json!({ "name": "Collection 1", "modes": ["Mode 1"] })) })
@@ -2551,7 +2551,7 @@ impl VariablesEditor {
                         }
                     })
                     .child(paint_icon(Icon::Plus, rgba(t.text_secondary), 14.0))
-                    .child(tr("Create variable")),
+                    .child(tr("+ Create variable")),
             )
     }
 

@@ -1831,6 +1831,7 @@ status = "draft — needs native review"
 "Measurements" = "Measurements"
 "New board" = "New board"
 "Sticky notes, shapes and connectors" = "Sticky notes, shapes and connectors"
+"Duration" = "Duration"
 [commands]
 "align.bottom" = "Allinea in basso"
 "align.hcenter" = "Allinea i centri orizzontali"
