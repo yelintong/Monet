@@ -212,8 +212,6 @@ enum DragKind {
     /// A clip bar / layer summary: `Act::DragMove` recomputes from the snapshot taken on press.
     Clip,
     Layer,
-    /// 顶边拖拽：`y0` 是按下时的 bar 局部 y（拖拽中按相对位移算高度，不受布局变化影响）。
-    Height(f32),
 }
 
 // ⛔ 拖拽的瞬时状态必须**跨帧持久**。`bar()` 每帧都会重新执行（`q.push` → wake → `cx.notify()`
@@ -240,13 +238,6 @@ thread_local! {
     static DUR_SCROLL: std::cell::Cell<f32> = const { std::cell::Cell::new(0.0) };
     /// 上一次推进滚动的时间戳（按真实 dt 算速度，不按帧数）。
     static DUR_LAST: std::cell::RefCell<Option<std::time::Instant>> = const { std::cell::RefCell::new(None) };
-    /// 顶边拖拽按下时的高度。
-    static H_START: std::cell::Cell<f32> = const { std::cell::Cell::new(0.0) };
-    /// 顶边拖拽按下时的**窗口** y。⛔ 必须用窗口坐标：面板高度一变，bar 的原点也跟着动，
-    /// 用 bar 局部坐标会让「拖上去 → 高度 +Δ → 原点 -Δ → 局部 y 不变」互相抵消，永远拖不动。
-    static H_START_WIN: std::cell::Cell<f32> = const { std::cell::Cell::new(0.0) };
-    /// 本帧视口高度（顶边拖拽的最大高度要用）。
-    static VIEWPORT_H: std::cell::Cell<f32> = const { std::cell::Cell::new(900.0) };
     /// 上一次请求悬停刷新的位置格（4pt），避免同格内反复唤醒。
     static HOVER_KEY: std::cell::Cell<(i32, i32)> = const { std::cell::Cell::new((i32::MIN, i32::MIN)) };
 }
@@ -707,15 +698,10 @@ fn build(
     p.line_segment([pos2(px_head, y0), pos2(px_head, height)], stroke(t.accent, 1.0));
     p.circle_filled(pos2(px_head, y0 + 1.0), 5.5, t.accent);
 
-    // egui L207: border on the panel's top edge.
-    p.line_segment([pos2(0.0, 0.0), pos2(track_right, 0.0)], stroke(t.border, 1.0));
-    // 顶边就是高度手柄（egui `app/frame.rs::timeline_edge`）：往下拖变矮、往上拖变高，
-    // 双击回到默认高度。放在命中表最后 = 最高优先级，只吃掉最上面 6pt。
-    let edge_rect = Rect::from_min_max(pos2(0.0, 0.0), pos2(track_right, 6.0));
-    if hover.is_some_and(|p| edge_rect.contains(p)) {
-        p.line_segment([pos2(0.0, 1.0), pos2(track_right, 1.0)], stroke(t.accent, 2.0));
-    }
-    hits.push(Hit { rect: edge_rect, kind: HitKind::ResizeH });
+    // 顶边那条 1px 描边由 timeline 容器自身的 border-top 唯一绘制（见 `bar()` 的 div），
+    // 不再在 canvas 里重复 `line_segment`，也不再强插 hover accent 线。
+    // 顶边高度手柄的命中交给 `bar()` div 上那条 4px GPUI 覆盖条（能向上溢出到画布侧），
+    // 拖动状态机与左面板共用 `resize_drag::Handle::BottomTimeline`。
     let _ = time_of;
     (p, labels, hits, icons)
 }
@@ -786,7 +772,6 @@ pub fn bar(
     let h = if ui.timeline_h > 0.0 { ui.timeline_h } else { crate::motion::HEIGHT };
     let settings = settings_of(doc, page);
     times.sync(cx, ui, settings, window);
-    VIEWPORT_H.with(|v| v.set(f32::from(window.viewport_size().height)));
     // 悬停：用**上一帧**记下的 bar 原点把窗口坐标换成局部坐标（指针是实时的，差一帧无感）。
     // 以前这里是「把命中项的文字画成一个跟着鼠标跑的黑色方块」，既不是 tooltip 的正确行为，
     // 也挡住了内容 —— 已删除，改成 egui 那套真悬停反馈（底色 / 眼睛 / 菱形变亮）。
@@ -833,7 +818,13 @@ pub fn bar(
                         f32::from(mp.y) - f32::from(b.origin.y),
                     );
                     if local.x >= 0.0 && local.x <= cw && local.y >= 0.0 && local.y <= chh {
-                        if let Some(hit) = hit_at(&ch, local) {
+                        // 顶边 4px 高度手柄的命中覆盖条落在 local y ∈ [0, 1.5]（其余 1.5px
+                        // 溢出到画布侧）。覆盖条用 hitbox 级 ResizeUpDown，但整窗级 cursor
+                        // 优先级更高，会把 hint 盖成 seek / clip 的光标 —— 这里在热区带内
+                        // 也显式登记 ResizeUpDown，保证与上方的覆盖条一致。
+                        if local.y <= crate::panels::HANDLE_HIT_W / 2.0 - crate::panels::HANDLE_W / 2.0 {
+                            window.set_window_cursor_style(CursorStyle::ResizeUpDown);
+                        } else if let Some(hit) = hit_at(&ch, local) {
                             window.set_window_cursor_style(cursor_for(hit.kind));
                         }
                     }
@@ -864,8 +855,17 @@ pub fn bar(
         .h(pt(h))
         .relative()
         .bg(rgba(t.panel))
-        .border_1()
-        .border_color(rgba(t.border))
+        // 唯一的 1px 边线绘制在**上面**：只保留顶边描边，左右下三边不画（与左右面板
+        // `border_r_1`/`border_l_1` 同一套做法）。hover 或拖拽中变强调色，状态由顶边 4px
+        // 覆盖条的 on_hover 写入 `resize_drag::hovered`。
+        .border_t_1()
+        .border_color(rgba(if crate::resize_drag::hovered(crate::resize_drag::Edge::Bottom)
+            || crate::resize_drag::drag_active(crate::resize_drag::Handle::BottomTimeline)
+        {
+            t.accent
+        } else {
+            t.border
+        }))
         .child(shapes)
         .children(icon_layers(&icons))
         .children(text_layers(&labels))
@@ -886,10 +886,50 @@ pub fn bar(
                 .w(px(38.0))
                 .child(times.dur.clone()),
         )
+        // 顶边高度手柄：4px 命中覆盖条（顶边描边为中心，上下各 1.5px），absolute 且
+        // 后绘制，才能压住上方画布那 1.5px。latch 进与左面板共用的 `resize_drag` 状态机；
+        // 整窗 move/up 由根视图 + 窗口级接管，指针移出 bar 仍连续。
+        .child({
+            let q = queue.clone();
+            let bh = h;
+            // `.id()` 升成 Stateful<Div> 才能挂 `on_hover`（只在 StatefulInteractiveElement 上）。
+            div()
+                .id("timeline-top-hit")
+                .absolute()
+                .left(px(0.0))
+                .top(px(-(crate::panels::HANDLE_HIT_W / 2.0 + crate::panels::HANDLE_W / 2.0)))
+                .w_full()
+                .h(px(crate::panels::HANDLE_HIT_W))
+                .cursor(CursorStyle::ResizeUpDown)
+                // hover 状态写进 thread_local，让顶边那条 1px 描边变强调色（与左右面板一致）。
+                // 这里没有 CanvasView 的 Context，直接 set + window.refresh() 触发重绘。
+                .on_hover(move |hovering: &bool, window: &mut Window, _: &mut App| {
+                    crate::resize_drag::set_hover(crate::resize_drag::Edge::Bottom, *hovering);
+                    window.refresh();
+                })
+                .on_mouse_down(MouseButton::Left, move |e: &MouseDownEvent, window: &mut Window, cx: &mut App| {
+                    // 覆盖条压在画布 / bar 内容之上，这一下只归顶边手柄：画布不得开始框选。
+                    cx.stop_propagation();
+                    let tallest = (f32::from(window.viewport_size().height) - 200.0).max(crate::motion::MIN_H);
+                    let double = crate::resize_drag::begin(
+                        crate::resize_drag::Handle::BottomTimeline,
+                        -1.0, // 上移（y 减小）→ 变高
+                        bh,
+                        f32::from(e.position.y),
+                        crate::motion::MIN_H,
+                        tallest,
+                        f32::from(e.position.x),
+                        f32::from(e.position.y),
+                    );
+                    if double {
+                        q.push(Act::SetTimelineHeight(crate::motion::HEIGHT));
+                        crate::resize_drag::end_drag(crate::resize_drag::Handle::BottomTimeline);
+                    }
+                })
+        })
         .on_mouse_down(MouseButton::Left, {
             let hits = hits.clone();
             let bo = bar_origin.clone();
-            let bar_h = h;
             move |e: &MouseDownEvent, _window, _cx| {
                 // Window coords → bar-local coords (see `bar_origin` above). Without this offset the
                 // whole timeline is dead: every hit test misses because the bar sits at the window's
@@ -906,15 +946,8 @@ pub fn bar(
                 });
                 LAST_PRESS.with(|lp| *lp.borrow_mut() = Some((now, pos.x, pos.y)));
                 let hit = hit_at(&hits, pos);
-                // 顶边：按下时记住当前高度（拖拽按相对位移算），双击回到默认高度。
-                if hit.is_some_and(|h| matches!(h.kind, HitKind::ResizeH)) {
-                    H_START.with(|s| s.set(bar_h));
-                    H_START_WIN.with(|y| y.set(f32::from(e.position.y)));
-                    if double {
-                        q_down.push(Act::SetTimelineHeight(crate::motion::HEIGHT));
-                        return;
-                    }
-                }
+                // 顶边高度手柄已移到 bar div 上那条 4px GPUI 覆盖条（latch 进 resize_drag），
+                // 不再走这条 canvas 命中表。`double` 仍传给 `begin_drag` 供关键帧等双击用。
                 begin_drag(&q_down, hit, pos, scale, looping, scrolling_x, &drag_doc, drag_duration, e.modifiers.shift, double);
             }
         })
@@ -1031,10 +1064,9 @@ fn dispatch_down(
             q.push(Act::SetDragDuration(Some(duration)));
             return Some(DragKind::Duration);
         }
-        HitKind::ResizeH => {
-            // 顶边：按下时的高度在 `bar` 的 down 里记好（`H_START`），这里只进入拖拽态。
-            return Some(DragKind::Height(pos.y));
-        }
+        // 顶边高度手柄已迁到 bar div 的 4px GPUI 覆盖条 + `resize_drag`，canvas 命中表
+        // 不再产生 `ResizeH`；保留此臂仅为 `HitKind` 穷尽匹配。
+        HitKind::ResizeH => {}
         HitKind::ToggleKey(n, p) => q.push(Act::ToggleKey(n, p)),
         HitKind::SeekKey(t) => q.push(Act::Seek(t)),
         HitKind::Layer(n) => q.push(Act::Click(SelItem::Layer(n), shift)),
@@ -1171,8 +1203,6 @@ fn route_drag_move(q: &Queue, scale: f32, scroll_x: f32, pos: Pos2) {
         Some(DragKind::Clip) | Some(DragKind::Layer) => {
             q.push(Act::DragMove { x: pos.x, pxms: scale });
         }
-        // 顶边高度在 `route_global_move` 里用窗口坐标处理（局部坐标会自我抵消，见 H_START_WIN）。
-        Some(DragKind::Height(_)) => {}
         None => {}
     }
     if let Some(k) = GRABBED.with(|g| *g.borrow()) {
@@ -1245,15 +1275,8 @@ pub fn tick_duration(q: &Queue, pos: Pos2) -> bool {
 /// window, so its `on_mouse_move` fires even when the pointer has left the timeline bar). Reads the
 /// bar origin captured each frame and routes through the shared [`route_drag_move`].
 pub fn route_global_move(q: &Queue, window_pos: Point<Pixels>) {
-    // 顶边高度：面板底边固定，指针往上 → 变高。用窗口 y（局部坐标会自我抵消）。
-    if let Some(DragKind::Height(_)) = DRAG.with(|d| *d.borrow()) {
-        let start = H_START.with(|h| h.get());
-        let y0 = H_START_WIN.with(|y| y.get());
-        let tallest = (VIEWPORT_H.with(|v| v.get()) - 200.0).max(crate::motion::MIN_H);
-        let h = (start + (y0 - f32::from(window_pos.y))).clamp(crate::motion::MIN_H, tallest);
-        q.push(Act::SetTimelineHeight(h));
-        return;
-    }
+    // 顶边高度手柄已迁到 `resize_drag::Handle::BottomTimeline`，由根视图 / 窗口级
+    // 通用路由处理；这里只负责 timeline 自身的其它拖拽（seek / duration / clip / layer）。
     let o = BAR_ORIGIN.with(|o| *o.borrow());
     let (scale, scroll_x, _, _, _) = GEOM.with(|g| *g.borrow());
     let pos = pos2(f32::from(window_pos.x) - f32::from(o.x), f32::from(window_pos.y) - f32::from(o.y));
@@ -1565,42 +1588,6 @@ mod tests {
             assert!((ms as f32) < prev, "指针左移时长要变短（{prev} → {ms}）");
             prev = ms as f32;
         }
-    }
-
-    /// 回归：顶边上下拖能改高度。必须用窗口坐标，否则「变高 → 原点下移 → 局部 y 抵消」。
-    #[test]
-    fn timeline_height_follows_a_top_edge_drag() {
-        reset_drag_state();
-        H_START.with(|h| h.set(309.0));
-        H_START_WIN.with(|y| y.set(600.0));
-        VIEWPORT_H.with(|v| v.set(1000.0));
-        DRAG.with(|d| *d.borrow_mut() = Some(DragKind::Height(0.0)));
-
-        let q = Queue::new(Rc::new(|| {}));
-        route_global_move(&q, Point::new(px(400.0), px(540.0))); // 往上 60
-        let up = q.drain().into_iter().find_map(|a| match a {
-            Act::SetTimelineHeight(h) => Some(h),
-            _ => None,
-        });
-        assert!(up.is_some_and(|h| (h - 369.0).abs() < 0.5), "往上拖 60pt 应变成 369pt，实得 {up:?}");
-
-        let q = Queue::new(Rc::new(|| {}));
-        route_global_move(&q, Point::new(px(400.0), px(700.0))); // 往下 100
-        let down = q.drain().into_iter().find_map(|a| match a {
-            Act::SetTimelineHeight(h) => Some(h),
-            _ => None,
-        });
-        assert!(down.is_some_and(|h| (h - 209.0).abs() < 0.5), "往下拖 100pt 应变成 209pt，实得 {down:?}");
-
-        // 极限：不能比 MIN_H 更矮。
-        let q = Queue::new(Rc::new(|| {}));
-        route_global_move(&q, Point::new(px(400.0), px(5000.0)));
-        let floor = q.drain().into_iter().find_map(|a| match a {
-            Act::SetTimelineHeight(h) => Some(h),
-            _ => None,
-        });
-        assert_eq!(floor, Some(crate::motion::MIN_H));
-        DRAG.with(|d| *d.borrow_mut() = None);
     }
 
     /// 悬停：行悬停才画眼睛、菱形变亮 —— 这是本次补上的 egui 悬停反馈（以前只有一个跟着

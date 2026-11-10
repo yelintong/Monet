@@ -144,8 +144,16 @@ impl Default for LayerTreeState {
 
 impl CanvasView {
     /// 左面板：标题 + 控件树滚动区。
+    ///
+    /// 宽度由调用方给 `left_w + HANDLE_W`：多出的 1px 是画布侧那条分隔线，容器**自身右缘**
+    /// 用 1px `border_r_1` 画它（与底栏 `border_t_1` 同一套做法，不再有独立的 `drag_handle`
+    /// 元素）。上/下/左三边一律不画，避免与标题栏下沿、时间轴顶边叠成双线。border-box 内描边
+    /// 不改布局宽度：`canvas_x` / 命中几何仍按 `left_w + HANDLE_W` 算，一像素不差。
+    /// hover 或拖拽中这条线变强调色（`resize_drag::hovered` 由 4px 覆盖条写入）。
     pub(crate) fn render_left_panel(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> Stateful<Div> {
         let t = tokens();
+        let divider_hot = crate::resize_drag::hovered(crate::resize_drag::Edge::Left)
+            || crate::resize_drag::drag_active(crate::resize_drag::Handle::LeftPanel);
         div()
             .id("left-panel")
             .flex_none()
@@ -154,8 +162,8 @@ impl CanvasView {
             .flex_col()
             .overflow_y_scroll()
             .bg(rgba(t.panel))
-            .border_1()
-            .border_color(rgba(t.border))
+            .border_r_1()
+            .border_color(rgba(if divider_hot { t.accent } else { t.border }))
             .child(SectionHeader::new("Layers").variant(SectionHeaderVariant::Normal))
             .child(self.render_layer_tree(cx))
     }

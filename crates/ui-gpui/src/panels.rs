@@ -1463,6 +1463,10 @@ pub(crate) fn left_rail(
         .py(pt(RAIL_PAD_Y))
         .gap(pt(4.0))
         .bg(rgba(t.panel))
+        // 与左面板之间的那条静态 1px 分隔线（用户：侧栏与左工具栏的分隔线要保留）。
+        // 用 rail 自身右缘描边、只此一条；border-box 内描边不改布局宽度，RAIL_W 命中几何不变。
+        .border_r_1()
+        .border_color(rgba(t.border))
         // 第 1 项：主菜单。点击在它下方弹出下拉菜单（egui 的 left-rail Menu 同义）。
         // 尺寸/内边距必须与 `rail_menu_bounds()` 一致（菜单锚点按那套几何算）。
         .child(IconButton::new(Icon::Menu).id("rail-menu").size(RAIL_BTN).on_click(on_menu))
