@@ -27,19 +27,19 @@ use crate::panels::{Cmd, Cmds};
 use crate::widgets::{
     Dropdown, Icon, IconButton, MenuRow, PanelSection, SectionHeaderVariant, TextField, field_row, field_row_full, pt, rgba, search_field, tokens,
 };
+use figcraft_color::{Color, Paint, PaintKind};
+use figcraft_doc::NodeKind;
+use figcraft_doc::styles::{Style, StyleKind};
 use figcraft_engine::components::default_variant;
 use figcraft_engine::keymap::{GESTURES, Group, KEYS, Platform};
-use figcraft_color::{Color, Paint, PaintKind};
-use figcraft_doc::styles::{Style, StyleKind};
-use figcraft_doc::NodeKind;
 use gpui::{
     App, Bounds, ClickEvent, Div, Entity, Hsla, ImageSource, IntoElement, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point,
     RenderImage, SharedString, Window, canvas, div, img, prelude::*, px, rgb,
 };
-use std::sync::Arc;
 use serde_json::{Value, json};
 use std::cell::RefCell;
 use std::rc::Rc;
+use std::sync::Arc;
 
 /// 打开着的是哪一块面板。
 #[derive(Clone, Debug, PartialEq)]
@@ -47,7 +47,10 @@ pub(crate) enum ExtraKind {
     Shortcuts,
     Versions,
     /// `dev.compare {id, version, show}` 带过来的目标。
-    DevCompare { id: Option<figcraft_doc::NodeId>, version: Option<String> },
+    DevCompare {
+        id: Option<figcraft_doc::NodeId>,
+        version: Option<String>,
+    },
     Assets,
     /// A1: `doc.home` 的首页（Recents / Templates / Getting started）。
     Home,
@@ -70,8 +73,14 @@ impl ExtraKind {
 pub(crate) enum UiAction {
     Tab(u8),
     Toggle(ExtraKind),
-    Compare { id: Option<figcraft_doc::NodeId>, version: Option<String> },
-    Widths { left: Option<f32>, right: Option<f32> },
+    Compare {
+        id: Option<figcraft_doc::NodeId>,
+        version: Option<String>,
+    },
+    Widths {
+        left: Option<f32>,
+        right: Option<f32>,
+    },
     Palette,
     /// 原型演示 / 浮动预览（engine proto.present / proto.preview）。
     Present(Option<figcraft_doc::NodeId>, bool),
@@ -143,6 +152,11 @@ pub(crate) struct ExtraState {
     pub assets_tab: Rc<RefCell<bool>>,
     pub assets_query: Rc<RefCell<String>>,
     pub assets_search: Entity<TextField>,
+    // ── A1 Home (egui `ui.home_view`) ──
+    /// 0 Recents / 1 Online / 2 Templates.
+    pub home_section: Rc<RefCell<usize>>,
+    pub home_query: Rc<RefCell<String>>,
+    pub home_search: Entity<TextField>,
 }
 
 impl ExtraState {
@@ -173,6 +187,16 @@ impl ExtraState {
                 aw.wake();
             });
         });
+        let home_query = Rc::new(RefCell::new(String::new()));
+        let home_search = search_field(cx, 220.0, "", "Search files and templates");
+        let hq = home_query.clone();
+        let hw = cmds.clone();
+        home_search.update(cx, move |tf, _| {
+            tf.set_on_commit(move |text, _, _| {
+                *hq.borrow_mut() = text.trim().to_lowercase();
+                hw.wake();
+            });
+        });
         Self {
             group: Rc::new(RefCell::new(0usize)),
             query,
@@ -190,27 +214,31 @@ impl ExtraState {
             assets_tab: Rc::new(RefCell::new(false)),
             assets_query,
             assets_search,
+            home_section: Rc::new(RefCell::new(0usize)),
+            home_query,
+            home_search,
         }
     }
 }
 
 /// 居中浮层（chrome）+ 对应面板的 body。
-pub(crate) fn render(
-    kind: &ExtraKind,
-    app: &CanvasApp,
-    cmds: &Cmds,
-    state: &ExtraState,
-    cx: &mut App,
-    close: Rc<dyn Fn()>,
-) -> gpui::Stateful<Div> {
+pub(crate) fn render(kind: &ExtraKind, app: &CanvasApp, cmds: &Cmds, state: &ExtraState, cx: &mut App, close: Rc<dyn Fn()>) -> gpui::Stateful<Div> {
     let t = tokens();
     let body = match kind {
         ExtraKind::Shortcuts => shortcuts_body(state, cmds, cx),
         ExtraKind::Versions => versions_body(app, cmds, state, cx),
         ExtraKind::DevCompare { id, version } => compare_body(app, cmds, state, *id, version.as_deref()),
         ExtraKind::Assets => assets_body(app, cmds, state, cx),
-        ExtraKind::Home => home_body(app, cmds),
+        ExtraKind::Home => home_body(app, cmds, state),
     };
+    if matches!(kind, ExtraKind::Home) {
+        // 1:1 with `ui-egui/src/home.rs`: `CentralPanel` fills the window, with the sidebar on
+        // the left and the scrolling content on the right — not a 760x520 centred popover.
+        let close = close.clone();
+        return div().id("home-screen").absolute().top(px(0.0)).left(px(0.0)).size_full().bg(rgba(t.panel)).child(body).child(
+            div().absolute().top(pt(12.0)).right(pt(12.0)).child(IconButton::new(Icon::Close).size(24.0).on_click(move |_e, _w, _cx| close())),
+        );
+    }
     let close_btn = {
         let close = close.clone();
         IconButton::new(Icon::Close).size(24.0).on_click(move |_e, _w, _cx| close())
@@ -327,26 +355,14 @@ fn shortcuts_body(state: &ExtraState, cmds: &Cmds, _cx: &mut App) -> Div {
             .w_full()
             .child(group_dd)
             .child(state.search.clone())
-            .child(
-                div()
-                    .text_size(pt(10.0))
-                    .text_color(rgba(t.text_secondary))
-                    .child(SharedString::from(format!("{} shortcuts", list.len()))),
-            ),
+            .child(div().text_size(pt(10.0)).text_color(rgba(t.text_secondary)).child(SharedString::from(format!("{} shortcuts", list.len())))),
     );
     if list.is_empty() {
         return body.child(div().text_size(pt(11.0)).text_color(rgba(t.text_secondary)).child("No shortcuts match"));
     }
     for r in list.iter().take(120) {
         let mut line = div().flex().flex_row().items_center().w_full().h(px(26.0)).gap(pt(6.0));
-        line = line.child(
-            div()
-                .flex_1()
-                .min_w(px(0.0))
-                .text_size(pt(11.0))
-                .text_color(rgba(t.text))
-                .child(SharedString::from(r.label.clone())),
-        );
+        line = line.child(div().flex_1().min_w(px(0.0)).text_size(pt(11.0)).text_color(rgba(t.text)).child(SharedString::from(r.label.clone())));
         for k in &r.keys {
             line = line.child(
                 div()
@@ -373,10 +389,7 @@ fn shortcuts_body(state: &ExtraState, cmds: &Cmds, _cx: &mut App) -> Div {
 
 /// 把 Unix 秒转成「3 minutes ago」式的相对时间（不依赖 chrono，避免引入新依赖）。
 fn time_ago(unix_secs: u64) -> String {
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(unix_secs);
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(unix_secs);
     let diff = now.saturating_sub(unix_secs);
     let (n, unit) = if diff < 60 {
         (diff.max(1), "second")
@@ -393,11 +406,7 @@ fn time_ago(unix_secs: u64) -> String {
     } else {
         (diff / 31_556_952, "year")
     };
-    if n <= 1 {
-        format!("{unit} ago")
-    } else {
-        format!("{n} {unit}s ago")
-    }
+    if n <= 1 { format!("{unit} ago") } else { format!("{n} {unit}s ago") }
 }
 
 /// 小号文本按钮（主要=accent 底白字，次要=field 底）。
@@ -467,7 +476,13 @@ fn versions_body(app: &CanvasApp, cmds: &Cmds, state: &ExtraState, cx: &mut App)
                         .flex_1()
                         .min_w(px(0.0))
                         .flex_col()
-                        .child(div().text_size(pt(11.0)).font_weight(gpui::FontWeight::SEMIBOLD).text_color(rgba(t.text)).child(SharedString::from(format!("Viewing “{nm}”"))))
+                        .child(
+                            div()
+                                .text_size(pt(11.0))
+                                .font_weight(gpui::FontWeight::SEMIBOLD)
+                                .text_color(rgba(t.text))
+                                .child(SharedString::from(format!("Viewing “{nm}”"))),
+                        )
                         .child(div().text_size(pt(10.0)).text_color(rgba(t.text_secondary)).child(SharedString::from(time_ago(p.time)))),
                 )
                 .child(pill("Back to current", false, move |_e, _w, _cx| {
@@ -539,7 +554,9 @@ fn versions_body(app: &CanvasApp, cmds: &Cmds, state: &ExtraState, cx: &mut App)
                 *vc.borrow_mut() = None;
             });
             let vc2 = state.ver_confirm.clone();
-            let no = pill("Cancel", false, move |_e, _w, _cx| { *vc2.borrow_mut() = None; });
+            let no = pill("Cancel", false, move |_e, _w, _cx| {
+                *vc2.borrow_mut() = None;
+            });
             sec = sec.child(field_row_full(
                 div()
                     .flex()
@@ -547,7 +564,14 @@ fn versions_body(app: &CanvasApp, cmds: &Cmds, state: &ExtraState, cx: &mut App)
                     .items_center()
                     .gap(pt(8.0))
                     .w_full()
-                    .child(div().flex_1().min_w(px(0.0)).text_size(pt(11.0)).text_color(rgba(t.text)).child(SharedString::from(format!("Delete “{}”? This can't be undone.", v.name))))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w(px(0.0))
+                            .text_size(pt(11.0))
+                            .text_color(rgba(t.text))
+                            .child(SharedString::from(format!("Delete “{}”? This can't be undone.", v.name))),
+                    )
                     .child(yes)
                     .child(no),
             ));
@@ -591,7 +615,9 @@ fn versions_body(app: &CanvasApp, cmds: &Cmds, state: &ExtraState, cx: &mut App)
         });
         let vc = state.ver_confirm.clone();
         let id4 = vid.clone();
-        let del = icon_act(Icon::Trash, 18.0, move |_e, _w, _cx| { *vc.borrow_mut() = Some(id4.clone()); });
+        let del = icon_act(Icon::Trash, 18.0, move |_e, _w, _cx| {
+            *vc.borrow_mut() = Some(id4.clone());
+        });
         let cm3 = cmds.clone();
         let id5 = vid.clone();
         let dup = pill("Dup", false, move |_e, _w, _cx| cm3.push(Cmd { id: "version.duplicate", params: Some(json!({ "id": id5 })) }));
@@ -661,14 +687,7 @@ fn layer_boxes(
         let bh = (b.height() * sy) as f32;
         let hot = hovered == Some(c.id);
         let fill = Hsla::from(col).opacity(0.18);
-        let mut box_el = div()
-            .absolute()
-            .top(px(by))
-            .left(px(bx))
-            .w(px(bw.max(1.0)))
-            .h(px(bh.max(1.0)))
-            .border_1()
-            .border_color(col);
+        let mut box_el = div().absolute().top(px(by)).left(px(bx)).w(px(bw.max(1.0))).h(px(bh.max(1.0))).border_1().border_color(col);
         if hot {
             box_el = box_el.bg(fill);
         }
@@ -701,17 +720,16 @@ fn compare_body(app: &CanvasApp, cmds: &Cmds, state: &ExtraState, id: Option<fig
     body = body.child(div().text_size(pt(12.0)).font_weight(gpui::FontWeight::SEMIBOLD).text_color(rgba(t.text)).child(SharedString::from(summary)));
     if let Some(v) = &chosen {
         if let Some(name) = ds.versions.iter().find(|x| &x.id == v).map(|x| x.name.clone()) {
-            body = body.child(div().text_size(pt(10.0)).text_color(rgba(t.text_secondary)).child(SharedString::from(format!("Compared to version {name}"))));
+            body = body
+                .child(div().text_size(pt(10.0)).text_color(rgba(t.text_secondary)).child(SharedString::from(format!("Compared to version {name}"))));
         }
     }
 
     // 控制行：Compare with + 并排/叠加切换。
     let opts: Vec<Option<String>> = std::iter::once(None).chain(ds.versions.iter().map(|v| Some(v.id.clone()))).collect();
     let cur_idx = opts.iter().position(|o| o == &chosen).unwrap_or(0);
-    let cur_name = chosen
-        .as_ref()
-        .and_then(|v| ds.versions.iter().find(|x| &x.id == v).map(|x| x.name.clone()))
-        .unwrap_or_else(|| "When marked ready".into());
+    let cur_name =
+        chosen.as_ref().and_then(|v| ds.versions.iter().find(|x| &x.id == v).map(|x| x.name.clone())).unwrap_or_else(|| "When marked ready".into());
     let vstate = state.dev_version.clone();
     let vwake = cmds.clone();
     let mut version_dd = Dropdown::new(SharedString::from(cur_name), 200.0, None).fill();
@@ -788,9 +806,17 @@ fn compare_body(app: &CanvasApp, cmds: &Cmds, state: &ExtraState, id: Option<fig
         .on_mouse_up(MouseButton::Left, move |_e: &MouseUpEvent, _window, _cx| {
             DRAGGING.with(|d| *d.borrow_mut() = false);
         })
-        .child(canvas(|_, _, _| (), move |b, _, _, _| {
-            STAGE_RECT.with(|s| *s.borrow_mut() = Some(b.clone()));
-        }).absolute().size_full().into_any_element())
+        .child(
+            canvas(
+                |_, _, _| (),
+                move |b, _, _, _| {
+                    STAGE_RECT.with(|s| *s.borrow_mut() = Some(b.clone()));
+                },
+            )
+            .absolute()
+            .size_full()
+            .into_any_element(),
+        )
         .child({
             let mut images = div().relative().flex().items_center().justify_center().w_full().h_full();
             let after_el = after.as_ref().map(|(tex, _, _)| img(ImageSource::Render(tex.clone())).w(px(dw)).h(px(dh)));
@@ -805,36 +831,12 @@ fn compare_body(app: &CanvasApp, cmds: &Cmds, state: &ExtraState, id: Option<fig
                     if let Some(a) = after_el {
                         images = images.child(a);
                         if let Some(b) = before_el {
-                            images = images.child(
-                                div()
-                                    .absolute()
-                                    .top(px(0.0))
-                                    .left(px(0.0))
-                                    .w(px(dw * split))
-                                    .h(px(dh))
-                                    .overflow_hidden()
-                                    .child(b),
-                            );
+                            images = images.child(div().absolute().top(px(0.0)).left(px(0.0)).w(px(dw * split)).h(px(dh)).overflow_hidden().child(b));
                         }
-                        images = images.child(
-                            div()
-                                .absolute()
-                                .top(px(0.0))
-                                .left(px(dw * split - 1.0))
-                                .w(px(1.0))
-                                .h(px(dh))
-                                .bg(rgba(t.accent))
-                                .child(
-                                    div()
-                                        .absolute()
-                                        .top(px(dh / 2.0 - 8.0))
-                                        .left(px(-5.0))
-                                        .w(px(12.0))
-                                        .h(px(16.0))
-                                        .rounded(px(6.0))
-                                        .bg(rgba(t.accent)),
-                                ),
-                        );
+                        images =
+                            images.child(div().absolute().top(px(0.0)).left(px(dw * split - 1.0)).w(px(1.0)).h(px(dh)).bg(rgba(t.accent)).child(
+                                div().absolute().top(px(dh / 2.0 - 8.0)).left(px(-5.0)).w(px(12.0)).h(px(16.0)).rounded(px(6.0)).bg(rgba(t.accent)),
+                            ));
                     }
                 }
             }
@@ -847,16 +849,13 @@ fn compare_body(app: &CanvasApp, cmds: &Cmds, state: &ExtraState, id: Option<fig
         });
 
     let hstate = state.dev_hovered.clone();
-    let mut list = div()
-        .id("compare-changes")
-        .flex_none()
-        .w(px(300.0))
-        .h_full()
-        .min_h(px(0.0))
-        .flex()
-        .flex_col()
-        .overflow_y_scroll()
-        .child(div().text_size(pt(11.0)).font_weight(gpui::FontWeight::SEMIBOLD).text_color(rgba(t.text)).child(SharedString::from(format!("{} changes", cmp.changes.len()))));
+    let mut list = div().id("compare-changes").flex_none().w(px(300.0)).h_full().min_h(px(0.0)).flex().flex_col().overflow_y_scroll().child(
+        div()
+            .text_size(pt(11.0))
+            .font_weight(gpui::FontWeight::SEMIBOLD)
+            .text_color(rgba(t.text))
+            .child(SharedString::from(format!("{} changes", cmp.changes.len()))),
+    );
     for c in &cmp.changes {
         let cid = c.id;
         let c2 = cmds.clone();
@@ -956,11 +955,7 @@ fn assets_body(app: &CanvasApp, cmds: &Cmds, state: &ExtraState, _cx: &mut App) 
         .child(div().flex_1().min_w(px(0.0)))
         .child(state.assets_search.clone());
 
-    let body = if on_components {
-        assets_components(doc, cmds, &q)
-    } else {
-        assets_styles(doc, cmds, &q)
-    };
+    let body = if on_components { assets_components(doc, cmds, &q) } else { assets_styles(doc, cmds, &q) };
     wrap_header(body, header)
 }
 
@@ -1001,11 +996,7 @@ fn assets_components(doc: &figcraft_doc::Document, cmds: &Cmds, q: &str) -> Div 
 fn component_tile(doc: &figcraft_doc::Document, cmds: &Cmds, id: figcraft_doc::NodeId) -> Div {
     let t = tokens();
     let Some(n) = doc.node(id) else { return div() };
-    let shown = if matches!(n.kind, NodeKind::ComponentSet { .. }) {
-        default_variant(doc, id).unwrap_or(id)
-    } else {
-        id
-    };
+    let shown = if matches!(n.kind, NodeKind::ComponentSet { .. }) { default_variant(doc, id).unwrap_or(id) } else { id };
     let thumb = render_thumb(doc, shown);
     let name = n.name.clone();
     let is_set = matches!(n.kind, NodeKind::ComponentSet { .. });
@@ -1035,16 +1026,7 @@ fn component_tile(doc: &figcraft_doc::Document, cmds: &Cmds, id: figcraft_doc::N
         .overflow_hidden()
         .on_mouse_down(MouseButton::Left, create.clone())
         .cursor_pointer()
-        .child(
-            div()
-                .h(px(120.0))
-                .flex()
-                .items_center()
-                .justify_center()
-                .p(pt(8.0))
-                .bg(rgba(t.field))
-                .child(thumb_el),
-        )
+        .child(div().h(px(120.0)).flex().items_center().justify_center().p(pt(8.0)).bg(rgba(t.field)).child(thumb_el))
         .child(
             div()
                 .flex()
@@ -1064,21 +1046,18 @@ fn component_tile(doc: &figcraft_doc::Document, cmds: &Cmds, id: figcraft_doc::N
                         .text_color(rgba(t.text))
                         .child(SharedString::from(name)),
                 )
-                .child(
-                    div()
-                        .text_size(pt(9.0))
-                        .text_color(rgba(t.text_secondary))
-                        .child(SharedString::from(if is_set { "Set" } else { "Component" })),
-                ),
+                .child(div().text_size(pt(9.0)).text_color(rgba(t.text_secondary)).child(SharedString::from(if is_set {
+                    "Set"
+                } else {
+                    "Component"
+                }))),
         )
 }
 
 /// Styles tab：本地样式列表，按类型给图标/色板，点一行把样式应用到当前选区。
 fn assets_styles(doc: &figcraft_doc::Document, cmds: &Cmds, q: &str) -> Div {
     let t = tokens();
-    let styles: Vec<&Style> = figcraft_engine::library::local_styles(doc)
-        .filter(|s| s.name.to_lowercase().contains(q))
-        .collect();
+    let styles: Vec<&Style> = figcraft_engine::library::local_styles(doc).filter(|s| s.name.to_lowercase().contains(q)).collect();
     let mut list = div().flex().flex_col().w_full().gap(pt(2.0));
     if styles.is_empty() {
         return list.child(note(if q.is_empty() { "No local styles." } else { "No styles match your search." }));
@@ -1119,12 +1098,7 @@ fn assets_styles(doc: &figcraft_doc::Document, cmds: &Cmds, q: &str) -> Div {
                                 .text_color(rgba(t.text))
                                 .child(SharedString::from(name)),
                         )
-                        .child(
-                            div()
-                                .text_size(pt(9.0))
-                                .text_color(rgba(t.text_secondary))
-                                .child(SharedString::from(s.kind.type_name())),
-                        ),
+                        .child(div().text_size(pt(9.0)).text_color(rgba(t.text_secondary)).child(SharedString::from(s.kind.type_name()))),
                 ),
         );
     }
@@ -1134,14 +1108,7 @@ fn assets_styles(doc: &figcraft_doc::Document, cmds: &Cmds, q: &str) -> Div {
 /// 样式类型徽标：Paint 用色板（首个纯色填充），Text/Grid 用图标，Effect 用「fx」文字徽标。
 fn style_badge(s: &Style) -> Div {
     fn boxed(el: impl IntoElement) -> Div {
-        div()
-            .flex_none()
-            .w(px(18.0))
-            .h(px(18.0))
-            .flex()
-            .items_center()
-            .justify_center()
-            .child(el)
+        div().flex_none().w(px(18.0)).h(px(18.0)).flex().items_center().justify_center().child(el)
     }
     let t = tokens();
     match &s.kind {
@@ -1164,13 +1131,9 @@ fn style_badge(s: &Style) -> Div {
         }
         StyleKind::Text { .. } => boxed(IconButton::new(Icon::Text).size(14.0)),
         StyleKind::Grid { .. } => boxed(IconButton::new(Icon::ViewGrid).size(14.0)),
-        StyleKind::Effect { .. } => boxed(
-            div()
-                .text_size(pt(9.0))
-                .font_weight(gpui::FontWeight::SEMIBOLD)
-                .text_color(rgba(t.text_secondary))
-                .child(SharedString::from("fx")),
-        ),
+        StyleKind::Effect { .. } => {
+            boxed(div().text_size(pt(9.0)).font_weight(gpui::FontWeight::SEMIBOLD).text_color(rgba(t.text_secondary)).child(SharedString::from("fx")))
+        }
     }
 }
 
@@ -1181,63 +1144,193 @@ fn icon_cmd(icon: Icon, id: &'static str, params: Value, cmds: &Cmds) -> IconBut
     IconButton::new(icon).size(24.0).on_click(move |_e, _w, _cx| c.push(Cmd { id, params: Some(params.clone()) }))
 }
 
-/// A1 Home: Recents / Templates / Getting started.
-///
-/// Everything is engine-owned: `prefs.recent_files` and `prefs.getting_started_dismissed` for the
-/// data, `file.openRecent` / `file.new` / `file.newBoard` / `file.newFromTemplate` /
-/// `help.gettingStarted` for the actions. Rows use this panel's existing `pill` / `note` helpers
-/// and every write goes through `CmdQueue` — no new control and no direct document writes.
-fn home_body(app: &CanvasApp, cmds: &Cmds) -> Div {
-    let mut col = div().flex().flex_col().w_full().gap(pt(12.0)).p(pt(16.0));
+/// A1 Home — 1:1 with `ui-egui/src/home.rs`: a 240 pt sidebar (wordmark, file search, section
+/// tabs) and a scrolling main area with `action_card`s, the recent-file list and the six tips.
+/// All data and actions come from the engine (`prefs.recent_files`, `prefs.getting_started_dismissed`,
+/// `file.new` / `file.newBoard` / `file.open` / `file.openRecent` / `file.newFromTemplate`).
+const HOME_TIPS: [(&str, &str); 6] = [
+    ("Draw a frame", "Pick the Frame tool, then drag on the canvas or choose a device size"),
+    ("Add auto layout", "Select layers and they space themselves as their content changes"),
+    ("Make a component", "Turn a layer into a component, reuse it, and change every copy at once"),
+    ("Prototype", "Link frames on the Prototype tab, then present the flow"),
+    ("Share with a code", "Start sharing with the Share button, then pass on the code it gives"),
+    ("Export", "Export frames and layers as PNG, JPG, SVG or PDF"),
+];
 
-    col = col.child(note("Recents"));
-    let recents = &app.session.prefs.recent_files;
-    if recents.is_empty() {
-        col = col.child(note("No recent files yet. Open or save a file to see it here."));
-    } else {
-        for path in recents.iter().take(8) {
-            let name = std::path::Path::new(path)
-                .file_name()
-                .map(|s| s.to_string_lossy().into_owned())
-                .unwrap_or_else(|| path.clone());
-            let c = cmds.clone();
-            let p = path.clone();
-            col = col.child(
-                div()
-                    .w_full()
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .child(pill(&name, false, move |_, _, _| {
-                        c.push(Cmd { id: "file.openRecent", params: Some(json!({ "path": p.clone() })) });
-                    })),
-            );
+fn heading(text: &'static str) -> Div {
+    div().w_full().text_size(pt(20.0)).font_weight(gpui::FontWeight::SEMIBOLD).text_color(rgba(tokens().text)).child(text)
+}
+
+fn subheading(text: &'static str) -> Div {
+    div().w_full().text_size(pt(13.0)).font_weight(gpui::FontWeight::SEMIBOLD).text_color(rgba(tokens().text)).child(text)
+}
+
+/// `ui-egui/src/home.rs::action_card`: 260x72, a 32 pt accent icon tile, title + sub line.
+fn action_card(icon: Icon, title: &'static str, sub: &'static str, id: &'static str, cmds: &Cmds) -> Div {
+    let t = tokens();
+    let c = cmds.clone();
+    div()
+        .flex_none()
+        .w(px(260.0))
+        .h(px(72.0))
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap(pt(12.0))
+        .px(pt(16.0))
+        .rounded(pt(8.0))
+        .bg(rgba(t.field))
+        .border_1()
+        .border_color(rgba(t.border))
+        .cursor_pointer()
+        .hover(|s| s.bg(rgba(t.hover)))
+        .child(
+            div()
+                .w(px(32.0))
+                .h(px(32.0))
+                .rounded(pt(6.0))
+                .bg(rgba(t.accent))
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(crate::widgets::icon::paint(icon, rgba(t.accent_on), 16.0)),
+        )
+        .child(
+            div()
+                .flex()
+                .flex_col()
+                .gap(pt(4.0))
+                .child(div().text_size(pt(12.0)).font_weight(gpui::FontWeight::SEMIBOLD).text_color(rgba(t.text)).child(title))
+                .child(div().text_size(pt(11.0)).text_color(rgba(t.text_secondary)).child(sub)),
+        )
+        .on_mouse_down(MouseButton::Left, move |_e, _, _| c.push(Cmd { id, params: None }))
+}
+
+fn home_body(app: &CanvasApp, cmds: &Cmds, state: &ExtraState) -> Div {
+    let t = tokens();
+    let section = *state.home_section.borrow();
+    let q = state.home_query.borrow().to_lowercase();
+
+    // ── 240 pt sidebar: wordmark, file/template search, three section tabs ──────
+    let mut side = div().flex_none().w(px(240.0)).h_full().flex().flex_col().gap(pt(8.0)).p(pt(12.0)).border_r_1().border_color(rgba(t.border));
+    side = side.child(
+        div()
+            .h(px(40.0))
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(pt(10.0))
+            .child(crate::widgets::icon::paint(Icon::Component, rgba(t.accent), 24.0))
+            .child(div().text_size(pt(16.0)).font_weight(gpui::FontWeight::SEMIBOLD).text_color(rgba(t.text)).child("FigCraft")),
+    );
+    side = side.child(state.home_search.clone());
+    for (i, (icon, label)) in [(Icon::Page, "Recents"), (Icon::LinkOn, "Online"), (Icon::ViewGrid, "Templates")].into_iter().enumerate() {
+        let on = section == i;
+        let slot = state.home_section.clone();
+        let wake = cmds.clone();
+        side = side.child(
+            div()
+                .h(px(32.0))
+                .w_full()
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap(pt(10.0))
+                .px(pt(10.0))
+                .rounded(pt(5.0))
+                .bg(rgba(if on { t.selected_row } else { t.panel }))
+                .hover(|s| s.bg(rgba(t.hover)))
+                .cursor_pointer()
+                .child(crate::widgets::icon::paint(icon, rgba(t.icon), 16.0))
+                .child(div().text_size(pt(12.0)).text_color(rgba(t.text)).child(label))
+                .on_mouse_down(MouseButton::Left, move |_e, _, _| {
+                    *slot.borrow_mut() = i;
+                    wake.wake();
+                }),
+        );
+    }
+
+    // ── main: heading + cards + files + tips, scrolled like the egui CentralPanel ─
+    let mut main = div().id("home-main").flex_1().min_w(px(0.0)).h_full().flex().flex_col().gap(pt(16.0)).p(pt(24.0)).overflow_y_scroll();
+    match section {
+        2 => {
+            main = main.child(heading("Templates"));
+            let mut row = div().flex().flex_row().gap(pt(12.0));
+            row = row.child(action_card(Icon::Frame, "New design file", "Start from a blank canvas", "file.new", cmds));
+            row = row.child(action_card(Icon::Rectangle, "New board", "Sticky notes, shapes and connectors", "file.newBoard", cmds));
+            row = row.child(action_card(Icon::ViewGrid, "New from template", "Pick a starter template", "file.newFromTemplate", cmds));
+            main = main.child(row);
+        }
+        1 => {
+            main = main.child(heading("Online"));
+            main = main.child(note("Online files come from the engine's online section; this front-end has no local list yet."));
+        }
+        _ => {
+            main = main.child(heading("Recents"));
+            let mut cards = div().flex().flex_row().gap(pt(12.0));
+            cards = cards.child(action_card(Icon::Frame, "New design file", "Start from a blank canvas", "file.new", cmds));
+            cards = cards.child(action_card(Icon::Rectangle, "New board", "Sticky notes, shapes and connectors", "file.newBoard", cmds));
+            cards = cards.child(action_card(Icon::Page, "Open file", "Open .figcraft, .svg or images", "file.open", cmds));
+            main = main.child(cards);
+            main = main.child(subheading("Recent files"));
+            let files: Vec<String> =
+                app.session.prefs.recent_files.iter().filter(|p| q.is_empty() || p.to_lowercase().contains(&q)).cloned().collect();
+            if files.is_empty() {
+                main = main.child(note("No recent files yet. Open or save a file to see it here."));
+            } else {
+                for path in files.iter().take(12) {
+                    let name = std::path::Path::new(path).file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| path.clone());
+                    let c = cmds.clone();
+                    let p = path.clone();
+                    main = main.child(
+                        div()
+                            .w_full()
+                            .h(px(36.0))
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .gap(pt(10.0))
+                            .px(pt(10.0))
+                            .rounded(pt(5.0))
+                            .hover(|s| s.bg(rgba(t.hover)))
+                            .cursor_pointer()
+                            .child(crate::widgets::icon::paint(Icon::Page, rgba(t.icon), 16.0))
+                            .child(div().text_size(pt(12.0)).text_color(rgba(t.text)).child(SharedString::from(name)))
+                            .on_mouse_down(MouseButton::Left, move |_e, _, _| {
+                                c.push(Cmd { id: "file.openRecent", params: Some(json!({ "path": p.clone() })) });
+                            }),
+                    );
+                }
+            }
+            if !app.session.prefs.getting_started_dismissed {
+                main = main.child(subheading("Getting started"));
+                let mut tips = div().w_full().flex().flex_col().gap(pt(8.0)).p(pt(16.0)).rounded(pt(8.0)).bg(rgba(t.field));
+                for (i, (title, line)) in HOME_TIPS.iter().enumerate() {
+                    tips =
+                        tips.child(
+                            div()
+                                .w_full()
+                                .flex()
+                                .flex_row()
+                                .items_center()
+                                .gap(pt(10.0))
+                                .child(div().size(pt(20.0)).rounded(pt(10.0)).bg(rgba(t.panel)).flex().items_center().justify_center().child(
+                                    div().text_size(pt(10.0)).text_color(rgba(t.text_secondary)).child(SharedString::from((i + 1).to_string())),
+                                ))
+                                .child(
+                                    div()
+                                        .flex()
+                                        .flex_col()
+                                        .child(div().text_size(pt(12.0)).text_color(rgba(t.text)).child(*title))
+                                        .child(div().text_size(pt(11.0)).text_color(rgba(t.text_secondary)).child(*line)),
+                                ),
+                        );
+                }
+                main = main.child(tips);
+            }
         }
     }
-
-    col = col.child(note("Templates"));
-    for (label, id) in [
-        ("New design file", "file.new"),
-        ("New board", "file.newBoard"),
-        ("New from template…", "file.newFromTemplate"),
-    ] {
-        let c = cmds.clone();
-        col = col.child(pill(label, label == "New from template…", move |_, _, _| {
-            c.push(Cmd { id, params: None });
-        }));
-    }
-
-    col = col.child(note("Getting started"));
-    col = col.child(note(if app.session.prefs.getting_started_dismissed {
-        "Tips are hidden. Use Help > Getting started to show them again."
-    } else {
-        "Tips are shown. Pick a tool, draw a frame, then try Prototype mode."
-    }));
-    let c = cmds.clone();
-    col = col.child(pill("Getting started", false, move |_, _, _| {
-        c.push(Cmd { id: "help.gettingStarted", params: None });
-    }));
-    col
+    div().flex().flex_row().w_full().h_full().child(side).child(main)
 }
 
 fn note(text: &'static str) -> Div {
@@ -1298,10 +1391,7 @@ mod tests {
         assert_eq!(ui_action("view.assets", &empty, 0), None, "Assets 请求是 panel.assets，不是命令名");
         assert_eq!(ui_action("panel.assets", &empty, 0), Some(UiAction::Toggle(ExtraKind::Assets)));
         assert_eq!(ui_action("panel.libraries", &empty, 0), Some(UiAction::Toggle(ExtraKind::Assets)));
-        assert_eq!(
-            ui_action("view.devCompare", &json!({"version": "v1"}), 0),
-            Some(UiAction::Compare { id: None, version: Some("v1".into()) })
-        );
+        assert_eq!(ui_action("view.devCompare", &json!({"version": "v1"}), 0), Some(UiAction::Compare { id: None, version: Some("v1".into()) }));
         assert_eq!(ui_action("panel.widths", &json!({"left": 320.0}), 0), Some(UiAction::Widths { left: Some(320.0), right: None }));
         assert_eq!(ui_action("palette.actions", &empty, 0), Some(UiAction::Palette));
         assert_eq!(ui_action("home", &empty, 0), Some(UiAction::Toggle(ExtraKind::Home)));
@@ -1310,10 +1400,7 @@ mod tests {
             Some(UiAction::Present(Some(figcraft_doc::NodeId(7)), false)),
             "proto.present → 演示层"
         );
-        assert_eq!(
-            ui_action("preview", &json!({"start": 7}), 0),
-            Some(UiAction::Present(Some(figcraft_doc::NodeId(7)), true))
-        );
+        assert_eq!(ui_action("preview", &json!({"start": 7}), 0), Some(UiAction::Present(Some(figcraft_doc::NodeId(7)), true)));
         assert_eq!(ui_action("preview.close", &empty, 0), Some(UiAction::PreviewClose));
     }
 

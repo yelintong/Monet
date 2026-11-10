@@ -268,7 +268,7 @@ A1=done
 
 **结论（19:1x 补全后）**：核查出的缺口已补 —— A6 预览、A7 三项、C1 全仓文案、A1 Home 全部落地；第 1 批 6 项现为 **5 项完成 + 1 项部分（B4 拖出成窗口）**。B4 是**有意不做**：引擎只有 `window.new` 请求，GPUI 侧缺 OS 多窗口的会话共享，按「不自己弄」的约束留待 A16。所有状态已回填 A/B/C/G 表，并由 J 节的契约测试自动守护。
 
-**下一步（19:1x 补全后修订）**：第 1 批仅剩 B4 拖出成窗口（A16，需共享 `Session` 的多窗口架构，见 J 节）；随后第 9–11 行 Comments / Plugins / Boards、B8 Present 子模块。涉及 `widgets/**` 冻结件的改动（A24 字段运算、调色板实时过滤）必须先与用户确认。新增能力时按 J 节同步 `CONTRACTS` / 代码 / 状态块。
+**（下一步已移至 K 节末尾）**
 
 ---
 
@@ -292,3 +292,56 @@ A1=done
 `cargo test -p figcraft-ui-gpui --lib --features test-support -- parity_contract` 会失败。**不要只改文档来让测试变绿。**
 
 **仍诚实保留的缺口**：`A18B4=partial` 依赖 `detach_window`。引擎确实有 `window.new` 请求（`cmd/view.rs:365`），但 GPUI 侧接 OS 多窗口要重构 `Session` 所有权以共享会话，属于「自己弄」，本轮按用户约束不做；契约保留这个 token，真正接上才会自动翻成 `done`。
+
+---
+
+## K. 全项目 GPUI 自查（2026-11-10 19:4x）
+
+> 触发：用户指出「里面的这些控件实际上下拉菜单我都是有的，但是我不知道你为什么不去还原。
+> 还有窗口本体也是有可以拖动的通用控件的，你也不用」，并明令
+> **「该还原的部分就该 1:1 还原，照着原来代码的布局直接抄」「写进项目记忆，严禁这么干」**。
+> 方法：以 `crates/ui-egui/src` 为唯一参照逐文件比对，并盘点 `widgets/` 下已有却没被调用的
+> 通用件。规则已固化到 `.workbuddy-ai/memory/MEMORY.md`（铁律，跨会话生效）与 J 节契约测试。
+
+**符号**：✅ 本轮已修 / 🔄 本轮修了主结构但仍有细节 / ⬜ 待办。
+
+| # | GPUI 位置 | EGUI 参照 | 差距（原控件 → 现/原替代件） | 状态 |
+|---|---|---|---|---|
+| 1 | `panels/extra.rs` `home_body` | `home.rs:145-232,313-370,418-454`；`home/home_recents.rs` | 全屏 240pt sidebar + Recents/Online/Templates tab + `action_card` 260×72 + 6 tips 徽标卡 + 搜索/排序 → 原先只有 `note()` 段 + `pill()` 列表 | 🔄 已改为全屏 + 侧栏 + 卡片 + tips；Online 区/模板缩略图/排序分页仍缺 |
+| 2 | `panels/extra.rs::render` 居中 760×520 卡 | `home.rs:145` `CentralPanel`；`shortcuts_panel.rs:105` 底部锚定 | 各自定位/可拖动的独立窗口 → 统一写死的居中遮罩卡 | 🔄 Home 已占满窗口；其余四块仍用居中卡 |
+| 3 | `dialogs.rs` A19 整套数据网格 | `dialogs.rs:86-97,219-365`；`dialogs/export.rs:90-151` | About 三 tab / Preferences 完整表单 / Export 分区 preset 行 → 15 种压成 message+fields+buttons | 🔄 补了 `Field::Section` / `Field::Action`，Export 按 8 preset 行重排；About tab、Preferences checkbox 等仍缺 |
+| 4 | `dialogs.rs` `popover_window(Open::At(at))` | `dialogs.rs:91` `floating()`「the user can move」 | 可移动对话框 → 固定居中不可拖 | ✅ 挂 `on_drag_start`/`on_drag_move` + `popover::clamp` + 3pt 死区，接 `CanvasView` 拖动状态机 |
+| 5 | `dialogs.rs` `choice_chips` | `dialogs.rs:343-352,436-475,506-545` | `widgets::dropdown` + `menu_popup` 下拉 → 一排 chips | ✅ 全改为真实 `widgets::dropdown()` + `CanvasView::open_menu` |
+| 6 | `dialogs.rs` `Field::Note` | `dialogs.rs:219-228,233-365` | tab 分组 / 分区 / 表单 → 纯文本行 | 🔄 引入 `Field::Section` 分区；About/Preferences 完整表单仍缺 |
+| 7 | `dialogs.rs` Export 硬编码 format 5 / scale 4 | `dialogs/export.rs:79-88,113-143` | 8 preset + 图层导出 + PDF print options → 编造的「格式/倍数下拉」 | ✅ 改回 caption + 8 preset 行 + PDF options + whole-file 行 |
+| 8 | `panels/extra.rs:309-317` 分组「伪下拉」 | `shortcuts_panel.rs:108` `tab_strip` | 真 tab 条 → 点一下换一组的循环切换 | ⬜ |
+| 9 | `panels/extra.rs:717-737` 版本/模式循环下拉 | `dev_compare.rs:491-492` | 带图标的 `dropdown` + `menu_popup` → 循环切换 | ⬜ |
+| 10 | `panels/extra.rs:303-368` Shortcuts 单列 `take(120)` | `shortcuts_panel.rs:15,110,126-142` | 3 列 keycap 网格 / 双语搜索 / 滚动 → 单列 120 行封顶 | ⬜ |
+| 11 | `popovers.rs:970-1019` `Setting::Options` chips | `layout_panel.rs` / `right/stroke.rs` | `dropdown` + `menu_popup` → chips | ⬜ |
+| 12 | `panels/extra.rs:935-947` Assets 用 `pill()` 切换 | `assets_panel.rs:301-312,421-449,1085` | 真 tab + 搜索 + 两列缩略图 + 文件夹折叠 → pill + 基础网格 | ⬜ |
+| 13 | `popovers.rs:380-381` 变量编辑器半张表 | `dialogs/variables_panel.rs::table()` | 左侧集合/分组 sidebar + 顶部搜索 + 编辑拖拽 → 只有右表 | ⬜ |
+| 14 | `panels/extra.rs:531-599` 版本行内联 5 图标 | `versions.rs:460,514` `menu_popup(&more)` | "more" 下拉菜单 → 一排内联小按钮 | ⬜ |
+| 15 | `lib.rs` palette 仅 tab + 搜索 + 点击 | `menus/palette.rs:57-61,113-141,215-241` | Up/Down 高亮 + Enter 运行 + 分区头 + 字母 tile → 无键盘导航 | ⬜ |
+| 16 | `panels/right/{devmode,inspect,proto,topbar}.rs` 各自 `note()` | 各 section 的空态 | 多为空态占位，不是替代主布局 | ⬜ 低优先 |
+
+**本轮已落地（提交见 git log）**
+- `dialogs.rs`：`Field::Choice` → 真实 `widgets::dropdown` + `open_menu`（`MenuRow.checked` 显示当前项）；
+  新增 `Field::Section`（caption + divider）与 `Field::Action`（点击即推引擎命令并关闭），
+  Export 按 `dialogs/export.rs` 抄成 8 preset + PDF options + whole file，Preferences 按
+  `dialogs.rs` 抄成 General / Interface 分区 + 下拉字段。
+- 对话框外壳：通用 `Popover` 的 `on_drag_start` / `on_drag_move` + `popover::clamp` + 3pt 死区，
+  并扩展 `CanvasView::begin_popup_drag` / `move_popup_drag` / `end_popup_drag` / `popup_dragging`
+  让窗口级拖拽路由也覆盖对话框（指针移出卡片仍连续）。
+- `panels/extra.rs`：Home 占满窗口、240pt 侧栏（wordmark + `search_field` + 3 个 section tab）、
+  主区 `action_card` 三连卡、Recents 文件行、6 条 Getting started tips（原文抄自 `home.rs::TIPS`）。
+- 契约加固：A19 的 `requires` 新增 `dropdown(` / `on_drag_start` / `on_drag_move`，A1 新增
+  `action_card` / `home_section` / `home-screen` —— 退回 chips / note+pill / 固定窗口会直接测试失败。
+
+**剩余待办按优先级**：#8/#9/#10/#11 的「真下拉 / 真 tab / 三列网格」→ #12/#13/#14 的整面板还原
+→ #15 调色板键盘导航 → #2 其余四块整面板的可拖动外壳 → #16 空态文案。**每一项都必须先读
+EGUI 原文件再动手，禁止再出现简化替代**；完成后同步 `CONTRACTS` / 代码 / 状态块。
+
+**下一步（19:4x 修订）**：先按上表把 `panels/extra.rs` 的四块整面板与 `popovers.rs` 的
+`Setting::Options` 换成真实 `dropdown` / `tab_strip` / 网格；B4 拖出成窗口（A16）需要共享
+`Session` 的多窗口架构，单独排期。涉及 `widgets/**` 冻结件的改动（A24 字段运算、调色板实时过滤）
+必须先与用户确认。

@@ -1576,7 +1576,9 @@ impl CanvasView {
 
         let preview = (kind == dialogs::Kind::Export).then(|| export_preview::make(&self.app.session)).flatten();
 
-        self.dialog = Some(dialogs::DialogState::new(kind, data, &cmds, cx, preview));
+        let root = cx.entity();
+
+        self.dialog = Some(dialogs::DialogState::new(kind, data, &cmds, cx, preview, root));
 
         // 从主菜单点开的对话框要把菜单本身收掉，否则菜单会盖在对话框上。
 
@@ -3515,6 +3517,10 @@ impl CanvasView {
 
             w.press(at);
 
+        } else if let Some(d) = &mut self.dialog {
+
+            d.press(at);
+
         }
 
     }
@@ -3535,7 +3541,7 @@ impl CanvasView {
 
         //     不是渲染慢，根因就是这段节流。
 
-        self.active_window_mut().is_some_and(|w| w.variables_route_move(at))
+        self.active_window_mut().is_some_and(|w| w.variables_route_move(at)) || self.dialog.as_mut().is_some_and(|d| d.route_move(at))
 
     }
 
@@ -3559,7 +3565,7 @@ impl CanvasView {
 
         }
 
-        let busy = self.window_drag_active();
+        let busy = self.window_drag_active() || self.popup_dragging() || self.popup_pending();
 
         if busy {
 
@@ -3577,7 +3583,7 @@ impl CanvasView {
 
     fn popup_dragging(&self) -> bool {
 
-        self.active_window().is_some_and(|w| w.dragging())
+        self.active_window().is_some_and(|w| w.dragging()) || self.dialog.as_ref().is_some_and(|d| d.dragging())
 
     }
 
@@ -3585,7 +3591,7 @@ impl CanvasView {
 
     fn popup_pending(&self) -> bool {
 
-        self.active_window().is_some_and(|w| w.pending().is_some())
+        self.active_window().is_some_and(|w| w.pending().is_some()) || self.dialog.as_ref().is_some_and(|d| d.pending())
 
     }
 
@@ -3662,6 +3668,12 @@ impl CanvasView {
             // 同时清掉整卡移动（pending/grab）与 resize（editor 内部状态）。
 
             w.variables_end_drag();
+
+        }
+
+        if let Some(d) = &mut self.dialog {
+
+            d.end_drag();
 
         }
 
@@ -6640,7 +6652,7 @@ impl Render for CanvasView {
 
         // A19：通用对话框（遮罩 + 居中窗口）画在所有面板 / 弹层 / 整面板之上。
 
-        let dialog_el: Vec<AnyElement> = self.dialog.as_ref().map(|d| d.render(vp)).unwrap_or_default();
+        let dialog_el: Vec<AnyElement> = self.dialog.as_mut().map(|d| d.render(vp)).unwrap_or_default();
 
 
 

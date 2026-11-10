@@ -21,13 +21,15 @@
 //! No field pretends to be wired: a choice either runs a real engine command on pick
 //! (`commands`) or contributes a value to the button's command params (`values`).
 
+use crate::CanvasView;
 use crate::panels::{Cmd, Cmds};
+use crate::widgets::dropdown::dropdown;
 use crate::widgets::menu::popup_backdrop;
-use crate::widgets::popover::{Open, popover_window, title_text};
-use crate::widgets::{Slot, TextField, field_row, field_row_full, number_field, pt, rgba, text_field, tokens};
+use crate::widgets::popover::{Open, clamp, popover_window, title_text};
+use crate::widgets::{MenuRow, Slot, TextField, field_row, field_row_full, number_field, pt, rgba, text_field, tokens};
 use gpui::{
-    AnyElement, App, Div, Entity, ImageSource, MouseButton, MouseDownEvent, Pixels, Point, RenderImage, SharedString, Size, Window, div, img,
-    prelude::*, px, size,
+    AnyElement, App, Bounds, Div, Entity, ImageSource, MouseButton, MouseDownEvent, MouseMoveEvent, Pixels, Point, RenderImage, SharedString, Size,
+    Window, div, img, prelude::*, px, size,
 };
 use serde_json::{Map, Value, json};
 use std::cell::RefCell;
@@ -126,6 +128,18 @@ pub(crate) enum Field {
     /// inside one `field_row_full`.
     Preview {
         label: &'static str,
+    },
+    /// A section caption with the hairline above it (`ui-egui/dialogs/export.rs`'s `caption`
+    /// + `divider`). Data only — the row stays inside the shared `field_row_full`.
+    Section {
+        title: &'static str,
+    },
+    /// A clickable preset row (`row_tip` in the egui Export dialog): clicking runs one engine
+    /// command with its params and closes the dialog, exactly like the original.
+    Action {
+        label: &'static str,
+        id: &'static str,
+        params: Value,
     },
 }
 
@@ -289,31 +303,39 @@ pub(crate) fn menu_action(cmd: &str) -> Option<Kind> {
 pub(crate) fn spec(kind: Kind, data: &Value) -> Spec {
     let str_field = |key: &str, d: &Value, default: &str| -> String { d.get(key).and_then(Value::as_str).unwrap_or(default).to_string() };
     match kind {
-        Kind::Export => Spec::new("Export")
-            .width(400.0)
-            .message("Export the current selection. Choose a format and a scale, then pick Export.")
-            .field(
-                Field::choice("format", "Format", vec!["PNG", "JPG", "SVG", "PDF", "FIG"], 0)
-                    .values(vec![json!("png"), json!("jpg"), json!("svg"), json!("pdf"), json!("fig")]),
-            )
-            .field(
-                Field::choice("scale", "Scale", vec!["1x", "2x", "3x", "0.5x"], 0)
-                    .values(vec![json!(1.0), json!(2.0), json!(3.0), json!(0.5)]),
-            )
-            .field(Field::Text { key: "path", label: "File name", value: str_field("path", data, "") })
-            .field(Field::Preview { label: "Nothing to preview: select a layer first." })
-            .button(Button::primary("Export", "file.export", json!({})))
-            .with_cancel(),
+        Kind::Export => {
+            // 1:1 with `ui-egui/src/dialogs/export.rs`: caption + divider + eight preset rows,
+            // PDF print options and the whole-file row. It is NOT an invented format/scale form.
+            let preset = |label, format: &str, scale| Field::Action {
+                label,
+                id: "file.export",
+                params: json!({"format": format, "scale": scale}),
+            };
+            Spec::new("Export")
+                .width(320.0)
+                .field(Field::Section { title: "With the layers' export settings" })
+                .field(Field::Action { label: "Export layers", id: "file.export", params: json!({"format": "png", "scale": 1.0}) })
+                .field(Field::Section { title: "The selection as one file" })
+                .field(preset("PNG @1x", "png", 1.0))
+                .field(preset("PNG @2x", "png", 2.0))
+                .field(preset("PNG @3x", "png", 3.0))
+                .field(preset("JPG @2x", "jpg", 2.0))
+                .field(preset("WebP @2x", "webp", 2.0))
+                .field(preset("SVG", "svg", 1.0))
+                .field(preset("PDF", "pdf", 1.0))
+                .field(preset("Vector Drawable", "vectordrawable", 1.0))
+                .field(Field::Section { title: "PDF print options" })
+                .field(Field::Preview { label: "Nothing to preview: select a layer first." })
+                .field(Field::Section { title: "The whole file" })
+                .field(Field::Action { label: ".fig (experimental)", id: "file.export", params: json!({"format": "fig"}) })
+                .with_cancel()
+        }
         Kind::Preferences => Spec::new("Preferences")
             .width(420.0)
-            .message("Theme and interface size take effect immediately. Panel widths are applied on Apply.")
+            .field(Field::Section { title: "General" })
             .field(
                 Field::choice("theme", "Theme", vec!["Dark", "Light", "System"], 0)
                     .commands(vec!["view.themeDark", "view.themeLight", "view.themeSystem"]),
-            )
-            .field(
-                Field::choice("uiScale", "Interface size", vec!["Default", "Larger", "Smaller"], 0)
-                    .commands(vec!["pref.uiScaleReset", "pref.uiScaleUp", "pref.uiScaleDown"]),
             )
             .field(
                 Field::choice("language", "Language", vec!["System", "English", "简体中文", "日本語", "Deutsch", "Français"], 0)
@@ -331,6 +353,11 @@ pub(crate) fn spec(kind: Kind, data: &Value) -> Spec {
                 Field::choice("wheel", "Scroll wheel", vec!["Zoom", "Scroll"], 0)
                     .commands(vec!["pref.scrollWheelZoom", "pref.scrollWheelZoom"])
                     .with_params(vec![json!({"on": true}), json!({"on": false})]),
+            )
+            .field(Field::Section { title: "Interface" })
+            .field(
+                Field::choice("uiScale", "Interface size", vec!["Default", "Larger", "Smaller"], 0)
+                    .commands(vec!["pref.uiScaleReset", "pref.uiScaleUp", "pref.uiScaleDown"]),
             )
             .field(Field::Number { key: "left", label: "Left panel width", value: 280.0 })
             .field(Field::Number { key: "right", label: "Right panel width", value: 280.0 })
@@ -474,10 +501,21 @@ pub(crate) struct DialogState {
     dismiss: Rc<RefCell<bool>>,
     /// Produced by `figcraft_render` in `CanvasView::open_dialog`; `None` shows the fallback label.
     preview: Option<Arc<RenderImage>>,
+    /// The root view: dropdown menus and the shared drag state machine both live there.
+    root: Entity<CanvasView>,
+    // Drag state, mirroring `popovers::WindowState` (3 pt dead zone + per-step `popover::clamp`).
+    viewport: Size<Pixels>,
+    place: Option<Point<Pixels>>,
+    pending: Option<Point<Pixels>>,
+    grab: Option<Point<Pixels>>,
+}
+
+fn centered(viewport: Size<Pixels>, width: f32, height: f32) -> Point<Pixels> {
+    Point { x: px(((f32::from(viewport.width) - width) * 0.5).max(0.0)), y: px(((f32::from(viewport.height) - height) * 0.5).max(0.0)) }
 }
 
 impl DialogState {
-    pub(crate) fn new(kind: Kind, data: &Value, cmds: &Cmds, cx: &mut App, preview: Option<Arc<RenderImage>>) -> Self {
+    pub(crate) fn new(kind: Kind, data: &Value, cmds: &Cmds, cx: &mut App, preview: Option<Arc<RenderImage>>, root: Entity<CanvasView>) -> Self {
         let spec = spec(kind, data);
         let mut rendered = Vec::with_capacity(spec.fields.len());
         for f in &spec.fields {
@@ -487,11 +525,77 @@ impl DialogState {
                 }
                 Field::Number { value, .. } => (Some(number_field(cx, 200.0, Some(*value), "", 1.0, Slot::None)), Rc::new(RefCell::new(0usize))),
                 Field::Choice { active, .. } => (None, Rc::new(RefCell::new(*active))),
-                Field::Note { .. } | Field::Preview { .. } => (None, Rc::new(RefCell::new(0usize))),
+                Field::Note { .. } | Field::Preview { .. } | Field::Section { .. } | Field::Action { .. } => (None, Rc::new(RefCell::new(0usize))),
             };
             rendered.push(Rendered { field: f.clone(), input, active });
         }
-        Self { spec, rendered, cmds: cmds.clone(), dismiss: Rc::new(RefCell::new(false)), preview }
+        Self {
+            spec,
+            rendered,
+            cmds: cmds.clone(),
+            dismiss: Rc::new(RefCell::new(false)),
+            preview,
+            root,
+            viewport: size(px(0.0), px(0.0)),
+            place: None,
+            pending: None,
+            grab: None,
+        }
+    }
+
+    /// The shared window's drag state machine (same dead zone / clamp as `popovers::WindowState`).
+    pub(crate) fn press(&mut self, at: Point<Pixels>) {
+        self.pending = Some(at);
+    }
+    pub(crate) fn dragging(&self) -> bool {
+        self.grab.is_some()
+    }
+    pub(crate) fn pending(&self) -> bool {
+        self.pending.is_some()
+    }
+    pub(crate) fn end_drag(&mut self) {
+        self.grab = None;
+        self.pending = None;
+    }
+    pub(crate) fn route_move(&mut self, at: Point<Pixels>) -> bool {
+        let origin = self.place.unwrap_or_else(|| centered(self.viewport, self.spec.width, self.height()));
+        if !self.dragging() {
+            let Some(p) = self.pending else { return false };
+            if (f32::from(at.x) - f32::from(p.x)).abs() + (f32::from(at.y) - f32::from(p.y)).abs() < 3.0 {
+                return false;
+            }
+            self.grab = Some(Point { x: px(f32::from(p.x) - f32::from(origin.x)), y: px(f32::from(p.y) - f32::from(origin.y)) });
+            self.pending = None;
+        }
+        let Some(g) = self.grab else { return false };
+        let raw = Point { x: px(f32::from(at.x) - f32::from(g.x)), y: px(f32::from(at.y) - f32::from(g.y)) };
+        let p = clamp(raw, self.spec.width, self.height(), self.viewport);
+        if let Some(old) = self.place
+            && (f32::from(p.x) - f32::from(old.x)).abs() < 0.5
+            && (f32::from(p.y) - f32::from(old.y)).abs() < 0.5
+        {
+            return false;
+        }
+        self.place = Some(p);
+        true
+    }
+
+    fn height(&self) -> f32 {
+        let extra: f32 = self
+            .spec
+            .fields
+            .iter()
+            .map(|f| match f {
+                Field::Preview { .. } => 80.0,
+                Field::Section { .. } => 18.0,
+                _ => 0.0,
+            })
+            .sum();
+        40.0 + 32.0
+            + self.spec.message.as_ref().map(|_| 32.0).unwrap_or(0.0)
+            + self.spec.fields.len() as f32 * 32.0
+            + extra
+            + self.spec.buttons.len().div_ceil(2) as f32 * 32.0
     }
 
     /// The root view polls this once per frame (same mechanism as `ExtraState::dismiss`).
@@ -517,16 +621,20 @@ impl DialogState {
                 Field::Text { key, .. } => r.input.clone().map(|e| Source::Text(key, e)).unwrap_or(Source::Note),
                 Field::Number { key, .. } => r.input.clone().map(|e| Source::Number(key, e)).unwrap_or(Source::Note),
                 Field::Choice { key, options, values, .. } => Source::Choice(key, options.clone(), values.clone(), r.active.clone()),
-                Field::Note { .. } | Field::Preview { .. } => Source::Note,
+                Field::Note { .. } | Field::Preview { .. } | Field::Section { .. } | Field::Action { .. } => Source::Note,
             })
             .collect()
     }
 
-    /// Backdrop + centred window. Everything is built from the frozen shared controls.
-    pub(crate) fn render(&self, viewport: Size<Pixels>) -> Vec<AnyElement> {
+    /// Backdrop + a **movable** window. Every piece is a shared control: `Popover` (title drag,
+    /// X), the `field_row` grid, `dropdown`, `text_field` / `number_field` and `dialog_button`.
+    pub(crate) fn render(&mut self, viewport: Size<Pixels>) -> Vec<AnyElement> {
         let t = tokens();
         let close = self.close_fn();
         let sources = self.sources();
+        self.viewport = viewport;
+        let height = self.height();
+        let at = self.place.unwrap_or_else(|| centered(viewport, self.spec.width, height));
         let mut body = div().w_full().flex().flex_col().gap(pt(8.0));
 
         if let Some(msg) = &self.spec.message {
@@ -536,7 +644,7 @@ impl DialogState {
         for r in &self.rendered {
             let label_text = match &r.field {
                 Field::Text { label, .. } | Field::Number { label, .. } | Field::Choice { label, .. } => *label,
-                Field::Preview { label } => *label,
+                Field::Preview { label } | Field::Section { title: label } | Field::Action { label, .. } => *label,
                 Field::Note { .. } => "",
             };
             let label = || {
@@ -555,8 +663,50 @@ impl DialogState {
                     field_row(vec![label(), control], Vec::<AnyElement>::new())
                 }
                 Field::Choice { options, commands, command_params, .. } => {
-                    let chips = choice_chips(options, commands.as_deref(), command_params.as_deref(), r.active.clone(), self.cmds.clone());
-                    field_row(vec![label(), chips.into_any_element()], Vec::<AnyElement>::new())
+                    // 1:1 with ui-egui: a real dropdown, not a row of chips.
+                    let control = dropdown_field(
+                        options,
+                        commands.as_deref(),
+                        command_params.as_deref(),
+                        r.active.clone(),
+                        self.root.clone(),
+                        self.cmds.clone(),
+                    );
+                    field_row(vec![label(), control], Vec::<AnyElement>::new())
+                }
+                Field::Section { title } => field_row_full(
+                    div()
+                        .w_full()
+                        .flex()
+                        .flex_col()
+                        .gap(pt(8.0))
+                        .child(div().h(pt(1.0)).w_full().bg(rgba(t.border)))
+                        .child(div().text_size(pt(11.0)).text_color(rgba(t.text_secondary)).child(*title)),
+                ),
+                Field::Action { label, id, params } => {
+                    let flag = self.dismiss.clone();
+                    let cmds = self.cmds.clone();
+                    let id = *id;
+                    let params = params.clone();
+                    field_row_full(
+                        div()
+                            .w_full()
+                            .h(pt(30.0))
+                            .pl(pt(10.0))
+                            .rounded(pt(5.0))
+                            .flex()
+                            .items_center()
+                            .text_size(pt(12.0))
+                            .text_color(rgba(t.text))
+                            .cursor_pointer()
+                            .hover(|s| s.bg(rgba(t.hover)))
+                            .on_mouse_down(MouseButton::Left, move |_: &MouseDownEvent, _, _| {
+                                cmds.push(Cmd { id, params: Some(params.clone()) });
+                                *flag.borrow_mut() = true;
+                                cmds.wake();
+                            })
+                            .child(*label),
+                    )
                 }
                 Field::Preview { label } => {
                     field_row_full(div().w_full().h(pt(112.0)).flex().items_center().justify_center().bg(rgba(t.field)).rounded(pt(6.0)).child(
@@ -612,69 +762,83 @@ impl DialogState {
             body = body.child(row);
         }
 
-        let preview_extra = self.spec.fields.iter().filter(|f| matches!(f, Field::Preview { .. })).count() as f32 * 80.0;
-        let height = 40.0
-            + 32.0
-            + self.spec.message.as_ref().map(|_| 32.0).unwrap_or(0.0)
-            + self.spec.fields.len() as f32 * 32.0
-            + preview_extra
-            + self.spec.buttons.len().div_ceil(2) as f32 * 32.0;
-        let at = Point {
-            x: px(((f32::from(viewport.width) - self.spec.width) * 0.5).max(0.0)),
-            y: px(((f32::from(viewport.height) - height) * 0.5).max(0.0)),
-        };
+        let root_start = self.root.clone();
+        let root_move = self.root.clone();
         let card = popover_window(Open::At(at))
             .width(self.spec.width)
             .height(height)
             .title(title_text(self.spec.title.clone()))
             .body(body)
+            .on_drag_start(move |e: &MouseDownEvent, _, cx: &mut App| {
+                root_start.update(cx, |cv, _| {
+                    if let Some(d) = &mut cv.dialog {
+                        d.press(e.position);
+                    }
+                });
+            })
+            .on_drag_move(move |e: &MouseMoveEvent, _, cx: &mut App| {
+                let held = e.pressed_button == Some(MouseButton::Left);
+                root_move.update(cx, |cv, cx| {
+                    let moved = if !held {
+                        if let Some(d) = &mut cv.dialog {
+                            d.end_drag();
+                            true
+                        } else {
+                            false
+                        }
+                    } else if let Some(d) = &mut cv.dialog {
+                        d.route_move(e.position)
+                    } else {
+                        false
+                    };
+                    if moved {
+                        cx.notify();
+                    }
+                });
+            })
             .show(size(viewport.width, viewport.height), close.clone());
         vec![popup_backdrop(close), card.1]
     }
 }
 
-/// A row of option chips. It lives *inside* one `field_row` cell — the row's columns still belong
-/// to the unified grid, this is only the control drawn in the second column. Picking an option
-/// that names a command runs it immediately (the generic "a choice is a command" behaviour).
-fn choice_chips(
+/// A real dropdown control inside one `field_row` cell. `CanvasView::open_menu` owns the popup's
+/// width / placement; picking an option updates the retained selection and (when the field names
+/// engine commands) runs that option's command with its own params. 1:1 with
+/// `ui-egui/src/dialogs.rs`'s `widgets::dropdown` + `right::menu_popup`.
+fn dropdown_field(
     options: &[&'static str],
     commands: Option<&[&'static str]>,
     params: Option<&[Value]>,
     active: Rc<RefCell<usize>>,
+    root: Entity<CanvasView>,
     queue: Cmds,
-) -> Div {
-    let t = tokens();
-    let mut row = div().w_full().flex().flex_row().gap(pt(4.0));
-    for (i, option) in options.iter().enumerate() {
-        let on = *active.borrow() == i;
-        let flag = active.clone();
-        let cmds = queue.clone();
-        let command = commands.and_then(|c| c.get(i)).copied();
-        let command_params = params.and_then(|p| p.get(i)).cloned();
-        let chip = div()
-            .flex_1()
-            .min_w(px(0.0))
-            .h(pt(24.0))
-            .rounded(pt(5.0))
-            .bg(rgba(if on { t.accent } else { t.field }))
-            .flex()
-            .items_center()
-            .justify_center()
-            .text_size(pt(9.0))
-            .text_color(rgba(if on { t.accent_on } else { t.text }))
-            .cursor_pointer()
-            .on_mouse_down(MouseButton::Left, move |_: &MouseDownEvent, _, _| {
-                *flag.borrow_mut() = i;
-                if let Some(id) = command {
-                    cmds.push(Cmd { id, params: command_params.clone() });
+) -> AnyElement {
+    let current = options.get(*active.borrow()).copied().unwrap_or("");
+    let opts = options.to_vec();
+    let cmd_list = commands.map(|c| c.to_vec());
+    let param_list = params.map(|p| p.to_vec());
+    dropdown(SharedString::from(current), 0.0, None)
+        .fill()
+        .on_click(move |anchor: Bounds<Pixels>, _w: &mut Window, cx: &mut App| {
+            let rows: Vec<MenuRow> = opts.iter().enumerate().map(|(i, o)| MenuRow::new(*o).checked(Some(i == *active.borrow()))).collect();
+            let act = active.clone();
+            let opts = opts.clone();
+            let cmd_list = cmd_list.clone();
+            let param_list = param_list.clone();
+            let q = queue.clone();
+            let root = root.clone();
+            let on_pick = Rc::new(move |picked: &str, _w: &mut Window, _cx: &mut App| {
+                let Some(i) = opts.iter().position(|o| *o == picked) else { return };
+                *act.borrow_mut() = i;
+                if let Some(id) = cmd_list.as_ref().and_then(|c| c.get(i)) {
+                    q.push(Cmd { id, params: param_list.as_ref().and_then(|p| p.get(i)).cloned() });
                 } else {
-                    cmds.wake();
+                    q.wake();
                 }
-            })
-            .child(SharedString::from(*option));
-        row = row.child(chip);
-    }
-    row
+            });
+            root.update(cx, |cv, cx| cv.open_menu(anchor, None, rows, on_pick, cx));
+        })
+        .into_any_element()
 }
 
 /// A labelled button. `on_click` is the generic mouse-down handler shared by every dialog button.
@@ -753,13 +917,18 @@ mod tests {
     #[test]
     fn export_and_preferences_carry_real_engine_commands() {
         let export = spec(Kind::Export, &json!({}));
-        assert!(export.fields.iter().any(|f| matches!(f, Field::Choice { key: "format", .. })));
-        assert!(export.buttons.iter().any(|b| matches!(&b.action, Action::Submit { id: "file.export", .. })));
-        // The engine's `file.export` wants a numeric scale, not the "2x" label.
-        assert!(export.fields.iter().any(|f| matches!(
-            f,
-            Field::Choice { key: "scale", values: Some(v), .. } if v.get(1) == Some(&json!(2.0))
-        )));
+        // 1:1 with the egui Export dialog: caption sections + eight clickable presets.
+        assert!(export.fields.iter().any(|f| matches!(f, Field::Section { .. })));
+        let presets: Vec<&str> = export
+            .fields
+            .iter()
+            .filter_map(|f| match f {
+                Field::Action { label, .. } => Some(*label),
+                _ => None,
+            })
+            .collect();
+        assert!(presets.contains(&"PNG @2x") && presets.contains(&".fig (experimental)"), "{presets:?}");
+        assert!(presets.len() >= 8, "all the original presets are listed");
         let prefs = spec(Kind::Preferences, &json!({}));
         assert!(prefs.buttons.iter().any(|b| matches!(&b.action, Action::Submit { id: "view.panelWidths", .. })));
         assert!(prefs.fields.iter().any(|f| matches!(

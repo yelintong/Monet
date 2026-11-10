@@ -33,14 +33,18 @@ pub struct Contract {
 /// refactor). Keeping the missing token in the contract is what makes the plan's `partial` status
 /// honest — implementing it later flips both code and document at once.
 pub const CONTRACTS: &[Contract] = &[
-    Contract { id: "A19", requires: &["popover_window", "field_row", "popup_backdrop"] },
+    Contract { id: "A19", requires: &["popover_window", "field_row", "popup_backdrop", "dropdown(", "on_drag_start", "on_drag_move"] },
     Contract { id: "B1C1", requires: &["developer_mode_label"] },
     Contract { id: "B9", requires: &["ui_flags"] },
     Contract { id: "B2", requires: &["Tab::Assets", "MAX_HITS", "recent_actions", "SEARCH_ALIASES"] },
-    Contract { id: "A6", requires: &["format", "scale", "path", "preview", "file.export"] },
+    Contract {
+        id: "A6",
+        // The egui Export dialog is caption + preset rows, not an invented format/scale form.
+        requires: &["file.export", "preview", "The selection as one file", "The whole file", "PNG @2x", ".fig (experimental)"],
+    },
     Contract { id: "A7", requires: &["view.themeDark", "pref.language", "pref.scrollWheelZoom", "view.panelWidths", "Reset widths"] },
     Contract { id: "A18B4", requires: &["file.close", "file.save", "detach_window"] },
-    Contract { id: "A1", requires: &["home"] },
+    Contract { id: "A1", requires: &["home", "action_card", "home_section", "home-screen"] },
 ];
 
 /// Every engine command a dialog can push (buttons + per-option choice commands).
@@ -50,8 +54,10 @@ fn dialog_commands() -> Vec<&'static str> {
     for kind in dialogs::Kind::ALL {
         let spec = dialogs::spec(kind, &empty);
         for f in &spec.fields {
-            if let dialogs::Field::Choice { commands: Some(c), .. } = f {
-                out.extend(c.iter().copied());
+            match f {
+                dialogs::Field::Choice { commands: Some(c), .. } => out.extend(c.iter().copied()),
+                dialogs::Field::Action { id, .. } => out.push(*id),
+                _ => {}
             }
         }
         for b in &spec.buttons {
@@ -78,6 +84,13 @@ fn capabilities() -> BTreeSet<String> {
                 dialogs::Field::Preview { .. } => {
                     out.insert("preview".into());
                 }
+                dialogs::Field::Section { title } => {
+                    out.insert((*title).to_string());
+                }
+                dialogs::Field::Action { label, id, .. } => {
+                    out.insert((*label).to_string());
+                    out.insert((*id).to_string());
+                }
                 dialogs::Field::Note { .. } => {}
             }
             if let dialogs::Field::Choice { commands: Some(c), .. } = f {
@@ -98,7 +111,9 @@ fn capabilities() -> BTreeSet<String> {
     // Shared chrome / state reads / palette data: source text is the evidence, so deleting the
     // real code removes the token automatically.
     let dialogs_src = include_str!("dialogs.rs");
-    for token in ["popover_window", "field_row", "popup_backdrop"] {
+    // `dropdown(` / `on_drag_start` / `on_drag_move` are the fidelity invariants: reverting to
+    // chips or a fixed window removes the token and the A19 contract fails.
+    for token in ["popover_window", "field_row", "popup_backdrop", "dropdown(", "on_drag_start", "on_drag_move"] {
         if dialogs_src.contains(token) {
             out.insert(token.into());
         }
@@ -110,6 +125,13 @@ fn capabilities() -> BTreeSet<String> {
     let palette_src = include_str!("palette.rs");
     for token in ["Tab::Assets", "MAX_HITS", "recent_actions", "SEARCH_ALIASES"] {
         if palette_src.contains(token) {
+            out.insert(token.into());
+        }
+    }
+    // A1: the Home screen must keep the egui sidebar/card layout, not fall back to note()+pill().
+    let extra_src = include_str!("panels/extra.rs");
+    for token in ["action_card", "home_section", "home-screen"] {
+        if extra_src.contains(token) {
             out.insert(token.into());
         }
     }
