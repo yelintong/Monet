@@ -238,9 +238,11 @@ pub(crate) fn view_bar(f: &RightFields, d: &PanelData) -> gpui::Div {
         .flex_row()
         .items_center()
         .gap(pt(2.0))
-        .child(tab("Design", 0))
-        .child(tab("Prototype", 1))
-        .child(tab("Inspect", 2));
+        // #2135 / docs/feature-names.md：第三个 tab 的显示名必须是 "Developer Mode"。
+        // 所有前端表面（含将来的 a11y 树）都从 naming::right_tab_label 取，避免改名漂移。
+        .child(tab(crate::naming::right_tab_label(0), 0))
+        .child(tab(crate::naming::right_tab_label(1), 1))
+        .child(tab(crate::naming::right_tab_label(2), 2));
     div()
         .flex_none()
         .w_full()

@@ -110,6 +110,13 @@ mod motion;
 
 mod toolbar;
 
+/// 用户可见的功能名（命名规范见 `docs/feature-names.md`）：右栏 tab / a11y / 命名回归测试
+/// 共用同一份常量，避免 "Dev Mode" 这类退役文案重新混进界面。
+mod naming;
+
+/// 通用对话框框架（A19）：所有对话框共用一套数据模型 + 冻结的 `widgets/` 控件 + 命令队列。
+mod dialogs;
+
 /// 通用 GPUI 控件：section header、panel section、icon button 以及输入框系列。
 
 pub mod widgets;
@@ -634,6 +641,11 @@ pub struct CanvasView {
 
     extra_state: panels::extra::ExtraState,
 
+    /// 当前打开的通用对话框（A19）。所有对话框共用 `dialogs::DialogState`，这里只存「有没有、
+    /// 是哪一个」，控件状态由它自己保留。
+
+    dialog: Option<dialogs::DialogState>,
+
     /// 原型演示（None = 未打开）。
 
     present: Option<present::PresentState>,
@@ -851,6 +863,8 @@ impl CanvasView {
             extra: None,
 
             extra_state,
+
+            dialog: None,
 
             present: None,
 
@@ -1402,6 +1416,14 @@ impl CanvasView {
 
         }
 
+        // 通用对话框：X / 遮罩 / 按钮统一置位，下一帧由这里收掉（与 four extra 面板同一机制）。
+
+        if self.dialog.as_ref().is_some_and(|d| d.take_dismiss()) {
+
+            self.dialog = None;
+
+        }
+
         let reqs = std::mem::take(&mut self.app.session.ui_requests);
 
         if reqs.is_empty() {
@@ -1411,6 +1433,17 @@ impl CanvasView {
         }
 
         for r in reqs {
+
+            // A19：所有 `dialog.*` 请求（以及少数需要输入的命令）先走通用对话框框架。
+            // 框架返回 None 的请求继续交给下面四块整面板的 `ui_action`，互不遮挡。
+
+            if let Some(kind) = dialogs::ui_action(&r.kind, &r.data) {
+
+                self.open_dialog(kind, &r.data, cx);
+
+                continue;
+
+            }
 
             // `ui.set` 是控制通道改 UI 状态的入口（egui control.rs:1112）：motion 开关、
 
@@ -1547,6 +1580,26 @@ impl CanvasView {
     }
 
 
+
+    /// A19：打开一个通用对话框。菜单命令与引擎 `ui_requests` 都走这一个入口，
+    /// 所有对话框共用 `DialogState` 的壳 / 网格 / 控件 / 命令队列 / 关闭行为。
+    fn open_dialog(&mut self, kind: dialogs::Kind, data: &serde_json::Value, cx: &mut Context<Self>) {
+
+        let cmds = self.fields.queue();
+
+        self.dialog = Some(dialogs::DialogState::new(kind, data, &cmds, cx));
+
+        // 从主菜单点开的对话框要把菜单本身收掉，否则菜单会盖在对话框上。
+
+        if matches!(self.popup, Some(Popup::MainMenu(_))) {
+
+            self.close_popup(cx);
+
+        }
+
+        cx.notify();
+
+    }
 
     fn toggle_extra(&mut self, kind: panels::extra::ExtraKind) {
 
@@ -2195,9 +2248,35 @@ impl CanvasView {
 
     /// 左侧的导轨 + 左面板 + 手柄；这里把它减掉。
 
+    /// B9：`view.toggleUi` 写 `ui_hidden`，`view.minimize` 写 `ui_minimized`；两条命令和
+    /// 快捷键早就绑好，界面层只差把这两个标志读出来。
+    fn ui_flags(&self) -> (bool, bool) {
+
+        self.app.session.ds().map(|d| (d.view.ui_hidden, d.view.ui_minimized)).unwrap_or((false, false))
+
+    }
+
+    /// 本帧的 Dock 值：隐藏 / 收起侧栏时把对应宽度置 0，**不改 `self.left_w` / `right_w`**，
+    /// 于是恢复时宽度原样回来。画布几何、命中换算与弹层锚点全取这一份值，不会互相漂移。
+    fn dock(&self) -> dock::DockLayout {
+
+        let (hidden, minimized) = self.ui_flags();
+
+        let left = if hidden || minimized { 0.0 } else { self.left_w };
+
+        let no_selection = self.app.session.ds().map(|d| d.selection.is_empty()).unwrap_or(true);
+
+        let right = if hidden || (minimized && no_selection) { 0.0 } else { self.right_w };
+
+        let bottom = if hidden { 0.0 } else { self.motion_bar_h() };
+
+        dock::DockLayout::new(left, right, bottom)
+
+    }
+
     fn local(&self, p: gpui::Point<Pixels>) -> Pos2 {
 
-        let dock = dock::DockLayout::new(self.left_w, self.right_w, self.motion_bar_h());
+        let dock = self.dock();
 
         pos2(f32::from(p.x) - dock.center_x(), f32::from(p.y) - dock.titlebar_h)
 
@@ -3187,6 +3266,17 @@ impl CanvasView {
 
         };
 
+        // A19：带 "…" 的菜单命令先要输入。直接 execute 会用默认参数静默导出 / 查找，
+        // 界面上什么都不会出现；先开通用对话框，由它的按钮带字段值提交同一条命令。
+
+        if let Some(kind) = dialogs::menu_action(cmd) {
+
+            self.open_dialog(kind, &params, cx);
+
+            return;
+
+        }
+
         if let Err(e) = self.app.session.execute(cmd, &params) {
 
             eprintln!("[menu] {cmd}: {e}");
@@ -4080,7 +4170,12 @@ impl Render for CanvasView {
         // `Painter::paint` 再叠加画布元素在窗口中的原点——所以这里只给尺寸，min 保持 0。
 
         // Dock 布局值：本帧所有几何（画布原点 / 尺寸 / 弹层锚点）都从这一份值推导。
-        let dock = dock::DockLayout::new(self.left_w, self.right_w, self.motion_bar_h());
+        // B9：两个标志只影响「画不画」与 Dock 宽度，不改控件本身，也不改记住的面板宽度。
+        let (ui_hidden, ui_minimized) = self.ui_flags();
+        let show_sidebars = !ui_hidden && !ui_minimized;
+        let show_right = !ui_hidden
+            && (!ui_minimized || self.app.session.ds().map(|d| !d.selection.is_empty()).unwrap_or(false));
+        let dock = self.dock();
         let canvas_x = dock.center_x();
 
         let canvas_w = dock.center_w(f32::from(vp.width));
@@ -5144,6 +5239,18 @@ impl Render for CanvasView {
 
                 }
 
+                // A19：通用对话框的 Escape 与 X / 遮罩一致，都是「只关窗、不改文档」。
+
+                if e.keystroke.key == "escape" && this.dialog.is_some() {
+
+                    this.dialog = None;
+
+                    cx.notify();
+
+                    return;
+
+                }
+
                 // 四块整面板：Escape 关掉浮层（egui 的 window/dialog 同款）。
 
                 if e.keystroke.key == "escape" && this.extra.is_some() {
@@ -5682,22 +5789,22 @@ impl Render for CanvasView {
 
             .relative()
 
-            .child(dbg_tint(panels::left_rail(on_menu, on_variables, on_file, self.variables_full, self.variables_open), dbg, 0xE5484D))
-
-            // 左面板宽度 +HANDLE_W：多出的 1px 那列就是它自身右缘的那条分隔线（见
-            // render_left_panel 的 border_r_1）。删掉独立的 drag_handle 后 flex 总宽不变，
-            // canvas_x / 覆盖条 / 命中几何全都不动。
-            .child(dbg_tint(self.render_left_panel(window, cx).w(px(self.left_w + panels::HANDLE_W)), dbg, 0xF5A524))
+            // B9：隐藏 UI 时左右侧栏、工具栏、分隔条命中区全部让位给画布；
+            // 收起界面（minimize）时保留工具栏，右栏只在有选区时出现（egui `view.minimize` 语义）。
+            .when(show_sidebars, |d| d
+                .child(dbg_tint(panels::left_rail(on_menu, on_variables, on_file, self.variables_full, self.variables_open), dbg, 0xE5484D))
+                .child(dbg_tint(self.render_left_panel(window, cx).w(px(self.left_w + panels::HANDLE_W)), dbg, 0xF5A524)))
 
             .child(dbg_tint(canvas, dbg, 0x30A46C))
 
-            .child(dbg_tint(right_el, dbg, 0x0091FF))
+            .when(show_right, |d| d.child(dbg_tint(right_el, dbg, 0x0091FF)))
 
-            .child(bar)
+            .when(!ui_hidden, |d| d.child(bar))
 
             // 4px 命中覆盖条必须最后绘制：后绘制的 hitbox 先命中，才压得住画布 / 面板。
-            .child(self.divider_hotspot(ResizeSide::Left, viewport_w, cx))
-            .child(self.divider_hotspot(ResizeSide::Right, viewport_w, cx));
+            .when(show_sidebars, |d| d
+                .child(self.divider_hotspot(ResizeSide::Left, viewport_w, cx))
+                .child(self.divider_hotspot(ResizeSide::Right, viewport_w, cx)));
 
 
 
@@ -6369,6 +6476,10 @@ impl Render for CanvasView {
 
             .into_iter().collect();
 
+        // A19：通用对话框（遮罩 + 居中窗口）画在所有面板 / 弹层 / 整面板之上。
+
+        let dialog_el: Vec<AnyElement> = self.dialog.as_ref().map(|d| d.render(vp)).unwrap_or_default();
+
 
 
         div()
@@ -6407,7 +6518,9 @@ impl Render for CanvasView {
 
             )
 
-            .child(tab_bar)
+            // B9：Hide UI 与 Minimize UI 都收起导航标签条（`view.minimize` 收导航栏）。
+
+            .when(!ui_hidden && !ui_minimized, |d| d.child(tab_bar))
 
             .child(top_row)
 
@@ -6415,7 +6528,7 @@ impl Render for CanvasView {
 
             // 不能再延伸过来盖住 Full（egui 的 full 由主布局给出整块 panel，Motion 让位）。
 
-            .when(self.motion && !variables_full, |d| d.child(dbg_tint(self.render_motion_timeline(window, cx), dbg, 0x8E4EC6)))
+            .when(self.motion && !variables_full && !ui_hidden, |d| d.child(dbg_tint(self.render_motion_timeline(window, cx), dbg, 0x8E4EC6)))
 
             // 变量编辑器在弹层之下、主布局之上：Full 时 rail 仍可点，主菜单等弹层盖在它上面。
 
@@ -6426,6 +6539,8 @@ impl Render for CanvasView {
             .children(extra_el)
 
             .children(present_el)
+
+            .children(dialog_el)
 
             // Motion 的 clip 设置浮窗：复用 `Popover` 窗口外壳，画在弹层之上。
 
