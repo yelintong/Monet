@@ -58,7 +58,7 @@
 | # | 位置 | EGUI 做法 | GPUI 现状（证据） | 差距 | 优先级 |
 |---|---|---|---|---|---|
 | B1 | ~~右栏第三个 tab~~ | `"Developer Mode"`（#2135 商标改名，`right_tab_label()` + 命名回归测试） | 改名与命名回归测试已落地；**2026-11-10 用户要求从右栏 tabs 行去掉该按钮**，现只剩 Design / Prototype。`naming.rs` 的常量/函数保留给 a11y 与其它入口，Developer Mode 面板仍可从底部工具栏 开发 或 Shift+D 进入 | 命名合规完成；可见 tab 按用户要求移除；底部模式切换第 4 格 `Inspect`→`开发`（修掉退役名），动画/开发模式下右栏 tabs 行改为显示「动画」/「开发」文本（见下方进度） | ✅ |
-| B2 | Actions 调色板（Cmd+K） | 三个 tab `All / Assets / Plugins & widgets`、`Recents`、前缀优先排序、最多 60 行（`menus/palette.rs:90,162,170`） | 单一平铺列表 `palette_rows()`（`lib.rs:311`），无 tab / Recents / 排序 | 找不到插件与资产，长列表体验差 | P1 |
+| B2 | ~~Actions 调色板（Cmd+K）~~ | 三个 tab `All / Assets / Plugins & widgets`、`Recents`、前缀优先排序、最多 60 行（`menus/palette.rs:90,162,170`） | 2026-11-10 落地 `palette.rs`：三 tab + Recents（读引擎 `prefs.recent_actions`）+ 按顶层菜单分组 + 搜索时前缀优先/60 行上限 + Assets/Plugins/widgets 真实数据 | 键盘上下键选中、Enter 运行高亮行、实时过滤（冻结的 `TextField` 只有 commit 回调）未移植；见 H 节 18:4x | ✅ |
 | B3 | 工具条 | 设计模式 6 组 + **画板模式 8 组**（bmove/marker/sticky/bshape/connector/text/section…） | 设计模式 6 组齐全；画板组全无（`toolbar.rs:17-20` 明写未移植） | 见 A2 / A27 | P1 |
 | B4 | 标签条 | 拖拽重排、关闭询问、拖出成窗口、Alt+close 直接丢弃 | `tabs.rs` / `tabs_view.rs` 有拖拽与重排；关闭询问与拖出成窗口未见 | 见 A16/A18 | P1 |
 | B5 | ~~协作 Live~~ | ~~59 个文件规模~~ → 实为 `live.rs` + `live/agent.rs` 共 1672 行 | ~~26 个文件规模~~ → **0 个文件**，整块缺失 | **已移到 A28**；原文「需逐项比对」严重低估 | P1（见 A28） |
@@ -161,7 +161,7 @@
 | 4 | `crates/ui-gpui/src/lib.rs` | A19 挂接 / B9 | `sync_ui_requests` + 渲染分层 + `DockLayout`；`ui_hidden`/`ui_minimized` 只改布局值，不动几何公式 | ✅ |
 | 5 | `crates/ui-gpui/src/main_menu.rs` | A6 / A7 / A11 菜单入口 | **无需改此文件**：菜单命令统一在 `lib.rs::click_menu` 拦截，仍是既有主菜单行模型 | ✅ |
 | 6 | `crates/ui-gpui/src/tabs_view.rs` | A18 / B4 | 关闭去掉写死的 `force:true`，只有 Alt+close 才直接丢弃；引擎 `dialog.unsaved` → 通用三问（Don't Save / Cancel / Save），弹窗前 `doc.switch` 到目标标签 | ✅ |
-| 7 | `crates/ui-gpui/src/lib.rs`（`palette_rows`） | B2 | 既有 `menu_card`/`Palette` 弹层 | ⬜ |
+| 7 | `crates/ui-gpui/src/palette.rs`（新）+ `menu_card.rs` + `lib.rs` | B2 | 既有 `menu_card::rows` / `Palette` 弹层；`Item.key` 让运行时 action key 复用同一套 `OnPick` | ✅ |
 | 8 | `crates/ui-gpui/src/home.rs`（新） | A1 | 通用对话框/浮层 + `TextField`/`IconButton` | ⬜ |
 | 9 | `crates/ui-gpui/src/comments.rs`（新） | A3 | 通用浮层 + 输入框系列 | ⬜ |
 | 10 | `crates/ui-gpui/src/plugins.rs`（新） | A4 / A25 | 通用浮层 + `widget_bar` 复用同一行模型 | ⬜ |
@@ -198,7 +198,7 @@
 - A6 导出、A7 首选项、A20 查找替换、A10 色彩配置、A8/A17 重命名、A12 导入报告、A23 另存、A9 分支已通过通用壳接到**真实引擎命令**（`file.export` / `view.panelWidths` / `edit.findReplace` / `file.colorProfile` / `object.rename` / `file.saveAs` / `branch.create`）；但字段仍是通用版，不等于 EGUI 的完整交互（预览、多选导出、逐字体替换等）。
 - A18 只接了引擎 `dialog.unsaved` 请求；`tabs_view.rs` 的 Alt+close / 关闭三问还没接（G 表第 6 行 🔄）。
 - A13 缺失字体、A15 取样色、A14 更新、A11 About、A4 插件目前是**带说明的提示窗口**，因为引擎没有对应命令或依赖 C2 升版；按钮只有 Close，不提交不存在的命令。
-- A1 Home / A2 Boards / A3 Comments / A16 多窗口 / A21 a11y / A22 bidi·ui_scale / A24 字段运算 / A28 Live / B2 调色板 / B8 Present 子模块仍未开始。
+- A1 Home / A2 Boards / A3 Comments / A16 多窗口 / A21 a11y / A22 bidi·ui_scale / A24 字段运算 / A28 Live / B8 Present 子模块仍未开始（B2 调色板已于 18:4x 落地，见下）。
 
 ### 17:25–17:33 按现场反馈追加调整
 
@@ -223,4 +223,16 @@
 - **点 Design 回不去 / 点不了 Draw（开发模式下）**：根因是 `on_intent` 的 `Mode(0)`/`Mode(1)` 分支只关 Motion、切工具，却**没把右栏标签切回 Design**（`set_right_tab(0)` 缺失），于是 `right_tab` 停在 2，右栏一直停在 Inspect 面板、底部高亮也永远卡在开发格。已对齐 EGUI `pick_mode`：Draw/Design 两个分支都补 `self.fields.set_right_tab(0)`。
 - **验证**：`cargo check -p figcraft-ui-gpui --lib` 通过；`cargo test --lib --features test-support -- naming` 4 条全绿；重编 exe 后启动窗口（Responding=True）。
 
-**下一步**：G 表第 7 行 —— Actions 调色板三 tab（`All / Assets / Plugins & widgets`）+ Recents + 前缀优先排序 + 最多 60 行；随后第 8 行 Home。涉及 `widgets/**` 冻结件的改动（A24）必须先与用户确认。
+### 18:4x G 表第 7 行落地（B2 Actions 调色板三 tab）
+
+- **新模块 `crates/ui-gpui/src/palette.rs`**（数据层，不碰任何 `widgets/**` 冻结件）：`Tab::{All,Assets,Plugins}`、`Section` / `Row`、`sections()` / `items()`，逐项对齐 `ui-egui/src/menus/palette.rs`。
+  - `All` = Recents（读引擎 `Session.prefs.recent_actions`）+ 按顶层菜单分组的命令；`Assets` = `library::local_components` / `local_styles`；`Plugins & widgets` = `prefs.plugins` 的命令与 widget；Plugins 菜单项并入 Plugins 分组。
+  - 搜索时把 `all_commands()`（排除 `cmd::needs_params`）并入候选、去重同名标签、**以 query 开头的标签优先 + 短标签优先**、截断 60 行；空查询保持目录顺序且不截断。`catalog::SEARCH_ALIASES`（"Dev Mode"）参与匹配，保住 `naming.rs` 的命名回归口径。
+  - 分组标题用 `menu_card::Item` 的 disabled 行呈现，不新增控件。
+- **`menu_card.rs` 最小扩展**：`Item` 增 `key: SharedString`（默认 = `id`）与 `key()` 构造器，`OnPick` 由 `&'static str` 改 `&str` —— 让 `component:<node>` / `style:<id>` / `plugin:<id>/<cmd>` / `widget:<id>` 这些运行时 key 复用同一套菜单行与点击回调，不必 `Box::leak`。原右键菜单 / 工具栏飞出的闭包只改参数类型。
+- **`lib.rs`**：`mod palette` 与 `palette_tab` 视图状态；`palette_at_pointer` 统一收口所有打开路径并重置为 All；新增 `pick_palette()` 按 key 前缀转真实引擎命令（`plugin.run` / `widget.insert` / `instance.place` / `style.apply`），并写回 Recents（newest first，上限 `MAX_RECENT_ACTIONS` = 5）；render 在借用 `&mut self.popup` **之前**快照 sections，弹层新增三 tab 行与空搜索提示。
+- **诚实的边界**：① 搜索框仍只在 **Enter 提交**时更新（冻结的 `widgets::TextField` 只有 `set_on_commit`，要实时过滤必须改冻结件，动手前先问用户）；② 打开面板保留上次搜索词（否则清空模型会留下旧文本），EGUI 是清空；③ 上下键移动高亮 / Enter 运行高亮行未移植；④ 引擎没注册的命令仍是 disabled 显示（EGUI 直接隐藏）；⑤ 插件命令走 `plugin.run`、widget 走 `widget.insert`，没有 EGUI 的插件面板 UI（A4 仍缺）。
+- **验证**：`cargo check -p figcraft-ui-gpui --lib`、`cargo check --example run` 通过；`rustfmt --check`（新模块）通过；`cargo test --lib --features test-support -- palette` **8/8**；全套 **210 通过 / 3 失败**，3 条与 HEAD 基线同名同因（`main_menu aim` / `extra Shift+D` / `panel_resize hit area`），无回归。
+- **exe（18:56 用户确认后重编）**：先关掉占用 `run.exe` 的旧窗口 PID 27484，`cargo build -p figcraft-ui-gpui --example run` 通过（76,654,080 字节 / 18:56:55），经资源管理器托管启动新窗口 PID 15124（`FigCraft` / Responding=True）。构建有一条 `error deleting lock file for incremental compilation session directory … 拒绝访问` 警告，属旧进程残留的 incremental 锁文件，不影响产物（Finished dev profile）。**改动仍未提交**。
+
+**下一步**：G 表第 8 行 —— A1 首页 Home（Recents 卡片 / Templates / Getting started）；随后第 9–11 行 Comments / Plugins / Boards。涉及 `widgets/**` 冻结件的改动（A24 字段运算、调色板实时过滤）必须先与用户确认。

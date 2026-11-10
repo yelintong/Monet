@@ -45,6 +45,9 @@ const SEP_H: f32 = 9.0;
 #[derive(Clone)]
 pub struct Item {
     pub id: &'static str,
+    /// The value handed to `OnPick` (defaults to `id`). Dynamic rows — an Actions palette
+    /// component, style, plugin or widget — carry a runtime key here instead of a static id.
+    pub key: SharedString,
     pub label: SharedString,
     pub checked: Option<bool>,
     pub disabled: bool,
@@ -58,6 +61,7 @@ impl Item {
     pub fn new(id: &'static str, label: impl Into<SharedString>) -> Self {
         Self {
             id,
+            key: SharedString::from(id),
             label: label.into(),
             checked: None,
             disabled: false,
@@ -66,6 +70,11 @@ impl Item {
             separator_before: false,
             sub: Vec::new(),
         }
+    }
+    /// Override the value handed to `OnPick` (defaults to `id`).
+    pub fn key(mut self, k: impl Into<SharedString>) -> Self {
+        self.key = k.into();
+        self
     }
     pub fn disabled(mut self, b: bool) -> Self {
         self.disabled = b;
@@ -94,7 +103,7 @@ impl Item {
 }
 
 /// 选中一项（送命令 id）与展开子菜单（送行下标）的回调。
-pub type OnPick = Rc<dyn Fn(&'static str, &mut Window, &mut App)>;
+pub type OnPick = Rc<dyn Fn(&str, &mut Window, &mut App)>;
 pub type OnSub = Rc<dyn Fn(usize, &mut Window, &mut App)>;
 
 /// 标签的左内缩：无勾选列 8；有勾选列时普通行 28、带图标的工具行 48。
@@ -172,7 +181,7 @@ pub(crate) fn rows(
             out.push(div().my(pt(4.0)).h(pt(1.0)).w_full().bg(rgba(t.border)).into_any_element());
             y += SEP_H;
         }
-        let id = item.id;
+        let key = item.key.clone();
         let has_sub = !item.sub.is_empty();
         let inset = label_x(item, has_check);
         // This row's top — the submenu is pinned to it.
@@ -201,7 +210,7 @@ pub(crate) fn rows(
                     // A submenu row opens its card instead of running a command.
                     sub(i, window, cx);
                 } else {
-                    pick(id, window, cx);
+                    pick(key.as_ref(), window, cx);
                 }
             });
         }

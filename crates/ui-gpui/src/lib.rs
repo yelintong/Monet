@@ -72,6 +72,9 @@ mod main_menu;
 
 mod menu_card;
 
+/// B2: the Actions palette's data (tabs, Recents, grouped commands, ranking). No widgets here.
+mod palette;
+
 mod panels;
 
 /// 左面板控件树（Layers 树）：可展开/折叠、选中、显隐/锁定，含父子级拖动排序（复用 `drag` 通用件）。
@@ -309,57 +312,11 @@ fn zoom_step(z: f64, up: bool) -> f64 {
 
 
 
-/// The Actions palette's rows for `query`: the engine's command catalog, filtered by id or label
+// B2: the palette's rows moved to `palette.rs` — three tabs, Recents, grouped commands,
 
-/// (`ui-egui/src/menus/palette.rs` lists the same registry). A command this front-end cannot run is
+// prefix-first ranking and a 60-row cap. `render` calls `palette::sections` before borrowing
 
-/// greyed rather than hidden.
-
-fn palette_rows(query: &str) -> Vec<menu_card::Item> {
-
-    let q = query.trim().to_lowercase();
-
-    let mut seen = std::collections::HashSet::new();
-
-    let mut rows = Vec::new();
-
-    for m in figcraft_engine::catalog::MENU.iter() {
-
-        if m.label == figcraft_engine::catalog::SEP || !seen.insert(m.id) {
-
-            continue;
-
-        }
-
-        let label = figcraft_i18n::command(m.id, m.label);
-
-        if !q.is_empty() && !m.id.to_lowercase().contains(&q) && !label.to_lowercase().contains(&q) {
-
-            continue;
-
-        }
-
-        let mut row = menu_card::Item::new(m.id, label.into_owned()).disabled(figcraft_engine::find_command(m.id).is_none());
-
-        if let Some(sc) = main_menu::shortcut_text(m.id) {
-
-            row = row.trail(sc);
-
-        }
-
-        rows.push(row);
-
-        if rows.len() >= 200 {
-
-            break;
-
-        }
-
-    }
-
-    rows
-
-}
+// `self.popup`; `palette::items` maps the sections onto the shared menu-card row model.
 
 
 
@@ -633,6 +590,10 @@ pub struct CanvasView {
 
     palette_query: String,
 
+    /// B2: the active tab (All / Assets / Plugins & widgets). Opening the palette resets it.
+
+    palette_tab: palette::Tab,
+
     palette_field: Entity<widgets::TextField>,
 
     /// 四块整面板的浮层（由引擎 `ui_requests` 打开）与其跨帧状态。
@@ -857,6 +818,8 @@ impl CanvasView {
             motion_times,
 
             palette_query: String::new(),
+
+            palette_tab: palette::Tab::All,
 
             palette_field,
 
@@ -1564,7 +1527,9 @@ impl CanvasView {
 
                 panels::extra::UiAction::Palette => {
 
-                    self.popup = Some(Popup::Palette { at: gpui::point(px(400.0), px(300.0)) });
+                    let p = self.palette_at_pointer(gpui::point(px(400.0), px(300.0)));
+
+                    self.popup = Some(p);
 
                 }
 
@@ -2810,6 +2775,14 @@ impl CanvasView {
 
     fn palette_at_pointer(&mut self, mouse: Point<Pixels>) -> Popup {
 
+        // Opening afresh lands on All (egui `set_palette`). The query is deliberately kept:
+
+        // GPUI's search field only commits on Enter, so clearing just the model would leave
+
+        // stale text in the field.
+
+        self.palette_tab = palette::Tab::All;
+
         Popup::Palette { at: mouse }
 
     }
@@ -2866,7 +2839,7 @@ impl CanvasView {
 
     /// button keeps showing it (`ui-egui`'s `tb_last`).
 
-    fn pick_flyout(&mut self, id: &'static str, cx: &mut Context<Self>) {
+    fn pick_flyout(&mut self, id: &str, cx: &mut Context<Self>) {
 
         if let Some(tool) = figcraft_engine::ToolId::ALL.iter().copied().find(|t| t.id() == id)
 
@@ -2892,7 +2865,7 @@ impl CanvasView {
 
     /// as-is (egui's `menus.rs` has the same special case).
 
-    fn pick_context(&mut self, id: &'static str, cx: &mut Context<Self>) {
+    fn pick_context(&mut self, id: &str, cx: &mut Context<Self>) {
 
         let params = if id == "edit.paste" {
 
@@ -2927,6 +2900,60 @@ impl CanvasView {
     }
 
 
+
+    /// B2: run an Actions palette row by its key and remember it in Recents (newest first).
+
+    fn pick_palette(&mut self, key: &str, cx: &mut Context<Self>) {
+
+        let r = &mut self.app.session.prefs.recent_actions;
+
+        if !r.first().is_some_and(|f| f == key) {
+
+            r.retain(|k| k != key);
+
+            r.insert(0, key.to_string());
+
+            r.truncate(figcraft_engine::MAX_RECENT_ACTIONS);
+
+        }
+
+        self.popup = None;
+
+        if let Some(id) = key.strip_prefix("command:") {
+
+            self.run_command(id, serde_json::json!({}), cx);
+
+        } else if let Some(rest) = key.strip_prefix("plugin:") {
+
+            if let Some((pid, cid)) = rest.split_once('/') {
+
+                self.run_command("plugin.run", serde_json::json!({ "id": pid, "command": cid }), cx);
+
+            }
+
+        } else if let Some(pid) = key.strip_prefix("widget:") {
+
+            self.run_command("widget.insert", serde_json::json!({ "plugin": pid }), cx);
+
+        } else if let Some(node) = key.strip_prefix("component:") {
+
+            let (x, y) = self.app.session.ds().ok().map(|ds| (ds.view.cx, ds.view.cy)).unwrap_or((0.0, 0.0));
+
+            if let Ok(n) = node.parse::<u64>() {
+
+                self.run_command("instance.place", serde_json::json!({ "component": n, "x": x, "y": y }), cx);
+
+            }
+
+        } else if let Some(style) = key.strip_prefix("style:") {
+
+            self.run_command("style.apply", serde_json::json!({ "style": style }), cx);
+
+        }
+
+        cx.notify();
+
+    }
 
     /// 左侧竖栏第 1 项（`Icon::Menu`）点开的主菜单。
 
@@ -5838,6 +5865,16 @@ impl Render for CanvasView {
 
         let palette_query = self.palette_query.clone();
 
+        // B2: sections are computed here, before `&mut self.popup` borrows all of `self`.
+
+        let palette_tab = self.palette_tab;
+
+        let palette_sections = palette::sections(&palette_query, palette_tab, &self.app.session);
+
+        let palette_items = palette::items(&palette_sections);
+
+        let palette_count = palette_sections.iter().map(|s| s.rows.len()).sum::<usize>();
+
         // Share 弹层同理：live 快照与命令队列也要在 `&mut self.popup` 之前取好。
 
         let share_live = panels::right::data::LiveData::read(&self.app.session);
@@ -6158,7 +6195,7 @@ impl Render for CanvasView {
 
                         let me = me.clone();
 
-                        std::rc::Rc::new(move |id: &'static str, _w: &mut Window, cx: &mut App| {
+                        std::rc::Rc::new(move |id: &str, _w: &mut Window, cx: &mut App| {
 
                             me.update(cx, |cv, cx| cv.pick_context(id, cx));
 
@@ -6244,7 +6281,7 @@ impl Render for CanvasView {
 
                         let me = me.clone();
 
-                        std::rc::Rc::new(move |id: &'static str, _w: &mut Window, cx: &mut App| {
+                        std::rc::Rc::new(move |id: &str, _w: &mut Window, cx: &mut App| {
 
                             me.update(cx, |cv, cx| cv.pick_flyout(id, cx));
 
@@ -6280,9 +6317,9 @@ impl Render for CanvasView {
 
                         let me = me.clone();
 
-                        std::rc::Rc::new(move |id: &'static str, _w: &mut Window, cx: &mut App| {
+                        std::rc::Rc::new(move |key: &str, _w: &mut Window, cx: &mut App| {
 
-                            me.update(cx, |cv, cx| cv.pick_context(id, cx));
+                            me.update(cx, |cv, cx| cv.pick_palette(key, cx));
 
                         })
 
@@ -6290,11 +6327,9 @@ impl Render for CanvasView {
 
                     let hover: std::rc::Rc<dyn Fn(usize, &mut Window, &mut App)> = std::rc::Rc::new(|_, _, _| {});
 
-                    let rows = palette_rows(&palette_query);
-
                     let (pal_rows, _pal_subs) = menu_card::rows(
 
-                        &rows,
+                        &palette_items,
 
                         context_menu::ROW_H,
 
@@ -6320,7 +6355,103 @@ impl Render for CanvasView {
 
                     );
 
-                    let list = div().id("palette-list").flex_1().min_h(px(0.0)).w_full().overflow_y_scroll().children(pal_rows);
+                    let list = div()
+
+                        .id("palette-list")
+
+                        .flex_1()
+
+                        .min_h(px(0.0))
+
+                        .w_full()
+
+                        .overflow_y_scroll()
+
+                        .children(if palette_count == 0 {
+
+                            vec![div()
+
+                                .p(widgets::pt(8.0))
+
+                                .text_size(widgets::pt(12.0))
+
+                                .text_color(widgets::rgba(t.menu_dim))
+
+                                .child("No actions match this search.")
+
+                                .into_any_element()]
+
+                        } else {
+
+                            pal_rows
+
+                        });
+
+                    // B2: All / Assets / Plugins & widgets. Fixed panel height, so switching
+
+                    // tabs never resizes it; only the active chip carries a fill.
+
+                    let tabs = {
+
+                        let me = me.clone();
+
+                        div()
+
+                            .flex()
+
+                            .flex_row()
+
+                            .gap(widgets::pt(4.0))
+
+                            .w_full()
+
+                            .children(palette::Tab::ALL.iter().map(|tab| {
+
+                                let tab = *tab;
+
+                                let active = tab == palette_tab;
+
+                                let me = me.clone();
+
+                                let mut chip = div()
+
+                                    .px(widgets::pt(8.0))
+
+                                    .py(widgets::pt(4.0))
+
+                                    .rounded(widgets::pt(6.0))
+
+                                    .text_size(widgets::pt(12.0))
+
+                                    .text_color(widgets::rgba(if active { t.menu_text } else { t.menu_dim }))
+
+                                    .cursor_pointer()
+
+                                    .child(tab.label())
+
+                                    .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+
+                                        me.update(cx, |cv, cx| {
+
+                                            cv.palette_tab = tab;
+
+                                            cx.notify();
+
+                                        });
+
+                                    });
+
+                                if active {
+
+                                    chip = chip.bg(widgets::rgba(t.menu_hover));
+
+                                }
+
+                                chip.into_any_element()
+
+                            }))
+
+                    };
 
                     els.push(
 
@@ -6355,6 +6486,8 @@ impl Render for CanvasView {
                             .occlude()
 
                             .child(palette_field.clone())
+
+                            .child(tabs)
 
                             .child(list)
 
