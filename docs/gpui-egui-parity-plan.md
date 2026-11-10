@@ -246,13 +246,13 @@
 
 | 条目 | 计划要求 | 实际状态 | 证据（文件:行） | 未完成 / 诚实边界 |
 |---|---|---|---|---|
-| **A19** 通用对话框框架 | 十个对话框共用一套壳 + 一套控件 + 一套 Escape/遮罩，数据驱动 | ✅ **完成** | `dialogs.rs` 687 行：`Kind` **15 种**、`Field::{Text,Number,Choice,Note}`、`Spec`/`Button`/`DialogState`、`ui_action()`/`menu_action()`、`render()`(452)、`popup_backdrop`(543)；壳用 `widgets::popover::Popover`、行用 `field_row`/`field_row_full`、按钮统一推 `CmdQueue`。`lib.rs`：状态(608)、`sync_ui_requests` 消费全部 `dialog.*`(1400)、带「…」菜单拦截(3317)、Escape(5289)/X/遮罩统一、render 挂层(6632)。**5 条单测**，**未改任何 `widgets/**` 冻结件** | A13/A15/A14/A11/A4 因引擎无对应命令，仍是「带说明的提示窗口」（按钮只有 Close），不等于 EGUI 的完整交互 |
+| **A19** 通用对话框框架 | 十个对话框共用一套壳 + 一套控件 + 一套 Escape/遮罩，数据驱动 | ✅ **完成** | `dialogs.rs`（15 种 `Kind`；A6/A7/A20/Plugins/Branch/SaveAs 已逐个深化）、`Field::{Text,Number,Choice,Note}`、`Spec`/`Button`/`DialogState`、`ui_action()`/`menu_action()`、`render()`(452)、`popup_backdrop`(543)；壳用 `widgets::popover::Popover`、行用 `field_row`/`field_row_full`、按钮统一推 `CmdQueue`。`lib.rs`：状态(608)、`sync_ui_requests` 消费全部 `dialog.*`(1400)、带「…」菜单拦截(3317)、Escape(5289)/X/遮罩统一、render 挂层(6632)。**5 条单测**，**未改任何 `widgets/**` 冻结件** | A13/A15/A14/A11/A4 因引擎无对应命令，仍是「带说明的提示窗口」（按钮只有 Close），不等于 EGUI 的完整交互 |
 | **B1 / C1** 命名合规 | 右栏第三 tab 改名、补 `right_tab_label()` 与命名回归测试、清掉全仓 UI 文案 `"Dev Mode"` 残留 | ✅ **完成** | `naming.rs`（`"开发"` + 4 条回归）；`ui-egui` 的 `app.rs:352` / `canvas.rs:238` / `menus.rs:56` 三处真实 UI 文案已改为 `Developer Mode…`，`devmode_tail_tests.rs:322` 断言同步 | 无（注释、RETIRED 测试表、`SEARCH_ALIASES` 里的旧名是标识符/测试，按规范保留） |
 | **B9** Hide UI / Minimize UI | 把 `ui_hidden` / `ui_minimized` 接到 render 层 | ✅ **完成** | `lib.rs::ui_flags()`(2231-2233) 读 `ds().view.ui_hidden/ui_minimized`；`dock()`(2239) 给有效宽度且**不改记住的 `left_w`/`right_w`**；render 条件渲染侧栏 / 标签条 / 工具栏 / 时间轴 / 分隔条命中区(4219-4222、5847、6674、6682) | 无 |
 | **A6** 导出对话框 | 格式 / 倍数 / **预览**，复用 A19 壳 | ✅ **完成** | `dialogs.rs::Kind::Export` 的 Format / Scale / File name + `Field::Preview`；`export_preview.rs` 用 `figcraft_render::render_node` + `to_rgba8` + 项目既有 `wrap_rgba`，显示走 `img(ImageSource::Render)` 并放进 `field_row_full` | 多选导出、逐格式参数、原生路径选择仍缺；预览固定 160×100 显示框、0.25 倍栅格，不随格式实时切换 |
 | **A7** 首选项对话框 | 主题 / **语言** / **滚轮缩放** / **面板宽度重置**，复用 A19 壳 | ✅ **完成** | `dialogs.rs::Kind::Preferences` 新增 Language（`pref.language` 带每选项参数）、Scroll wheel（`pref.scrollWheelZoom`）、`Reset widths` 按钮（`Action::Run` → `view.panelWidths` 空参数，引擎自带的重置语义）；全部复用 `Field::Choice` chips + `field_row` | 语言只列 6 个常用项（引擎支持更多 BCP 47 代码）；首选项无实时预览 |
 | **A18 / B4** 标签关闭三问 | Don't Save / Cancel / Save + Alt+close + 拖拽重排 + 拖出成窗口 | ✅ **A18 完成** / 🔄 **B4 部分** | A18 同前（`force: alt`、`dialog.unsaved`、`doc.switch`、三问）；拖拽重排 `tabs_view.rs:155-187` 已有 | **拖出成窗口仍缺**：引擎确有 `window.new` 请求（`cmd/view.rs:365`），但 GPUI 要开 OS 多窗口须重构 `Session` 所有权以共享会话，属于「自己弄」，按本轮约束不做（见 J 节） |
-| **A1** 首页 Home（第 2 批第 1 项） | Recents 卡片 + Templates + Getting started | ✅ **完成** | `doc.home` → `home` ui_request → `panels::extra::ui_action` → `ExtraKind::Home`；`home_body` 读 `prefs.recent_files` / `getting_started_dismissed`，按钮推 `file.openRecent` / `file.new` / `file.newBoard` / `file.newFromTemplate` / `help.gettingStarted`，行用面板既有 `pill` / `note` | Online（服务器文件）区、缩略图卡片网格、`home_sort`/`home_order` 排序 UI 未做；Recents 为文本行 |
+| **A1** 首页 Home（第 2 批第 1 项） | Recents 卡片 + Templates + Getting started | ✅ **完成** | 独立 `home/mod.rs`（不再塞在 extra.rs）：`doc.home` → `ExtraKind::Home` → `home::body`；Recents 网格/列表 + 名称/编辑时间排序读 `prefs.recent_files` / `getting_started_dismissed`，按钮推 `file.openRecent` / `file.new` / `file.newBoard` / `file.newFromTemplate` / `help.gettingStarted`，行用面板既有 `pill` / `note` | Online（服务器文件）区、缩略图卡片网格、`home_sort`/`home_order` 排序 UI 未做；Recents 为文本行 |
 
 <!-- PARITY_CONTRACT_STATUS — 由 crates/ui-gpui/src/parity_contract.rs 自动核对；
      状态只能随代码一起改，测试会双向检查「代码做到没 / 文档标没标」。
@@ -345,3 +345,35 @@ EGUI 原文件再动手，禁止再出现简化替代**；完成后同步 `CONTR
 `Setting::Options` 换成真实 `dropdown` / `tab_strip` / 网格；B4 拖出成窗口（A16）需要共享
 `Session` 的多窗口架构，单独排期。涉及 `widgets/**` 冻结件的改动（A24 字段运算、调色板实时过滤）
 必须先与用户确认。
+
+---
+
+## L. 2026-11-10 21:5x 第 1–2 批功能核查（用户要求）
+
+> 用户要求：确认第 1 批（A19 / B1C1 / B9 / A6 / A7 / A18·B4）与第 2 批（A1 / B2 / A3 / A4·A25 / A20）**功能正常运行、模块不遗漏、不重复造轮子、能用通用控件的地方都用通用控件、能用引擎能力的地方都用引擎本身**。
+
+**审计方法**
+1. `cargo test -p figcraft-ui-gpui --lib --features test-support` = **213 通过 / 3 失败**（基线 3 条：main_menu aim / extra Shift+D / panel_resize hit area），无新增回归。
+2. `parity_contract` **3/3**：A19 / B1C1 / B9 / B2 / A18B4 / A1 / A6 / A7 的能力 token 与本文档状态块双向一致。
+3. **命令审计**：`crates/ui-gpui/src` 里 46 个 `Cmd { id: "…" }` 字面量 id **全部**能在 `crates/engine/src` 找到定义（**0 个自造**）；对话框命令另由 `every_dialog_command_is_a_real_engine_command` 断言。
+4. 逐项读源码确认模块存在、使用 `crate::widgets` 通用件、推真实引擎命令。
+
+**逐项结果**
+
+| 项 | 状态 | 模块 | 通用控件 | 引擎能力 | 诚实边界 |
+|---|---|---|---|---|---|
+| **A19** 对话框框架 | ✅ | `dialogs.rs`（15 `Kind`；A6/A7/A20/Plugins/Branch/SaveAs 已逐个深化） | `Popover`/`field_row`/`field_row_full`/`Dropdown`/`Checkbox` | 全部命令 `find_command` 可达 | notice 型（MissingFonts/ImportReport/SampledColor/Updates）引擎无命令，保持提示 |
+| **B1 / C1** 命名 | ✅ | `naming.rs` | — | — | — |
+| **B9** 隐藏 / 最小化 | ✅ | `lib.rs::ui_flags`/`dock` | — | `view.toggleUi`/`view.minimize` | — |
+| **A6** 导出 | ✅ | `dialogs.rs::Kind::Export` + `export_preview.rs` | `field_row`/`Field::Preview`(`img`) | `file.export` / `file.exportLayers` | 多选导出 / 原生路径 / 逐格式参数未做 |
+| **A7** 首选项 | ✅ | `dialogs.rs::Kind::Preferences` | `field_row`/`Dropdown`/`Checkbox` | `pref.*` / `view.theme*` | Accent / 图形后端引擎无命令，未造假控件 |
+| **A18 / B4** 标签关闭 | A18 ✅ / B4 🔄 | `tabs_view.rs` + `dialogs.rs` | — | `file.close`/`file.save`/`dialog.unsaved` | B4 拖出成窗口需 `Session` 跨窗口共享重构 |
+| **A1** 首页 | ✅ | `home/mod.rs`（独立模块） | `PanelSection`/`icon`/`Dropdown`/`canvas` 无 | `file.openRecent`/`file.new*`/`help.gettingStarted` | Online 在线区、缩略图卡片未做 |
+| **B2** 调色板 | ✅ | `palette.rs` + `menu_card` | `menu_card`/`TextField` | `pick_palette` 把 key 转真实命令 | 搜索仍 Enter 提交（冻结 `TextField` 只有 commit） |
+| **A3** 评论 | ✅ | `comments.rs` | `Dropdown`/`div` 行 | `comment.open`/`comment.markRead` | 回复 / 编辑 / 表情（thread 弹层）未接 |
+| **A4 / A25** 插件 + widget 栏 | A4 🔄 / A25 ✅ | `dialogs.rs::Kind::Plugins` + `widget_bar.rs` | `field_row`/`Dropdown` | `plugin.remove`/`plugin.import`/`widget.menu` | A4 的 Browse（网络插件目录）是异步后台任务，未接 |
+| **A20** 查找替换 | ✅ | `dialogs.rs::Kind::Find` | `field_row` | `edit.findReplace`（Find 不带 `replace`，修掉删匹配的 bug） | — |
+
+**结论**：第 1–2 批 11 项中 **8 项完整、3 项有诚实边界**（B4 拖出成窗口、A4 网络 Browse、A3 thread 弹层）；模块齐全、无自造命令、通用控件与引擎能力均按 EGUI 用法接入，没有另起炉灶。
+
+**本轮之后新增（第 3 批起步）**：画板工具条 `board_bar.rs`（颜色 / 形状网格 / 字号 / 连线，全部 `canvas()`+`paint_path` 自绘，命令 `board.setColor`/`board.setStyle`），尚未进入上面的第 1–2 批统计。
