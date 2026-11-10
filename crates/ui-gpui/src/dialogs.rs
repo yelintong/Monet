@@ -441,7 +441,7 @@ pub(crate) fn spec(kind: Kind, data: &Value) -> Spec {
             .field(Field::Text { key: "name", label: tr("Name"), value: str_field("name", data, "") })
             .button(Button::primary(tr("Rename"), "object.rename", json!({})))
             .with_cancel(),
-        Kind::ColorProfile => Spec::new(tr("Colour profile"))
+        Kind::ColorProfile => Spec::new(tr("Color profile"))
             .width(380.0)
             .message(tr("Choose the colour space used for display and export."))
             .field(
