@@ -452,6 +452,8 @@ pub(crate) struct RightFields {
     preset_open: std::rc::Rc<std::cell::RefCell<Vec<(&'static str, bool)>>>,
     /// 右栏当前标签：0 = Design，1 = Prototype，2 = Inspect（egui `app.ui.right_tab`）。纯 UI 状态，不进文档。
     right_tab: std::rc::Rc<std::cell::RefCell<u8>>,
+    /// A3: the Comments panel's local state (filter / sort / search / open thread).
+    comment_ui: crate::comments::CommentState,
     /// Inspect 标签的三个选择：代码语言下标、颜色格式下标、Web 语言是否用 rem。
     inspect_lang: std::rc::Rc<std::cell::RefCell<usize>>,
     inspect_fmt: std::rc::Rc<std::cell::RefCell<usize>>,
@@ -820,6 +822,7 @@ impl RightFields {
             scale_ctx,
             preset_open: std::rc::Rc::new(std::cell::RefCell::new(Vec::new())),
             right_tab: std::rc::Rc::new(std::cell::RefCell::new(0u8)),
+            comment_ui: std::rc::Rc::new(std::cell::RefCell::new(crate::comments::CommentUi::default())),
             inspect_lang: std::rc::Rc::new(std::cell::RefCell::new(0usize)),
             inspect_fmt: std::rc::Rc::new(std::cell::RefCell::new(0usize)),
             inspect_rem: std::rc::Rc::new(std::cell::RefCell::new(false)),
@@ -959,6 +962,16 @@ impl RightFields {
     }
 
     /// 通用窗口弹层也走同一条命令通道（点选一行/一个设置立刻唤醒下一帧执行）。
+    /// The canvas view, for opening a menu from a panel control (the comments filter).
+    pub(crate) fn root(&self) -> Option<Entity<CanvasView>> {
+        self.root.clone()
+    }
+
+    /// A3: the Comments panel's local state.
+    pub(crate) fn comment_ui(&self) -> crate::comments::CommentState {
+        self.comment_ui.clone()
+    }
+
     pub(crate) fn queue(&self) -> Cmds {
         self.cmds.clone()
     }
@@ -1538,6 +1551,13 @@ pub(crate) fn right_panel(
     // 列表行编辑器池：每帧清空上下文，然后各节按顺序认领槽位。
     f.begin_rows();
     let mut n = 0usize;
+
+    // A3: the Comment tool shows the Comments list instead of the design sections
+    // (egui `right.rs`: `if tool == Comment { crate::comments::panel(...); return; }`).
+    if data.comment_tool {
+        body = body.child(crate::comments::panel(f, &data.comments, data.comments_total));
+        return wrap(body);
+    }
 
     // ── Prototype / Inspect 标签：整页交给对应面板（egui `RightTab::Prototype` / `RightTab::Inspect`）──
     match *f.right_tab.borrow() {

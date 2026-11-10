@@ -77,6 +77,8 @@ mod palette;
 
 mod widget_bar;
 
+mod comments;
+
 /// A6: the Export dialog's bitmap preview, produced by the engine's renderer.
 mod export_preview;
 
@@ -1201,6 +1203,17 @@ impl CanvasView {
         let page = self.app.session.page().ok();
 
         let mut d = panels::right::data::read(&ds.doc, &ds.selection, page, self.fields.dev_ready_filter());
+
+        // A3: the Comments panel's list, from the panel's own filter/sort/search.
+        let comment_me = figcraft_engine::cmd::comment::user_name(&self.app.session);
+        {
+            let cu = self.fields.comment_ui();
+            let cu = cu.borrow();
+            d.comments = comments::read_rows(&ds.doc, &comment_me, cu.filter, cu.sort, &cu.search);
+        }
+        d.comment_me = comment_me;
+        d.comment_tool = self.app.session.tool.tool == figcraft_engine::tools::ToolId::Comment;
+        d.comments_total = ds.doc.comments.len();
 
         // 变量编辑器还要列已启用库的只读集合（egui `View::of(lib)`）。
 

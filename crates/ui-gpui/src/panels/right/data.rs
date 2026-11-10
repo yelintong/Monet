@@ -1191,6 +1191,14 @@ pub struct PanelData {
     pub dev: DevModeData,
     /// Component / Instance 面板；`None` = 选中的不是组件相关节点。
     pub component: Option<ComponentData>,
+    /// A3: the Comments panel's rows (already filtered/sorted/searched).
+    pub comments: Vec<crate::comments::CommentRow>,
+    /// A3: the current user (for unread dots).
+    pub comment_me: String,
+    /// A3: whether the Comment tool is active (the panel shows the Comments list instead).
+    pub comment_tool: bool,
+    /// A3: every comment on every page, for the "No comments yet" vs "No matching comments" state.
+    pub comments_total: usize,
 }
 
 /// `common()`：选中节点的某个值全一致才 `Some`，否则 `None`（egui `right.rs::common`）。

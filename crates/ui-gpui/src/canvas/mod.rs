@@ -544,6 +544,8 @@ pub(crate) fn draw_overlays(app: &mut CanvasApp, painter: &mut Painter, t: &Toke
     // `overlays` 同时返回每个顶层帧/section 名称标签的矩形；写入 `tool.labels`，
     // 引擎 `label_at` 据此在点击标签时选中/拖拽对应容器（照搬 `ui-egui`）。
     app.session.tool.labels = overlays::overlays(app, painter, t);
+    // A3: comment pins, over the overlays (egui `comments::draw` after `overlays()`).
+    crate::comments::draw(app, painter, t);
     // 注解 callout：egui 在 `overlays()` 之后、`handles::draw()` 之前画（Inspect 标签才画）。
     dev::draw_annotations(app, painter, t);
     // 自动布局的 padding/gap 手柄（原 `show()` 里 `crate::handles::draw` 就在 overlays 之后）。
