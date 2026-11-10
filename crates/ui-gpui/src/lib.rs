@@ -7718,6 +7718,82 @@ impl Render for CanvasView {
 
 
 
+        // 拖着文件悬在窗口上（egui `open.rs::drop_overlay`）：整窗一圈强调色 + 中间一句话，
+
+        // 说明松手会发生什么。GPUI 把外部拖入翻译成一次内部拖拽，而本工程只有图层树用
+
+        // `on_drag`，所以「有活动拖拽、又不是在拖图层」就是外部文件。
+
+        let drop_el: Option<AnyElement> = (cx.has_active_drag() && self.layer_tree.drag.is_none()).then(|| {
+
+            let t = widgets::tokens();
+
+            let mut tint = widgets::rgba(t.accent);
+
+            tint.a = 0.12;
+
+            let label: gpui::SharedString =
+
+                if self.tabs.home { figcraft_i18n::tr("Drop to open") } else { figcraft_i18n::tr("Drop to import") }.into();
+
+            div()
+
+                .absolute()
+
+                .left(px(4.0))
+
+                .top(px(4.0))
+
+                .right(px(4.0))
+
+                .bottom(px(4.0))
+
+                .rounded(px(8.0))
+
+                .bg(tint)
+
+                .border_2()
+
+                .border_color(widgets::rgba(t.accent))
+
+                .flex()
+
+                .items_center()
+
+                .justify_center()
+
+                .child(
+
+                    div()
+
+                        .px(px(16.0))
+
+                        .py(px(8.0))
+
+                        .rounded(px(8.0))
+
+                        .bg(widgets::rgba(t.panel))
+
+                        .border_1()
+
+                        .border_color(widgets::rgba(t.accent))
+
+                        .text_size(px(14.0))
+
+                        .font_weight(gpui::FontWeight::SEMIBOLD)
+
+                        .text_color(widgets::rgba(t.text))
+
+                        .child(label),
+
+                )
+
+                .into_any_element()
+
+        });
+
+
+
         // 一条临时提示（egui `app.toast`）：底部中间、圆角卡片，4 秒后自己消失。
 
         let toast_el: Option<AnyElement> = self.toast_msg.as_ref().map(|(text, _)| {
@@ -7867,6 +7943,10 @@ impl Render for CanvasView {
             .children(extra_el)
 
             .children(present_el)
+
+            .children(drop_el)
+
+
 
             .children(dialog_el)
 
