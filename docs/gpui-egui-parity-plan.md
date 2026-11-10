@@ -486,3 +486,30 @@ EGUI 原文件再动手，禁止再出现简化替代**；完成后同步 `CONTR
 - Pages 段还没有**拖拽排序**、**就地改名**、**把图层拖到某页**（egui `pages()` 有，`list_drag` 通用件 GPUI 侧已有但未接）。
 - 在线段没有「刷新 / 打开 / 移除」动作（缺引擎命令）。
 - 模板卡片没有按类别（`Kind`）过滤的分段控件，也没有独立的模板搜索框（复用侧栏搜索）。
+
+---
+
+## P. 2026-11-10 23:3x 导入 / 拖入按原版补齐
+
+用户：「导入的能力严重缺失，去看原版是怎么导入、怎么处理拖入的，引擎底层已经很完备了」。
+
+**原来缺什么**：只在 `run_command` 里拦了三条命令弹一个 `rfd` 选择器；**完全没有拖入**；
+文档拖进来会被 `file.import` 当成「追加页面」而不是「开成新文件」；不认落点；错误只在
+`FC_DEBUG_CMDS` 下打到 stderr。
+
+**现在（照 `ui-egui/src/open.rs` + `canvas/input.rs::import_dropped` + `home.rs::dropped`）**：
+
+| 件 | 内容 |
+|---|---|
+| `open.rs`（新） | `OPEN_EXTENSIONS` / `IMPORT_EXTENSIONS` / `IMAGE_EXTENSIONS`，`opens()` / `is_document()` / `is_image()` / `file_name()`；带 4 组单元测试（文档 / 图片 / SVG / 拒绝） |
+| `CanvasView::drop_files` | 文档 → `file.open`（**开成新文件**，首页与画布都一样）；图片与 SVG → `file.import` 带**落点页面坐标** `{path, x, y}`（引擎自己分流：SVG 变框架、图片放图片）；首页只收 `opens()` 的类型，其余弹 "Drop a .figcraft, …" |
+| 拖放目标 | **整个窗口**（root 上的 `.on_drop::<ExternalPaths>`），不只是画布；落点取 `window.mouse_position()`（GPUI 在 Submit 时已更新） |
+| 拖入高亮 | 悬停时整窗强调色描边 + 中间「松手以打开 / 松手以导入」（`has_active_drag() && layer_tree.drag.is_none()` 判定外部拖拽；本工程只有图层树用 `on_drag`） |
+| 错误反馈 | 新增 `toast`（egui `app.toast`）：底部中间圆角卡片，4 秒自动消失；`execute_reporting` 把引擎原话弹出来 |
+| 原生选择器 | 三个命令共用 `open.rs` 的扩展名表（一个筛选器列全部扩展名），失败也走 toast |
+
+**验证**：`file.import {"path", "x", "y"}` 对一张真实 PNG 返回放置好的图片节点（`{id, image, width, height}`）；
+拖入高亮层实测在一次真实拖拽中出现并在松手后消失；`open.rs` 4 条测试通过。
+
+**仍未做**：`pending_open` 那种「读取中」卡片（桌面有路径是同步读，不需要）、
+从资源面板把素材拖到画布（GPUI 的资源面板还没有内容）、浏览器端的 `data` + `name` 形式。
