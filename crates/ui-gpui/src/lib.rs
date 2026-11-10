@@ -77,6 +77,8 @@ mod palette;
 
 mod widget_bar;
 
+mod home;
+
 mod comments;
 
 /// A6: the Export dialog's bitmap preview, produced by the engine's renderer.

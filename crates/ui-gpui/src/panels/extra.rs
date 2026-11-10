@@ -158,6 +158,10 @@ pub(crate) struct ExtraState {
     pub home_section: Rc<RefCell<usize>>,
     pub home_query: Rc<RefCell<String>>,
     pub home_search: Entity<TextField>,
+    /// Recents view: `true` grid (cards) / `false` list (egui `home_recents::View`).
+    pub home_view_grid: Rc<RefCell<bool>>,
+    /// Recents sort: 0 name / 1 edited (egui `home_recents::SortKey`).
+    pub home_sort: Rc<RefCell<u8>>,
 }
 
 impl ExtraState {
@@ -218,6 +222,8 @@ impl ExtraState {
             home_section: Rc::new(RefCell::new(0usize)),
             home_query,
             home_search,
+            home_view_grid: Rc::new(RefCell::new(true)),
+            home_sort: Rc::new(RefCell::new(1)),
         }
     }
 }
@@ -230,7 +236,7 @@ pub(crate) fn render(kind: &ExtraKind, app: &CanvasApp, cmds: &Cmds, state: &Ext
         ExtraKind::Versions => versions_body(app, cmds, state, cx),
         ExtraKind::DevCompare { id, version } => compare_body(app, cmds, state, *id, version.as_deref()),
         ExtraKind::Assets => assets_body(app, cmds, state, cx),
-        ExtraKind::Home => home_body(app, cmds, state),
+        ExtraKind::Home => crate::home::body(app, cmds, state),
     };
     if matches!(kind, ExtraKind::Home) {
         // 1:1 with `ui-egui/src/home.rs`: `CentralPanel` fills the window, with the sidebar on
@@ -1149,15 +1155,6 @@ fn icon_cmd(icon: Icon, id: &'static str, params: Value, cmds: &Cmds) -> IconBut
 /// tabs) and a scrolling main area with `action_card`s, the recent-file list and the six tips.
 /// All data and actions come from the engine (`prefs.recent_files`, `prefs.getting_started_dismissed`,
 /// `file.new` / `file.newBoard` / `file.open` / `file.openRecent` / `file.newFromTemplate`).
-const HOME_TIPS: [(&str, &str); 6] = [
-    ("Draw a frame", "Pick the Frame tool, then drag on the canvas or choose a device size"),
-    ("Add auto layout", "Select layers and they space themselves as their content changes"),
-    ("Make a component", "Turn a layer into a component, reuse it, and change every copy at once"),
-    ("Prototype", "Link frames on the Prototype tab, then present the flow"),
-    ("Share with a code", "Start sharing with the Share button, then pass on the code it gives"),
-    ("Export", "Export frames and layers as PNG, JPG, SVG or PDF"),
-];
-
 fn heading(text: &'static str) -> Div {
     div().w_full().text_size(pt(20.0)).font_weight(gpui::FontWeight::SEMIBOLD).text_color(rgba(tokens().text)).child(text)
 }
@@ -1207,132 +1204,6 @@ fn action_card(icon: Icon, title: &'static str, sub: &'static str, id: &'static 
         .on_mouse_down(MouseButton::Left, move |_e, _, _| c.push(Cmd { id, params: None }))
 }
 
-fn home_body(app: &CanvasApp, cmds: &Cmds, state: &ExtraState) -> Div {
-    let t = tokens();
-    let section = *state.home_section.borrow();
-    let q = state.home_query.borrow().to_lowercase();
-
-    // ── 240 pt sidebar: wordmark, file/template search, three section tabs ──────
-    let mut side = div().flex_none().w(px(240.0)).h_full().flex().flex_col().gap(pt(8.0)).p(pt(12.0)).border_r_1().border_color(rgba(t.border));
-    side = side.child(
-        div()
-            .h(px(40.0))
-            .flex()
-            .flex_row()
-            .items_center()
-            .gap(pt(10.0))
-            .child(crate::widgets::icon::paint(Icon::Component, rgba(t.accent), 24.0))
-            .child(div().text_size(pt(16.0)).font_weight(gpui::FontWeight::SEMIBOLD).text_color(rgba(t.text)).child(tr("FigCraft"))),
-    );
-    side = side.child(state.home_search.clone());
-    for (i, (icon, label)) in [(Icon::Page, "Recents"), (Icon::LinkOn, "Online"), (Icon::ViewGrid, "Templates")].into_iter().enumerate() {
-        let on = section == i;
-        let slot = state.home_section.clone();
-        let wake = cmds.clone();
-        side = side.child(
-            div()
-                .h(px(32.0))
-                .w_full()
-                .flex()
-                .flex_row()
-                .items_center()
-                .gap(pt(10.0))
-                .px(pt(10.0))
-                .rounded(pt(5.0))
-                .bg(rgba(if on { t.selected_row } else { t.panel }))
-                .hover(|s| s.bg(rgba(t.hover)))
-                .cursor_pointer()
-                .child(crate::widgets::icon::paint(icon, rgba(t.icon), 16.0))
-                .child(div().text_size(pt(12.0)).text_color(rgba(t.text)).child(label))
-                .on_mouse_down(MouseButton::Left, move |_e, _, _| {
-                    *slot.borrow_mut() = i;
-                    wake.wake();
-                }),
-        );
-    }
-
-    // ── main: heading + cards + files + tips, scrolled like the egui CentralPanel ─
-    let mut main = div().id("home-main").flex_1().min_w(px(0.0)).h_full().flex().flex_col().gap(pt(16.0)).p(pt(24.0)).overflow_y_scroll();
-    match section {
-        2 => {
-            main = main.child(heading("Templates"));
-            let mut row = div().flex().flex_row().gap(pt(12.0));
-            row = row.child(action_card(Icon::Frame, "New design file", "Start from a blank canvas", "file.new", cmds));
-            row = row.child(action_card(Icon::Rectangle, "New board", "Sticky notes, shapes and connectors", "file.newBoard", cmds));
-            row = row.child(action_card(Icon::ViewGrid, "New from template", "Pick a starter template", "file.newFromTemplate", cmds));
-            main = main.child(row);
-        }
-        1 => {
-            main = main.child(heading("Online"));
-            main = main.child(note("Online files come from the engine's online section; this front-end has no local list yet."));
-        }
-        _ => {
-            main = main.child(heading("Recents"));
-            let mut cards = div().flex().flex_row().gap(pt(12.0));
-            cards = cards.child(action_card(Icon::Frame, "New design file", "Start from a blank canvas", "file.new", cmds));
-            cards = cards.child(action_card(Icon::Rectangle, "New board", "Sticky notes, shapes and connectors", "file.newBoard", cmds));
-            cards = cards.child(action_card(Icon::Page, "Open file", "Open .figcraft, .svg or images", "file.open", cmds));
-            main = main.child(cards);
-            main = main.child(subheading("Recent files"));
-            let files: Vec<String> =
-                app.session.prefs.recent_files.iter().filter(|p| q.is_empty() || p.to_lowercase().contains(&q)).cloned().collect();
-            if files.is_empty() {
-                main = main.child(note("No recent files yet. Open or save a file to see it here."));
-            } else {
-                for path in files.iter().take(12) {
-                    let name = std::path::Path::new(path).file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| path.clone());
-                    let c = cmds.clone();
-                    let p = path.clone();
-                    main = main.child(
-                        div()
-                            .w_full()
-                            .h(px(36.0))
-                            .flex()
-                            .flex_row()
-                            .items_center()
-                            .gap(pt(10.0))
-                            .px(pt(10.0))
-                            .rounded(pt(5.0))
-                            .hover(|s| s.bg(rgba(t.hover)))
-                            .cursor_pointer()
-                            .child(crate::widgets::icon::paint(Icon::Page, rgba(t.icon), 16.0))
-                            .child(div().text_size(pt(12.0)).text_color(rgba(t.text)).child(SharedString::from(name)))
-                            .on_mouse_down(MouseButton::Left, move |_e, _, _| {
-                                c.push(Cmd { id: "file.openRecent", params: Some(json!({ "path": p.clone() })) });
-                            }),
-                    );
-                }
-            }
-            if !app.session.prefs.getting_started_dismissed {
-                main = main.child(subheading("Getting started"));
-                let mut tips = div().w_full().flex().flex_col().gap(pt(8.0)).p(pt(16.0)).rounded(pt(8.0)).bg(rgba(t.field));
-                for (i, (title, line)) in HOME_TIPS.iter().enumerate() {
-                    tips =
-                        tips.child(
-                            div()
-                                .w_full()
-                                .flex()
-                                .flex_row()
-                                .items_center()
-                                .gap(pt(10.0))
-                                .child(div().size(pt(20.0)).rounded(pt(10.0)).bg(rgba(t.panel)).flex().items_center().justify_center().child(
-                                    div().text_size(pt(10.0)).text_color(rgba(t.text_secondary)).child(SharedString::from((i + 1).to_string())),
-                                ))
-                                .child(
-                                    div()
-                                        .flex()
-                                        .flex_col()
-                                        .child(div().text_size(pt(12.0)).text_color(rgba(t.text)).child(*title))
-                                        .child(div().text_size(pt(11.0)).text_color(rgba(t.text_secondary)).child(*line)),
-                                ),
-                        );
-                }
-                main = main.child(tips);
-            }
-        }
-    }
-    div().flex().flex_row().w_full().h_full().child(side).child(main)
-}
 
 fn note(text: &'static str) -> Div {
     let t = tokens();
