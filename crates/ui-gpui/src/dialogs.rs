@@ -22,12 +22,12 @@
 //! (`commands`) or contributes a value to the button's command params (`values`).
 
 use crate::CanvasView;
-use figcraft_i18n::tr;
 use crate::panels::{Cmd, Cmds};
 use crate::widgets::dropdown::dropdown;
 use crate::widgets::menu::popup_backdrop;
 use crate::widgets::popover::{Open, clamp, popover_window, title_text};
 use crate::widgets::{Checkbox, MenuRow, Slot, TextField, field_row, field_row_full, number_field, pt, rgba, text_field, tokens};
+use figcraft_i18n::tr;
 use gpui::{
     AnyElement, App, Bounds, Div, Entity, ImageSource, MouseButton, MouseDownEvent, MouseMoveEvent, Pixels, Point, RenderImage, SharedString, Size,
     Window, div, img, prelude::*, px, size,
@@ -495,12 +495,30 @@ pub(crate) fn spec(kind: Kind, data: &Value) -> Spec {
             .field(Field::Text { key: "path", label: tr("File name"), value: str_field("path", data, "") })
             .button(Button::primary(tr("Save"), "file.saveAs", json!({})))
             .with_cancel(),
-        Kind::Branch => Spec::new(tr("Branch"))
-            .width(400.0)
-            .message(tr("Create a branch to work on changes separately from the main file."))
-            .field(Field::Text { key: "name", label: tr("Branch name"), value: String::new() })
-            .button(Button::primary(tr("Create"), "branch.create", json!({})))
-            .with_cancel(),
+        Kind::Branch => {
+            // 1:1 with `ui-egui/src/dialogs/branch_ui.rs`: the branch list (each opens or archives)
+            // above the create field. The side-by-side review window is a separate large piece.
+            let list = data["branches"].as_array().cloned().unwrap_or_default();
+            let mut spec = Spec::new(tr("Branch"))
+                .width(440.0)
+                .message(tr("Create a branch to work on changes separately from the main file."))
+                .field(Field::Text { key: "name", label: tr("Branch name"), value: String::new() })
+                .button(Button::primary(tr("Create"), "branch.create", json!({})));
+            if !list.is_empty() {
+                spec = spec.field(Field::Section { title: tr("Branches") });
+                for b in &list {
+                    let id = b["id"].as_str().unwrap_or("").to_string();
+                    let name = b["name"].as_str().unwrap_or("").to_string();
+                    let state = b["state"].as_str().unwrap_or("");
+                    let label = if state == "active" || state.is_empty() { name.clone() } else { format!("{name}  ({state})") };
+                    spec = spec
+                        .field(Field::Note { text: label })
+                        .field(Field::Action { label: tr("Open"), id: "branch.open", params: json!({ "id": id }) })
+                        .field(Field::Action { label: tr("Archive"), id: "branch.archive", params: json!({ "id": id }) });
+                }
+            }
+            spec.with_cancel()
+        }
         Kind::Updates => Spec::new(tr("Updates"))
             .width(400.0)
             .message(tr("The updater needs the craft-update upgrade (C2) before it can check or install. This is a notice until then."))

@@ -1606,6 +1606,18 @@ impl CanvasView {
     /// 所有对话框共用 `DialogState` 的壳 / 网格 / 控件 / 命令队列 / 关闭行为。
     fn open_dialog(&mut self, kind: dialogs::Kind, data: &serde_json::Value, cx: &mut Context<Self>) {
 
+        // A19 SaveAs: a native "Save as…" picker (like egui's `pick_file`), not a fake path field.
+        if kind == dialogs::Kind::SaveAs {
+            if let Some(path) = rfd::FileDialog::new().set_file_name("Untitled.figcraft").add_filter("FigCraft", &["figcraft"]).save_file() {
+                let _ = self.app.session.execute("file.saveAs", &serde_json::json!({ "path": path.to_string_lossy() }));
+            }
+            if matches!(self.popup, Some(Popup::MainMenu(_))) {
+                self.close_popup(cx);
+            }
+            cx.notify();
+            return;
+        }
+
         let cmds = self.fields.queue();
 
         // A6: only the Export dialog needs a bitmap, and it comes from the engine renderer.
@@ -1643,6 +1655,17 @@ impl CanvasView {
                     })
                     .collect();
                 std::borrow::Cow::Owned(serde_json::json!({ "plugins": plugins }))
+            }
+            dialogs::Kind::Branch => {
+                // A19: the branch list is the live `branch.list`, not a stub.
+                let branches = self
+                    .app
+                    .session
+                    .execute("branch.list", &serde_json::json!({}))
+                    .ok()
+                    .and_then(|v| v.as_array().cloned())
+                    .unwrap_or_default();
+                std::borrow::Cow::Owned(serde_json::json!({ "branches": branches }))
             }
             _ => std::borrow::Cow::Borrowed(data),
         };
