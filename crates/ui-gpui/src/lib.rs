@@ -48,6 +48,10 @@ mod title_bar;
 
 mod dock;
 
+/// 左面板分隔条的窗口级拖拽状态机（与 `motion/timeline` 顶边拖动同构：thread_local + route）。
+
+mod left_divider;
+
 /// 画布右键菜单（`ui-egui/src/menus.rs` 的 context menu）。
 
 mod context_menu;
@@ -2083,36 +2087,50 @@ impl CanvasView {
         };
         let border = widgets::rgba(widgets::tokens().border);
         let accent = widgets::rgba(widgets::tokens().accent);
-        div()
+        let hit = div()
             .absolute()
             .left(px(panels::divider_hit_left(centre)))
             .top(px(0.0))
             .w(px(panels::HANDLE_HIT_W))
             .h_full()
             .group(group.clone())
+            // hover 光标用 **hitbox 级**，绝不用整窗级 `set_window_cursor_style`：后者会压掉
+            // 右栏输入框前导格的 `ResizeLeftRight`（见 lib.rs:4139 / 4341 的回归记录）。
+            // 拖动中的 `ClosedHand` 整窗锁由 `left_divider_cursor` 在 paint 阶段单独处理。
+            .cursor(gpui::CursorStyle::ResizeLeftRight)
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |this: &mut CanvasView, e: &MouseDownEvent, window, cx| {
                     // 热区压在画布 / 面板之上，这一下必须只归分隔条：否则溢出到画布的
-                    // 1.5px 会同时启动框选。窗口级 move/up 路由仍按 `resizing` 状态机走。
+                    // 1.5px 会同时启动框选。
                     cx.stop_propagation();
-                    if e.click_count >= 2 {
-                        match side {
-                            ResizeSide::Left => this.left_w = panels::DEFAULT_PANEL,
-                            ResizeSide::Right => this.right_w = panels::DEFAULT_PANEL,
+                    match side {
+                        ResizeSide::Left => {
+                            // 左栏：与 timeline 顶边同构 —— 状态 latch 进 thread_local，
+                            // move/up 由根视图 + 窗口级接管，双击复位也走同一处判定。
+                            let double = crate::left_divider::begin(this.left_w, f32::from(e.position.x), f32::from(e.position.y));
+                            if double {
+                                this.left_w = panels::DEFAULT_PANEL;
+                                crate::left_divider::end_drag();
+                                cx.notify();
+                                return;
+                            }
                         }
-                        this.resizing = None;
-                        cx.notify();
-                        return;
+                        ResizeSide::Right => {
+                            // 右栏维持现状：沿用 `resizing` 状态机 + 根 div 内联路由。
+                            if e.click_count >= 2 {
+                                this.right_w = panels::DEFAULT_PANEL;
+                                this.resizing = None;
+                                cx.notify();
+                                return;
+                            }
+                            this.resizing = Some(side);
+                            this.drag_start_x = f32::from(e.position.x);
+                            this.drag_start_w = this.right_w;
+                        }
                     }
                     this.commit_edits(window, cx);
                     this.focus.focus(window);
-                    this.resizing = Some(side);
-                    this.drag_start_x = f32::from(e.position.x);
-                    this.drag_start_w = match side {
-                        ResizeSide::Left => this.left_w,
-                        ResizeSide::Right => this.right_w,
-                    };
                     cx.notify();
                 }),
             )
@@ -2126,7 +2144,8 @@ impl CanvasView {
                     .h_full()
                     .bg(border)
                     .group_hover(group, |s| s.bg(accent)),
-            )
+            );
+        hit
     }
 
 
@@ -3445,6 +3464,8 @@ impl CanvasView {
 
             || self.resizing.is_some()
 
+            || crate::left_divider::drag_active()
+
             || self.layer_tree.drag.is_some()
 
             || crate::motion::timeline::drag_active()
@@ -3470,6 +3491,8 @@ impl CanvasView {
             || self.zoom_drag.is_some()
 
             || self.resizing.is_some()
+
+            || crate::left_divider::drag_active()
 
             || self.layer_tree.drag.is_some()
 
@@ -3789,7 +3812,13 @@ impl CanvasView {
 
     pub(crate) fn test_resizing(&self) -> Option<ResizeSide> {
 
-        self.resizing
+        // 左栏已迁到 `left_divider` 的 thread_local 状态机（与 timeline 同构）；右栏仍用
+        // `self.resizing`。测试辅助把两者统一成同一个 `ResizeSide` 视图，保持既有断言语义。
+        if crate::left_divider::drag_active() {
+            Some(ResizeSide::Left)
+        } else {
+            self.resizing
+        }
 
     }
 
@@ -6391,6 +6420,26 @@ impl Render for CanvasView {
 
             .children(self.layer_overlay())
 
+            // 左分隔条拖动中的整窗光标锁定（与 timeline 顶边同构）：只在 paint 阶段、
+            // 只在 drag_active 期间调 `set_window_cursor_style(ClosedHand)`，松手即不再登记，
+            // 光标自动回退到各元素的 hitbox 级 `.cursor()`（不压右栏输入框）。
+            // 1×1 absolute canvas，不接任何鼠标事件、不注册 hitbox，不影响命中顺序。
+            .child(
+                gpui::canvas(
+                    |_, _, _| (),
+                    |_, _, window, _| {
+                        if crate::left_divider::drag_active() {
+                            window.set_window_cursor_style(gpui::CursorStyle::ClosedHand);
+                        }
+                    },
+                )
+                .absolute()
+                .left(px(0.0))
+                .top(px(0.0))
+                .w(px(1.0))
+                .h(px(1.0)),
+            )
+
             // 容器级 move：分隔条 resize / 整卡移动 / 控件树 / 时间轴 / easing / 可复用路由器
 
             // 的拖拽进度已统一由窗口级 `on_window_drag_move` 接管；这里只更新「时间轴指针是否在
@@ -6493,6 +6542,21 @@ impl Render for CanvasView {
 
                 }
 
+                // 左分隔条：与 timeline 顶边同构的窗口级接管。根 div 覆盖整窗、永远悬停，
+                // 指针移出 4px 覆盖条（拖到画布 / 面板上）仍连续；窗口外松手时下一帧 move
+                // 不带左键，在这里优雅收尾，避免面板卡在拖拽态。
+                if crate::left_divider::drag_active() {
+                    if e.pressed_button != Some(MouseButton::Left) {
+                        crate::left_divider::end_drag();
+                    } else if let Some(w) = crate::left_divider::route_move(f32::from(e.position.x)) {
+                        this.left_w = w;
+                    }
+                    cx.notify();
+                    cx.stop_propagation();
+                    return;
+                }
+
+                // 右分隔条维持现状（`resizing` 状态机，左栏已迁到 thread_local）。
                 let Some(side) = this.resizing else { return };
 
                 let dx = f32::from(e.position.x) - this.drag_start_x;
@@ -6557,6 +6621,10 @@ impl Render for CanvasView {
 
                     }
 
+                    // 左分隔条收尾（与 timeline 同式，优先于控件树 / 面板内联路由）。
+                    // thread_local 收尾幂等；窗口外松手时这里不触发，由根 move 的下一帧兜底。
+                    let was_left_divider = crate::left_divider::end_drag();
+
                     // 控件树拖动结束（或左键抬起当作选中）：提交落点 / 选中。
 
                     this.layer_drag_up(cx);
@@ -6567,7 +6635,7 @@ impl Render for CanvasView {
 
                     let was_resize = this.resizing.take().is_some();
 
-                    if was_window || was_resize {
+                    if was_window || was_resize || was_left_divider {
 
                         cx.notify();
 
@@ -6650,6 +6718,27 @@ impl drag_manager::WindowDragTarget for CanvasView {
             } else {
 
                 crate::motion::timeline::route_global_move(&self.motion_q, e.position);
+
+            }
+
+            cx.notify();
+
+            return;
+
+        }
+
+        // 左分隔条窗口级接管：与 timeline 同构。指针移出根 div（拖到画布 / 面板 / 窗口外）时
+        // 逐元素 move 停发，靠这条按窗口 x 的相对位移续算；松手（含窗口外）在这里收尾。
+
+        if crate::left_divider::drag_active() {
+
+            if e.pressed_button != Some(MouseButton::Left) {
+
+                crate::left_divider::end_drag();
+
+            } else if let Some(w) = crate::left_divider::route_move(f32::from(e.position.x)) {
+
+                self.left_w = w;
 
             }
 
@@ -6763,11 +6852,24 @@ impl drag_manager::WindowDragTarget for CanvasView {
 
 
 
-        // 面板分隔条收尾：与画布级拖拽（pan / zoom / handles / guide / 选区间距）互斥，
+        // 左分隔条收尾（thread_local，与 timeline 同式）：必须在画布级分支之前清掉，
+        // 否则指针落在画布参考线 / 标尺区时 `guide_input` 提前 return，状态残留卡在拖拽态。
+
+        if crate::left_divider::end_drag() {
+
+            self.drag_just_ended = true;
+
+            cx.notify();
+
+            return;
+
+        }
+
+        // 右分隔条收尾：与画布级拖拽（pan / zoom / handles / guide / 选区间距）互斥，
 
         // 必须在这些分支之前清掉。否则指针落在画布参考线 / 标尺区时 `guide_input` 提前 return，
 
-        // `resizing` 残留、面板卡在拖拽态（左分隔条正好贴着画布左标尺，松手即触发）。
+        // `resizing` 残留、面板卡在拖拽态（右分隔条正好贴着画布右标尺，松手即触发）。
 
         if self.resizing.take().is_some() {
 
@@ -6931,7 +7033,10 @@ impl drag_manager::WindowDragTarget for CanvasView {
 
         let was_resize = self.resizing.take().is_some();
 
-        if was_window || was_resize {
+        // 左分隔条收尾（thread_local，幂等；三条 up 路径都兜一次，防状态残留）。
+        let was_left_divider = crate::left_divider::end_drag();
+
+        if was_window || was_resize || was_left_divider {
 
             self.drag_just_ended = true;
 
