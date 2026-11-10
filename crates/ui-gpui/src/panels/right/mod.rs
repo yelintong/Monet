@@ -18,6 +18,8 @@ pub(crate) mod devmode;
 pub(crate) mod proto;
 /// 按 egui 源码实现的各节真实行控件。
 pub(crate) mod sections;
+/// 右栏顶部 48 pt 顶栏（头像 / Present / Share）+ Share 弹层内容（egui `live.rs`）。
+pub(crate) mod topbar;
 /// 变量编辑器「右边的列表」（egui `dialogs/variables_panel.rs::table()`）。
 pub(crate) mod variables;
 /// 列表虚拟化组件（适配 gpui 0.2.2；

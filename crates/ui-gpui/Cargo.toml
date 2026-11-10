@@ -34,6 +34,7 @@ figcraft-i18n = { path = "../i18n" }
 figcraft-geom = { path = "../geom" }
 # 文字排版代数（字体到位后重排，与原文的 JobKey.fonts 一致）。
 figcraft-text = { path = "../text" }
+figcraft-collab-net = { path = "../collab-net" }
 # 把 RGBA 字节包成 GPUI 的 RenderImage。版本对齐 workspace 的 image 0.25。
 image = "0.25"
 log = "0.4"

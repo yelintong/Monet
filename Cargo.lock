@@ -3042,6 +3042,7 @@ name = "figcraft-ui-gpui"
 version = "0.11.2"
 dependencies = [
  "bytemuck",
+ "figcraft-collab-net",
  "figcraft-color",
  "figcraft-doc",
  "figcraft-engine",

@@ -1129,6 +1129,7 @@ impl ViewData {
 /// 右栏所有列表的一次快照。`None` 的 Vec 表示「多选且值不一致」（egui 显示 Mixed / 提示点 + 替换）。
 #[derive(Clone, Debug, PartialEq, Default)]
 pub struct PanelData {
+    pub live: LiveData,
     pub header: Option<HeaderData>,
     pub fills: Option<Vec<PaintRow>>,
     pub strokes: Option<Vec<PaintRow>>,
@@ -1722,5 +1723,35 @@ mod tests {
         assert_eq!(d.assets.len(), 1);
         assert_eq!(d.assets[0].id, id);
         assert!(d.assets[0].thumb.is_some(), "Assets 行带着缩略图");
+    }
+}
+
+
+// DIAGNOSTIC CUT (isolate data.rs): stub LiveData so per-frame `read` is neutralized.
+#[derive(Default, Clone, Debug, PartialEq)]
+pub struct LiveData {
+    pub me_name: String,
+    pub me_color: Option<String>,
+    pub peers: Vec<(u32, String, String)>,
+    pub active: bool,
+    pub status: &'static str,
+    pub reason: Option<String>,
+    pub host: bool,
+    pub follow: Option<u32>,
+    pub spotlighting: bool,
+    pub can_remove: bool,
+    pub can_host: bool,
+    pub code: Option<String>,
+    pub link: Option<String>,
+    pub info_link: Option<String>,
+    pub shared: bool,
+    pub online: bool,
+    pub server_set: bool,
+    pub view_only: bool,
+}
+
+impl LiveData {
+    pub fn read(_session: &figcraft_engine::Session) -> Self {
+        Self::default()
     }
 }

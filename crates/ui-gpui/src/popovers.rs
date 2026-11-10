@@ -152,6 +152,9 @@ pub(crate) struct WindowState {
 }
 
 impl WindowState {
+    /// DIAGNOSTIC CUT glue: no-op anchor adjustment (base WindowState lacks exact_top).
+    pub(crate) fn anchor_to_button_top(&mut self, _top: Pixels) {}
+
     /// 供根视图判断当前是否是某个特定窗口（例如变量面板已开时再点按钮就不要二次弹出）。
     pub(crate) fn kind(&self) -> WindowKind {
         self.kind

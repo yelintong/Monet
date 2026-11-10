@@ -15,6 +15,12 @@
 
 mod app;
 mod canvas;
+/// 标签条的纯几何 / 动画状态（上游 `ui-egui/src/tabs.rs` 的可测部分，P0-1）。
+mod tabs;
+/// 标签条的 GPUI 视图层（P0-1 第 2 步）。
+mod tabs_view;
+/// 窗口级标题栏壳：按 GPUI Kit 的 TitleBar 契约抄实现，不引入外部库。
+mod title_bar;
 /// 画布右键菜单（`ui-egui/src/menus.rs` 的 context menu）。
 mod context_menu;
 pub mod control;
@@ -37,6 +43,8 @@ mod theme;
 /// 通用列表 / 树拖拽件：把 egui 的 `list_drag` 原语、layers 的拖动效果与 variables groups 的
 /// 「左右改层级」整合为一套几何 + 状态机 + GPUI 视觉件，供任何面板复用。
 mod drag;
+mod drag_manager;
+mod drag_router;
 /// Motion (Beta) 动画系统：底部时间轴 + 右栏 inspector + easing + clip 设置浮窗。
 /// 控件全部复用 `widgets/`（template::Input 带插槽输入框 / PanelSection 统一网格 / Popover 窗口外壳）。
 mod motion;
@@ -54,7 +62,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use crate::widgets::menu::{MenuRow, menu_popup, popup_backdrop};
+use crate::widgets::menu::{MenuRow, menu_popup_in, popup_backdrop};
 use figcraft_doc::{CrossAlign, Document, MainAlign, Node, NodeId, NodeKind};
 use figcraft_engine::textedit;
 use figcraft_engine::tools::{PointerEvent, PointerKind};
@@ -62,7 +70,7 @@ use gpui::prelude::*;
 use gpui::{
     AnyElement, App, Application, Bounds, Context, ElementInputHandler, Entity, EntityInputHandler, FocusHandle, ImageSource, KeyDownEvent,
     KeyUpEvent, Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point, Render, ScrollDelta, ScrollWheelEvent,
-    UTF16Selection, Window, WindowBounds, WindowOptions, div, img, px, size,
+    UTF16Selection, WeakEntity, Window, WindowBounds, WindowOptions, div, img, px, size,
 };
 
 use canvas::geom::*;
@@ -166,7 +174,7 @@ fn palette_rows(query: &str) -> Vec<menu_card::Item> {
 }
 
 /// 正在拖拽的分隔线：左面板右边缘 / 右面板左边缘。
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ResizeSide {
     Left,
     Right,
@@ -178,7 +186,15 @@ enum ResizeSide {
 enum Popup {
     /// 下拉菜单：`anchor` 是触发控件的矩形（egui 的 `Response::rect`）——菜单位置取它的左下角，
     /// 宽度取 `anchor.width().max(48)`（`ui-egui` 的 `menu_popup` / `MENU_MIN_W`）。
-    Menu { anchor: Bounds<Pixels>, width: Option<f32>, rows: Vec<MenuRow>, on_pick: std::rc::Rc<dyn Fn(&str, &mut Window, &mut App)> },
+    Menu {
+        anchor: Bounds<Pixels>,
+        width: Option<f32>,
+        rows: Vec<MenuRow>,
+        on_pick: std::rc::Rc<dyn Fn(&str, &mut Window, &mut App)>,
+        /// 触发按钮每帧上报的真实矩形：右栏滚动 / 面板变宽后，菜单要跟着按钮一起动，
+        /// 不能停在点击那一帧的坐标（用户 2026-11-08）。`None` = 静态锚点（旧调用点）。
+        probe: Option<std::rc::Rc<std::cell::Cell<Option<Bounds<Pixels>>>>>,
+    },
     /// 主菜单：多级、悬停展开。`menu.rs::menu_popup` 是单层菜单、没有悬停回调，
     /// 装不下「悬停展开 + 子菜单贴行顶对齐」，所以单独一个变体（见 `main_menu` 模块）。
     MainMenu(main_menu::MainMenu),
@@ -206,18 +222,26 @@ enum Popup {
     /// Actions 面板：搜索框 + 命令列表，贴在指针上方。`at` 是打开时的指针（窗口坐标），
     /// render 时按当前画布宽度重算，窗口缩放时跟着动。
     Palette { at: Point<Pixels> },
+    /// Share 弹层（右栏顶栏的 Share 按钮）：锚在按钮上，内容每帧按 live 状态重建
+    /// （egui `live::share_popover`）。
+    Share { anchor: Bounds<Pixels> },
 }
 
 /// 画布视图：引擎会话 + 画布状态 + 交互状态。
 pub struct CanvasView {
     app: CanvasApp,
+    /// 顶部 40pt 标签条的状态（Home / 开场动画 / 拖拽），P0-1。
+    tabs: tabs_view::TabState,
     worker: Worker,
     /// 键盘焦点（空格平移、Z 缩放工具要收键盘事件）。
     focus: FocusHandle,
     /// 按下后正在拖拽（Move 事件只在拖拽时送给引擎）。
     dragging: bool,
-    /// 中键 / 空格平移：按下点的屏幕位置与当时的视图中心。
+    /// 中键 / 空格 / Ctrl+右键平移：按下点的屏幕位置与当时的视图中心。
     pan: Option<(Pos2, f64, f64)>,
+    /// 这次平移是 **Ctrl+右键** 发起的：`on_mouse_move` 必须把 `Right` 当成「仍按住」，
+    /// 否则 `route_canvas_drag` 会按「窗口外松手」立刻收尾，右键根本拖不动。
+    right_pan: bool,
     /// 指针最后的位置（画布局部坐标）。
     pointer: Option<Pos2>,
     /// 当前修饰键状态（GPUI 不给「当前状态」，只能从事件里记）。
@@ -292,6 +316,13 @@ pub struct CanvasView {
     present: Option<present::PresentState>,
     /// 左面板控件树（Layers）的展开 / 选中 / 拖动状态。
     layer_tree: layer_tree::LayerTreeState,
+    /// 通用窗口级拖拽层（Kit 范式：`canvas` 覆盖层 + `window.on_mouse_event`）。
+    /// 每帧在 Paint 阶段注册 move/up/down 三个窗口级监听，把跨元素 / 跨窗口的拖拽
+    /// 统一收口到 `WindowDragTarget` 实现，指针移到哪一层拖拽都不中断。
+    drag_layer: drag_manager::WindowDragLayer,
+    /// 上一帧的 `on_mouse_up` 刚结束过一次拖拽（窗口级已收尾）。根 div 的 up handler
+    /// 据此跳过 plain-click 的 guide 命中，避免拖拽收尾那一下重复触发命中逻辑。
+    drag_just_ended: bool,
 }
 
 impl CanvasView {
@@ -316,6 +347,15 @@ impl CanvasView {
             }
         })
         .detach();
+        // 实时协作的传输层：与 `apps/figcraft/src/main.rs` 同一句（`NetLink` + 唤醒 UI）。
+        // 网络线程收到东西就 `try_send` 一帧唤醒 —— 和右栏字段提交用的是同一个通道。
+        let live_wake: Arc<dyn Fn() + Send + Sync> = {
+            let tx = tx.clone();
+            Arc::new(move || {
+                let _ = tx.try_send(());
+            })
+        };
+        app.session.live.install(Box::new(figcraft_collab_net::NetLink::new(live_wake)));
         let panel_wake: Rc<dyn Fn()> = Rc::new(move || {
             let _ = tx.try_send(());
         });
@@ -332,10 +372,12 @@ impl CanvasView {
         let extra_state = panels::extra::ExtraState::new(cx, &fields.queue());
         let mut view = Self {
             app,
+            tabs: tabs_view::TabState::default(),
             worker: Worker::new(wake),
             focus: cx.focus_handle(),
             dragging: false,
             pan: None,
+            right_pan: false,
             pointer: None,
             mods: Modifiers::default(),
             space: false,
@@ -381,6 +423,8 @@ impl CanvasView {
             extra_state,
             present: None,
             layer_tree: layer_tree::LayerTreeState::default(),
+            drag_layer: drag_manager::WindowDragLayer::new(),
+            drag_just_ended: false,
         };
         // 启动即 Motion 模式（egui `set_open(true)`）：右栏加宽到 inspector 的 413pt，
         // 并记住原宽度，切回 Design 时由 `set_motion_open(false)` 还原。
@@ -554,6 +598,8 @@ impl CanvasView {
         d.variables.libraries = panels::right::variables::read_libraries(&self.app.session.libraries, &ds.doc);
         // Zoom / Show 菜单的勾选状态来自引擎的 ViewState，不从 UI 另存一份。
         d.view = panels::right::data::ViewData::read(&ds.view);
+        // 右栏顶栏（头像 / Present / Share）的 live 快照：同样每帧从引擎现读。
+        d.live = panels::right::data::LiveData::read(&self.app.session);
         // Frame 工具：Design 标签整页换成 Frame 预设（egui 同款分支）。
         d.frame_tool = self.app.session.tool.tool == figcraft_engine::tools::ToolId::Frame;
         // Inspect 标签（Dev Mode）：属性分组 + 生成的代码，按当前语言 / 颜色格式 / rem 计算。
@@ -1121,8 +1167,39 @@ impl CanvasView {
     // 打开后画在最上层（root 视图在 `render` 末尾把 backdrop + 弹层作为最后的孩子渲染），
     // 透明 backdrop 拦截外部点击来关闭。
 
-    /// 打开一个锚定在 `origin`（窗口坐标）的下拉菜单。`rows` 是菜单项，`on_pick` 在选中后调用
-    ///（携带菜单项 label）。完全照搬 egui `right/menu.rs` 的 `menu_popup` 语义。
+    /// **所有下拉弹窗的唯一入口**（用户 2026-11-08：跟随按钮 / 宽度取按钮真实宽度 /
+    /// 下方 4pt 收口成通用能力）。
+    ///
+    /// `anchor` 是 `Dropdown::menu(key)` 登记后拿到的 `MenuAnchor`：它跨帧保留按钮矩形，
+    /// 所以右栏滚动、面板变宽、弹窗拖动时菜单都跟着按钮走。`rect` 是点击那一帧的矩形
+    ///（`Dropdown::on_click` 给的），用来给探针播种，之后由 prepaint 每帧刷新。
+    /// `min_width = None` 表示「宽度就取按钮真实宽度」；`Some(w)` 只作为不得更窄的下限。
+    fn open_dropdown_menu(
+        &mut self,
+        anchor: Option<crate::widgets::dropdown::MenuAnchor>,
+        rect: Bounds<Pixels>,
+        min_width: Option<f32>,
+        rows: Vec<MenuRow>,
+        on_pick: std::rc::Rc<dyn Fn(&str, &mut Window, &mut App)>,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(a) = &anchor {
+            a.seed(rect);
+            crate::widgets::dropdown::set_active_menu(Some((a.key().to_string(), f32::from(rect.origin.x))));
+        } else {
+            crate::widgets::dropdown::set_active_menu(None);
+        }
+        self.popup = Some(Popup::Menu {
+            anchor: rect,
+            width: min_width.or_else(|| Some(f32::from(rect.size.width))),
+            rows,
+            on_pick,
+            probe: anchor.map(|a| a.cell()),
+        });
+        cx.notify();
+    }
+
+    /// 静态锚点的旧调用点：统一走同一个入口，只是没有跟随探针。
     fn open_menu(
         &mut self,
         anchor: Bounds<Pixels>,
@@ -1131,7 +1208,12 @@ impl CanvasView {
         on_pick: std::rc::Rc<dyn Fn(&str, &mut Window, &mut App)>,
         cx: &mut Context<Self>,
     ) {
-        self.popup = Some(Popup::Menu { anchor, width, rows, on_pick });
+        self.open_dropdown_menu(None, anchor, width, rows, on_pick, cx);
+    }
+
+    /// 打开 Share 弹层（右栏顶栏的 Share 按钮；内容在 render 里按 live 状态重建）。
+    fn open_share(&mut self, anchor: Bounds<Pixels>, cx: &mut Context<Self>) {
+        self.popup = Some(Popup::Share { anchor });
         cx.notify();
     }
 
@@ -1584,7 +1666,7 @@ impl CanvasView {
             w.press(at);
         }
     }
-    fn move_popup_drag(&mut self, at: Point<Pixels>) -> bool {
+    fn move_popup_drag(&mut self, at: Point<Pixels>, pressed: bool) -> bool {
         // 统一路由：resize（editor 按住边缘 handle）改窗口尺寸，否则整卡移动。**每次移动都直接
         // 改状态并让调用方 notify，绝不节流**：
         //   * GPUI 自己会把同一帧内的多次 `cx.notify()` 合并成一次渲染（按 vsync），所以「每个
@@ -1593,6 +1675,22 @@ impl CanvasView {
         //     出来就是「窗口非常卡、完全不跟鼠标」。用户 2026-11-07 实测确认这是逻辑错误，
         //     不是渲染慢，根因就是这段节流。
         self.active_window_mut().is_some_and(|w| w.variables_route_move(at))
+    }
+    /// 指针在**没有按住左键**的情况下移动：一律收掉卡片拖动。
+    ///
+    /// 这是「必须一直按住才拖」的保证：GPUI 在指针移出窗口后松手时不会补发 `mouse_up`，
+    /// 只靠 up 事件收尾的话，`grab` / `pending` 会留到下一次按下——于是松手之后光是移动鼠标，
+    /// 卡片就又开始跟着走（用户 2026-11-08 明确指出这个行为不对）。每次 move 带着真实的按键
+    /// 状态，就永远不会「没按住还拖」。
+    fn cancel_drag_if_not_held(&mut self, held: bool) -> bool {
+        if held {
+            return false;
+        }
+        let busy = self.window_drag_active();
+        if busy {
+            self.end_popup_drag();
+        }
+        busy
     }
     /// True while a detached window's header is held. The canvas skips its hover hit-testing
     /// during a drag (that is the expensive part that made dragging feel sticky).
@@ -1616,11 +1714,129 @@ impl CanvasView {
             || crate::motion::timeline::drag_active()
             || crate::motion::easing::drag_active()
     }
+    /// 是否有「窗口级」拖拽正在进行——即任何需要由 `on_window_drag_*` 统一接管的拖拽。
+    /// 根 div 的 hover/命中 handler 据此跳过，避免与窗口级双发；窗口级 handler 自身也用它
+    /// 做无拖拽时的早退（几乎零开销）。覆盖：画布平移/缩放/Move、多选间距/变换手柄、面板 resize、
+    /// 控件树拖动、整卡移动（含 resize handle）、时间轴/easing 拖拽、可复用拖拽路由器、Ctrl+右键平移。
+    fn any_window_drag_active(&self) -> bool {
+        self.dragging
+            || self.pan.is_some()
+            || self.zoom_drag.is_some()
+            || self.resizing.is_some()
+            || self.layer_tree.drag.is_some()
+            || self.window_drag_active()
+            || self.right_pan
+            || crate::drag_router::is_active()
+            || crate::motion::timeline::drag_active()
+            || crate::motion::easing::drag_active()
+            || self.app.selection_spacing.is_dragging()
+            || self.app.handles.drag.is_some()
+    }
     fn end_popup_drag(&mut self) {
         if let Some(w) = self.active_window_mut() {
             // 同时清掉整卡移动（pending/grab）与 resize（editor 内部状态）。
             w.variables_end_drag();
         }
+    }
+    /// 画布级拖拽（平移 / 缩放 / 框选拖移 / 间距手柄 / padding 手柄）的**窗口级**路由。
+    ///
+    /// 这些拖拽原本只在画布元素的 `on_mouse_move` 里推进，指针移到画布外的面板、或拖出窗口
+    /// 就断；窗口外松手收不到 `on_mouse_up`，状态残留。把「继续拖拽」与「按键已松开→收尾」都搬
+    /// 到窗口根视图（覆盖整窗），指针离开画布/窗口也能连续，窗口外松手也能干净结束（用户
+    /// 2026-11-08 指出的监听失效）。返回 true 表示事件被拖拽消费，调用方应跳过 hover 处理。
+    fn route_canvas_drag(&mut self, e: &MouseMoveEvent, cx: &mut Context<Self>) -> bool {
+        let active = self.dragging
+            || self.pan.is_some()
+            || self.zoom_drag.is_some()
+            || self.app.selection_spacing.is_dragging()
+            || self.app.handles.drag.is_some();
+        if !active {
+            return false;
+        }
+        // 窗口外松手：下一帧 move 带「按键已松开」回来，在这里收尾——每一类画布拖拽都按
+        // 它们原本 `on_mouse_up` 的语义结束（缩放要 finish_zoom、框选/变换手柄要用「抬起」
+        // 语义写回、frame 拖动要发 Up），否则回窗后还会继续平移 / 拖手柄，或改动没落库。
+        // Ctrl+右键平移时 `Right` 也算「按住」，否则一移动就被判成松手（用户 2026-11-08）。
+        let held = e.pressed_button == Some(MouseButton::Left)
+            || (self.right_pan && e.pressed_button == Some(MouseButton::Right));
+        if !held {
+            let pos = self.local(e.position);
+            let was_dragging = self.dragging;
+            self.pan = None;
+            self.right_pan = false;
+            let zoom_start = self.zoom_drag.take();
+            self.dragging = false;
+            if let Some(start) = zoom_start {
+                self.finish_zoom(start, pos, e.modifiers.alt);
+            }
+            if was_dragging {
+                self.send(PointerKind::Up, pos, &e.modifiers);
+            }
+            if self.app.selection_spacing.is_dragging() {
+                let _ = canvas::selection_spacing::input(
+                    &mut self.app,
+                    Some(pos),
+                    true,
+                    self.space,
+                    false,
+                    false,
+                    true,
+                    e.modifiers.platform || e.modifiers.control,
+                    e.modifiers.alt,
+                    e.modifiers.shift,
+                );
+            }
+            if self.app.handles.drag.is_some() {
+                let _ = canvas::handles::input(&mut self.app, pos, false, false, true, e.modifiers.shift);
+            }
+            cx.notify();
+            return true;
+        }
+        // 继续拖拽（与画布元素原处理逻辑一致，但由窗口级接管）。
+        let pos = self.local(e.position);
+        self.mods = e.modifiers;
+        self.pointer = Some(pos);
+        if let Some((p0, cx0, cy0)) = self.pan {
+            if let Ok(ds) = self.app.session.ds_mut() {
+                let z = ds.view.zoom.max(1e-6);
+                ds.view.cx = cx0 - f64::from(pos.x - p0.x) / z;
+                ds.view.cy = cy0 - f64::from(pos.y - p0.y) / z;
+                ds.revision += 1;
+            }
+            cx.notify();
+            return true;
+        }
+        if self.zoom_drag.is_some() {
+            cx.notify();
+            return true;
+        }
+        if self.dragging {
+            self.send(PointerKind::Move, pos, &e.modifiers);
+            cx.notify();
+            return true;
+        }
+        if self.app.selection_spacing.is_dragging() {
+            let _ = canvas::selection_spacing::input(
+                &mut self.app,
+                Some(pos),
+                true,
+                self.space,
+                false,
+                self.primary_down,
+                false,
+                e.modifiers.platform || e.modifiers.control,
+                e.modifiers.alt,
+                e.modifiers.shift,
+            );
+            cx.notify();
+            return true;
+        }
+        if self.app.handles.drag.is_some() {
+            let _ = canvas::handles::input(&mut self.app, pos, false, self.primary_down, false, e.modifiers.shift);
+            cx.notify();
+            return true;
+        }
+        true
     }
     /// 是否有窗口级拖拽正在进行（整卡移动 pending/dragging，或变量编辑器的 resize handle 按住）。
     /// 根 `on_mouse_move` 据此接管，使拖拽在指针移出「最初按下那个元素」后依然连续——
@@ -1653,9 +1869,25 @@ impl CanvasView {
     pub(crate) fn test_variables_size(&self) -> Option<(f32, f32)> {
         self.variables_editor.as_ref().and_then(|w| w.test_size())
     }
+    /// 端到端测试读取：左面板当前宽度。
+    #[cfg(test)]
+    pub(crate) fn test_left_w(&self) -> f32 {
+        self.left_w
+    }
+    /// 端到端测试读取：右面板当前宽度。
+    #[cfg(test)]
+    pub(crate) fn test_right_w(&self) -> f32 {
+        self.right_w
+    }
+    /// 端到端测试读取：当前是否正在拖拽某条面板分隔条（None = 没有）。
+    #[cfg(test)]
+    pub(crate) fn test_resizing(&self) -> Option<ResizeSide> {
+        self.resizing
+    }
 
     /// 关闭当前弹层（backdrop 点击 / 菜单项选中 / 取色后都会调用）。
     fn close_popup(&mut self, cx: &mut Context<Self>) {
+        crate::widgets::dropdown::set_active_menu(None);
         // A flyout's open mark lives on the view, not in the popup: closing either way (outside
         // click, Escape, a pick) must clear it, or the caret keeps reading as open.
         self.tool_flyout = None;
@@ -1750,6 +1982,24 @@ impl Render for CanvasView {
         // set_root 若因时序没落地，所有开窗按钮都会被 `let Some(root) = … else { return }`
         // 静默吞掉 —— 现象就是「按钮点了没反应」。
         self.fields.ensure_root(cx.entity());
+        // 菜单关掉（或被别的弹层顶掉）后，别让按钮继续写跨帧探针。
+        if !matches!(&self.popup, Some(Popup::Menu { .. })) {
+            crate::widgets::dropdown::set_active_menu(None);
+        }
+        // 触发按钮的选中态 / 「再次点击关闭」一律由**真实 popup 状态**驱动，不靠按钮自己记：
+        // 每帧把当前窗口写回共享槽，于是 backdrop / Escape / X 关窗后按钮同步熄灭。
+        let popup_reqs = self.fields.popups();
+        if popup_reqs.take_close() {
+            self.close_popup(cx);
+            if self.variables_open {
+                self.close_variables(cx);
+            }
+        }
+        let current_kind = match &self.popup {
+            Some(Popup::Window(w)) => Some(w.kind()),
+            _ => self.variables_open.then_some(popovers::WindowKind::VariablesTable),
+        };
+        popup_reqs.sync_open(current_kind);
         // 右栏按钮把「要打开的窗口」放进共享槽，这里每帧取走。按钮因此不需要持有根视图
         // Entity，也就不会被 `let Some(root) = … else { return }` 静默吞掉。
         if let Some(w) = self.fields.take_window() {
@@ -2045,41 +2295,16 @@ impl Render for CanvasView {
                     cx.notify();
                 }),
             )
-            // 移动：平移 / 缩放框 / 拖拽 Move / 否则 Hover。
+            // 移动：拖拽进度已统一由窗口级 `on_window_drag_move` 接管（见 `WindowDragTarget`
+            // 实现）；这里只做 hover 命中，拖拽进行中由 `any_window_drag_active()` 提前跳过。
             .on_mouse_move(cx.listener(|this: &mut CanvasView, e: &MouseMoveEvent, _window, cx| {
-                // A window-header drag must not run the canvas hover hit-testing (guide lines,
-                // selection spacing, handles, pointer send). Those walks are the expensive part
-                // of every move event and made dragging the popover feel sticky.
-                if this.popup_dragging() {
-                    return;
-                }
-                // 拖左右面板分隔线时，指针就在画布边缘上：画布每次 move 都跑一遍
-                // hover 命中（guide / spacing / handles / send Hover）纯属白干，还会
-                // 让拖宽发涩。resize 期间直接跳过画布的 hover 处理。
-                if this.resizing.is_some() {
-                    return;
-                }
                 this.mods = e.modifiers;
                 let pos = this.local(e.position);
                 this.pointer = Some(pos);
-                // 控件树拖动中：用全局指针重算落点（行间 / 列表外也能更新），跳过画布自身的
-                // Hover / 选中派发。几何由通用件的 `calibrate` 从命中行矩形重建。
-                if this.layer_tree.drag.is_some() {
-                    this.layer_on_global_move(e.position, cx);
-                    return;
-                }
-                if let Some((p0, cx0, cy0)) = this.pan {
-                    if let Ok(ds) = this.app.session.ds_mut() {
-                        let z = ds.view.zoom.max(1e-6);
-                        ds.view.cx = cx0 - f64::from(pos.x - p0.x) / z;
-                        ds.view.cy = cy0 - f64::from(pos.y - p0.y) / z;
-                        ds.revision += 1;
-                    }
-                    cx.notify();
-                    return;
-                }
-                if this.zoom_drag.is_some() {
-                    cx.notify();
+                // 所有拖拽（画布 / 面板 / 弹窗 / 时间轴 / 控件树）现已由窗口级
+                // `on_window_drag_move` 统一接管，指针移出最初按下元素或窗口也不中断。
+                // 拖拽进行中这里只做轻量跳过，避免与窗口级双发；hover 命中在拖拽结束后再跑。
+                if this.any_window_drag_active() {
                     return;
                 }
                 if !this.dragging && this.guide_input(pos, false, false, e.modifiers.alt) {
@@ -2111,59 +2336,20 @@ impl Render for CanvasView {
                 this.send(kind, pos, &e.modifiers);
                 cx.notify();
             }))
-            // 抬起：结束平移 / 缩放 / 拖拽。
+            // 抬起：画布级拖拽收尾（pan / zoom / 框选 / 变换手柄 / Move）已统一由窗口级
+            // `on_window_drag_up` 接管，指针移出画布 / 窗口也不中断，故此处只做兜底复位。
             .on_mouse_up(
                 MouseButton::Left,
                 cx.listener(|this: &mut CanvasView, e: &MouseUpEvent, _window, cx| {
+                    // 兜底：万一窗口级 up 因为某种原因没跑到，这里把最关键的 `primary_down`
+                    // 复位，避免「抬起后还以为按着」的卡死。其余收尾逻辑只见窗口级。
+                    this.primary_down = false;
                     this.mods = e.modifiers;
                     let pos = this.local(e.position);
                     this.pointer = Some(pos);
-                    this.primary_down = false;
-                    // 控件树拖动中：提交落点（或把按下候选当作选中），不再跑画布自身的 up 逻辑。
-                    if this.layer_tree.drag.is_some() {
-                        this.layer_drag_up(cx);
-                        cx.notify();
-                        return;
+                    if this.drag_just_ended {
+                        this.drag_just_ended = false;
                     }
-                    if this.pan.take().is_some() {
-                        cx.notify();
-                        return;
-                    }
-                    if let Some(start) = this.zoom_drag.take() {
-                        this.finish_zoom(start, pos, e.modifiers.alt);
-                        cx.notify();
-                        return;
-                    }
-                    if this.app.selection_spacing.is_dragging() {
-                        let _ = canvas::selection_spacing::input(
-                            &mut this.app,
-                            Some(pos),
-                            true,
-                            this.space,
-                            false,
-                            false,
-                            true,
-                            e.modifiers.platform || e.modifiers.control,
-                            e.modifiers.alt,
-                            e.modifiers.shift,
-                        );
-                        cx.notify();
-                        return;
-                    }
-                    if this.app.handles.drag.is_some() {
-                        let _ = canvas::handles::input(&mut this.app, pos, false, false, true, e.modifiers.shift);
-                        cx.notify();
-                        return;
-                    }
-                    if !this.dragging && this.guide_input(pos, false, true, e.modifiers.alt) {
-                        cx.notify();
-                        return;
-                    }
-                    if this.dragging {
-                        this.dragging = false;
-                        this.send(PointerKind::Up, pos, &e.modifiers);
-                    }
-                    cx.notify();
                 }),
             )
             .on_scroll_wheel(cx.listener(|this: &mut CanvasView, e: &ScrollWheelEvent, _window, cx| {
@@ -2171,17 +2357,36 @@ impl Render for CanvasView {
                 this.on_wheel(e);
                 cx.notify();
             }))
-            // 右键：画布里的上下文菜单（`ui-egui` 的 `open_context_menu`）。
+            // 右键：Ctrl/Cmd + 右键 = 平移画布；否则打开画布上下文菜单
+            //（`ui-egui` 的 `open_context_menu`）。用户 2026-11-08：Ctrl+右键拖不动。
             .on_mouse_down(
                 MouseButton::Right,
                 cx.listener(|this: &mut CanvasView, e: &MouseDownEvent, window, cx| {
                     let pos = this.local(e.position);
                     this.pointer = Some(pos);
                     this.commit_edits(window, cx);
+                    if e.modifiers.control || e.modifiers.platform {
+                        if let Ok(ds) = this.app.session.ds() {
+                            this.pan = Some((pos, ds.view.cx, ds.view.cy));
+                        }
+                        this.right_pan = true;
+                        cx.notify();
+                        cx.stop_propagation();
+                        return;
+                    }
                     this.focus.focus(window);
                     this.open_context_menu(pos, cx);
                     // 不许再走画布命中：右键这一下不属于工具的按下。
                     cx.stop_propagation();
+                }),
+            )
+            .on_mouse_up(
+                MouseButton::Right,
+                cx.listener(|this: &mut CanvasView, _e: &MouseUpEvent, _window, cx| {
+                    if this.pan.take().is_some() {
+                        this.right_pan = false;
+                        cx.notify();
+                    }
                 }),
             )
             // 中键平移（原实现同款）。
@@ -2193,6 +2398,7 @@ impl Render for CanvasView {
                     if let Ok(ds) = this.app.session.ds() {
                         this.pan = Some((pos, ds.view.cx, ds.view.cy));
                     }
+                    this.right_pan = false;
                     cx.notify();
                 }),
             )
@@ -2200,6 +2406,7 @@ impl Render for CanvasView {
                 MouseButton::Middle,
                 cx.listener(|this: &mut CanvasView, _e: &MouseUpEvent, _window, cx| {
                     this.pan = None;
+                    this.right_pan = false;
                     cx.notify();
                 }),
             )
@@ -2293,7 +2500,7 @@ impl Render for CanvasView {
                 // 右键菜单 / 飞出菜单 / Actions：Escape 关掉它们，而不是把这次按键送给引擎
                 // （否则会先 `select.none` 清掉选区，egui 那边 Escape 只关菜单）。
                 if e.keystroke.key == "escape"
-                    && matches!(&this.popup, Some(Popup::Context { .. } | Popup::Flyout { .. } | Popup::Palette { .. } | Popup::Menu { .. }))
+                    && matches!(&this.popup, Some(Popup::Context { .. } | Popup::Flyout { .. } | Popup::Palette { .. } | Popup::Menu { .. } | Popup::Share { .. }))
                 {
                     this.popup = None;
                     this.tool_flyout = None;
@@ -2475,11 +2682,64 @@ impl Render for CanvasView {
         );
         // Motion 打开时右栏换成 Motion inspector（宽 413）；否则仍是 Design 面板。
         // 两者都返回 `Stateful<Div>`，宽度由同一个 `right_w` 决定。
+        // egui 里 Motion 只占「标签行以下」：48 pt 顶栏与 Design/Prototype 标签**仍然在**，
+        // 所以这里把同样两行摆在 Motion inspector 上面，而不是整块换掉。
         let right_el = if self.motion {
-            self.render_motion_inspector(window, cx).w(px(self.right_w))
+            let head = div()
+                .flex_none()
+                .w_full()
+                .flex()
+                .flex_col()
+                .child(panels::right::topbar::top_bar(&self.fields, &panel_data))
+                .child(panels::right::sections::view_bar(&self.fields, &panel_data));
+            let t = crate::widgets::tokens();
+            div()
+                .id("right-motion")
+                .flex_none()
+                .h_full()
+                .flex()
+                .flex_col()
+                .bg(crate::widgets::rgba(t.panel))
+                .border_1()
+                .border_color(crate::widgets::rgba(t.border))
+                .child(head)
+                .child(self.render_motion_inspector(window, cx).flex_1().min_h(px(0.0)))
+                .w(px(self.right_w))
         } else {
             panels::right_panel(&self.fields, self.panel_sel(), &panel_data, self.right_w, window, cx).w(px(self.right_w))
         };
+        // ── 顶部标签条（P0-1）─────────────────────────────────────────────────────────────
+        // 根 `flex_col` 的第一个子项：40pt 高、占满窗宽。标签数据每帧从 `session.docs` 现读
+        // （与右栏 PanelData 同一套快照模式），命令走右栏的 Cmd 队列，由 sync_panel 统一执行。
+        let tab_docs = tabs_view::read_docs(&self.app.session);
+        let tabs_active = self.app.session.active;
+        let tabs_dark = self.app.theme.dark;
+        let tabs_reduce_motion = self.app.session.prefs.reduce_motion;
+        let viewport_w = f32::from(window.viewport_size().width);
+        let content_w = title_bar::content_width(viewport_w);
+        let tabs_cmds = self.fields.queue();
+        let tabs_me = cx.entity();
+        // kit `TitleBar::new().child(TabBar)`：标签条只是标题栏的内容，窗口壳负责高度 /
+        // 左留白 / 三个窗口控制按钮，不再在内容区另塞一条标题栏。
+        let tab_bar = title_bar::title_bar(
+            tabs_view::tab_strip(
+                &mut self.tabs,
+                &tab_docs,
+                tabs_active,
+                tabs_dark,
+                tabs_reduce_motion,
+                content_w,
+                &tabs_cmds,
+                &tabs_me,
+            ),
+            // 三态标题栏：max 键在已最大化时画 WinRestore，动作由系统 HTMAXBUTTON toggle。
+            window.is_maximized(),
+        );
+        // 新标签的 0.18s 入场动画期间要连续重绘，直到 opening 队列清空。
+        if !self.tabs.motion.opening().is_empty() {
+            cx.notify();
+        }
+
         let top_row = div()
             .flex()
             .flex_row()
@@ -2505,6 +2765,9 @@ impl Render for CanvasView {
         // 先把 Actions 面板要用的两个字段读出来：下面 `&mut self.popup` 会把 self 整体借走。
         let palette_field = self.palette_field.clone();
         let palette_query = self.palette_query.clone();
+        // Share 弹层同理：live 快照与命令队列也要在 `&mut self.popup` 之前取好。
+        let share_live = panels::right::data::LiveData::read(&self.app.session);
+        let share_cmds = self.fields.queue();
         if let Some(p) = &mut self.popup {
             let me = cx.entity();
             let dismiss = std::rc::Rc::new({
@@ -2527,8 +2790,10 @@ impl Render for CanvasView {
                 move |e: &MouseMoveEvent, _window: &mut Window, cx: &mut App| {
                     // 卡片自身的 on_mouse_move 也要 notify：一旦根视图那层因为某种原因没接到
                     // move（如 cursor_grab 只把事件送到卡片），这里仍能驱动重绘，窗口才跟手。
+                    let held = e.pressed_button == Some(MouseButton::Left);
                     me.update(cx, |cv, cx| {
-                        if cv.move_popup_drag(e.position) {
+                        // 没按住左键的移动只能「收尾」，绝不能继续拖（用户 2026-11-08）。
+                        if cv.cancel_drag_if_not_held(held) || cv.move_popup_drag(e.position, held) {
                             cx.notify();
                         }
                     });
@@ -2605,16 +2870,16 @@ impl Render for CanvasView {
             };
             let mut els: Vec<AnyElement> = Vec::new();
             match p {
-                Popup::Menu { anchor, width, rows, on_pick } => {
-                    // `menu` 自己会算「锚点底边 + gap(4)」，所以这里**不能**再把
-                    // `anchor.size.height` 加上去 —— 那是重复计算，会让菜单整体下移一整行。
-                    // 这里只做贴边夹紧（egui 的 popup 在屏幕边缘也只做这件事）。
-                    let w = width.unwrap_or_else(|| f32::from(anchor.size.width).max(48.0));
-                    let h = rows.len() as f32 * 28.0 + 16.0;
-                    let x = px(f32::from(anchor.origin.x).min(vw - w - m).max(m));
-                    let y = px(f32::from(anchor.origin.y).min(vh - h - m).max(m));
-                    let clamped = Bounds { origin: Point { x, y }, size: anchor.size };
-                    els.push(menu_popup(clamped, *width, rows.clone(), on_pick.clone(), dismiss.clone()));
+                Popup::Menu { anchor, width, rows, on_pick, probe } => {
+                    // 每帧取触发按钮的当前矩形（滚动 / resize / 弹窗拖动后仍跟着按钮走）。
+                    let live = probe.as_ref().and_then(|p| p.get()).unwrap_or(*anchor);
+                    // 宽度下限 = 按钮真实宽度（旧代码把调用方传的 0 → 120 当菜单宽，
+                    // 而按钮是网格铺满的 160/200，菜单与下拉框不齐）。
+                    let w = f32::from(live.size.width).max(width.unwrap_or(0.0)).max(48.0);
+                    // 位置与防溢出全部交给通用 `Menu`：它自带「按钮底 + 4」、上下防溢出、
+                    // 内部滚动、水平贴边。以前在这里手工夹 x/y 用的是估计高度，
+                    // 漏了分隔符和 8pt 内边距，项多 / 贴屏幕底部时照样溢出。
+                    els.push(menu_popup_in(live, Some(w), rows.clone(), on_pick.clone(), dismiss.clone(), vw, vh));
                 }
                 Popup::MainMenu(mm) => {
                     // Re-anchor to the rail button from the *current* layout every render, so the
@@ -2637,6 +2902,16 @@ impl Render for CanvasView {
                     els.extend(main_menu::render(mm, vw, vh, hover, click));
                 }
                 Popup::Window(w) => els.extend(w.render(cx, vp, dismiss.clone(), drag_start, drag_move.clone(), right_edge)),
+                Popup::Share { anchor } => {
+                    // 锚在 Share 按钮的左下角，贴边夹紧（同 Popup::Menu 的做法）。
+                    let w = 300.0_f32;
+                    let h = 220.0_f32;
+                    let x = px(f32::from(anchor.origin.x).min(vw - w - m).max(m));
+                    let y = px(f32::from(anchor.origin.y).min(vh - h - m).max(m));
+                    let clamped = Bounds { origin: Point { x, y }, size: anchor.size };
+                    let card = panels::right::topbar::share_card(clamped, &share_live, &share_cmds, dismiss.clone());
+                    els.push(card);
+                }
                 Popup::Context { pos, items, open_sub, .. } => {
                     // Clamp against the window's right/bottom edge (egui's `constrain(true)`). The
                     // point is canvas-local; convert to window coords from the *current* canvas
@@ -2781,8 +3056,9 @@ impl Render for CanvasView {
                 });
                 let drag_move = Rc::new(move |e: &MouseMoveEvent, _w: &mut Window, cx: &mut App| {
                     // 同通用窗口：卡片自身 move 也 notify，保证根视图没接到时窗口仍跟手。
+                    let held = e.pressed_button == Some(MouseButton::Left);
                     me_drag.update(cx, |cv, cx| {
-                        if cv.move_popup_drag(e.position) {
+                        if cv.cancel_drag_if_not_held(held) || cv.move_popup_drag(e.position, held) {
                             cx.notify();
                         }
                     });
@@ -2835,6 +3111,7 @@ impl Render for CanvasView {
                     this.commit_edits(window, cx);
                 }),
             )
+            .child(tab_bar)
             .child(top_row)
             // 结构性：变量面板 Full 占「面板 + 画布」区域，底部动画时间轴属于这块，
             // 不能再延伸过来盖住 Full（egui 的 full 由主布局给出整块 panel，Motion 让位）。
@@ -2849,95 +3126,226 @@ impl Render for CanvasView {
             // 通用拖拽的视觉层（插入线 / Into 整行描边 / 跟随光标的标签）画在最上面，
             // 用窗口坐标绝对定位，覆盖所有面板。
             .children(self.layer_overlay())
-            // 拖拽分隔线：move 改宽度（夹紧 240..=500），up 结束。
+            // 容器级 move：分隔条 resize / 整卡移动 / 控件树 / 时间轴 / easing / 可复用路由器
+            // 的拖拽进度已统一由窗口级 `on_window_drag_move` 接管；这里只更新「时间轴指针是否在
+            // bar 内」的 hover 标记，拖拽进行中由 `any_window_drag_active()` 提前跳过。
             .on_mouse_move(cx.listener(|this: &mut CanvasView, e: &MouseMoveEvent, window, cx| {
                 // Space 在 Motion 时间轴里才播放：时间轴是窗口底部、高 motion_bar_h() 的那条。
                 let vh = f32::from(window.viewport_size().height);
                 crate::motion::timeline::set_pointer_in_bar(
                     this.motion && f32::from(e.position.y) >= vh - this.motion_bar_h(),
                 );
-                // Easing 曲线手柄拖拽：同样由窗口级 move 接管（相对位移，不需要元素原点）。
-                if crate::motion::easing::drag_active() {
-                    crate::motion::easing::route_move(e.position);
+                // 所有拖拽（面板 resize / 窗口整卡移动 / 控件树 / 时间轴 / easing / 可复用路由器 /
+                // Ctrl+右键平移）现已由窗口级 `on_window_drag_move` 统一接管，指针移出面板 / 窗口
+                // 也不中断。拖拽进行中这里直接跳过，避免与窗口级双发；hover 命中只在没有拖拽时跑。
+                if let Some(ResizeSide::Left) = this.resizing {
+                    let dx = f32::from(e.position.x) - this.drag_start_x;
+                    let w = (this.drag_start_w + dx).clamp(panels::MIN_PANEL, panels::MAX_PANEL);
+                    this.left_w = w;
                     cx.notify();
-                }
-                // Motion 时间轴拖拽延续：bar 自己的 on_mouse_move 只在指针悬停其命中框时触发，
-                // 一旦指针移出 bar（例如移到上方画布上）拖拽就断。根 div 覆盖整窗、永远悬停，故在此接管。
-                if crate::motion::timeline::drag_active() {
-                    if e.pressed_button != Some(MouseButton::Left) {
-                        // 按钮在窗口外松开：优雅结束（与弹窗拖拽同理），避免卡死。
-                        crate::motion::timeline::end_drag(&this.motion_q);
-                    } else {
-                        crate::motion::timeline::route_global_move(&this.motion_q, e.position);
-                    }
-                    cx.notify();
-                    cx.stop_propagation();
                     return;
                 }
-                // 通用窗口拖动优先于分隔线拖动。`window_drag_active()` = 按下后标题栏整卡移动
-                // （含越过 3pt 死区前）或变量编辑器的 resize handle 正按住——都要在此接管，
-                // 指针移出最初元素后拖拽才不会断（与 motion/timeline 的 route_global_move 同理）。
-                if this.window_drag_active() {
-                    // GPUI only delivers mouse events inside the window. If the button was
-                    // released outside, no `on_mouse_up` arrives; the next move with no button
-                    // held ends the drag instead of leaving the card glued to the pointer.
-                    if e.pressed_button != Some(MouseButton::Left) {
-                        this.end_popup_drag();
-                        cx.notify();
-                        cx.stop_propagation();
-                        return;
-                    }
-                    if this.move_popup_drag(e.position) {
-                        cx.notify();
-                    }
-                    cx.stop_propagation();
+                if this.any_window_drag_active() {
                     return;
                 }
-                // 控件树拖动中：用全局指针重算落点，跳过分隔线拖动逻辑。
-                if this.layer_tree.drag.is_some() {
-                    this.layer_on_global_move(e.position, cx);
-                    return;
-                }
-                let Some(side) = this.resizing else { return };
-                let dx = f32::from(e.position.x) - this.drag_start_x;
-                let w = match side {
-                    ResizeSide::Left => this.drag_start_w + dx,
-                    ResizeSide::Right => this.drag_start_w - dx,
-                };
-                let w = w.clamp(panels::MIN_PANEL, panels::MAX_PANEL);
-                match side {
-                    ResizeSide::Left => this.left_w = w,
-                    ResizeSide::Right => this.right_w = w,
-                }
-                cx.notify();
             }))
+            // 抬起：面板 resize / 窗口整卡移动 / 控件树 / 时间轴 / easing / 可复用路由器的收尾
+            // 已全部由窗口级 `on_window_drag_up` 接管（指针移出面板 / 窗口也不中断），此处只做兜底。
             .on_mouse_up(
                 MouseButton::Left,
                 cx.listener(|this: &mut CanvasView, _e: &MouseUpEvent, _window, cx| {
-                    // Easing 手柄抬起：整段拖拽收成一个 undo step。
-                    if crate::motion::easing::drag_active() {
-                        crate::motion::easing::end_drag();
-                        cx.notify();
-                        cx.stop_propagation();
-                        return;
-                    }
-                    // Motion 拖拽在指针移出 bar 时由根 move 接管，up 也须在此结束（bar 的 up 在指针离开时不触发）。
-                    if crate::motion::timeline::drag_active() {
-                        crate::motion::timeline::end_drag(&this.motion_q);
-                        cx.notify();
-                        cx.stop_propagation();
-                        return;
-                    }
-                    // 控件树拖动结束（或左键抬起当作选中）：提交落点 / 选中。
-                    this.layer_drag_up(cx);
-                    let was_window = this.window_drag_active();
-                    this.end_popup_drag();
-                    let was_resize = this.resizing.take().is_some();
-                    if was_window || was_resize {
-                        cx.notify();
+                    if this.drag_just_ended {
+                        this.drag_just_ended = false;
                     }
                 }),
             )
+    }
+}
+
+/// 通用窗口级拖拽派发（Kit 范式：`canvas` 覆盖层 + `window.on_mouse_event`）。
+///
+/// 把分散在两个根 div 上的「拖拽续帧 / 收尾」逻辑统一收口到这里：指针无论停在哪个子元素、
+/// 是否移出最初按下那个元素、甚至拖出窗口（OS 捕获范围内），事件都由窗口级监听接住，拖拽
+/// 不再断裂。hover / 命中（guide / spacing / handles / send）仍由各根 div 的 `on_mouse_move`
+/// 负责，但拖拽进行中会跳过（见 `any_window_drag_active`）。
+impl drag_manager::WindowDragTarget for CanvasView {
+    fn on_window_drag_move(&mut self, e: &MouseMoveEvent, window: &mut Window, cx: &mut Context<Self>) {
+        // 画布级拖拽（平移 / 缩放 / 拖拽 Move / 多选间距手柄 / 变换手柄）沿用既有 route_canvas_drag。
+        if self.route_canvas_drag(e, cx) {
+            return;
+        }
+        // 可复用拖拽路由器（dev 对比分割条、tab 拖拽等）：按下时在 on_mouse_down 里 begin，这里接管。
+        // 按真实按键状态收尾，覆盖「指针滑出窗口后松手」导致的监听失效。
+        if crate::drag_router::route_move(e.position, e.pressed_button == Some(MouseButton::Left), window, cx) {
+            return;
+        }
+        // Easing 曲线手柄拖拽（相对位移，不需要元素原点）。
+        if crate::motion::easing::drag_active() {
+            if e.pressed_button != Some(MouseButton::Left) {
+                crate::motion::easing::end_drag();
+            } else {
+                crate::motion::easing::route_move(e.position);
+            }
+            cx.notify();
+            return;
+        }
+        // Motion 时间轴拖拽延续：bar 自己的 move 只在指针悬停其命中框时触发，移到画布上就断；
+        // 窗口级 move 接管，指针移出 bar 仍连续。
+        if crate::motion::timeline::drag_active() {
+            if e.pressed_button != Some(MouseButton::Left) {
+                crate::motion::timeline::end_drag(&self.motion_q);
+            } else {
+                crate::motion::timeline::route_global_move(&self.motion_q, e.position);
+            }
+            cx.notify();
+            return;
+        }
+        // 整卡移动 / 变量编辑器 resize handle：按下后标题栏 on_mouse_down 进入 pending/dragging，
+        // 指针移出最初元素后拖拽不中断（与 motion/timeline 同理）。
+        if self.window_drag_active() {
+            if self.cancel_drag_if_not_held(e.pressed_button == Some(MouseButton::Left)) {
+                cx.notify();
+                return;
+            }
+            if self.move_popup_drag(e.position, e.pressed_button == Some(MouseButton::Left)) {
+                cx.notify();
+            }
+            return;
+        }
+        // 控件树（Layers）拖动：用全局指针重算落点，跳过分隔线逻辑。
+        if self.layer_tree.drag.is_some() {
+            if e.pressed_button != Some(MouseButton::Left) {
+                self.layer_drag_up(cx);
+            } else {
+                self.layer_on_global_move(e.position, cx);
+            }
+            return;
+        }
+        // 面板分隔条：move 改宽度（夹紧 240..=500）；处理「窗口外松手」——没按住就结束。
+        if let Some(side) = self.resizing {
+            if e.pressed_button != Some(MouseButton::Left) {
+                self.resizing = None;
+                cx.notify();
+                return;
+            }
+            if side != ResizeSide::Right {
+                return;
+            }
+            let dx = f32::from(e.position.x) - self.drag_start_x;
+            let w = match side {
+                ResizeSide::Left => self.drag_start_w + dx,
+                ResizeSide::Right => self.drag_start_w - dx,
+            };
+            let w = w.clamp(panels::MIN_PANEL, panels::MAX_PANEL);
+            match side {
+                ResizeSide::Left => self.left_w = w,
+                ResizeSide::Right => self.right_w = w,
+            }
+            cx.notify();
+            return;
+        }
+    }
+
+    fn on_window_drag_up(&mut self, e: &MouseUpEvent, window: &mut Window, cx: &mut Context<Self>) {
+        self.mods = e.modifiers;
+        let pos = self.local(e.position);
+        self.pointer = Some(pos);
+        self.primary_down = false;
+
+        // 面板分隔条收尾：与画布级拖拽（pan / zoom / handles / guide / 选区间距）互斥，
+        // 必须在这些分支之前清掉。否则指针落在画布参考线 / 标尺区时 `guide_input` 提前 return，
+        // `resizing` 残留、面板卡在拖拽态（左分隔条正好贴着画布左标尺，松手即触发）。
+        if self.resizing.take().is_some() {
+            self.drag_just_ended = true;
+            cx.notify();
+            return;
+        }
+
+        // 可复用拖拽路由器收尾（dev 对比分割条等）。
+        if crate::drag_router::end(window, cx) {
+            self.drag_just_ended = true;
+            cx.notify();
+            return;
+        }
+        // Easing 手柄抬起：整段拖拽收成一个 undo step。
+        if crate::motion::easing::drag_active() {
+            crate::motion::easing::end_drag();
+            self.drag_just_ended = true;
+            cx.notify();
+            return;
+        }
+        // Motion 拖拽结束（指针移出 bar 时由窗口级 move 接管，up 也须窗口级结束）。
+        if crate::motion::timeline::drag_active() {
+            crate::motion::timeline::end_drag(&self.motion_q);
+            self.drag_just_ended = true;
+            cx.notify();
+            return;
+        }
+        // 控件树拖动结束（或左键抬起当作选中）。
+        if self.layer_tree.drag.is_some() {
+            self.layer_drag_up(cx);
+            self.drag_just_ended = true;
+            // 继续往下处理画布 / 窗口 / 分隔线收尾（与根 div 原逻辑一致：不中途 return）。
+        }
+        // 画布级拖拽结束：pan / zoom / 框选 / 变换手柄 / 拖拽 Move。
+        if self.pan.take().is_some() {
+            self.right_pan = false;
+            self.drag_just_ended = true;
+            cx.notify();
+            return;
+        }
+        if let Some(start) = self.zoom_drag.take() {
+            self.finish_zoom(start, pos, e.modifiers.alt);
+            self.drag_just_ended = true;
+            cx.notify();
+            return;
+        }
+        if self.app.selection_spacing.is_dragging() {
+            let _ = canvas::selection_spacing::input(
+                &mut self.app,
+                Some(pos),
+                true,
+                self.space,
+                false,
+                false,
+                true,
+                e.modifiers.platform || e.modifiers.control,
+                e.modifiers.alt,
+                e.modifiers.shift,
+            );
+            self.drag_just_ended = true;
+            cx.notify();
+            return;
+        }
+        if self.app.handles.drag.is_some() {
+            let _ = canvas::handles::input(&mut self.app, pos, false, false, true, e.modifiers.shift);
+            self.drag_just_ended = true;
+            cx.notify();
+            return;
+        }
+        if !self.dragging && self.guide_input(pos, false, true, e.modifiers.alt) {
+            cx.notify();
+            return;
+        }
+        if self.dragging {
+            self.dragging = false;
+            self.send(PointerKind::Up, pos, &e.modifiers);
+            self.drag_just_ended = true;
+        }
+        // 整卡移动 / 变量编辑器 resize 收尾。
+        let was_window = self.window_drag_active();
+        self.end_popup_drag();
+        let was_resize = self.resizing.take().is_some();
+        if was_window || was_resize {
+            self.drag_just_ended = true;
+            cx.notify();
+        }
+    }
+
+    fn on_window_drag_down(&mut self, _e: &MouseDownEvent, _window: &mut Window, _cx: &mut Context<Self>) {
+        // 按下起拖由各元素自身的 `on_mouse_down` 负责（画布在 canvas div、面板在各自控件、
+        // 标题栏在弹层头部），它们在按下时写入拖拽状态；本方法留空，避免与元素级 down 重复。
+        // 窗口级 down 监听仍每帧注册，便于未来把「起拖」也收口到此处。
     }
 }
 
@@ -2948,10 +3356,19 @@ pub fn run() {
     figcraft_text::scan_system_fonts();
     // `--control <port>`：开本地控制通道（与 `cargo run -p figcraft -- --control 7979` 同义）。
     let control_port = control_port_from_args(std::env::args());
-    let app = Application::new();
+    // 图标走 GPUI 的 SVG 管线（`svg().path(...)` / `paint_svg`），必须由 `AssetSource` 提供字节。
+    // GPUI 默认资源源是 `()`（load 恒返回 None），不注册图标就会静默不画。
+    // 这是 kit `Icon` 依赖的资源注册契约，本地实现、不引入 gpui-kit crate。
+    let app = Application::new().with_assets(crate::widgets::icon::IconAssets);
     app.run(move |cx: &mut App| {
         let bounds = Bounds::centered(None, size(px(1280.0), px(860.0)), cx);
-        let options = WindowOptions { window_bounds: Some(WindowBounds::Windowed(bounds)), ..Default::default() };
+        // kit `TitleBar::window_options()` 的等价物：系统标题栏设为透明（Windows 上
+        // `hide_title_bar = true`），客户端区从 y=0 起，于是自绘的 40pt 标题栏就是唯一一条。
+        let options = WindowOptions {
+            window_bounds: Some(WindowBounds::Windowed(bounds)),
+            titlebar: Some(title_bar::title_bar_options()),
+            ..Default::default()
+        };
         let view = match cx.open_window(options, |_window, cx| cx.new(CanvasView::new)) {
             Ok(view) => Some(view),
             Err(e) => {
@@ -3461,5 +3878,197 @@ mod popup_drag_tests {
             (size_after.0 - size.0).abs() < 0.01 && (size_after.1 - size.1).abs() < 0.01,
             "size must stay put after the resize ends"
         );
+    }
+}
+
+/// 左/右面板分隔条 resize 的端到端自测：覆盖「菜单快速滑动跳针」同类问题——
+/// 即高频 `WM_MOUSEMOVE` 被系统合并、只交付最新一条时，拖拽会不会断裂 / 卡死 / 残留状态。
+///
+/// 与菜单不同，面板宽度由**绝对指针位置** `drag_start_w + (e.position.x - drag_start_x)` 算出，
+/// 所以合并后宽度只跳到真实指针处、不会卡在错误中间态（这正是 Kit 范式下 resize 天然抗合并的原因）。
+/// 这里用真实鼠标事件逐一验证：慢拖、镜像侧、快速跳针、窗口外松手、上下夹紧。
+#[cfg(test)]
+mod panel_resize_tests {
+    use super::*;
+    use crate::panels::{HANDLE_W, MAX_PANEL, MIN_PANEL, RAIL_W};
+    use gpui::{MouseButton, Modifiers, Point, Size, TestAppContext, px};
+
+    /// 左分隔条中心 x = RAIL_W + left_w + HANDLE_W/2；右分隔条中心 x = vw - right_w - HANDLE_W/2。
+    fn handle_x(side: ResizeSide, vw: f32, w: f32) -> f32 {
+        match side {
+            ResizeSide::Left => RAIL_W + w + HANDLE_W / 2.0,
+            ResizeSide::Right => vw - w - HANDLE_W / 2.0,
+        }
+    }
+
+    #[gpui::test]
+    async fn left_panel_resize_slow_drag_updates_width_and_persists(cx: &mut TestAppContext) {
+        let (view, window) = cx.add_window_view(|_window, cx| CanvasView::new(cx));
+        window.simulate_resize(Size::new(px(1280.0), px(860.0)));
+        // 触发一次布局，让分隔条位置算出来。
+        window.simulate_mouse_move(Point::new(px(0.0), px(0.0)), None, Modifiers::default());
+
+        let left0 = view.update(window, |cv, _cx| cv.test_left_w());
+        assert_eq!(left0, 280.0, "left panel starts at DEFAULT_PANEL 280");
+
+        let hx = px(handle_x(ResizeSide::Left, 1280.0, left0));
+        let hy = px(430.0);
+        window.simulate_mouse_down(Point::new(hx, hy), MouseButton::Left, Modifiers::default());
+        assert_eq!(
+            view.update(window, |cv, _cx| cv.test_resizing()),
+            Some(ResizeSide::Left),
+            "press on left handle starts resize"
+        );
+
+        // 按住左键往右拖 60px：左面板应加宽 60。
+        let moved = Point::new(hx + px(60.0), hy);
+        window.simulate_mouse_move(moved, MouseButton::Left, Modifiers::default());
+        let left1 = view.update(window, |cv, _cx| cv.test_left_w());
+        assert!((left1 - 340.0).abs() < 2.0, "left panel widened to {left1}, expected ~340");
+
+        // 松手：resize 清空，宽度保留。
+        window.simulate_mouse_up(moved, MouseButton::Left, Modifiers::default());
+        assert_eq!(
+            view.update(window, |cv, _cx| cv.test_resizing()),
+            None,
+            "resize cleared after mouse up"
+        );
+        let left2 = view.update(window, |cv, _cx| cv.test_left_w());
+        assert!((left2 - left1).abs() < 0.01, "width persists after mouse up");
+    }
+
+    #[gpui::test]
+    async fn right_panel_resize_drag_updates_width_and_persists(cx: &mut TestAppContext) {
+        let (view, window) = cx.add_window_view(|_window, cx| CanvasView::new(cx));
+        window.simulate_resize(Size::new(px(1280.0), px(860.0)));
+        window.simulate_mouse_move(Point::new(px(0.0), px(0.0)), None, Modifiers::default());
+
+        let right0 = view.update(window, |cv, _cx| cv.test_right_w());
+        // 启动默认 Motion 模式：右栏初始宽度 = motion::INSPECTOR_W（413），不是 DEFAULT_PANEL。
+        // 这里不写死，直接以实际初值推导期望，避免与产品默认耦合。
+
+        let hx = px(handle_x(ResizeSide::Right, 1280.0, right0));
+        let hy = px(430.0);
+        window.simulate_mouse_down(Point::new(hx, hy), MouseButton::Left, Modifiers::default());
+        assert_eq!(
+            view.update(window, |cv, _cx| cv.test_resizing()),
+            Some(ResizeSide::Right),
+            "press on right handle starts resize"
+        );
+
+        // 右面板：往左拖 50px → dx = -50 → w = right0 - (-50) = right0 + 50（右面板加宽）。
+        let moved = Point::new(hx - px(50.0), hy);
+        window.simulate_mouse_move(moved, MouseButton::Left, Modifiers::default());
+        let right1 = view.update(window, |cv, _cx| cv.test_right_w());
+        assert!((right1 - (right0 + 50.0)).abs() < 2.0, "right panel widened to {right1}, expected ~{}", right0 + 50.0);
+
+        // 松手：状态清空、宽度保留。
+        window.simulate_mouse_up(moved, MouseButton::Left, Modifiers::default());
+        assert_eq!(view.update(window, |cv, _cx| cv.test_resizing()), None);
+        let right2 = view.update(window, |cv, _cx| cv.test_right_w());
+        assert!((right2 - right1).abs() < 0.01, "right width persists after mouse up");
+    }
+
+    /// 模拟 `WM_MOUSEMOVE` 合并：按下后**直接**跳到远点、中间一步都不发。
+    /// 若 resize 用相对增量累加，这里会漏掉中间位移导致宽度不对；本实现用绝对指针位置，
+    /// 跳针后宽度正好落在最终指针处——这正是它**不会**像菜单那样「卡在错误中间态」的原因。
+    #[gpui::test]
+    async fn left_panel_resize_fast_jump_tracks_final_position(cx: &mut TestAppContext) {
+        let (view, window) = cx.add_window_view(|_window, cx| CanvasView::new(cx));
+        window.simulate_resize(Size::new(px(1280.0), px(860.0)));
+        window.simulate_mouse_move(Point::new(px(0.0), px(0.0)), None, Modifiers::default());
+
+        let left0 = view.update(window, |cv, _cx| cv.test_left_w());
+        let hx = px(handle_x(ResizeSide::Left, 1280.0, left0));
+        let hy = px(430.0);
+        window.simulate_mouse_down(Point::new(hx, hy), MouseButton::Left, Modifiers::default());
+
+        // 一步跳 120px，无中间 move。
+        let jumped = Point::new(hx + px(120.0), hy);
+        window.simulate_mouse_move(jumped, MouseButton::Left, Modifiers::default());
+        let left1 = view.update(window, |cv, _cx| cv.test_left_w());
+        assert!((left1 - 400.0).abs() < 2.0, "jump drag landed at {left1}, expected ~400 (absolute tracking)");
+
+        window.simulate_mouse_up(jumped, MouseButton::Left, Modifiers::default());
+        assert_eq!(view.update(window, |cv, _cx| cv.test_resizing()), None);
+    }
+
+    /// 窗口外松手：指针移出窗口后系统不再上报 `pressed_button`，最后一条 move 的
+    /// `pressed_button == None` 应让 resize 立刻收尾（不残留、不冻结），宽度停在最后一次
+    /// 仍按住时的位置，而非继续跳变。
+    #[gpui::test]
+    async fn left_panel_resize_release_outside_window_clears_state(cx: &mut TestAppContext) {
+        let (view, window) = cx.add_window_view(|_window, cx| CanvasView::new(cx));
+        window.simulate_resize(Size::new(px(1280.0), px(860.0)));
+        window.simulate_mouse_move(Point::new(px(0.0), px(0.0)), None, Modifiers::default());
+
+        let left0 = view.update(window, |cv, _cx| cv.test_left_w());
+        let hx = px(handle_x(ResizeSide::Left, 1280.0, left0));
+        let hy = px(430.0);
+        window.simulate_mouse_down(Point::new(hx, hy), MouseButton::Left, Modifiers::default());
+
+        // 先按住拖 40px（仍在窗口内、按键上报）。
+        let held = Point::new(hx + px(40.0), hy);
+        window.simulate_mouse_move(held, MouseButton::Left, Modifiers::default());
+        let left_held = view.update(window, |cv, _cx| cv.test_left_w());
+        assert!((left_held - 320.0).abs() < 2.0, "after held drag width ~320, got {left_held}");
+
+        // 再「移出窗口」：按键不再上报（pressed_button = None）。
+        let outside = Point::new(hx + px(80.0), hy);
+        window.simulate_mouse_move(outside, None, Modifiers::default());
+        assert_eq!(
+            view.update(window, |cv, _cx| cv.test_resizing()),
+            None,
+            "resizing must end when the button is no longer reported held (pointer left window)"
+        );
+        // 宽度停在最后一次仍按住的位置（320），不因「窗口外」那条 move 继续变。
+        let left_out = view.update(window, |cv, _cx| cv.test_left_w());
+        assert!((left_out - 320.0).abs() < 0.01, "width frozen at last held value, got {left_out}");
+
+        // 真正松手也不该再触发任何状态。
+        window.simulate_mouse_up(outside, MouseButton::Left, Modifiers::default());
+        assert_eq!(view.update(window, |cv, _cx| cv.test_resizing()), None);
+    }
+
+    #[gpui::test]
+    async fn left_panel_resize_clamps_to_max(cx: &mut TestAppContext) {
+        let (view, window) = cx.add_window_view(|_window, cx| CanvasView::new(cx));
+        window.simulate_resize(Size::new(px(1280.0), px(860.0)));
+        window.simulate_mouse_move(Point::new(px(0.0), px(0.0)), None, Modifiers::default());
+
+        let left0 = view.update(window, |cv, _cx| cv.test_left_w());
+        let hx = px(handle_x(ResizeSide::Left, 1280.0, left0));
+        let hy = px(430.0);
+        window.simulate_mouse_down(Point::new(hx, hy), MouseButton::Left, Modifiers::default());
+
+        // 往右拖 400px：280 + 400 = 680 > MAX(500) → 夹紧 500。
+        let moved = Point::new(hx + px(400.0), hy);
+        window.simulate_mouse_move(moved, MouseButton::Left, Modifiers::default());
+        let left1 = view.update(window, |cv, _cx| cv.test_left_w());
+        assert_eq!(left1, MAX_PANEL, "clamped to MAX_PANEL {MAX_PANEL}, got {left1}");
+
+        window.simulate_mouse_up(moved, MouseButton::Left, Modifiers::default());
+        assert_eq!(view.update(window, |cv, _cx| cv.test_resizing()), None);
+    }
+
+    #[gpui::test]
+    async fn left_panel_resize_clamps_to_min(cx: &mut TestAppContext) {
+        let (view, window) = cx.add_window_view(|_window, cx| CanvasView::new(cx));
+        window.simulate_resize(Size::new(px(1280.0), px(860.0)));
+        window.simulate_mouse_move(Point::new(px(0.0), px(0.0)), None, Modifiers::default());
+
+        let left0 = view.update(window, |cv, _cx| cv.test_left_w());
+        let hx = px(handle_x(ResizeSide::Left, 1280.0, left0));
+        let hy = px(430.0);
+        window.simulate_mouse_down(Point::new(hx, hy), MouseButton::Left, Modifiers::default());
+
+        // 往左拖 200px：280 - 200 = 80 < MIN(240) → 夹紧 240。
+        let moved = Point::new(hx - px(200.0), hy);
+        window.simulate_mouse_move(moved, MouseButton::Left, Modifiers::default());
+        let left1 = view.update(window, |cv, _cx| cv.test_left_w());
+        assert_eq!(left1, MIN_PANEL, "clamped to MIN_PANEL {MIN_PANEL}, got {left1}");
+
+        window.simulate_mouse_up(moved, MouseButton::Left, Modifiers::default());
+        assert_eq!(view.update(window, |cv, _cx| cv.test_resizing()), None);
     }
 }

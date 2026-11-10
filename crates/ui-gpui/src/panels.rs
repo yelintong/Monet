@@ -204,6 +204,12 @@ impl PopupReqs {
         *self.slot.borrow_mut() = Some(w);
         self.cmds.wake();
     }
+
+    /// DIAGNOSTIC CUT glue: no-op (base PopupReqs lacks open_kind/close_req fields).
+    pub(crate) fn sync_open(&self, _current: Option<crate::popovers::WindowKind>) {}
+    pub(crate) fn take_close(&self) -> bool {
+        false
+    }
 }
 
 /// Merge a button's extra params into `{"ids": ids}` — the GPUI equivalent of egui's
