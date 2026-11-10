@@ -181,7 +181,7 @@
 |---|---|
 | `docs/gpui-egui-parity-plan.md` | 复查修订：补 A19–A28、修正 7 处证据、新增 F 复查说明与 G 按文件清单 |
 | `crates/ui-gpui/src/naming.rs`（新） | `right_tab_label()` + `RIGHT_TAB_LABELS` + 4 条命名回归测试；命令 id 与调色板搜索别名保持不变 |
-| `crates/ui-gpui/src/panels/right/sections.rs` | 第三个 tab 从 `"Inspect"` 改为 `crate::naming::right_tab_label(2)` = `"Developer Mode"`，没有新控件 |
+| `crates/ui-gpui/src/panels/right/sections.rs` | 第三个 tab 从 `"Inspect"` 改为 `crate::naming::right_tab_label(2)`（常量后随用户口径改为 `"开发"`）；2026-11-10 用户要求从右栏 tabs 行移除该按钮，现只剩 Design / Prototype |
 | `crates/ui-gpui/src/dialogs.rs`（新） | A19 通用框架：`Kind` / `Field` / `Action` / `Spec` 数据模型 + 15 种 `spec()` + `ui_action()` / `menu_action()` 映射 + `DialogState`（retained 输入框）；外壳用 `widgets::popover::Popover`，遮罩用 `popup_backdrop`，行一律走 `field_row`/`field_row_full`，按钮统一推 `CmdQueue`。**没有修改任何 `widgets/**` 冻结件** |
 | `crates/ui-gpui/src/lib.rs` | `mod naming` / `mod dialogs`；`CanvasView::dialog` 状态；`sync_ui_requests` 消费 `dialog.*`；`click_menu` 拦截带 "…" 的命令；Escape / X / 遮罩统一关闭；render 末尾挂对话框层。B9：`ui_flags()` 读 `ds().view.ui_hidden/ui_minimized`，`dock()` 统一给出有效宽度（**不改记住的 `left_w`/`right_w`**），`local()` 与 render 共用同一份 Dock 值，隐藏/收起时条件渲染侧栏、标签条、工具栏、时间轴与分隔条命中区 |
 | `crates/ui-gpui/Cargo.toml` | 新增**可选** `test-support` feature（`gpui/test-support` + 可选 `usvg`），只供手工跑单元测试；`[dev-dependencies]` 保持只有 `tiny-skia`。**同时修正 17:15 引入的性能回归**：先前把 `gpui/test-support` 放进 dev-dependencies，而 examples 也使用 dev 依赖，Cargo 把 `test-support → leak-detection → backtrace` 统一进了 exe 的 GPUI 构建，拖动时整窗非常卡 |
