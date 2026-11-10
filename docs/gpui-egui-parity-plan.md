@@ -57,7 +57,7 @@
 
 | # | 位置 | EGUI 做法 | GPUI 现状（证据） | 差距 | 优先级 |
 |---|---|---|---|---|---|
-| B1 | ~~右栏第三个 tab~~ | `"Developer Mode"`（#2135 商标改名，`right_tab_label()` + 命名回归测试） | 改名与命名回归测试已落地；**2026-11-10 用户要求从右栏 tabs 行去掉该按钮**，现只剩 Design / Prototype。`naming.rs` 的常量/函数保留给 a11y 与其它入口，Developer Mode 面板仍可从底部工具栏 Inspect 或 Shift+D 进入 | 命名合规完成；可见 tab 按用户要求移除；底部模式切换第 4 格 `Inspect`→`开发`（修掉退役名），动画/开发模式下右栏 tabs 行改为显示「动画」/「开发」文本（见下方进度） | ✅ |
+| B1 | ~~右栏第三个 tab~~ | `"Developer Mode"`（#2135 商标改名，`right_tab_label()` + 命名回归测试） | 改名与命名回归测试已落地；**2026-11-10 用户要求从右栏 tabs 行去掉该按钮**，现只剩 Design / Prototype。`naming.rs` 的常量/函数保留给 a11y 与其它入口，Developer Mode 面板仍可从底部工具栏 开发 或 Shift+D 进入 | 命名合规完成；可见 tab 按用户要求移除；底部模式切换第 4 格 `Inspect`→`开发`（修掉退役名），动画/开发模式下右栏 tabs 行改为显示「动画」/「开发」文本（见下方进度） | ✅ |
 | B2 | Actions 调色板（Cmd+K） | 三个 tab `All / Assets / Plugins & widgets`、`Recents`、前缀优先排序、最多 60 行（`menus/palette.rs:90,162,170`） | 单一平铺列表 `palette_rows()`（`lib.rs:311`），无 tab / Recents / 排序 | 找不到插件与资产，长列表体验差 | P1 |
 | B3 | 工具条 | 设计模式 6 组 + **画板模式 8 组**（bmove/marker/sticky/bshape/connector/text/section…） | 设计模式 6 组齐全；画板组全无（`toolbar.rs:17-20` 明写未移植） | 见 A2 / A27 | P1 |
 | B4 | 标签条 | 拖拽重排、关闭询问、拖出成窗口、Alt+close 直接丢弃 | `tabs.rs` / `tabs_view.rs` 有拖拽与重排；关闭询问与拖出成窗口未见 | 见 A16/A18 | P1 |
@@ -143,7 +143,7 @@
 4. B5「26 个文件」→ 0 个；B8「`present.rs` 存在，细节待核」→ 约 1/6 规模。
 5. B9「全仓不读」→「`crates/ui-gpui/src` 内 0 处读」（engine / ui-egui 侧确有命中）。
 6. C1 本地 `ui-egui` 仍是旧文案 `tr("Dev Mode")`，`right_tab_label()` / `naming_tests.rs` 本地不存在，实施时以 `docs/feature-names.md` 为准，不要照抄本地 EGUI。
-7. B1/B3/A18 的现状证据（`:243` 仍为 `"Inspect"`、`toolbar.rs:17-20` 画板组未移植、`tabs_view.rs:11-13` 自认无对话框/a11y/live）复查后仍成立。
+7. 现状证据复查：B3 仍成立（`toolbar.rs:17-20` 画板组未移植）；B1 与 A18 已在 2026-11-10 实施完成——B1 的右栏第 3 tab 已移除、底部切换器第 4 格由退役名 `Inspect` 改为 `开发`（原 `:243` 的 `"Inspect"` 已不存在），A18 的标签关闭三问已接通用对话框，原 `tabs_view.rs:11-13`「无对话框/a11y/live」已不成立。
 
 ---
 
@@ -171,7 +171,7 @@
 | 14 | `crates/ui-gpui/src/services.rs`（新） | A23 | 平台能力接口（保持 UI 可替换） | ⬜ |
 | 15 | `crates/ui-gpui/src/widgets/field_math.rs`（新，需解冻确认） | A24 | 通用数字字段（**冻结件，改前必须先问用户**） | ⬜ |
 | 16 | `crates/ui-gpui/src/panels.rs` | 右栏 48 pt 顶栏（头像 / Present / Share）恢复 | 既有 `right::topbar::top_bar` 通用顶栏，只补一行调用，与 Motion 分支同序 | ✅ |
-| 17 | `crates/ui-gpui/src/panels/right/sections.rs` | 右栏 tabs 去掉第三个「开发模式」按钮 | 既有 `tab(...)`，只减少一项数据；面板功能仍由底部工具栏 Inspect / Shift+D 进入 | ✅ |
+| 17 | `crates/ui-gpui/src/panels/right/sections.rs` | 右栏 tabs 去掉第三个「开发模式」按钮 | 既有 `tab(...)`，只减少一项数据；面板功能仍由底部工具栏 开发 / Shift+D 进入 | ✅ |
 
 ---
 
@@ -206,7 +206,7 @@
 |---|---|
 | 提交 GitHub | `e9de7cb4`（第一批）+ `e9640ac1`（Cargo.lock）已推送 `fork/GPUI-smooth`。git 的 `http.proxy` 写死在失效端口 65311，实际监听的是 54834；临时 `-c http.proxy=… -c http.schannelCheckRevoke=false` 后推送成功 |
 | 用户头像 / Present / Share 栏「会丢失」 | 根因：`panels.rs::right_panel` 的 `wrap()` 只画 `view_bar` + body，48 pt 顶栏**只在 `lib.rs` 的 Motion 分支**画过。已在 `wrap()` 补上 `right::topbar::top_bar(f, data)`，顺序与 Motion 分支一致；两条分支互斥，不会重复画 |
-| 「下面这一栏不要开发模式按钮」 / 底部切换器第 4 格名称 | 用户确认为**右栏 tabs 行的第三个标签**，已移除只留 Design / Prototype；`naming.rs` 的 `right_tab_label` / 常量 / 命名回归测试保留给 a11y 与其它入口，Developer Mode 面板本身没删（底部工具栏 Inspect、Shift+D 仍可进入）。同一轮把底部模式切换器第 4 格从退役名 `Inspect` 改为 `开发`，并在动画/开发模式下把右栏 tabs 行的 Design/Prototype 换成「动画」/「开发」文本 |
+| 「下面这一栏不要开发模式按钮」 / 底部切换器第 4 格名称 | 用户确认为**右栏 tabs 行的第三个标签**，已移除只留 Design / Prototype；`naming.rs` 的 `right_tab_label` / 常量 / 命名回归测试保留给 a11y 与其它入口，Developer Mode 面板本身没删（底部工具栏 开发、Shift+D 仍可进入）。同一轮把底部模式切换器第 4 格从退役名 `Inspect` 改为 `开发`，并在动画/开发模式下把右栏 tabs 行的 Design/Prototype 换成「动画」/「开发」文本 |
 | 验证 | `cargo check -p figcraft-ui-gpui --lib` 通过；重编前先关闭占用 `run.exe` 的旧窗口（否则 LNK1104），新 exe 17:32 生成，17:33 启动窗口 `FigCraft`（PID 4204，Responding=True） |
 
 ### G 表第 6 行落地（A18 标签关闭三问）
