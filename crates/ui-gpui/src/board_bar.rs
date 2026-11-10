@@ -1,14 +1,13 @@
 //! The small bar floating over a board's selection: colours (`board.setColor`), text sizes
-//! (`board.setStyle {fontSize}`) and the shape grid (`board.setStyle {shape}`). Structure copied
-//! from `ui-egui/src/canvas/board_bar.rs`.
-//!
-//! The connector part (routing / caps / line style) is the remaining section of the same file.
+//! (`board.setStyle {fontSize}`), the shape grid (`board.setStyle {shape}`) and the connector part
+//! (routing, start/end caps, line style). Structure copied from
+//! `ui-egui/src/canvas/board_bar.rs`; `cap_art` from `ui-egui/src/panels/right/stroke.rs`.
 
 use crate::panels::{Cmd, Cmds};
 use crate::widgets::{Icon, icon, pt, rgba, tokens};
-use figcraft_doc::{BOARD_COLORS, BoardItem, BoardShape};
+use figcraft_doc::{BOARD_COLORS, BoardItem, BoardShape, NodeId, Routing, StrokeCap};
 use figcraft_engine::board::TEXT_SIZES;
-use gpui::{AnyElement, IntoElement, SharedString, canvas, div, prelude::*, px};
+use gpui::{AnyElement, Div, IntoElement, Pixels, Point, SharedString, canvas, div, point, prelude::*, px};
 use serde_json::json;
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -21,21 +20,42 @@ const GAP: f32 = 4.0;
 const PART_END: f32 = 8.0;
 /// The shape grid's columns (egui `SHAPE_COLUMNS`).
 const SHAPE_COLUMNS: usize = 6;
+/// A start/end point menu's width (egui `CAP_W`).
+const CAP_W: f32 = 62.0;
+/// The line style menu's width (egui `STYLE_W`).
+const STYLE_W: f32 = CELL + 12.0;
+/// The weights the line style menu offers (egui `WEIGHTS`).
+const WEIGHTS: [f64; 4] = [1.0, 2.0, 4.0, 6.0];
+/// A dashed connector's dashes and gaps (egui `DASHES`).
+const DASHES: [f64; 2] = [8.0, 6.0];
 
 fn color_of(c: figcraft_color::Color) -> crate::canvas::geom::Color32 {
     let [r, g, b, a] = c.to_rgba8();
     crate::canvas::geom::Color32::from_rgba_unmultiplied(r, g, b, a)
 }
 
-/// The selected board objects' colour / text / shape (egui `has`).
+/// The selected connectors' line as the bar shows it (the first one's), and their ids.
+#[derive(Clone)]
+struct Line {
+    routing: Routing,
+    start: StrokeCap,
+    end: StrokeCap,
+    weight: f64,
+    dashed: bool,
+    ids: Vec<NodeId>,
+}
+
+/// The selected board objects' colour / text / shape / connector (egui `has`).
+#[derive(Default)]
 struct Has {
     color: bool,
     text: bool,
     shape: Option<BoardShape>,
+    connector: Option<Line>,
 }
 
 fn has(ds: &figcraft_engine::DocState) -> Option<Has> {
-    let mut h = Has { color: false, text: false, shape: None };
+    let mut h = Has::default();
     for n in ds.selection.iter().filter_map(|id| ds.doc.node(*id)) {
         match &n.board {
             Some(BoardItem::Sticky { .. } | BoardItem::Ink) => h.color = true,
@@ -44,34 +64,52 @@ fn has(ds: &figcraft_engine::DocState) -> Option<Has> {
                 h.text = true;
                 h.shape = Some(*shape);
             }
-            Some(BoardItem::Connector(_)) => h.color = true,
+            Some(BoardItem::Connector(c)) => {
+                h.color = true;
+                let s = &n.stroke;
+                let line = h.connector.get_or_insert_with(|| Line {
+                    routing: c.routing,
+                    start: s.cap_start,
+                    end: s.cap_end,
+                    weight: s.weight,
+                    dashed: !s.dashes.is_empty(),
+                    ids: Vec::new(),
+                });
+                line.ids.push(n.id);
+            }
             Some(BoardItem::Label { .. }) => h.text = true,
             _ => {}
         }
     }
-    (h.color || h.text || h.shape.is_some()).then_some(h)
+    (h.color || h.text || h.shape.is_some() || h.connector.is_some()).then_some(h)
 }
 
-/// A shape's outline as a GPUI stroke path, offset to `origin` (kurbo `BezPath` → `PathBuilder`).
-fn shape_path_at(shape: BoardShape, size: f32, origin: gpui::Point<gpui::Pixels>) -> Option<gpui::Path<gpui::Pixels>> {
+fn at(origin: Point<Pixels>, x: f32, y: f32) -> Point<Pixels> {
+    point(origin.x + px(x), origin.y + px(y))
+}
+
+/// A shape's outline as a GPUI stroke path, offset to `origin`.
+fn shape_path_at(shape: BoardShape, size: f32, origin: Point<Pixels>) -> Option<gpui::Path<Pixels>> {
     use figcraft_geom::kurbo::PathEl;
     let bez = shape.path(f64::from(size), f64::from(size));
-    let (ox, oy) = (f32::from(origin.x), f32::from(origin.y));
-    let pt = |x: f64, y: f64| gpui::point(px(ox + x as f32), px(oy + y as f32));
     let mut b = gpui::PathBuilder::stroke(px(1.2));
     for el in bez.elements() {
         match *el {
-            PathEl::MoveTo(p) => b.move_to(pt(p.x, p.y)),
-            PathEl::LineTo(p) => b.line_to(pt(p.x, p.y)),
-            PathEl::QuadTo(c, p) => b.curve_to(pt(p.x, p.y), pt(c.x, c.y)),
-            PathEl::CurveTo(c1, c2, p) => b.cubic_bezier_to(pt(p.x, p.y), pt(c1.x, c1.y), pt(c2.x, c2.y)),
+            PathEl::MoveTo(p) => b.move_to(at(origin, p.x as f32, p.y as f32)),
+            PathEl::LineTo(p) => b.line_to(at(origin, p.x as f32, p.y as f32)),
+            PathEl::QuadTo(c, p) => b.curve_to(at(origin, p.x as f32, p.y as f32), at(origin, c.x as f32, c.y as f32)),
+            PathEl::CurveTo(c1, c2, p) => b.cubic_bezier_to(
+                at(origin, p.x as f32, p.y as f32),
+                at(origin, c1.x as f32, c1.y as f32),
+                at(origin, c2.x as f32, c2.y as f32),
+            ),
             PathEl::ClosePath => b.close(),
         }
     }
     b.build().ok()
 }
 
-/// A shape drawn as its outline in `ink`, `size` square (egui `paint_choice` `Mark::Shape`).
+/// A shape drawn as its outline in `ink`, `size` square.
 fn shape_cell(shape: BoardShape, size: f32, ink: gpui::Rgba) -> impl IntoElement {
     canvas(
         |_, _, _| (),
@@ -84,13 +122,123 @@ fn shape_cell(shape: BoardShape, size: f32, ink: gpui::Rgba) -> impl IntoElement
     .size(px(size))
 }
 
+/// A connector routing icon: straight, elbow or curved, drawn in `ink`.
+fn routing_cell(routing: Routing, active: bool, ink: gpui::Rgba) -> impl IntoElement {
+    canvas(
+        move |_, _, _| (),
+        move |bounds, _, window, _| {
+            let o = bounds.origin;
+            let w = f32::from(bounds.size.width);
+            let h = f32::from(bounds.size.height);
+            let (x0, x1) = (5.0, w - 5.0);
+            let y = h / 2.0;
+            let mut b = gpui::PathBuilder::stroke(px(if active { 2.0 } else { 1.5 }));
+            b.move_to(at(o, x0, y));
+            match routing {
+                Routing::Straight => b.line_to(at(o, x1, y)),
+                Routing::Elbow => {
+                    let mx = (x0 + x1) / 2.0;
+                    b.line_to(at(o, mx, y));
+                    b.line_to(at(o, mx, 7.0));
+                    b.line_to(at(o, x1, 7.0));
+                }
+                Routing::Curved => {
+                    let mx = (x0 + x1) / 2.0;
+                    b.cubic_bezier_to(at(o, x1, y), at(o, mx, y - 8.0), at(o, mx, y + 8.0));
+                }
+            }
+            if let Ok(p) = b.build() {
+                window.paint_path(p, ink);
+            }
+        },
+    )
+    .size(px(CELL))
+}
+
+/// A line `weight` thick, dashed or not, across the middle (egui `paint_line`).
+fn line_sample(weight: f64, dashed: bool, ink: gpui::Rgba) -> impl IntoElement {
+    canvas(
+        move |_, _, _| (),
+        move |bounds, _, window, _| {
+            let o = bounds.origin;
+            let w = f32::from(bounds.size.width);
+            let y = f32::from(bounds.size.height) / 2.0;
+            let mut b = gpui::PathBuilder::stroke(px((weight as f32).clamp(1.0, 5.0)));
+            if dashed {
+                b = b.dash_array(&[px(5.0), px(3.0)]);
+            }
+            b.move_to(at(o, 2.0, y));
+            b.line_to(at(o, w - 2.0, y));
+            if let Ok(p) = b.build() {
+                window.paint_path(p, ink);
+            }
+        },
+    )
+    .size_full()
+}
+
+/// A connector start/end cap drawn like egui `cap_art`: the stroke and its cap shape.
+fn cap_art(cap: StrokeCap, start: bool, ink: gpui::Rgba) -> impl IntoElement {
+    canvas(
+        move |_, _, _| (),
+        move |bounds, _, window, _| {
+            let o = bounds.origin;
+            let w = f32::from(bounds.size.width);
+            let y = f32::from(bounds.size.height) / 2.0;
+            let (left, right) = (w - 58.0, w - 14.0);
+            let (tip, tail, d) = if start { (left, right, -1.0) } else { (right, left, 1.0) };
+            let pt = |back: f32, dy: f32| at(o, tip - d * back, y + dy);
+            let weight = if cap == StrokeCap::None { 4.0 } else { 1.5 };
+            // The stroke from the plain end into the cap.
+            let mut lb = gpui::PathBuilder::stroke(px(weight));
+            lb.move_to(at(o, tail, y));
+            lb.line_to(pt(0.0, 0.0));
+            if let Ok(p) = lb.build() {
+                window.paint_path(p, ink);
+            }
+            // A filled polygon: a triangle or a diamond.
+            let mut fill = |pts: &[(f32, f32)]| {
+                let mut b = gpui::PathBuilder::fill();
+                for (i, (bx, by)) in pts.iter().enumerate() {
+                    if i == 0 {
+                        b.move_to(pt(*bx, *by));
+                    } else {
+                        b.line_to(pt(*bx, *by));
+                    }
+                }
+                b.close();
+                if let Ok(p) = b.build() {
+                    window.paint_path(p, ink);
+                }
+            };
+            match cap {
+                StrokeCap::None => {}
+                StrokeCap::Round => fill(&[(1.0, -2.0), (3.0, -2.0), (3.0, 2.0), (1.0, 2.0)]),
+                StrokeCap::Square => fill(&[(-2.0, -2.0), (0.0, -2.0), (0.0, 2.0), (-2.0, 2.0)]),
+                StrokeCap::LineArrow => fill(&[(5.5, -5.5), (0.0, 0.0), (5.5, 5.5), (4.0, 0.0)]),
+                StrokeCap::TriangleArrow => fill(&[(0.0, 0.0), (8.0, -4.5), (8.0, 4.5)]),
+                StrokeCap::ReversedTriangle => fill(&[(8.0, 0.0), (0.0, -4.5), (0.0, 4.5)]),
+                StrokeCap::CircleFilled => fill(&[(0.0, -4.0), (4.0, 0.0), (0.0, 4.0), (-4.0, 0.0)]),
+                StrokeCap::DiamondFilled => fill(&[(0.0, 0.0), (5.0, -5.0), (10.0, 0.0), (5.0, 5.0)]),
+            }
+        },
+    )
+    .w(px(CAP_W))
+    .h(px(CELL))
+}
+
 /// A thin separator between two parts.
 fn divider(t: &crate::theme::Tokens) -> impl IntoElement {
     div().flex_none().w(px(1.0)).h(px(20.0)).mx(px(2.0)).bg(rgba(t.border))
 }
 
+/// A small toggle button (`cell` square) with `el` inside.
+fn cell_button(id: impl Into<gpui::ElementId>, el: impl IntoElement) -> gpui::Stateful<Div> {
+    div().id(id).size(px(CELL)).flex().items_center().justify_center().rounded(px(5.0)).cursor_pointer().hover(|s| s.bg(rgba(tokens().hover))).child(el)
+}
+
 /// The bar above a board selection, while nothing is being dragged and the file can be edited.
-pub(crate) fn bar(app: &crate::CanvasApp, cmds: Cmds, shape_open: &Rc<RefCell<bool>>) -> Option<AnyElement> {
+pub(crate) fn bar(app: &crate::CanvasApp, cmds: Cmds, shape_open: &Rc<RefCell<bool>>, line_open: &Rc<RefCell<u8>>) -> Option<AnyElement> {
     if app.session.tool.busy() || app.session.active_read_only().is_some() {
         return None;
     }
@@ -111,6 +259,10 @@ pub(crate) fn bar(app: &crate::CanvasApp, cmds: Cmds, shape_open: &Rc<RefCell<bo
     }
     if h.text {
         w += TEXT_SIZES.len() as f32 * (CELL + 2.0) + PART_END;
+    }
+    if let Some(line) = &h.connector {
+        w += 3.0 * (CELL + 2.0) + 8.0 + 2.0 * CAP_W + 2.0 + 8.0 + STYLE_W + PART_END;
+        let _ = line;
     }
     let x = (tl.x + (br.x - tl.x) / 2.0 - w / 2.0).max(0.0);
     let y = (tl.y - 14.0 - HEIGHT).max(0.0);
@@ -137,9 +289,7 @@ pub(crate) fn bar(app: &crate::CanvasApp, cmds: Cmds, shape_open: &Rc<RefCell<bo
         if h.color {
             row = row.child(divider(&t));
         }
-        // The shape button: the current shape + a chevron; it toggles the grid below.
         let open = shape_open.clone();
-        let is_open = *shape_open.borrow();
         row = row.child(
             div()
                 .id("bb-shape")
@@ -156,9 +306,6 @@ pub(crate) fn bar(app: &crate::CanvasApp, cmds: Cmds, shape_open: &Rc<RefCell<bo
                 .child(icon::paint(Icon::ChevronDown, rgba(t.icon), 12.0))
                 .on_click(move |_, _, _| *open.borrow_mut() = !*open.borrow()),
         );
-        if is_open {
-            row = row.child(divider(&t));
-        }
     }
     if h.text {
         if h.color || h.shape.is_some() {
@@ -184,24 +331,61 @@ pub(crate) fn bar(app: &crate::CanvasApp, cmds: Cmds, shape_open: &Rc<RefCell<bo
             );
         }
     }
-
-    let mut root = div()
-        .absolute()
-        .left(px(x))
-        .top(px(y))
-        .child(
-            div()
-                .h(px(HEIGHT))
-                .flex()
-                .flex_row()
-                .items_center()
-                .rounded(px(10.0))
-                .bg(rgba(t.panel))
-                .border_1()
-                .border_color(rgba(t.border))
-                .child(row),
+    // ── The connector part: routing, start/end caps, line style (egui `line_part`) ──
+    if let Some(line) = &h.connector {
+        if h.color || h.shape.is_some() || h.text {
+            row = row.child(divider(&t));
+        }
+        for (i, (routing, id)) in [(Routing::Straight, "straight"), (Routing::Elbow, "elbow"), (Routing::Curved, "curved")].into_iter().enumerate() {
+            let cmds = cmds.clone();
+            let active = line.routing == routing;
+            row = row.child(
+                cell_button(("bb-line", i), routing_cell(routing, active, rgba(if active { t.accent } else { t.icon })))
+                    .when(active, |d| d.bg(rgba(t.selected_row)))
+                    .on_click(move |_, _, _| cmds.push(Cmd { id: "board.setStyle", params: Some(json!({ "style": id })) })),
+            );
+        }
+        // Start / end cap menus.
+        for (slot, start, cap) in [(1u8, true, line.start), (2u8, false, line.end)] {
+            let open = line_open.clone();
+            let is_open = *line_open.borrow() == slot;
+            row = row.child(
+                cell_button(("bb-cap", slot as usize), cap_art(cap, start, rgba(t.icon)))
+                    .when(is_open, |d| d.bg(rgba(t.selected_row)))
+                    .w(px(CAP_W))
+                    .on_click(move |_, _, _| {
+                        let mut o = open.borrow_mut();
+                        *o = if *o == slot { 0 } else { slot };
+                    }),
+            );
+        }
+        // The line style menu (solid / dash / weights).
+        let open = line_open.clone();
+        let is_open = *line_open.borrow() == 3;
+        row = row.child(
+            cell_button("bb-style", line_sample(line.weight, line.dashed, rgba(t.icon)))
+                .when(is_open, |d| d.bg(rgba(t.selected_row)))
+                .w(px(STYLE_W))
+                .on_click(move |_, _, _| {
+                    let mut o = open.borrow_mut();
+                    *o = if *o == 3 { 0 } else { 3 };
+                }),
         );
-    // The shape grid, above the bar: every shape's outline (egui's `SHAPE_COLUMNS` grid).
+    }
+
+    let mut root = div().absolute().left(px(x)).top(px(y)).child(
+        div()
+            .h(px(HEIGHT))
+            .flex()
+            .flex_row()
+            .items_center()
+            .rounded(px(10.0))
+            .bg(rgba(t.panel))
+            .border_1()
+            .border_color(rgba(t.border))
+            .child(row),
+    );
+    // The shape grid, above the bar.
     if *shape_open.borrow() {
         if let Some(current) = h.shape {
             let mut grid = div().flex().flex_wrap().gap(px(2.0)).p(px(6.0)).rounded(px(8.0)).bg(rgba(t.menu)).border_1().border_color(rgba(t.border));
@@ -226,7 +410,6 @@ pub(crate) fn bar(app: &crate::CanvasApp, cmds: Cmds, shape_open: &Rc<RefCell<bo
                         }),
                 );
             }
-            let _ = SHAPE_COLUMNS;
             root = root.child(
                 div()
                     .absolute()
@@ -235,6 +418,86 @@ pub(crate) fn bar(app: &crate::CanvasApp, cmds: Cmds, shape_open: &Rc<RefCell<bo
                     .w(px(SHAPE_COLUMNS as f32 * (CELL + 2.0) + 12.0))
                     .child(grid),
             );
+        }
+    }
+    // The connector cap / style popovers, above the bar.
+    let open = *line_open.borrow();
+    if open != 0 {
+        if let Some(line) = &h.connector {
+            let mut pop = div().flex().flex_col().gap(px(2.0)).p(px(6.0)).rounded(px(8.0)).bg(rgba(t.menu)).border_1().border_color(rgba(t.border));
+            match open {
+                1 | 2 => {
+                    let start = open == 1;
+                    for cap in StrokeCap::ALL {
+                        let cmds = cmds.clone();
+                        let ids = line.ids.clone();
+                        let key = if start { "startCap" } else { "endCap" };
+                        let close = line_open.clone();
+                        pop = pop.child(
+                            div()
+                                .id(gpui::ElementId::from(SharedString::from(format!("bb-cap-{}-{}", start, cap.label()))))
+                                .h(px(CELL))
+                                .flex()
+                                .items_center()
+                                .rounded(px(5.0))
+                                .hover(|s| s.bg(rgba(t.hover)))
+                                .cursor_pointer()
+                                .child(cap_art(cap, start, rgba(t.icon)))
+                                .on_click(move |_, _, _| {
+                                    let _ = &ids;
+                                    cmds.push(Cmd { id: "board.setStyle", params: Some(json!({ key: cap })) });
+                                    *close.borrow_mut() = 0;
+                                }),
+                        );
+                    }
+                }
+                _ => {
+                    for (dashed, label) in [(false, "Solid"), (true, "Dash")] {
+                        let cmds = cmds.clone();
+                        let close = line_open.clone();
+                        pop = pop.child(
+                            div()
+                                .id(gpui::ElementId::from(SharedString::from(format!("bb-dash-{dashed}"))))
+                                .h(px(CELL))
+                                .flex()
+                                .items_center()
+                                .gap(px(6.0))
+                                .rounded(px(5.0))
+                                .hover(|s| s.bg(rgba(t.hover)))
+                                .cursor_pointer()
+                                .child(div().w(px(44.0)).h(px(CELL)).child(line_sample(2.0, dashed, rgba(t.icon))))
+                                .child(div().text_size(px(11.0)).text_color(rgba(t.text)).child(SharedString::from(label)))
+                                .on_click(move |_, _, _| {
+                                    let dashes: &[f64] = if dashed { &DASHES } else { &[] };
+                                    cmds.push(Cmd { id: "board.setStyle", params: Some(json!({ "dashes": dashes })) });
+                                    *close.borrow_mut() = 0;
+                                }),
+                        );
+                    }
+                    for w in WEIGHTS {
+                        let cmds = cmds.clone();
+                        let close = line_open.clone();
+                        pop = pop.child(
+                            div()
+                                .id(gpui::ElementId::from(SharedString::from(format!("bb-weight-{w}"))))
+                                .h(px(CELL))
+                                .flex()
+                                .items_center()
+                                .gap(px(6.0))
+                                .rounded(px(5.0))
+                                .hover(|s| s.bg(rgba(t.hover)))
+                                .cursor_pointer()
+                                .child(div().w(px(44.0)).h(px(CELL)).child(line_sample(w, false, rgba(t.icon))))
+                                .child(div().text_size(px(11.0)).text_color(rgba(t.text)).child(SharedString::from(format!("{w}"))))
+                                .on_click(move |_, _, _| {
+                                    cmds.push(Cmd { id: "board.setStyle", params: Some(json!({ "strokeWeight": w })) });
+                                    *close.borrow_mut() = 0;
+                                }),
+                        );
+                    }
+                }
+            }
+            root = root.child(div().absolute().bottom(px(HEIGHT + 4.0)).left(px(0.0)).w(px(200.0)).child(pop));
         }
     }
     Some(root.into_any_element())

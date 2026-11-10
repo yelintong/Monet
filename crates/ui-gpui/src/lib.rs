@@ -624,6 +624,9 @@ pub struct CanvasView {
     /// B3: the board bar's shape grid is open (the shape button toggles it).
     board_shape_open: std::rc::Rc<std::cell::RefCell<bool>>,
 
+    /// B3: which connector popover is open: 0 none, 1 start cap, 2 end cap, 3 line style.
+    board_line_open: std::rc::Rc<std::cell::RefCell<u8>>,
+
     /// 当前打开的通用对话框（A19）。所有对话框共用 `dialogs::DialogState`，这里只存「有没有、
     /// 是哪一个」，控件状态由它自己保留。
 
@@ -852,6 +855,8 @@ impl CanvasView {
             extra_state,
 
             board_shape_open: std::rc::Rc::new(std::cell::RefCell::new(false)),
+
+            board_line_open: std::rc::Rc::new(std::cell::RefCell::new(0u8)),
 
             dialog: None,
 
@@ -4706,7 +4711,7 @@ impl Render for CanvasView {
         }
 
         // B3: the board selection's bar (colours first), above the selected board objects.
-        if let Some(bar) = board_bar::bar(&self.app, self.fields.queue(), &self.board_shape_open) {
+        if let Some(bar) = board_bar::bar(&self.app, self.fields.queue(), &self.board_shape_open, &self.board_line_open) {
             layers.push(bar);
         }
 
