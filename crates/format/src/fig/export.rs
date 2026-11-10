@@ -43,6 +43,7 @@ mod component;
 mod layer;
 mod paint;
 mod prototype;
+mod scale;
 mod shape;
 
 /// Most layers written, and deepest nesting followed (the import's limits).
@@ -526,6 +527,9 @@ impl<'d> Exporter<'d> {
 
     /// The file format names four patterns, so a 45° grid is written as columns and rings as the
     /// square grid. Say so rather than let the file come back as something else.
+    ///
+    /// Local-only helper (diagonal/ring grids are a fork extension); upstream's `assets.rs` calls
+    /// it, so it has to stay here across syncs.
     fn warn_lossy_grids(&mut self, grids: &[figcraft_doc::LayoutGrid]) {
         if grids.iter().any(|g| matches!(g.kind, GridKind::Diagonal | GridKind::Rings)) {
             self.warn("a 45° grid is written as columns and rings as the square grid: the file format names no pattern for them");

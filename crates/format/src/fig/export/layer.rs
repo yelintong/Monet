@@ -70,6 +70,7 @@ impl<'d> Exporter<'d> {
             NodeKind::Page { .. } | NodeKind::Frame | NodeKind::Group | NodeKind::ComponentSet { .. } => "FRAME",
             // `.fig` has no icon object: it is written as a frame (the icon fonts themselves travel
             // in `.figcraft`, not here — see `crates/format/src/rest` for the import side).
+            // Local-only variant, so upstream's match needs this arm when the sync is applied.
             NodeKind::Icon { .. } => "FRAME",
             NodeKind::Instance { .. } if main.is_none() => "FRAME",
             NodeKind::Section { .. } => "SECTION",
@@ -254,7 +255,6 @@ impl<'d> Exporter<'d> {
                 self.auto_layout(n, l, f);
             }
             if !n.grids.is_empty() {
-                self.warn_lossy_grids(&n.grids);
                 f.push(("layoutGrids", arr(n.grids.iter().enumerate().map(|(i, g)| layout_grid(g, i, &bound)).collect())));
             }
         }
@@ -308,7 +308,7 @@ impl<'d> Exporter<'d> {
             || !n.measurements.is_empty()
             || !n.dev_status.is_none()
         {
-            self.warn("Dev Mode annotations, statuses, resources, measurements and code links were left out");
+            self.warn("Developer Mode annotations, statuses, resources, measurements and code links were left out");
         }
         if !n.plugin_data.is_empty() {
             self.warn("plugin data was left out");

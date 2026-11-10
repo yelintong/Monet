@@ -72,20 +72,6 @@ pub fn checked(s: &Session, id: &str) -> Option<bool> {
     if id == "view.pixelPreview" {
         return Some(v.pixel_preview);
     }
-    // The four brand accents (pref.accent.blue|green|yellow|pink) tick the chosen one.
-    if let Some(accent) = id.strip_prefix("pref.accent.") {
-        return Some(s.prefs.accent.eq_ignore_ascii_case(accent));
-    }
-    // The three themes tick the current one (View ▸ Theme and Preferences ▸ Theme share them).
-    if let Some(want) = id.strip_prefix("view.theme") {
-        let want = match want {
-            "Light" => "light",
-            "Dark" => "dark",
-            "System" => "system",
-            _ => return None,
-        };
-        return Some(s.prefs.theme.eq_ignore_ascii_case(want));
-    }
     TOGGLES.iter().find(|(k, ..)| *k == id).map(|(_, f, _)| *f(&mut v))
 }
 
@@ -358,11 +344,10 @@ pub fn specs() -> Vec<CommandSpec> {
         }),
         spec!("view.layers", "Layers panel", "{}", false, |s, _| ui(s, "panel.layers")),
         spec!("view.assets", "Assets panel", "{}", false, |s, _| ui(s, "panel.assets")),
-        spec!("view.icons", "Icons panel", "{}", false, |s, _| ui(s, "panel.icons")),
         spec!("view.design", "Design panel", "{}", false, |s, _| ui(s, "panel.design")),
         spec!("view.prototype", "Prototype panel", "{}", false, |s, _| ui(s, "panel.prototype")),
         spec!("view.designPrototype", "Switch between Design and Prototype", "{}", false, |s, _| ui(s, "panel.designPrototype")),
-        spec!("view.devMode", "Dev Mode", "{}", false, |s, _| ui(s, "panel.devMode")),
+        spec!("view.devMode", "Developer Mode", "{}", false, |s, _| ui(s, "panel.devMode")),
         spec!("view.leftSidebar", "Show/Hide left sidebar", "{}", false, |s, _| ui(s, "panel.leftSidebar")),
         spec!(
             "view.panelWidths",
@@ -419,21 +404,6 @@ pub fn specs() -> Vec<CommandSpec> {
         spec!("pref.showDimensions", "Show dimensions on objects", "{on?}", false, |s, p| pref(s, p, |x| &mut x.show_dimensions)),
         spec!("pref.numberKeysOpacity", "Use number keys for opacity", "{on?}", false, |s, p| pref(s, p, |x| &mut x.number_keys_opacity)),
         spec!(
-            "pref.accent",
-            "Brand accent colour",
-            "{accent: blue|green|yellow|pink; default green}  the brand accent used across the interface (buttons, selection, focus rings): one of the four Figma accents",
-            false,
-            |s, p| {
-                let accent = req_string("pref.accent", p, "accent")?;
-                let accent = accent.trim().to_ascii_lowercase();
-                if !matches!(accent.as_str(), "blue" | "green" | "yellow" | "pink") {
-                    return Err(bad("pref.accent", format!("`{accent}` is not a brand accent (blue|green|yellow|pink)")));
-                }
-                s.prefs.accent = accent;
-                Ok(json!({"accent": s.prefs.accent}))
-            }
-        ),
-        spec!(
             "pref.scrollWheelZoom",
             "Scroll wheel zoom",
             "{on?}  a mouse wheel zooms the canvas about the pointer and Cmd/Ctrl+wheel scrolls it (Shift+wheel still scrolls sideways; trackpads are unchanged) → {on}",
@@ -461,7 +431,7 @@ pub fn specs() -> Vec<CommandSpec> {
         spec!(
             "pref.uiScaleUp",
             "Larger interface",
-            "{}  the next of the Preferences sizes above the current one (the interface size keys of Accessibility at Figma); at the largest it stays → {scale}",
+            "{}  the next of the Preferences sizes above the current one; at the largest it stays → {scale}",
             false,
             |s, _| ui_scale_step(s, 1)
         ),
@@ -475,23 +445,6 @@ pub fn specs() -> Vec<CommandSpec> {
         spec!("pref.uiScaleReset", "Default interface size", "{}  back to the system's own size (1) → {scale}", false, |s, _| ui_scale_step(s, 0)),
         spec!("pref.autoSave", "Save files automatically", "{on?}", false, |s, p| pref(s, p, |x| &mut x.auto_save)),
         spec!("pref.startOnHome", "Start on the Home screen", "{on?}", false, |s, p| pref(s, p, |x| &mut x.start_on_home)),
-        spec!(
-            "pref.graphicsBackend",
-            "Graphics renderer",
-            "{backend?: system|dx12|vulkan|gl|metal (omit: just read it)} → {backend}: which graphics API draws the window; read when the window opens, so a change takes effect on the next start (desktop only: the browser has no API to choose)",
-            false,
-            |s, p| {
-                const CMD: &str = "pref.graphicsBackend";
-                if get(p, "backend").is_some() {
-                    let asked = req_string(CMD, p, "backend")?.trim().to_ascii_lowercase();
-                    if !["system", "dx12", "vulkan", "gl", "metal"].contains(&asked.as_str()) {
-                        return Err(bad(CMD, "`backend` is one of system, dx12, vulkan, gl or metal"));
-                    }
-                    s.prefs.graphics_backend = asked;
-                }
-                Ok(json!({"backend": s.prefs.graphics_backend}))
-            }
-        ),
         spec!("pref.nudge", "Nudge amount", "{small?, big?}", false, |s, p| {
             s.prefs.nudge_small = num(p, "small").unwrap_or(s.prefs.nudge_small).clamp(0.01, 1000.0);
             s.prefs.nudge_big = num(p, "big").unwrap_or(s.prefs.nudge_big).clamp(0.01, 10000.0);
@@ -718,41 +671,5 @@ mod start_on_home_tests {
         assert_eq!(s.execute("pref.startOnHome", &json!({"on": false})).unwrap()["on"], false);
         let old: crate::Prefs = serde_json::from_value(json!({"theme": "dark"})).unwrap();
         assert!(!old.start_on_home);
-    }
-}
-
-#[cfg(test)]
-mod graphics_backend_tests {
-    use serde_json::json;
-
-    use crate::Session;
-
-    #[test]
-    fn the_graphics_backend_is_a_preference_that_persists() {
-        let mut s = Session::new();
-        assert_eq!(s.prefs.graphics_backend, "system");
-        // Reading it changes nothing.
-        assert_eq!(s.execute("pref.graphicsBackend", &json!({})).unwrap()["backend"], "system");
-        assert_eq!(s.execute("pref.graphicsBackend", &json!({"backend": "DX12"})).unwrap()["backend"], "dx12");
-        assert_eq!(s.prefs.graphics_backend, "dx12");
-        // Saved with the other preferences and read back; older settings files without it read as "system".
-        let saved: crate::Prefs = serde_json::from_value(serde_json::to_value(&s.prefs).unwrap()).unwrap();
-        assert_eq!(saved.graphics_backend, "dx12");
-        let old: crate::Prefs = serde_json::from_value(json!({"theme": "dark"})).unwrap();
-        assert_eq!(old.graphics_backend, "system");
-    }
-
-    #[test]
-    fn an_unknown_graphics_backend_is_refused() {
-        let mut s = Session::new();
-        for asked in ["direct3d", "webgpu", "", "dx12, gl"] {
-            let err = s.execute("pref.graphicsBackend", &json!({"backend": asked})).unwrap_err();
-            assert!(err.to_string().contains("one of system, dx12, vulkan, gl or metal"), "{asked}: {err}");
-        }
-        assert_eq!(s.prefs.graphics_backend, "system", "a refused backend changes nothing");
-        // Not a string either.
-        assert!(s.execute("pref.graphicsBackend", &json!({"backend": 12})).is_err());
-        // Null reads as "not given": the current backend.
-        assert_eq!(s.execute("pref.graphicsBackend", &json!({"backend": null})).unwrap()["backend"], "system");
     }
 }

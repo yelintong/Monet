@@ -18,12 +18,16 @@ macro_rules! m {
 
 pub const SEP: &str = "-";
 
+/// Extra search terms the Actions palette reads, by command id: a name a feature had before it was
+/// renamed, so people who know the old name still find the command. Never shown.
+pub static SEARCH_ALIASES: &[(&str, &str)] = &[("view.devMode", "Dev Mode")];
+
 pub static MENU: &[MenuItem] = &[
     // File
     m!("File", "New design file", "file.new"),
     m!("File", "New board", "file.newBoard"),
-    // FigCraft's own: starter templates (not counted by `parity`, like the other items of its own
-    // listed in `OWN`).
+    // FigCraft's own: boards and starter templates (not counted by `parity`, like the other items
+    // of its own listed in `OWN`).
     m!("File", "New from template…", "file.newFromTemplate"),
     m!("File", "New window", "window.new"),
     m!("File", "Open…", "file.open"),
@@ -110,8 +114,6 @@ pub static MENU: &[MenuItem] = &[
     m!("View/Panels", "Reset panel widths", "view.panelWidths"),
     m!("View/Panels", "Layers", "view.layers"),
     m!("View/Panels", "Assets", "view.assets"),
-    // FigCraft's own: the panel that makes icons out of layers (see `cmd/icon.rs`).
-    m!("View/Panels", "Icons", "view.icons"),
     m!("View/Panels", "Design", "view.design"),
     m!("View/Panels", "Prototype", "view.prototype"),
     m!("View", SEP, ""),
@@ -130,12 +132,6 @@ pub static MENU: &[MenuItem] = &[
     m!("View/Theme", "Light", "view.themeLight"),
     m!("View/Theme", "Dark", "view.themeDark"),
     m!("View/Theme", "Follow system", "view.themeSystem"),
-    // FigCraft's own: the brand accent (not in the reference menu, so not counted by `parity`).
-    m!("View/Theme", SEP, ""),
-    m!("View/Theme/Accent", "Blue", "pref.accent.blue"),
-    m!("View/Theme/Accent", "Green", "pref.accent.green"),
-    m!("View/Theme/Accent", "Yellow", "pref.accent.yellow"),
-    m!("View/Theme/Accent", "Pink", "pref.accent.pink"),
     // Object
     m!("Object", "Frame selection", "object.frameSelection"),
     m!("Object", "Group selection", "object.group"),
@@ -149,8 +145,6 @@ pub static MENU: &[MenuItem] = &[
     m!("Object", SEP, ""),
     m!("Object", "Create component", "component.create"),
     m!("Object", "Create multiple components", "component.createMultiple"),
-    // FigCraft's own: an icon font the file carries with it (see `cmd/icon.rs`).
-    m!("Object", "Create icon", "icon.create"),
     m!("Object", "Combine as variants", "component.combineVariants"),
     m!("Object", "Reset all changes", "component.resetInstance"),
     m!("Object", "Detach instance", "component.detach"),
@@ -255,18 +249,12 @@ pub static MENU: &[MenuItem] = &[
     m!("Vector", "Delete and heal selection", "vector.deleteHeal"),
     m!("Vector", "Simplify vector", "vector.simplify"),
     m!("Vector", "Reverse path direction", "vector.reverse"),
-    m!("Vector", "Set fill rule", "vector.fillRule"),
-    m!("Vector", "Reverse loop", "vector.reverseLoop"),
     m!("Vector", "Offset path", "vector.offset"),
     // Plugins
     m!("Plugins", "Run last plugin", "plugins.runLast"),
     m!("Plugins", "Manage plugins…", "plugins.manage"),
     m!("Plugins/Development", "Import plugin from manifest…", "plugin.import"),
     // Preferences
-    // FigCraft's own: the theme picker, first in Preferences (View ▸ Theme shares the commands).
-    m!("Preferences/Theme", "Light", "view.themeLight"),
-    m!("Preferences/Theme", "Dark", "view.themeDark"),
-    m!("Preferences/Theme", "Follow system", "view.themeSystem"),
     m!("Preferences", "Snap to geometry", "view.snapGeometry"),
     m!("Preferences", "Snap to objects", "view.snapObjects"),
     m!("Preferences", "Snap to pixel grid", "view.snapPixel"),
@@ -313,8 +301,7 @@ pub fn items() -> impl Iterator<Item = &'static MenuItem> {
 }
 
 /// Items of FigCraft's own that the parity count leaves out (as it does the `collab.` ones).
-const OWN: [&str; 7] =
-    ["file.newFromTemplate", "file.newBoard", "help.gettingStarted", "icon.create", "text.missingFonts", "image.crop", "text.directionAuto"];
+const OWN: [&str; 6] = ["file.newFromTemplate", "file.newBoard", "help.gettingStarted", "text.missingFonts", "image.crop", "text.directionAuto"];
 
 /// Coverage: (implemented, total, missing ids). `extra` lists ids implemented by the UI layer.
 pub fn parity(extra: &[&str]) -> (usize, usize, Vec<&'static str>) {
