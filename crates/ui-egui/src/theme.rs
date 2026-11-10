@@ -84,6 +84,10 @@ pub fn under_white(t: &Tokens, c: Color32) -> Color32 {
     if c == t.accent { t.accent_hover } else { c }
 }
 
+/// An AI agent attached over MCP: its avatar and the outline of the layers it works on (none of
+/// the people colours, so it never looks like someone in a live session).
+pub const AGENT: Color32 = Color32::from_rgb(0xF5, 0x9E, 0x0B);
+
 pub const COMPONENT: Color32 = Color32::from_rgb(0x97, 0x47, 0xFF);
 /// An icon layer, and every layer inside one: icons are their own kind of layer, so they get their
 /// own colour — orange, next to the purple a component gets and the blue everything else gets.
