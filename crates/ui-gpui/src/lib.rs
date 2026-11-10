@@ -85,6 +85,8 @@ mod board_bar;
 
 mod board_picker;
 
+mod open;
+
 /// A6: the Export dialog's bitmap preview, produced by the engine's renderer.
 mod export_preview;
 
@@ -705,6 +707,14 @@ pub struct CanvasView {
 
 
 
+    /// 底部中间的一条临时提示（egui `app.toast`）：导入失败、拖入被拒这类话必须让用户看见，
+
+    /// 不能像以前那样只在 `FC_DEBUG_CMDS` 下打到 stderr。
+
+    toast_msg: Option<(String, std::time::Instant)>,
+
+
+
     /// 上一次同步给 `file_name_field` 的 `(uid, name)`：切标签时才回写，免得打字被打断。
 
     file_name_seen: Option<(u64, String)>,
@@ -925,6 +935,10 @@ impl CanvasView {
             page_search_field: widgets::search_field(cx, 200.0, "", "Search pages"),
 
             left_collapsed: false,
+
+
+
+            toast_msg: None,
 
             file_name_seen: None,
 
@@ -2861,27 +2875,19 @@ impl CanvasView {
 
 
 
-        // 需要**系统文件对话框**的命令：引擎只认 `path`，路径得由原生选择器给
+        // 需要**系统文件对话框**的命令（egui `FigApp::open_dialog` / `import_dialog`）：
 
-        // （egui 里由 `FigApp::open_dialog` / `import_dialog` 负责，见 `app/files.rs:83`）。
+        // 引擎只认 `path`（或 `data` + `name`），路径得由原生选择器给。
 
-        // 扩展名表逐条照抄 `import_dialog`：导入含设计文件与图片，放置只收图片。
+        // 扩展名表来自 `crate::open`，与 `ui-egui/src/open.rs` / `import_dialog` 同源。
 
         let picker: Option<(&str, &[&str], &str)> = match id {
 
-            "file.open" => Some((tr("Open"), &["figcraft", "fig", "jam", "sketch", "penpot", "svg", "png", "jpg", "jpeg", "webp", "gif", "tif", "tiff"], "file.open")),
+            "file.open" => Some((tr("Open"), crate::open::OPEN_EXTENSIONS, "file.open")),
 
-            "file.import" => Some((
+            "file.import" => Some((tr("Import"), crate::open::IMPORT_EXTENSIONS, "file.import")),
 
-                tr("Import"),
-
-                &["penpot", "svg", "png", "jpg", "jpeg", "webp", "gif", "tif", "tiff", "figcraft", "fig", "jam", "sketch"],
-
-                "file.import",
-
-            )),
-
-            "file.placeImage" => Some((tr("Place image"), &["png", "jpg", "jpeg", "webp", "gif", "tif", "tiff"], "file.placeImage")),
+            "file.placeImage" => Some((tr("Place image"), crate::open::IMAGE_EXTENSIONS, "file.placeImage")),
 
             _ => None,
 
@@ -2889,31 +2895,21 @@ impl CanvasView {
 
         if let Some((title, exts, cmd)) = picker {
 
-            let mut dialog = rfd::FileDialog::new().set_title(title);
+            // 一个筛选器列出全部扩展名（每个扩展名一个筛选器会变成一长串重复项）。
 
-            for ext in exts {
-
-                dialog = dialog.add_filter(title, &[*ext]);
-
-            }
+            let mut dialog = rfd::FileDialog::new().set_title(title).add_filter(title, exts);
 
             if let Some(path) = dialog.pick_file() {
 
                 let params = serde_json::json!({ "path": path.to_string_lossy() });
 
-                if let Err(e) = self.app.session.execute(cmd, &params) {
+                if self.execute_reporting(cmd, params, cx) {
 
-                    if std::env::var_os("FC_DEBUG_CMDS").is_some() {
-
-                        eprintln!("[ui cmd] {cmd} {params} -> {e}");
-
-                    }
+                    cx.notify();
 
                 }
 
             }
-
-            cx.notify();
 
             return;
 
@@ -2950,6 +2946,174 @@ impl CanvasView {
     fn is_board_doc(&self) -> bool {
 
         self.app.session.doc().is_ok_and(figcraft_engine::board::is_board)
+
+    }
+
+
+
+    /// 底部中间弹一条提示，4 秒后自己消失（egui `app.toast`）。
+
+    pub(crate) fn toast(&mut self, text: impl Into<String>, cx: &mut Context<Self>) {
+
+        let text = text.into();
+
+        if text.is_empty() {
+
+            return;
+
+        }
+
+        self.toast_msg = Some((text, std::time::Instant::now()));
+
+        // 只在过期那一刻唤醒一次：不为一条提示持续重绘。
+
+        let me = cx.entity();
+
+        cx.spawn(async move |_, cx| {
+
+            gpui::Timer::after(std::time::Duration::from_secs(4)).await;
+
+            let _ = me.update(cx, |cv, cx| {
+
+                cv.toast_msg = None;
+
+                cx.notify();
+
+            });
+
+        })
+
+        .detach();
+
+        cx.notify();
+
+    }
+
+
+
+    /// 跑一条命令；失败时把引擎的原话弹出来（egui 的 `app.run` + `show_error`）。
+
+    fn execute_reporting(&mut self, id: &str, params: serde_json::Value, cx: &mut Context<Self>) -> bool {
+
+        match self.app.session.execute(id, &params) {
+
+            Ok(_) => true,
+
+            Err(e) => {
+
+                if std::env::var_os("FC_DEBUG_CMDS").is_some() {
+
+                    eprintln!("[ui cmd] {id} {params} -> {e}");
+
+                }
+
+                self.toast(e.to_string(), cx);
+
+                false
+
+            }
+
+        }
+
+    }
+
+
+
+    /// 一次拖入（`ui-egui/src/canvas/input.rs::import_dropped` 与 `home.rs::dropped` 的合并）：
+
+    ///
+
+    /// * **文档**（`.figcraft` / `.fig` / `.jam` / `.penpot` / `.sketch` / JSON）—— 每个都
+
+    ///   `file.open` 成一个**新文件**，不管落在首页还是画布上（`is_document`）。
+
+    /// * **图片与 SVG** —— 编辑器里 `file.import` 落在**放下那一点**（页面坐标，引擎自己分流：
+
+    ///   SVG 变框架、图片放图片；`.figcraft` 之类才会追加页面）。
+
+    /// * 首页只接受能打开的类型，其余按原文提示 "Drop a .figcraft, …"。
+
+    pub(crate) fn drop_files(&mut self, paths: &[std::path::PathBuf], at: Point<Pixels>, cx: &mut Context<Self>) {
+
+        if paths.is_empty() {
+
+            return;
+
+        }
+
+        let on_home = self.tabs.home;
+
+        let pt = self.app.to_page(pos2(f32::from(at.x), f32::from(at.y)));
+
+        let (mut opened, mut imported, mut refused) = (0usize, 0usize, 0usize);
+
+        for path in paths {
+
+            if crate::open::is_document(path) {
+
+                if self.execute_reporting("file.open", serde_json::json!({ "path": path.to_string_lossy() }), cx) {
+
+                    opened += 1;
+
+                }
+
+                continue;
+
+            }
+
+            if on_home {
+
+                if crate::open::opens(path) {
+
+                    if self.execute_reporting("file.open", serde_json::json!({ "path": path.to_string_lossy() }), cx) {
+
+                        opened += 1;
+
+                    }
+
+                } else {
+
+                    refused += 1;
+
+                }
+
+                continue;
+
+            }
+
+            // 编辑器里：落到指针那一点。引擎按扩展名自己选「SVG → 框架 / 图片 → 图片 /
+
+            // 文档 → 追加页面」，这里不重复判断。
+
+            let params = serde_json::json!({ "path": path.to_string_lossy(), "x": pt.x, "y": pt.y });
+
+            if self.execute_reporting("file.import", params, cx) {
+
+                imported += 1;
+
+            }
+
+        }
+
+        if opened > 0 {
+
+            // 打开文件后离开首页（egui `app.ui.home = false`）。
+
+            self.close_home();
+
+        }
+
+        if refused > 0 {
+
+            self.toast(figcraft_i18n::tr("Drop a .figcraft, .fig, .jam, .sketch, .json, .svg or image file."), cx);
+
+        }
+
+        if imported > 0 {
+
+            cx.notify();
+
+        }
 
     }
 
@@ -7554,17 +7718,111 @@ impl Render for CanvasView {
 
 
 
+        // 一条临时提示（egui `app.toast`）：底部中间、圆角卡片，4 秒后自己消失。
+
+        let toast_el: Option<AnyElement> = self.toast_msg.as_ref().map(|(text, _)| {
+
+            let t = widgets::tokens();
+
+            div()
+
+                .absolute()
+
+                .bottom(px(72.0))
+
+                .left(px(0.0))
+
+                .right(px(0.0))
+
+                .flex()
+
+                .flex_row()
+
+                .justify_center()
+
+                .child(
+
+                    div()
+
+                        .px(px(14.0))
+
+                        .py(px(8.0))
+
+                        .rounded(px(8.0))
+
+                        .bg(widgets::rgba(t.menu))
+
+                        .border_1()
+
+                        .border_color(widgets::rgba(t.border_strong))
+
+                        .shadow(vec![gpui::BoxShadow {
+
+                            color: widgets::rgba(t.shadow).into(),
+
+                            offset: gpui::point(px(0.0), px(3.0)),
+
+                            blur_radius: px(14.0),
+
+                            spread_radius: px(0.0),
+
+                        }])
+
+                        .text_size(px(12.0))
+
+                        .text_color(widgets::rgba(t.menu_text))
+
+                        .child(gpui::SharedString::from(text.clone())),
+
+                )
+
+                .into_any_element()
+
+        });
+
+
+
+        // 整个窗口都是拖放目标：GPUI 把 OS 的文件拖入翻译成一次内部拖拽 + 抬起，
+
+        // `on_drop::<ExternalPaths>` 就是落点。落点坐标用 `window.mouse_position()`（Submit 时
+
+        // 已更新），首页与画布的取舍在 `drop_files` 里。
+
+        let drop_target = cx.entity();
+
         div()
+
+
 
             .size_full()
 
+
+
             .flex()
+
+
 
             .flex_col()
 
+
+
             .overflow_hidden()
 
+
+
             .relative()
+
+
+
+            .on_drop::<gpui::ExternalPaths>(move |paths: &gpui::ExternalPaths, window, cx| {
+
+                let at = window.mouse_position();
+
+                let paths = paths.paths().to_vec();
+
+                drop_target.update(cx, |cv, cx| cv.drop_files(&paths, at, cx));
+
+            })
 
             // 全局字体：MiSans（系统已装）。GPUI 按 family 名解析；子元素与自绘的
 
@@ -7611,6 +7869,10 @@ impl Render for CanvasView {
             .children(present_el)
 
             .children(dialog_el)
+
+
+
+            .children(toast_el)
 
             // Popups (dropdown menus, the main menu, the Actions palette) are drawn AFTER the
             // dialog layer, so a dropdown inside a dialog is not covered by it. This is the one
