@@ -160,6 +160,8 @@ pub(crate) struct ExtraState {
     pub home_search: Entity<TextField>,
     /// Recents view: `true` grid (cards) / `false` list (egui `home_recents::View`).
     pub home_view_grid: Rc<RefCell<bool>>,
+    /// 首页模板卡片的缩略图缓存（`template id → 图`）：渲一次就留着。
+    pub template_thumbs: Rc<RefCell<std::collections::HashMap<&'static str, Option<std::sync::Arc<gpui::RenderImage>>>>>,
     /// Recents sort: 0 name / 1 edited (egui `home_recents::SortKey`).
     pub home_sort: Rc<RefCell<u8>>,
 }
@@ -171,7 +173,7 @@ impl ExtraState {
         let q = query.clone();
         let wake = cmds.clone();
         search.update(cx, move |tf, _| {
-            tf.set_on_commit(move |text, _, _| {
+            tf.set_on_change(move |text, _, _| {
                 *q.borrow_mut() = text.trim().to_lowercase();
                 wake.wake();
             });
@@ -187,7 +189,7 @@ impl ExtraState {
         let aq = assets_query.clone();
         let aw = cmds.clone();
         assets_search.update(cx, move |tf, _| {
-            tf.set_on_commit(move |text, _, _| {
+            tf.set_on_change(move |text, _, _| {
                 *aq.borrow_mut() = text.trim().to_lowercase();
                 aw.wake();
             });
@@ -197,7 +199,7 @@ impl ExtraState {
         let hq = home_query.clone();
         let hw = cmds.clone();
         home_search.update(cx, move |tf, _| {
-            tf.set_on_commit(move |text, _, _| {
+            tf.set_on_change(move |text, _, _| {
                 *hq.borrow_mut() = text.trim().to_lowercase();
                 hw.wake();
             });
@@ -223,6 +225,7 @@ impl ExtraState {
             home_query,
             home_search,
             home_view_grid: Rc::new(RefCell::new(true)),
+            template_thumbs: Rc::new(RefCell::new(std::collections::HashMap::new())),
             home_sort: Rc::new(RefCell::new(1)),
         }
     }

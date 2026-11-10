@@ -261,8 +261,8 @@ pub(crate) fn view_bar(f: &RightFields, d: &PanelData, motion: bool) -> gpui::Di
             .items_center()
             .gap(pt(2.0))
             // 标签文案仍由 naming::right_tab_label 统一提供（a11y / 命名回归测试继续用它）。
-            .child(tab(crate::naming::right_tab_label(0), 0))
-            .child(tab(crate::naming::right_tab_label(1), 1))
+            .child(tab(tr(crate::naming::right_tab_label(0)), 0))
+            .child(tab(tr(crate::naming::right_tab_label(1)), 1))
     };
     div()
         .flex_none()
@@ -1190,9 +1190,13 @@ pub(crate) fn appearance(
         .child(field_row(vec![opacity.clone(), corner.clone()], Vec::<IconButton>::new()));
     // 仅当 header 的 blend 开关打开时才显示 blend-mode 下拉行（egui `blend_open`）。
     if *f.blend_open.borrow() {
-        let rows: Vec<(String, &'static str, Value)> =
-            crate::panels::blend_rows().into_iter().map(|r| (r.label.to_string(), "node.set", json!({ "props": { "blend": r.label } }))).collect();
-        sec = sec.child(field_row_full(pick_dropdown(f, f.blend_label.borrow().clone(), row_w, rows)));
+        // 显示走 `tr`，**写回值必须是英文 serde 名**（`blend` 只认 `Normal` / `Multiply` …）。
+        let rows: Vec<(String, &'static str, Value)> = crate::panels::blend_rows()
+            .into_iter()
+            .map(|r| (tr(&r.label).to_string(), "node.set", json!({ "props": { "blend": r.label } })))
+            .collect();
+        let shown = tr(&f.blend_label.borrow()).to_string();
+        sec = sec.child(field_row_full(pick_dropdown(f, shown, row_w, rows)));
     }
     sec
 }
@@ -1783,7 +1787,7 @@ pub(crate) fn header(f: &RightFields, d: &PanelData, col: f32) -> Option<crate::
         vec![(tr("Frame").into(), "object.convertToFrame", json!({})), (tr("Group").into(), "object.convertToGroup", json!({}))];
     let mut lead: Vec<gpui::AnyElement> = Vec::new();
     if visibility::kind_menu(h.is_frame, h.is_group) {
-        lead.push(kind_dropdown(f, h.label.clone(), kind_rows).into_any_element());
+        lead.push(kind_dropdown(f, tr(&h.label).to_string(), kind_rows).into_any_element());
     } else {
         // 其它类型没有下拉，连 chevron 都不画：就是一段 13 pt 半粗文字。
         lead.push(
@@ -1792,7 +1796,7 @@ pub(crate) fn header(f: &RightFields, d: &PanelData, col: f32) -> Option<crate::
                 .text_size(pt(13.0))
                 .font_weight(gpui::FontWeight::SEMIBOLD)
                 .text_color(rgba(t.text))
-                .child(SharedString::from(h.label.clone()))
+                .child(SharedString::from(tr(&h.label).to_string()))
                 .into_any_element(),
         );
     }

@@ -75,16 +75,54 @@ pub(crate) fn body(app: &CanvasApp, cmds: &Cmds, state: &ExtraState) -> Div {
     let mut main = div().id("home-main").flex_1().min_w(px(0.0)).h_full().flex().flex_col().gap(pt(16.0)).p(pt(24.0)).overflow_y_scroll();
     match section {
         2 => {
+            // egui `home.rs::templates`：标题 + 卡片网格（248×234，缩略图 148 高），
+            // 点一张就 `file.newFromTemplate`。以前这里是三张动作卡，根本不是模板。
             main = main.child(heading(tr("Templates")));
-            let mut row = div().flex().flex_row().flex_wrap().gap(pt(12.0));
-            row = row.child(action_card(Icon::Frame, tr("New design file"), tr("Start from a blank canvas"), "file.new", cmds));
-            row = row.child(action_card(Icon::Rectangle, tr("New board"), tr("Sticky notes, shapes and connectors"), "file.newBoard", cmds));
-            row = row.child(action_card(Icon::ViewGrid, tr("Start from a template"), tr("Start from a template"), "file.newFromTemplate", cmds));
-            main = main.child(row);
+            let shown: Vec<&figcraft_engine::templates::Template> = figcraft_engine::templates::TEMPLATES
+                .iter()
+                .filter(|x| q.is_empty() || x.name.to_lowercase().contains(&q) || x.description.to_lowercase().contains(&q))
+                .collect();
+            if shown.is_empty() {
+                main = main.child(note(tr("No templates match your search")));
+            } else {
+                let mut grid = div().w_full().flex().flex_row().flex_wrap().gap(pt(20.0));
+                for tpl in shown {
+                    grid = grid.child(template_card(state, tpl, cmds));
+                }
+                main = main.child(grid);
+            }
         }
         1 => {
-            main = main.child(heading(tr("Online")));
-            main = main.child(note(tr("Online files come from the engine's online section; this front-end has no local list yet.")));
+            // egui `home/online.rs::section`：标题 + 说明 + 本机在线文件列表（空态另说）。
+            main = main.child(heading(tr("Online files")));
+            main = main.child(note(tr(
+                "The files you shared or published online from this computer. They stay on their server until you remove them.",
+            )));
+            let files = &app.session.prefs.online_files;
+            if files.is_empty() {
+                main = main.child(note(tr("Nothing online yet. Use Share on a file to put it online and it is listed here.")));
+            } else {
+                let mut list = div().w_full().flex().flex_col();
+                for f in files.iter().take(40) {
+                    list = list.child(
+                        div()
+                            .w_full()
+                            .h(px(36.0))
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .gap(pt(10.0))
+                            .px(pt(10.0))
+                            .rounded(pt(5.0))
+                            .child(crate::widgets::icon::paint(Icon::LinkOn, rgba(t.icon), 16.0))
+                            .child(div().flex_1().min_w(px(0.0)).overflow_hidden().text_size(pt(12.0)).text_color(rgba(t.text)).child(
+                                SharedString::from(f.name.clone()),
+                            ))
+                            .child(div().text_size(pt(11.0)).text_color(rgba(t.text_tertiary)).child(SharedString::from(f.server.clone()))),
+                    );
+                }
+                main = main.child(list);
+            }
         }
         _ => {
             main = main.child(heading(tr("Recents")));
@@ -281,6 +319,90 @@ fn recent_row(path: &str, cmds: &Cmds) -> Div {
         .on_mouse_down(MouseButton::Left, move |_e, _, _| {
             c.push(Cmd { id: "file.openRecent", params: Some(json!({ "path": p.clone() })) });
         })
+}
+
+/// A template card (egui `home.rs::template_card`): a 148 pt thumbnail over its name and one
+/// line about it, 248 × 234. Clicking it opens a new document made from the template.
+fn template_card(state: &ExtraState, tpl: &figcraft_engine::templates::Template, cmds: &Cmds) -> gpui::Stateful<Div> {
+    let t = tokens();
+    let thumb = template_thumb(state, tpl);
+    let c = cmds.clone();
+    let id = tpl.id;
+    let name = figcraft_i18n::tr(tpl.name).to_string();
+    let name_for_cmd = name.clone();
+    let mut card = div()
+        .id(gpui::ElementId::from(SharedString::from(format!("home-tpl-{}", tpl.id))))
+        .flex_none()
+        .w(px(248.0))
+        .h(px(234.0))
+        .flex()
+        .flex_col()
+        .rounded(pt(8.0))
+        .bg(rgba(t.field))
+        .border_1()
+        .border_color(rgba(t.border))
+        .cursor_pointer()
+        .hover(|s| s.bg(rgba(t.hover)))
+        .overflow_hidden()
+        .on_mouse_down(MouseButton::Left, move |_e, _, _| {
+            c.push(Cmd { id: "file.newFromTemplate", params: Some(json!({ "template": id, "name": name_for_cmd.clone() })) });
+        });
+    // The picture: the template drawn small, or its mark when it couldn't be drawn.
+    let mut pic = div()
+        .w_full()
+        .h(px(148.0))
+        .flex()
+        .items_center()
+        .justify_center()
+        .bg(rgba(t.panel))
+        .border_b_1()
+        .border_color(rgba(t.border));
+    pic = match thumb {
+        Some(tex) => pic.child(gpui::img(gpui::ImageSource::Render(tex)).max_w(px(226.0)).max_h(px(148.0))),
+        None => pic.child(crate::widgets::icon::paint(Icon::Frame, rgba(t.icon), 32.0)),
+    };
+    card = card.child(pic).child(
+        div()
+            .flex()
+            .flex_col()
+            .gap(pt(4.0))
+            .p(pt(12.0))
+            .child(div().text_size(pt(12.0)).font_weight(gpui::FontWeight::SEMIBOLD).text_color(rgba(t.text)).child(SharedString::from(name)))
+            .child(
+                div()
+                    .text_size(pt(11.0))
+                    .text_color(rgba(t.text_secondary))
+                    .child(SharedString::from(figcraft_i18n::tr(tpl.description).to_string())),
+            ),
+    );
+    card
+}
+
+/// A template's thumbnail, drawn once and kept on the view (five documents' worth of rendering
+/// is far too slow to do per frame).
+fn template_thumb(state: &ExtraState, tpl: &figcraft_engine::templates::Template) -> Option<std::sync::Arc<gpui::RenderImage>> {
+    if let Some(hit) = state.template_thumbs.borrow().get(tpl.id) {
+        return hit.clone();
+    }
+    let drawn = draw_template_thumb(tpl);
+    state.template_thumbs.borrow_mut().insert(tpl.id, drawn.clone());
+    drawn
+}
+
+/// `ui-egui/src/home.rs::thumbnail`: the template built on a page of its own and drawn to fit
+/// a 226 × 126 area, cropped to its top when it is much taller than it is wide.
+fn draw_template_thumb(tpl: &figcraft_engine::templates::Template) -> Option<std::sync::Arc<gpui::RenderImage>> {
+    let doc = tpl.build(figcraft_color::Color::WHITE).ok()?;
+    let frames = doc.node(doc.first_page()?)?.children.clone();
+    let bounds = frames.iter().filter_map(|id| figcraft_render::export_bounds(&doc, *id)).reduce(|a, b| a.union(b))?;
+    if !(bounds.width() > 0.0 && bounds.height() > 0.0) {
+        return None;
+    }
+    let (w, h) = (226.0f64, 126.0f64);
+    let area = figcraft_geom::Rect::new(bounds.x0, bounds.y0, bounds.x1, bounds.y1.min(bounds.y0 + bounds.width() * h / w * 1.5));
+    let scale = (w / area.width()).min(h / area.height());
+    let pix = figcraft_render::render_area(&doc, &frames, area, scale.min(1.0))?;
+    Some(crate::canvas::render_worker::screen_image(&pix, doc.color_profile))
 }
 
 fn note(text: &'static str) -> Div {

@@ -90,6 +90,8 @@ pub struct TextEdit {
     /// `render()` 里的失焦轮询上，点画布时会漏掉。
     focus_out: Option<gpui::Subscription>,
     on_commit: Option<CommitHandler>,
+    /// 每改一个字符就回调一次（首页搜索这类「边打边过滤」用；`on_commit` 只在 Enter / 失焦时给）。
+    on_change: Option<CommitHandler>,
     /// Scrub state: the value at drag start and the accumulated amount (egui's `scrub_id`).
     pub(crate) scrub: Option<(f64, f64)>,
     pub(crate) scrub_x: Option<Pixels>,
@@ -119,6 +121,7 @@ impl TextEdit {
             focus: cx.focus_handle(),
             focus_out: None,
             on_commit: None,
+            on_change: None,
             scrub: None,
             scrub_x: None,
             last_click: None,
@@ -213,6 +216,18 @@ impl TextEdit {
     }
     pub fn set_on_commit(&mut self, f: impl Fn(&str, &mut Window, &mut App) + 'static) {
         self.on_commit = Some(Rc::new(f));
+    }
+
+    /// 每改一次文本就回调（含输入法逐字上屏、退格、粘贴）。和 `set_on_commit` 互不影响。
+    pub fn set_on_change(&mut self, f: impl Fn(&str, &mut Window, &mut App) + 'static) {
+        self.on_change = Some(Rc::new(f));
+    }
+
+    /// 把当前内容交给 `on_change`。
+    fn notify_change(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(cb) = self.on_change.clone() else { return };
+        let text = self.input.buffer.text().to_string();
+        cb(&text, window, cx);
     }
     pub fn value(&self) -> &str {
         &self.value
@@ -663,6 +678,7 @@ impl Render for TextEdit {
                     EditOutcome::Cancel => this.cancel(window),
                     EditOutcome::Changed => {
                         this.select_all_pending = false;
+                        this.notify_change(window, cx);
                         cx.notify();
                     }
                     EditOutcome::None => {}
@@ -686,9 +702,10 @@ impl EntityInputHandler for TextEdit {
         self.input.input_unmark();
         cx.notify();
     }
-    fn replace_text_in_range(&mut self, range: Option<Range<usize>>, text: &str, _: &mut Window, cx: &mut Context<Self>) {
+    fn replace_text_in_range(&mut self, range: Option<Range<usize>>, text: &str, window: &mut Window, cx: &mut Context<Self>) {
         self.input.input_replace(range, text);
         self.select_all_pending = false;
+        self.notify_change(window, cx);
         cx.notify();
     }
     fn replace_and_mark_text_in_range(
@@ -696,11 +713,12 @@ impl EntityInputHandler for TextEdit {
         range: Option<Range<usize>>,
         new_text: &str,
         selected: Option<Range<usize>>,
-        _: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         self.input.input_replace_and_mark(range, new_text, selected);
         self.select_all_pending = false;
+        self.notify_change(window, cx);
         cx.notify();
     }
     fn bounds_for_range(

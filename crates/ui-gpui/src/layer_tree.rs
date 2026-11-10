@@ -25,7 +25,7 @@ use serde_json::json;
 
 use crate::drag;
 use crate::widgets::icon::paint as paint_icon;
-use crate::widgets::{Icon, SectionHeader, SectionHeaderVariant, pt, rgba, tokens};
+use crate::widgets::{Icon, IconButton, SectionHeader, SectionHeaderVariant, pt, rgba, tokens};
 use crate::CanvasView;
 
 /// 每行的视觉缩进（与控件树自己的 `depth * INDENT` 对齐）。
@@ -155,18 +155,191 @@ impl CanvasView {
         let t = tokens();
         let divider_hot = crate::resize_drag::hovered(crate::resize_drag::Edge::Left)
             || crate::resize_drag::drag_active(crate::resize_drag::Handle::LeftPanel);
+        // 文件头那个改名框提交的新名字（`file.rename`）。
+        // 先把待提交的名字取出来（`RefMut` 的临时值活到语句结束，不能包着 `&mut self` 调用）。
+        let renamed = self.file_rename.borrow_mut().take();
+        if let Some(name) = renamed {
+            self.run_command("file.rename", serde_json::json!({ "name": name }), cx);
+        }
+        self.sync_file_name(cx);
+        // egui `layers::left_panel`：**三段** —— 64 pt 文件头、Pages 段、Layers 段。
+        // 以前只有「Layers 标题 + 树」，文件头和页面列表整个没有（用户 2026-11-10）。
         div()
             .id("left-panel")
             .flex_none()
             .h_full()
             .flex()
             .flex_col()
-            .overflow_y_scroll()
             .bg(rgba(t.panel))
             .border_r_1()
             .border_color(rgba(if divider_hot { t.accent } else { t.border }))
+            .child(self.file_header(cx))
+            .child(self.pages_section(cx))
             .child(SectionHeader::new(tr("Layers")).variant(SectionHeaderVariant::Normal))
             .child(self.render_layer_tree(cx))
+    }
+
+    /// 把文档名回写进文件头的输入框：只在**换了标签**（uid 变化）或名字真的变了时写，
+    /// 否则每帧 `set_value` 会把正在输入的内容打断。
+    fn sync_file_name(&mut self, cx: &mut Context<Self>) {
+        let Some(ds) = self.app.session.ds().ok() else { return };
+        let (uid, name) = (ds.uid, ds.doc.name.clone());
+        if self.file_name_seen.as_ref() == Some(&(uid, name.clone())) {
+            return;
+        }
+        let field = self.file_name_field.clone();
+        field.update(cx, |tf, _| tf.set_value(name.clone()));
+        self.file_name_seen = Some((uid, name));
+    }
+
+    /// 左栏的文件头（egui `layers::left_panel` 开头那段 64 pt）：文件名（可改）+ `Drafts` + 收起按钮。
+    fn file_header(&mut self, cx: &mut Context<Self>) -> Div {
+        let t = tokens();
+        let field = self.file_name_field.clone();
+        // 提交（Enter / 失焦）→ 排队一个 `file.rename`，由下一帧的左栏取走。
+        let pending = self.file_rename.clone();
+        field.update(cx, |tf, _| {
+            tf.set_on_commit(move |text, _, _| {
+                let name = text.trim().to_string();
+                if !name.is_empty() {
+                    *pending.borrow_mut() = Some(name);
+                }
+            });
+        });
+        let me = cx.entity();
+        div()
+            .flex_none()
+            .w_full()
+            .h(pt(64.0))
+            .flex()
+            .flex_col()
+            .px(pt(14.0))
+            .pt(pt(12.0))
+            .border_b_1()
+            .border_color(rgba(t.border))
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap(pt(6.0))
+                    .child(div().flex_1().min_w(px(0.0)).child(field))
+                    .child(IconButton::new(Icon::Panels).size(24.0).on_click(move |_e, _w, cx| {
+                        me.update(cx, |cv, cx| {
+                            cv.left_collapsed = true;
+                            cx.notify();
+                        });
+                    })),
+            )
+            .child(div().mt(pt(2.0)).text_size(pt(11.0)).text_color(rgba(t.text_secondary)).child(tr("Drafts")))
+    }
+
+    /// Pages 段（egui `layers::pages`）：40 pt 标题行（`Pages` + 搜索 + 加页）+ 页行。
+    /// 页行 32 pt：选中页有底色；分隔页显示一条横线（egui 的 `divider` 页）。
+    fn pages_section(&mut self, cx: &mut Context<Self>) -> Stateful<Div> {
+        let t = tokens();
+        let Some(ds) = self.app.session.ds().ok() else { return div().id("pages-section") };
+        let pages: Vec<(NodeId, String, bool)> =
+            ds.doc.pages.iter().filter_map(|p| ds.doc.node(*p).map(|n| (*p, n.name.clone(), ds.doc.is_divider(*p)))).collect();
+        let cur = ds.page;
+        let open = *self.pages_open.borrow();
+        let searching = *self.page_search.borrow();
+        let filter = self.page_filter.borrow().trim().to_lowercase();
+        let me = cx.entity();
+
+        // ── 40 pt 标题行 ────────────────────────────────────────────────────────────────
+        let open_slot = self.pages_open.clone();
+        let search_slot = self.page_search.clone();
+        let filter_slot = self.page_filter.clone();
+        let me_add = me.clone();
+        let head = div()
+            .flex_none()
+            .w_full()
+            .h(pt(40.0))
+            .flex()
+            .flex_row()
+            .items_center()
+            .pl(pt(16.0))
+            .pr(pt(8.0))
+            .cursor_pointer()
+            .on_mouse_down(MouseButton::Left, {
+                let me = me.clone();
+                move |_e, _, cx| {
+                    let next = !*open_slot.borrow();
+                    *open_slot.borrow_mut() = next;
+                    me.update(cx, |_, cx| cx.notify());
+                }
+            })
+            .child(div().flex_1().text_size(pt(11.0)).font_weight(gpui::FontWeight::SEMIBOLD).text_color(rgba(t.text)).child(tr("Pages")))
+            .child(IconButton::new(Icon::Search).size(24.0).active(searching).on_click({
+                let me = me.clone();
+                move |_e, _, cx| {
+                    let next = !*search_slot.borrow();
+                    *search_slot.borrow_mut() = next;
+                    if next {
+                        filter_slot.borrow_mut().clear();
+                    }
+                    me.update(cx, |_, cx| cx.notify());
+                }
+            }))
+            .child(IconButton::new(Icon::Plus).size(24.0).on_click(move |_e, _, cx| {
+                me_add.update(cx, |cv, cx| cv.run_command("page.add", serde_json::json!({}), cx));
+            }));
+
+        let mut sec = div().id("pages-section").flex_none().w_full().flex().flex_col().child(head);
+        if !open {
+            return sec;
+        }
+        if searching {
+            // 边打边过滤：`set_on_change`（不是 Enter）。
+            let field = self.page_search_field.clone();
+            let slot = self.page_filter.clone();
+            let me_field = me.clone();
+            field.update(cx, |tf, _| {
+                tf.set_on_change(move |text, _, cx| {
+                    *slot.borrow_mut() = text.trim().to_string();
+                    me_field.update(cx, |_, cx| cx.notify());
+                });
+            });
+            sec = sec.child(div().px(pt(8.0)).pb(pt(4.0)).child(field));
+        }
+        let mut list = div().id("pages-list").w_full().flex().flex_col().max_h(px(220.0)).overflow_y_scroll();
+        for (id, name, divider) in pages {
+            if !filter.is_empty() && (divider || !name.to_lowercase().contains(&filter)) {
+                continue;
+            }
+            let is_cur = id == cur;
+            let me_row = me.clone();
+            let row = div()
+                .id(ElementId::from(SharedString::from(format!("page-{}", id.0))))
+                .flex_none()
+                .w_full()
+                .h(pt(32.0))
+                .px(pt(8.0))
+                .flex()
+                .items_center()
+                .cursor_pointer()
+                .on_mouse_down(MouseButton::Left, move |_e, _, cx| {
+                    me_row.update(cx, |cv, cx| cv.run_command("page.select", serde_json::json!({ "id": id.0 }), cx));
+                })
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w(px(0.0))
+                        .overflow_hidden()
+                        .whitespace_nowrap()
+                        .rounded(pt(5.0))
+                        .px(pt(8.0))
+                        .py(pt(4.0))
+                        .text_size(pt(11.0))
+                        .text_color(rgba(t.text))
+                        .when(is_cur, |d| d.bg(rgba(t.selected_row)))
+                        .when(!is_cur, |d| d.hover(|s| s.bg(rgba(t.hover))))
+                        .child(if divider { SharedString::from("—") } else { SharedString::from(name) }),
+                );
+            list = list.child(row);
+        }
+        sec.child(list)
     }
 
     fn render_layer_tree(&mut self, cx: &mut Context<Self>) -> Stateful<Div> {

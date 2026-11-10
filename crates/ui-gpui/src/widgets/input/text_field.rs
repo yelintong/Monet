@@ -59,6 +59,7 @@ struct Pending {
     readonly: Option<bool>,
     search_clear: Option<bool>,
     on_commit: Option<CommitHandler>,
+    on_change: Option<CommitHandler>,
 }
 
 /// The field shell with optional lead/trail slots around one [`TextEdit`].
@@ -129,6 +130,11 @@ impl TextField {
     }
     pub fn set_on_commit(&mut self, f: impl Fn(&str, &mut Window, &mut App) + 'static) {
         self.pending.on_commit = Some(Rc::new(f));
+    }
+
+    /// 边打边回调：每改一个字符就调一次（首页搜索过滤用）。与 `set_on_commit` 互不影响。
+    pub fn set_on_change(&mut self, f: impl Fn(&str, &mut Window, &mut App) + 'static) {
+        self.pending.on_change = Some(Rc::new(f));
     }
     pub fn set_readonly(&mut self, b: bool) {
         self.pending.readonly = Some(b);
@@ -204,6 +210,9 @@ impl TextField {
             }
             if let Some(cb) = p.on_commit {
                 e.set_on_commit(move |t, w, cx| cb(t, w, cx));
+            }
+            if let Some(cb) = p.on_change {
+                e.set_on_change(move |t, w, cx| cb(t, w, cx));
             }
         });
     }

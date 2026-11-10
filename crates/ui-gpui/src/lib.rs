@@ -671,6 +671,46 @@ pub struct CanvasView {
 
     extra_state: panels::extra::ExtraState,
 
+    /// 左栏 Pages 段是否展开（egui `app.ui.pages_open`，默认展开）。
+
+    pages_open: std::rc::Rc<std::cell::RefCell<bool>>,
+
+
+
+    /// Pages 段的搜索：搜索框是否打开、以及过滤词（egui `page_search` / `page_filter`）。
+
+    page_search: std::rc::Rc<std::cell::RefCell<bool>>,
+
+    page_filter: std::rc::Rc<std::cell::RefCell<String>>,
+
+
+
+    /// 文件名的可编辑字段 + 待提交的新名字（`file.rename`）。
+
+    file_name_field: Entity<widgets::TextField>,
+
+    file_rename: std::rc::Rc<std::cell::RefCell<Option<String>>>,
+
+
+
+    /// Pages 段的搜索框（边打边过滤）。
+
+    page_search_field: Entity<widgets::TextField>,
+
+
+
+    /// 左栏是否收起（egui `ui.left_collapsed`；文件头的面板按钮切换）。
+
+    left_collapsed: bool,
+
+
+
+    /// 上一次同步给 `file_name_field` 的 `(uid, name)`：切标签时才回写，免得打字被打断。
+
+    file_name_seen: Option<(u64, String)>,
+
+
+
     /// B3: the board bar's shape grid is open (the shape button toggles it).
     board_shape_open: std::rc::Rc<std::cell::RefCell<bool>>,
 
@@ -726,11 +766,11 @@ impl CanvasView {
 
         let _ = app.session.execute("view.rulers", &serde_json::json!({"on": true}));
 
-        // 界面语言：与原文 `FigApp::new` 同一句（`session.prefs.language`；`system` 时读系统语言，
+        // 界面语言：与原文 `FigApp::new` 同一句 —— `session.prefs.language` 是 `system` 时，
 
-        // GPUI 侧暂无系统语言探测，传 `None` 即按英文回退——与原文在没有系统语言信息时一致）。
+        // 用系统偏好的语言列表来选目录（`i18n::set` 会挑列表里第一个有目录的）。
 
-        figcraft_i18n::set(&app.session.prefs.language, None);
+        figcraft_i18n::set(&app.session.prefs.language, system_language().as_deref());
 
         // 右栏字段提交后要唤醒视图去 drain 写回队列（按 Enter 提交时画布不会自己重绘）。
 
@@ -865,6 +905,28 @@ impl CanvasView {
 
 
             board_panel: false,
+
+
+
+            pages_open: std::rc::Rc::new(std::cell::RefCell::new(true)),
+
+            page_search: std::rc::Rc::new(std::cell::RefCell::new(false)),
+
+            page_filter: std::rc::Rc::new(std::cell::RefCell::new(String::new())),
+
+            file_name_field: widgets::TextField::build(cx, 180.0, |tf, _| {
+
+                tf.set_placeholder(tr("Untitled"));
+
+            }),
+
+            file_rename: std::rc::Rc::new(std::cell::RefCell::new(None)),
+
+            page_search_field: widgets::search_field(cx, 200.0, "", "Search pages"),
+
+            left_collapsed: false,
+
+            file_name_seen: None,
 
 
 
@@ -2475,7 +2537,7 @@ impl CanvasView {
 
 
 
-        let left = if board { 0.0 } else { left };
+        let left = if board || self.left_collapsed { 0.0 } else { left };
 
 
 
@@ -2798,6 +2860,64 @@ impl CanvasView {
         }
 
 
+
+        // 需要**系统文件对话框**的命令：引擎只认 `path`，路径得由原生选择器给
+
+        // （egui 里由 `FigApp::open_dialog` / `import_dialog` 负责，见 `app/files.rs:83`）。
+
+        // 扩展名表逐条照抄 `import_dialog`：导入含设计文件与图片，放置只收图片。
+
+        let picker: Option<(&str, &[&str], &str)> = match id {
+
+            "file.open" => Some((tr("Open"), &["figcraft", "fig", "jam", "sketch", "penpot", "svg", "png", "jpg", "jpeg", "webp", "gif", "tif", "tiff"], "file.open")),
+
+            "file.import" => Some((
+
+                tr("Import"),
+
+                &["penpot", "svg", "png", "jpg", "jpeg", "webp", "gif", "tif", "tiff", "figcraft", "fig", "jam", "sketch"],
+
+                "file.import",
+
+            )),
+
+            "file.placeImage" => Some((tr("Place image"), &["png", "jpg", "jpeg", "webp", "gif", "tif", "tiff"], "file.placeImage")),
+
+            _ => None,
+
+        };
+
+        if let Some((title, exts, cmd)) = picker {
+
+            let mut dialog = rfd::FileDialog::new().set_title(title);
+
+            for ext in exts {
+
+                dialog = dialog.add_filter(title, &[*ext]);
+
+            }
+
+            if let Some(path) = dialog.pick_file() {
+
+                let params = serde_json::json!({ "path": path.to_string_lossy() });
+
+                if let Err(e) = self.app.session.execute(cmd, &params) {
+
+                    if std::env::var_os("FC_DEBUG_CMDS").is_some() {
+
+                        eprintln!("[ui cmd] {cmd} {params} -> {e}");
+
+                    }
+
+                }
+
+            }
+
+            cx.notify();
+
+            return;
+
+        }
 
         if let Err(e) = self.app.session.execute(id, &params) {
 
@@ -4503,7 +4623,7 @@ impl Render for CanvasView {
 
         // i18n: the language can change from the Preferences dialog, the palette or a menu; sync
         // the catalog every frame so the change takes effect at once (an atomic store, cheap).
-        figcraft_i18n::set(&self.app.session.prefs.language, None);
+        figcraft_i18n::set(&self.app.session.prefs.language, system_language().as_deref());
 
         // 每帧渲染开始时把 icon 按钮的稳定 id 序号归零。右栏/弹窗里的 icon 按钮每帧重建，
 
@@ -6330,7 +6450,12 @@ impl Render for CanvasView {
             // 收起界面（minimize）时保留工具栏，右栏只在有选区时出现（egui `view.minimize` 语义）。
             .when(show_sidebars, |d| d
                 .child(dbg_tint(panels::left_rail(on_menu, on_variables, on_file, self.variables_full, self.variables_open), dbg, 0xE5484D))
-                .child(dbg_tint(self.render_left_panel(window, cx).w(px(self.left_w + panels::HANDLE_W)), dbg, 0xF5A524)))
+
+                .when(!self.left_collapsed, |d| {
+
+                    d.child(dbg_tint(self.render_left_panel(window, cx).w(px(self.left_w + panels::HANDLE_W)), dbg, 0xF5A524))
+
+                }))
 
             .child(dbg_tint(canvas, dbg, 0x30A46C))
 
@@ -8267,6 +8392,142 @@ fn dbg_tint<E: gpui::Styled>(el: E, on: bool, color: u32) -> E {
 
 
 /// `--control <port>` / `--control=<port>`（照搬 `apps/figcraft` 的同名选项）。
+
+/// The system's preferred UI languages, comma separated ("zh-CN,en-US"), or `None` when the
+
+/// platform can't say.
+
+///
+
+/// `figcraft_i18n::set` picks the first language in that list that has a catalog, so `"system"`
+
+/// in the preferences resolves to the interface language the OS is actually in. `ui-egui` reads
+
+/// the same list through `apps/figcraft`'s `Services::system_language`; the GPUI front-end runs
+
+/// on its own (the crate is excluded from the workspace), so it asks the OS directly.
+
+fn system_language() -> Option<String> {
+
+    use std::sync::OnceLock;
+
+    static CACHE: OnceLock<Option<String>> = OnceLock::new();
+
+    CACHE.get_or_init(probe_system_language).clone()
+
+}
+
+
+
+#[cfg(target_os = "windows")]
+
+fn probe_system_language() -> Option<String> {
+
+    // `GetUserPreferredUILanguages(MUI_LANGUAGE_NAME, …)` is what
+
+    // `GlobalizationPreferences::Languages()` wraps: a double-null-terminated list of BCP-47 tags.
+
+    unsafe extern "system" {
+
+        fn GetUserPreferredUILanguages(flags: u32, count: *mut u32, buffer: *mut u16, size: *mut u32) -> i32;
+
+    }
+
+    const MUI_LANGUAGE_NAME: u32 = 0x8;
+
+    let mut count: u32 = 0;
+
+    let mut size: u32 = 0;
+
+    // First call: how big the buffer must be.
+
+    let ok = unsafe { GetUserPreferredUILanguages(MUI_LANGUAGE_NAME, &mut count, std::ptr::null_mut(), &mut size) };
+
+    if ok == 0 || size == 0 {
+
+        return None;
+
+    }
+
+    let mut buf = vec![0u16; size as usize];
+
+    let ok = unsafe { GetUserPreferredUILanguages(MUI_LANGUAGE_NAME, &mut count, buf.as_mut_ptr(), &mut size) };
+
+    if ok == 0 {
+
+        return None;
+
+    }
+
+    let list: Vec<String> = buf
+
+        .split(|c| *c == 0)
+
+        .filter(|w| !w.is_empty())
+
+        .map(String::from_utf16_lossy)
+
+        .filter(|s| !s.is_empty())
+
+        .collect();
+
+    (!list.is_empty()).then(|| list.join(","))
+
+}
+
+
+
+#[cfg(target_os = "macos")]
+
+fn probe_system_language() -> Option<String> {
+
+    // `defaults` prints a list: ( "es-ES", en ).
+
+    let out = std::process::Command::new("defaults").args(["read", "-g", "AppleLanguages"]).output().ok()?;
+
+    let list: Vec<String> = String::from_utf8_lossy(&out.stdout)
+
+        .split(['(', ',', ')'])
+
+        .map(|s| s.trim().trim_matches('"').to_string())
+
+        .filter(|s| !s.is_empty())
+
+        .collect();
+
+    (!list.is_empty()).then(|| list.join(","))
+
+}
+
+
+
+#[cfg(all(unix, not(target_os = "macos")))]
+
+fn probe_system_language() -> Option<String> {
+
+    // gettext's `LANGUAGE` priority list ("fr:de"), then the locale ("fr_FR.UTF-8").
+
+    let var = |k: &str| std::env::var(k).ok().filter(|v| !v.is_empty() && v != "C" && v != "POSIX");
+
+    let locale = ["LC_ALL", "LC_MESSAGES", "LANG"].into_iter().find_map(var);
+
+    let list: Vec<String> = var("LANGUAGE").map(|l| l.replace(':', ",")).into_iter().chain(locale).collect();
+
+    (!list.is_empty()).then(|| list.join(","))
+
+}
+
+
+
+#[cfg(not(any(windows, unix)))]
+
+fn probe_system_language() -> Option<String> {
+
+    None
+
+}
+
+
 
 fn control_port_from_args(args: impl Iterator<Item = String>) -> Option<u16> {
 
