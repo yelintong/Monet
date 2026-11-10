@@ -1505,6 +1505,7 @@ pub(crate) fn right_panel(
     panel_w: f32,
     window: &mut Window,
     cx: &mut App,
+    motion: bool,
 ) -> Stateful<Div> {
     let t = tokens();
     // 不再手算任何列宽：字段/下拉/颜色行一律 `w_full`，列宽完全由统一网格的 `flex_1` 决定。
@@ -1530,7 +1531,7 @@ pub(crate) fn right_panel(
             // 于是退出 Motion 后整条头像/分享栏就「消失」了。这里补回，与 Motion 分支同序。
             .child(right::topbar::top_bar(f, data))
             // 「显示 / 隐藏」开关无论有无选中都在：view.* 是文档级命令，不需要选区。
-            .child(right::sections::view_bar(f, data))
+            .child(right::sections::view_bar(f, data, motion))
             .child(body)
     };
 

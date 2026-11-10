@@ -2669,15 +2669,20 @@ impl CanvasView {
 
                         self.set_motion_open(false, cx);
 
+                        self.fields.set_right_tab(0);
+
                         self.run_command("tool.set", serde_json::json!({ "tool": "pencil" }), cx);
 
                     }
 
-                    // Design: the move tool (leaving the pencil).
+                    // Design: the move tool (leaving the pencil). Also returns the right panel to
+                    // the Design tab so the Dev-Mode inspector (tab 2) does not stay on screen.
 
                     1 => {
 
                         self.set_motion_open(false, cx);
+
+                        self.fields.set_right_tab(0);
 
                         if tool == ToolId::Pencil {
 
@@ -5688,7 +5693,7 @@ impl Render for CanvasView {
 
                 .child(panels::right::topbar::top_bar(&self.fields, &panel_data))
 
-                .child(panels::right::sections::view_bar(&self.fields, &panel_data));
+                .child(panels::right::sections::view_bar(&self.fields, &panel_data, true));
 
             let t = crate::widgets::tokens();
 
@@ -5733,7 +5738,7 @@ impl Render for CanvasView {
             let right_hot = crate::resize_drag::hovered(crate::resize_drag::Edge::Right)
                 || self.resizing == Some(ResizeSide::Right);
 
-            panels::right_panel(&self.fields, self.panel_sel(), &panel_data, self.right_w, window, cx)
+            panels::right_panel(&self.fields, self.panel_sel(), &panel_data, self.right_w, window, cx, self.motion)
 
                 .border_l_1()
 

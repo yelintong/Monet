@@ -57,7 +57,7 @@
 
 | # | 位置 | EGUI 做法 | GPUI 现状（证据） | 差距 | 优先级 |
 |---|---|---|---|---|---|
-| B1 | ~~右栏第三个 tab~~ | `"Developer Mode"`（#2135 商标改名，`right_tab_label()` + 命名回归测试） | 改名与命名回归测试已落地；**2026-11-10 用户要求从右栏 tabs 行去掉该按钮**，现只剩 Design / Prototype。`naming.rs` 的常量/函数保留给 a11y 与其它入口，Developer Mode 面板仍可从底部工具栏 Inspect 或 Shift+D 进入 | 命名合规完成；可见 tab 按用户要求移除 | ✅ |
+| B1 | ~~右栏第三个 tab~~ | `"Developer Mode"`（#2135 商标改名，`right_tab_label()` + 命名回归测试） | 改名与命名回归测试已落地；**2026-11-10 用户要求从右栏 tabs 行去掉该按钮**，现只剩 Design / Prototype。`naming.rs` 的常量/函数保留给 a11y 与其它入口，Developer Mode 面板仍可从底部工具栏 Inspect 或 Shift+D 进入 | 命名合规完成；可见 tab 按用户要求移除；底部模式切换第 4 格 `Inspect`→`开发`（修掉退役名），动画/开发模式下右栏 tabs 行改为显示「动画」/「开发」文本（见下方进度） | ✅ |
 | B2 | Actions 调色板（Cmd+K） | 三个 tab `All / Assets / Plugins & widgets`、`Recents`、前缀优先排序、最多 60 行（`menus/palette.rs:90,162,170`） | 单一平铺列表 `palette_rows()`（`lib.rs:311`），无 tab / Recents / 排序 | 找不到插件与资产，长列表体验差 | P1 |
 | B3 | 工具条 | 设计模式 6 组 + **画板模式 8 组**（bmove/marker/sticky/bshape/connector/text/section…） | 设计模式 6 组齐全；画板组全无（`toolbar.rs:17-20` 明写未移植） | 见 A2 / A27 | P1 |
 | B4 | 标签条 | 拖拽重排、关闭询问、拖出成窗口、Alt+close 直接丢弃 | `tabs.rs` / `tabs_view.rs` 有拖拽与重排；关闭询问与拖出成窗口未见 | 见 A16/A18 | P1 |
@@ -206,7 +206,7 @@
 |---|---|
 | 提交 GitHub | `e9de7cb4`（第一批）+ `e9640ac1`（Cargo.lock）已推送 `fork/GPUI-smooth`。git 的 `http.proxy` 写死在失效端口 65311，实际监听的是 54834；临时 `-c http.proxy=… -c http.schannelCheckRevoke=false` 后推送成功 |
 | 用户头像 / Present / Share 栏「会丢失」 | 根因：`panels.rs::right_panel` 的 `wrap()` 只画 `view_bar` + body，48 pt 顶栏**只在 `lib.rs` 的 Motion 分支**画过。已在 `wrap()` 补上 `right::topbar::top_bar(f, data)`，顺序与 Motion 分支一致；两条分支互斥，不会重复画 |
-| 「下面这一栏不要开发模式按钮」 | 用户确认为**右栏 tabs 行的第三个标签**。已移除，只留 Design / Prototype；`naming.rs` 的 `right_tab_label` / 常量 / 命名回归测试保留给 a11y 与其它入口，Developer Mode 面板本身没删（底部工具栏 Inspect、Shift+D 仍可进入） |
+| 「下面这一栏不要开发模式按钮」 / 底部切换器第 4 格名称 | 用户确认为**右栏 tabs 行的第三个标签**，已移除只留 Design / Prototype；`naming.rs` 的 `right_tab_label` / 常量 / 命名回归测试保留给 a11y 与其它入口，Developer Mode 面板本身没删（底部工具栏 Inspect、Shift+D 仍可进入）。同一轮把底部模式切换器第 4 格从退役名 `Inspect` 改为 `开发`，并在动画/开发模式下把右栏 tabs 行的 Design/Prototype 换成「动画」/「开发」文本 |
 | 验证 | `cargo check -p figcraft-ui-gpui --lib` 通过；重编前先关闭占用 `run.exe` 的旧窗口（否则 LNK1104），新 exe 17:32 生成，17:33 启动窗口 `FigCraft`（PID 4204，Responding=True） |
 
 ### G 表第 6 行落地（A18 标签关闭三问）
@@ -215,5 +215,12 @@
 - **修法**：改为 `force: e.modifiers.alt`（Alt+close 才直接丢弃）；普通关闭由引擎对脏文档发 `dialog.unsaved`，已接好的通用对话框弹 Don't Save / Cancel / Save。`sync_ui_requests` 在弹窗前执行 `doc.switch {index}`，避免 Save 存到别的活动文档；Save 按钮改为不带 index 的 `file.save`（引擎不接受 index）。
 - **诚实的边界**：Save 只保存，不会自动再执行一次关闭（这样即使保存失败也不会丢改动）；保存后再点 X 即可关闭。EGUI 的「保存后自动关闭 / Save as」流程仍未移植。
 - **验证**：`cargo check -p figcraft-ui-gpui --lib` 通过；`cargo test --lib --features test-support -- naming dialogs` 9 条全绿；重编 exe（17:36）并重启窗口（PID 3500，Responding=True）。
+
+### 18:1x 模式切换器改名 + 右栏 tabs 文本化（用户 2026-11-10 现场反馈）
+
+- **底部模式切换器第 4 格名称不对**：原写死 `"Inspect"`，而 `naming.rs` 的 `RETIRED` 列表把 `Inspect` 列为退役名（违反 #2135 商标合规）。已改为 `"开发"`，与用户口径一致；`active` 高亮逻辑不变（仍由 `right_tab==2` 判定）。`naming.rs` 的 `DEVELOPER_MODE` 常量同步改为 `"开发"`，命名回归测试相应更新（仍 4 条全绿）。
+- **动画 / 开发模式里不显示 Design / Prototype 按钮**：`view_bar` 新增 `motion` 形参；`motion==true` 时整行显示「动画」、`f.right_tab()==2`（开发模式）时显示「开发」，其余模式才显示可点的 Design / Prototype 两个标签。动画分支由 `lib.rs` 的 Motion 右栏头部传 `true`，普通分支传 `self.motion`；`right_panel` 同步新增 `motion` 形参。
+- **点 Design 回不去 / 点不了 Draw（开发模式下）**：根因是 `on_intent` 的 `Mode(0)`/`Mode(1)` 分支只关 Motion、切工具，却**没把右栏标签切回 Design**（`set_right_tab(0)` 缺失），于是 `right_tab` 停在 2，右栏一直停在 Inspect 面板、底部高亮也永远卡在开发格。已对齐 EGUI `pick_mode`：Draw/Design 两个分支都补 `self.fields.set_right_tab(0)`。
+- **验证**：`cargo check -p figcraft-ui-gpui --lib` 通过；`cargo test --lib --features test-support -- naming` 4 条全绿；重编 exe 后启动窗口（Responding=True）。
 
 **下一步**：G 表第 7 行 —— Actions 调色板三 tab（`All / Assets / Plugins & widgets`）+ Recents + 前缀优先排序 + 最多 60 行；随后第 8 行 Home。涉及 `widgets/**` 冻结件的改动（A24）必须先与用户确认。

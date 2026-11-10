@@ -190,7 +190,7 @@ fn view_rows(v: &ViewData) -> Vec<ViewMenuRow> {
     rows
 }
 
-pub(crate) fn view_bar(f: &RightFields, d: &PanelData) -> gpui::Div {
+pub(crate) fn view_bar(f: &RightFields, d: &PanelData, motion: bool) -> gpui::Div {
     let t = tokens();
     let zoom_label = format!("{}%", (d.view.zoom * 100.0).round() as i64);
     let zoom = checked_dropdown(f, zoom_label, 64.0, view_rows(&d.view));
@@ -233,16 +233,35 @@ pub(crate) fn view_bar(f: &RightFields, d: &PanelData) -> gpui::Div {
                     .child(label),
             )
     };
-    let tabs = div()
-        .flex()
-        .flex_row()
-        .items_center()
-        .gap(pt(2.0))
-        // 2026-11-10 用户要求：这一栏不放「开发模式」按钮，只留 Design / Prototype。
-        // Developer Mode 面板本身没有删，仍可从底部工具栏的 Inspect 或 Shift+D 进入；
-        // 标签文案仍由 naming::right_tab_label 统一提供（a11y / 命名回归测试继续用它）。
-        .child(tab(crate::naming::right_tab_label(0), 0))
-        .child(tab(crate::naming::right_tab_label(1), 1));
+    // 2026-11-10 用户要求：动画 / 开发模式下，这一栏不显示 Design / Prototype 两个标签，
+    // 原位置直接换成文本——动画写「动画」、开发写「开发」；其余模式仍是可点的 Design / Prototype。
+    // 开发模式由右栏标签下标 2（set_right_tab(2)）判定；动画模式由 motion 判定。
+    let mode_label = |s: &'static str| -> gpui::Div {
+        div()
+            .h(pt(24.0))
+            .px(pt(8.0))
+            .flex()
+            .items_center()
+            .rounded(pt(5.0))
+            .text_size(pt(11.0))
+            .font_weight(gpui::FontWeight::SEMIBOLD)
+            .text_color(rgba(t.text))
+            .child(s)
+    };
+    let tabs = if motion {
+        div().flex().flex_row().items_center().gap(pt(2.0)).child(mode_label("动画"))
+    } else if f.right_tab() == 2 {
+        div().flex().flex_row().items_center().gap(pt(2.0)).child(mode_label("开发"))
+    } else {
+        div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(pt(2.0))
+            // 标签文案仍由 naming::right_tab_label 统一提供（a11y / 命名回归测试继续用它）。
+            .child(tab(crate::naming::right_tab_label(0), 0))
+            .child(tab(crate::naming::right_tab_label(1), 1))
+    };
     div()
         .flex_none()
         .w_full()

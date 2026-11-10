@@ -275,9 +275,9 @@ pub(crate) fn bar(
 
     pill = pill.child(divider());
 
-    // ── the mode switcher: Draw · Design · Animation · Inspect ──────────────────────────────
-    // Draw is Design with the pencil; Animation is the Motion timeline; Inspect (Dev Mode) has no
-    // panel in this front-end yet, so it is drawn greyed instead of pretending to switch.
+    // ── the mode switcher: Draw · Design · Animation · 开发 ──────────────────────────────────
+    // Draw is Design with the pencil; Animation is the Motion timeline; 开发 (Dev Mode) opens the
+    // right-panel inspector (Inspect 标签 + ui_requests 通道), reached here or via Shift+D.
     let active = if motion {
         Some(2)
     } else if inspect {
@@ -287,7 +287,7 @@ pub(crate) fn bar(
     } else {
         Some(1)
     };
-    let modes = [(Icon::Pencil, "Draw"), (Icon::Frame, "Design"), (Icon::Animation, "Animation"), (Icon::Code, "Inspect")];
+    let modes = [(Icon::Pencil, "Draw"), (Icon::Frame, "Design"), (Icon::Animation, "Animation"), (Icon::Code, "开发")];
     let mut seg = div().flex_none().w(pt(MODE_CELLS as f32 * CELL)).h(pt(CELL)).flex().flex_row().items_center().rounded(pt(5.0)).bg(rgba(t.field));
     for (i, (icon, name)) in modes.iter().enumerate() {
         // 四段全部可点：Inspect 现在有面板（右栏 Inspect 标签 + ui_requests 通道）。

@@ -13,8 +13,10 @@
 pub const DESIGN: &str = "Design";
 /// The Prototype tab.
 pub const PROTOTYPE: &str = "Prototype";
-/// The third right-panel tab. Was "Inspect" in GPUI, "Dev Mode" in the egui front-end.
-pub const DEVELOPER_MODE: &str = "Developer Mode";
+/// The dev-mode label shown in the toolbar (mode switcher) and as the right-panel tab-row text
+/// while the Dev-Mode inspector is open. Was "Inspect" in GPUI, "Dev Mode" in the egui front-end;
+/// both are retired (trademark + the user's 2026-11-10 request to label it 开发).
+pub const DEVELOPER_MODE: &str = "开发";
 
 /// The command id — an identifier, deliberately unchanged by the rename.
 #[cfg(test)]
@@ -40,7 +42,7 @@ mod tests {
     fn third_right_tab_is_developer_mode() {
         assert_eq!(right_tab_label(0), "Design");
         assert_eq!(right_tab_label(1), "Prototype");
-        assert_eq!(right_tab_label(2), "Developer Mode");
+        assert_eq!(right_tab_label(2), "开发");
         assert_eq!(right_tab_label(255), "Design", "an unknown tab must not panic");
     }
 
