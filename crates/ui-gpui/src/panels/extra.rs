@@ -816,7 +816,7 @@ fn compare_body(app: &CanvasApp, cmds: &Cmds, state: &ExtraState, id: Option<fig
                                 .absolute()
                                 .top(px(0.0))
                                 .left(px(dw * split - 1.0))
-                                .w(px(2.0))
+                                .w(px(1.0))
                                 .h(px(dh))
                                 .bg(rgba(t.accent))
                                 .child(

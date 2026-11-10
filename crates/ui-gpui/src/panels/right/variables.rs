@@ -2460,7 +2460,8 @@ impl VariablesEditor {
                 );
                 d.on_mouse_down(MouseButton::Left, {
                     let st = st.clone();
-                    move |e: &MouseDownEvent, _, _| {
+                    move |e: &MouseDownEvent, _, cx| {
+                        cx.stop_propagation();
                         let items: Vec<MenuItem> = candidates
                             .iter()
                             .map(|(id, name)| MenuItem::new(name.clone(), "ui.setAlias", json!({ "variable": vid, "mode": mid, "alias": id })))
@@ -2539,7 +2540,8 @@ impl VariablesEditor {
                     .hover(move |s| s.bg(rgba(t.hover)))
                     .on_mouse_down(MouseButton::Left, {
                         let st = st.clone();
-                        move |e: &MouseDownEvent, _, _| {
+                        move |e: &MouseDownEvent, _, cx| {
+                            cx.stop_propagation();
                             st.borrow_mut().menu = Some(Menu {
                                 x: f32::from(e.position.x),
                                 y: f32::from(e.position.y) - 130.0,

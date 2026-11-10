@@ -57,7 +57,7 @@ pub(crate) fn rail_button_hit(x: f32, y: f32) -> bool {
 /// The bottom animation bar's height (egui's timeline is taller; this keeps the canvas usable).
 pub(crate) const ANIM_H: f32 = 220.0;
 /// A panel divider's hit width.
-pub(crate) const HANDLE_W: f32 = 4.0;
+pub(crate) const HANDLE_W: f32 = 1.0;
 /// Panel width limits, per the user's spec.
 pub(crate) const MIN_PANEL: f32 = 240.0;
 pub(crate) const MAX_PANEL: f32 = 500.0;
@@ -1402,8 +1402,6 @@ pub(crate) fn left_rail(
         .py(pt(RAIL_PAD_Y))
         .gap(pt(4.0))
         .bg(rgba(t.panel))
-        .border_1()
-        .border_color(rgba(t.border))
         // 第 1 项：主菜单。点击在它下方弹出下拉菜单（egui 的 left-rail Menu 同义）。
         // 尺寸/内边距必须与 `rail_menu_bounds()` 一致（菜单锚点按那套几何算）。
         .child(IconButton::new(Icon::Menu).id("rail-menu").size(RAIL_BTN).on_click(on_menu))
@@ -1427,8 +1425,6 @@ pub(crate) fn left_panel() -> Stateful<Div> {
         .flex_col()
         .overflow_y_scroll()
         .bg(rgba(t.panel))
-        .border_1()
-        .border_color(rgba(t.border))
         .child(SectionHeader::new("Layers").variant(SectionHeaderVariant::Normal))
 }
 
@@ -1460,12 +1456,10 @@ pub(crate) fn right_panel(
         div()
             .id("right-panel")
             .flex_none()
-            .h_full()
-            .flex()
-            .flex_col()
-            .bg(rgba(t.panel))
-            .border_1()
-            .border_color(rgba(t.border))
+        .h_full()
+        .flex()
+        .flex_col()
+        .bg(rgba(t.panel))
             // 「显示 / 隐藏」开关无论有无选中都在：view.* 是文档级命令，不需要选区。
             .child(right::sections::view_bar(f, data))
             .child(body)
@@ -1895,8 +1889,6 @@ pub(crate) fn animation_bar() -> Div {
         .flex()
         .flex_col()
         .bg(rgba(t.panel))
-        .border_1()
-        .border_color(rgba(t.border))
         .child(
             div()
                 .h(pt(47.0))
@@ -1905,8 +1897,6 @@ pub(crate) fn animation_bar() -> Div {
                 .flex_row()
                 .items_center()
                 .px(pt(16.0))
-                .border_b_1()
-                .border_color(rgba(t.border))
                 .child(div().text_size(pt(11.0)).text_color(rgba(t.text)).child("Animations")),
         )
         .child(div().flex_1().w_full())

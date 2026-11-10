@@ -255,7 +255,7 @@ pub fn color_picker(
                 .top(pt((1.0 - hsb.b) * 240.0 - 6.0))
                 .size(pt(12.0))
                 .rounded(pt(6.0))
-                .border_2()
+                .border_1()
                 .border_color(gpui::white()),
         )
         .on_mouse_down(MouseButton::Left, move |e: &MouseDownEvent, window, cx| {
@@ -319,7 +319,7 @@ pub fn color_picker(
                 .top(pt(14.0 - 6.0))
                 .size(pt(12.0))
                 .rounded(pt(6.0))
-                .border_2()
+                .border_1()
                 .border_color(gpui::white()),
         );
     col = col.child(hue_row);
@@ -364,7 +364,7 @@ pub fn color_picker(
             .top(pt(10.0 - 6.0))
             .size(pt(12.0))
             .rounded(pt(6.0))
-            .border_2()
+            .border_1()
             .border_color(gpui::white()),
     );
     col = col.child(alpha_row);

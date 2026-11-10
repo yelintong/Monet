@@ -153,7 +153,7 @@ fn avatar(name: &str, fill: Color32, ring: Option<Color32>) -> Div {
         .size(pt(2.0 * R))
         .rounded_full()
         .bg(rgba(fill))
-        .border_2()
+        .border_1()
         .border_color(rgba(ring.unwrap_or(t.panel)))
         .flex()
         .items_center()
