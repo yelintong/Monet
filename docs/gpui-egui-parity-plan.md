@@ -27,8 +27,8 @@
 | A3 | **评论 Comments**（评论工具之外的评论列表/气泡/回复） | `comments_*`、`canvas/comments.rs` | 只有工具按钮 `ToolId::Comment`（`toolbar.rs:80`），无评论面板/线程 UI | 能点工具，无处查看/回复评论 | P1 | 中 |
 | A4 | **插件面板 Plugins**（浏览、安装、启用） | `dialogs/plugins_ui.rs`、`plugin_panel` | 只有主菜单 `"Plugins"` 字样（`main_menu.rs:37`），无浏览/管理面板 | 插件生态入口缺失 | P1 | 中 |
 | A5 | **图标面板 Icons**（图标库插入） | `icons_panel.rs` | 0 处引用 | 图标字体插入路径缺失 | P2 | 中 |
-| A6 | **导出对话框 Export**（格式/倍数/预览/多选导出） | `dialogs/export.rs:64 export_dialog` | 只有变量导出 `panels/right/variables.rs:760`（`ui.export` 的 JSON），无通用导出 UI | 无法从界面选格式/倍数导出 | P0 | 中 |
-| A7 | **首选项 Preferences 对话框** | `dialogs.rs:211 show`（Preferences 分支） | 只有菜单项 `"Preferences"`（`main_menu.rs:37`），无对话框 | 主题/语言/滚轮缩放等设置无 UI | P0 | 中 |
+| A6 | **导出对话框 Export**（格式/倍数/预览/多选导出） | `dialogs/export.rs:64 export_dialog` | 🔄 已通过 A19 通用壳接上：`dialogs.rs:239-251` 的 `Kind::Export` 有 Format(5)/Scale(4)/File name + `file.export`，菜单 `catalog.rs:48` 与 `menu_action()` 可达 | **预览、多选导出、逐格式参数、原生路径选择仍缺**（见 I 节） | P0 | 中 |
+| A7 | **首选项 Preferences 对话框** | `dialogs.rs:211 show`（Preferences 分支） | 🔄 已通过 A19 通用壳接上：`dialogs.rs:253-267` 的 `Kind::Preferences` 有 Theme / Interface size / 左右面板宽度 + Apply→`view.panelWidths`；入口 `catalog.rs:267` 与 Cmd+, 可用 | **语言、滚轮缩放、面板宽度重置仍缺**（见 I 节） | P0 | 中 |
 | A8 | **批量重命名 Batch rename** | `dialogs/batch_rename.rs` | 搜 `"Rename layers"` 0 命中 | 多选改名只能逐个 | P2 | 小 |
 | A9 | **分支 UI Branch** | `dialogs/branch_ui.rs` | 搜 `branch` 只命中控制通道/文本编辑，无 UI | 分支管理不可用 | P2 | 中 |
 | A10 | **色彩配置 Color profile** | `dialogs/color_profile.rs` | 仅 `panels/right/sections.rs:1823` 注释提到 Page 设置 | 色域 / 配置文件不可设 | P2 | 小 |
@@ -39,7 +39,7 @@
 | A15 | **取色器 Eyedropper / Sampled color** | `dialogs/sampled_color.rs` | 只有光标名命中（`canvas/cursors.rs`），无取样 UI | 屏幕取色不可用 | P2 | 小 |
 | A16 | **多窗口**（File ▸ New window / Open in new window / 标签拖出成窗口） | `windows.rs` | `open_window` 是弹层 `popovers::WindowState`，非 OS 多窗口 | 只能单窗口 | P2 | 大 |
 | A17 | **菜单项取值对话框**（Create link / Offset path / Move to page 等） | `dialogs/menu_input.rs` | 无对应实现 | 这些命令没有输入入口 | P2 | 小 |
-| A18 | **标签关闭未保存询问**（Don't Save / Cancel / Save；Alt+close 直接丢弃） | `windows.rs:392,422,542`（引擎请求 `dialog.unsaved`，**原文写的 `app.rs` #2032 不是对话框所在处**） | `tabs_view.rs:11` 自己写着：`未保存关闭的 Save / Don't Save / Cancel 三问（P1：GPUI 还没有对话框框架…）` | 关标签可能直接丢改动 | P1 | 小 |
+| A18 | **标签关闭未保存询问**（Don't Save / Cancel / Save；Alt+close 直接丢弃） | `windows.rs:392,422,542`（引擎请求 `dialog.unsaved`，**原文写的 `app.rs` #2032 不是对话框所在处**） | ✅ 已落地：`tabs_view.rs:388,392` 的 `force: e.modifiers.alt`、`lib.rs:1400` 消费 `dialog.unsaved`、`dialogs.rs:285-295` 三问 | Save 后不会自动再关闭；拖出成窗口（A16）仍缺（见 I 节） | P1 | 小 |
 | **A19** | **通用对话框框架**（数据驱动：标题 / 说明 / 字段 / 按钮 / 确认取消 / Escape / 遮罩） | `dialogs.rs`（579 行，`renderers()` 统一 About·Preferences·Shortcuts·Find·Rename·Variables·Export） | `tabs_view.rs:11` 自认「还没有对话框框架」；`control.rs:356` 只有 `"dialogs": null` | **A6/A7/A8/A10/A11/A12/A13/A15/A17/A18 十个对话框的共同前置**；不做就只能每个各造一套壳 | **P0** | 中 |
 | **A20** | **查找替换 Find and replace** | `dialogs.rs:368-404`（`edit.findReplace`） | `edit.findReplace` / `find_replace` / `Find and replace` 全 0 命中 | 文档内文本无法批量查找替换 | P1 | 小 |
 | **A21** | **无障碍 a11y**（AccessKit 树、F6/Shift+F6 区域切换、Tab 焦点环、方向键导航） | `a11y.rs`（1071 行，`focus.region` 请求） | `AccessKit` / `accesskit` / `focus_ring` / `Key::F6` 全 0；`tabs_view.rs:13` 自认「a11y（AccessKit，P4）」 | 键盘/读屏用户不可用 | P2 | 大 |
@@ -60,12 +60,12 @@
 | B1 | ~~右栏第三个 tab~~ | `"Developer Mode"`（#2135 商标改名，`right_tab_label()` + 命名回归测试） | 改名与命名回归测试已落地；**2026-11-10 用户要求从右栏 tabs 行去掉该按钮**，现只剩 Design / Prototype。`naming.rs` 的常量/函数保留给 a11y 与其它入口，Developer Mode 面板仍可从底部工具栏 开发 或 Shift+D 进入 | 命名合规完成；可见 tab 按用户要求移除；底部模式切换第 4 格 `Inspect`→`开发`（修掉退役名），动画/开发模式下右栏 tabs 行改为显示「动画」/「开发」文本（见下方进度） | ✅ |
 | B2 | ~~Actions 调色板（Cmd+K）~~ | 三个 tab `All / Assets / Plugins & widgets`、`Recents`、前缀优先排序、最多 60 行（`menus/palette.rs:90,162,170`） | 2026-11-10 落地 `palette.rs`：三 tab + Recents（读引擎 `prefs.recent_actions`）+ 按顶层菜单分组 + 搜索时前缀优先/60 行上限 + Assets/Plugins/widgets 真实数据 | 键盘上下键选中、Enter 运行高亮行、实时过滤（冻结的 `TextField` 只有 commit 回调）未移植；见 H 节 18:4x | ✅ |
 | B3 | 工具条 | 设计模式 6 组 + **画板模式 8 组**（bmove/marker/sticky/bshape/connector/text/section…） | 设计模式 6 组齐全；画板组全无（`toolbar.rs:17-20` 明写未移植） | 见 A2 / A27 | P1 |
-| B4 | 标签条 | 拖拽重排、关闭询问、拖出成窗口、Alt+close 直接丢弃 | `tabs.rs` / `tabs_view.rs` 有拖拽与重排；关闭询问与拖出成窗口未见 | 见 A16/A18 | P1 |
+| B4 | 标签条 | 拖拽重排、关闭询问、拖出成窗口、Alt+close 直接丢弃 | 拖拽重排（`tabs_view.rs:155-187`）与关闭询问均已接（G 表第 6 行）；**拖出成窗口（A16）仍缺** | 见 A16/A18 与 I 节 | 🔄 |
 | B5 | ~~协作 Live~~ | ~~59 个文件规模~~ → 实为 `live.rs` + `live/agent.rs` 共 1672 行 | ~~26 个文件规模~~ → **0 个文件**，整块缺失 | **已移到 A28**；原文「需逐项比对」严重低估 | P1（见 A28） |
 | B6 | 变量面板 | Full / Floating + 表格列、重命名、导出 | `variables_full` 有（`lib.rs:585`），`WindowKind::VariablesTable` 有 | 列行为/多选/导出细节待逐项核 | P2 |
 | B7 | 属性面板（右栏 sections） | `panels/right/{effects,inspect,menu,paints,stroke}.rs` 分模块 | 集中在 `panels/right/sections.rs`（+inspect.rs/proto.rs/component.rs） | 需按 section 逐条比对；`fill_rule.rs`（442 行）只有 Non-zero/Even-odd 菜单（GPUI `sections.rs:669-670`），`reverseLoop` 与填充区域蓝/橙可视化、点击反转环仍缺 | P2 |
 | B8 | 演示 Present | `present.rs` + **10 个非测试子模块**（actions/chrome/device/draw/input/layout/navigate/player/scroll/transition，约 2731 行） | `present.rs:231` + `preview.rs:257` ≈ 488 行，子模块全无对应 | **约 1/6**；多页/链接/响应式/退出的细节不只是「待核」，是未移植 | P2 |
-| B9 | **Hide UI / Minimize UI** | `view.toggleUi`（Cmd+\\）设 `ui_hidden`；`view.minimize`（Shift+Cmd+\\）设 `ui_minimized`，EGUI 据此收侧栏并保留宽度 | engine 两个命令与快捷键都在（`engine/src/cmd/view.rs:333,339`、`keymap.rs:164,228`），但 **`crates/ui-gpui/src` 内 0 处读 `ui_hidden` / `ui_minimized`**（原文写「全仓不读」不准：engine 与 ui-egui 都有命中）→ 快捷键有反应、界面不动 | 接两个状态到 render 层（低工作量、高可见收益） | P1 |
+| B9 | **Hide UI / Minimize UI** | `view.toggleUi`（Cmd+\\）设 `ui_hidden`；`view.minimize`（Shift+Cmd+\\）设 `ui_minimized`，EGUI 据此收侧栏并保留宽度 | engine 两个命令与快捷键都在（`engine/src/cmd/view.rs:333,339`、`keymap.rs:164,228`），✅ 2026-11-10 已接：`lib.rs::ui_flags()`(2231-2233) 读两个状态，`dock()`(2239) 给有效宽度且**不改记住的 `left_w`/`right_w`**，render 条件渲染侧栏/标签条/工具栏/时间轴/分隔条命中区(4219-4222、5847、6674、6682) | 无 | ✅ |
 | B10 | 画布光标/工具态 | 每工具+修饰键的光标、拖拽阈值、双击进文本 | `canvas/cursors.rs` 存在 | 需逐工具核对 | P3 |
 
 ---
@@ -74,7 +74,7 @@
 
 | # | 上游变更 | 说明 | GPUI 现状 | 优先级 |
 |---|---|---|---|---|
-| C1 | #2135 / #2165 **Dev Mode → Developer Mode** | 商标原因改名，新增 `right_tab_label()` 与 `naming_tests.rs`；locales 里法/葡/荷的错误译名一并修正。**注意本地 `ui-egui/src/app.rs:352` 仍是 `tr("Dev Mode")`**（该 crate 刻意不同步），`right_tab_label` / `naming_tests.rs` 本地不存在，需以 `docs/feature-names.md` 为准 | 已补 `right_tab_label()` + 命名回归测试，UI 文案改为 Developer Mode；随后按用户要求从右栏 tabs 行移除该按钮，常量与测试保留 | ✅ |
+| C1 | #2135 / #2165 **Dev Mode → Developer Mode** | 商标原因改名，新增 `right_tab_label()` 与 `naming_tests.rs`；locales 里法/葡/荷的错误译名一并修正。**注意本地 `ui-egui/src/app.rs:352` 仍是 `tr("Dev Mode")`**（该 crate 刻意不同步），`right_tab_label` / `naming_tests.rs` 本地不存在，需以 `docs/feature-names.md` 为准 | GPUI 侧 ✅：`right_tab_label()` + 4 条命名回归、标签 `"开发"`、右栏第三 tab 按用户要求移除、底部切换器第 4 格 `Inspect`→`开发`。⚠️ **全仓清理未彻底**：`ui-egui/src/app.rs:352` 仍是 `tr("Dev Mode")` 的真实 UI 文案（该 crate 刻意不同步且本地破损），见 I 节 | ✅（GPUI）/ ⚠️（ui-egui 残留） |
 | C2 | craft-update `c5a1cbf` → `1b34eba`：更新器上报 installing/ready/installed/failed，**退出时安装** | `start_pending_update()` 由 `FigApp` 提供，`main.rs` 退出时调用 | 无更新器 UI、无退出安装 | P1（依赖 A14） |
 | C3 | `docs/feature-names.md` 新增 | 命名规范（不再用 Figma-class 比较措辞）；Developer Mode 一节 | 已同步文档，UI 文案尚未按规范对齐 | P2 |
 | C4 | MCP display names 测试 | 非 UI（已同步） | 已同步 | — |
@@ -83,6 +83,8 @@
 ---
 
 ## D. 建议实施顺序
+
+> **2026-11-10 19:0x 逐项核查结果见 I 节**：下面写的是「建议」，不等于已落地 —— A6/A7 目前只是 A19 通用壳版本，A1 仍未开始。
 
 ### 第 1 批（合规 + 通用底座，1–2 天）
 0. **A19**：通用对话框框架（一次做成数据驱动，十个对话框共用一套壳 + 一套控件 + 一套 Escape/遮罩行为）。**必须排在最前**，否则 A6/A7/A18 各自造轮子。
@@ -196,7 +198,7 @@
 
 **诚实的边界**（没有假装接好）：
 - A6 导出、A7 首选项、A20 查找替换、A10 色彩配置、A8/A17 重命名、A12 导入报告、A23 另存、A9 分支已通过通用壳接到**真实引擎命令**（`file.export` / `view.panelWidths` / `edit.findReplace` / `file.colorProfile` / `object.rename` / `file.saveAs` / `branch.create`）；但字段仍是通用版，不等于 EGUI 的完整交互（预览、多选导出、逐字体替换等）。
-- A18 只接了引擎 `dialog.unsaved` 请求；`tabs_view.rs` 的 Alt+close / 关闭三问还没接（G 表第 6 行 🔄）。
+- A18 首轮只接了引擎 `dialog.unsaved` 请求，`tabs_view.rs` 的 Alt+close / 关闭三问当时未接；已在 17:2x「G 表第 6 行落地」补齐（见下），此处保留原记录仅为时间线。
 - A13 缺失字体、A15 取样色、A14 更新、A11 About、A4 插件目前是**带说明的提示窗口**，因为引擎没有对应命令或依赖 C2 升版；按钮只有 Close，不提交不存在的命令。
 - A1 Home / A2 Boards / A3 Comments / A16 多窗口 / A21 a11y / A22 bidi·ui_scale / A24 字段运算 / A28 Live / B8 Present 子模块仍未开始（B2 调色板已于 18:4x 落地，见下）。
 
@@ -235,4 +237,23 @@
 - **验证**：`cargo check -p figcraft-ui-gpui --lib`、`cargo check --example run` 通过；`rustfmt --check`（新模块）通过；`cargo test --lib --features test-support -- palette` **8/8**；全套 **210 通过 / 3 失败**，3 条与 HEAD 基线同名同因（`main_menu aim` / `extra Shift+D` / `panel_resize hit area`），无回归。
 - **exe（18:56 用户确认后重编）**：先关掉占用 `run.exe` 的旧窗口 PID 27484，`cargo build -p figcraft-ui-gpui --example run` 通过（76,654,080 字节 / 18:56:55），经资源管理器托管启动新窗口 PID 15124（`FigCraft` / Responding=True）。构建有一条 `error deleting lock file for incremental compilation session directory … 拒绝访问` 警告，属旧进程残留的 incremental 锁文件，不影响产物（Finished dev profile）。**改动仍未提交**。
 
-**下一步**：G 表第 8 行 —— A1 首页 Home（Recents 卡片 / Templates / Getting started）；随后第 9–11 行 Comments / Plugins / Boards。涉及 `widgets/**` 冻结件的改动（A24 字段运算、调色板实时过滤）必须先与用户确认。
+---
+
+## I. 2026-11-10 19:0x 完成情况核查（第 1 批 6 项 + 第 2 批 A1）
+
+> 用户要求逐项核对 D 节「建议实施顺序」第 1 批六项与第 2 批第 1 项（A1）的**实际落地**，而不是照抄计划。
+> 方式：直接读当前 `crates/ui-gpui/src` 源码、`engine/catalog` 与 `ui-egui` 对照，每条给出文件:行号证据，明确「完成 / 部分完成 / 未开始」。
+
+| 条目 | 计划要求 | 实际状态 | 证据（文件:行） | 未完成 / 诚实边界 |
+|---|---|---|---|---|
+| **A19** 通用对话框框架 | 十个对话框共用一套壳 + 一套控件 + 一套 Escape/遮罩，数据驱动 | ✅ **完成** | `dialogs.rs` 687 行：`Kind` **15 种**、`Field::{Text,Number,Choice,Note}`、`Spec`/`Button`/`DialogState`、`ui_action()`/`menu_action()`、`render()`(452)、`popup_backdrop`(543)；壳用 `widgets::popover::Popover`、行用 `field_row`/`field_row_full`、按钮统一推 `CmdQueue`。`lib.rs`：状态(608)、`sync_ui_requests` 消费全部 `dialog.*`(1400)、带「…」菜单拦截(3317)、Escape(5289)/X/遮罩统一、render 挂层(6632)。**5 条单测**，**未改任何 `widgets/**` 冻结件** | A13/A15/A14/A11/A4 因引擎无对应命令，仍是「带说明的提示窗口」（按钮只有 Close），不等于 EGUI 的完整交互 |
+| **B1 / C1** 命名合规 | 右栏第三 tab 改名、补 `right_tab_label()` 与命名回归测试、清掉全仓 UI 文案 `"Dev Mode"` 残留 | ✅ **GPUI 侧完成** / ⚠️ **全仓清理差一处** | `naming.rs`：`DEVELOPER_MODE = "开发"`、`RIGHT_TAB_LABELS`、`right_tab_label()` + **4 条**命名回归；右栏 tabs 按用户要求**移除**第三按钮（只剩 Design / Prototype），底部模式切换第 4 格 `Inspect`→`开发`，动画/开发模式 tabs 行显示「动画」/「开发」文本。`ui-gpui` 内 `"Dev Mode"` 只出现在注释、`RETIRED` 测试表与 `catalog::SEARCH_ALIASES` 搜索别名（标识符/测试，不是显示文案） | ⚠️ `crates/ui-egui/src/app.rs:352` 仍是 `i18n::tr("Dev Mode")` 的**真实 UI 文案**（该 crate 刻意不同步、本地 62 个既有编译错误）；`crates/i18n/src/tests.rs:19` 只是注释提及。C1 的「清掉全仓 UI 文案残留」严格说**没做完**，是否动 ui-egui 需先确认它解冻 |
+| **B9** Hide UI / Minimize UI | 把 `ui_hidden` / `ui_minimized` 接到 render 层 | ✅ **完成** | `lib.rs::ui_flags()`(2231-2233) 读 `ds().view.ui_hidden/ui_minimized`；`dock()`(2239) 给有效宽度且**不改记住的 `left_w`/`right_w`**；render 条件渲染侧栏 / 标签条 / 工具栏 / 时间轴 / 分隔条命中区(4219-4222、5847、6674、6682) | 无 |
+| **A6** 导出对话框 | 格式 / 倍数 / **预览**，复用 A19 壳 | 🔄 **部分完成** | `dialogs.rs:239-251` `Kind::Export`：Format(PNG/JPG/SVG/PDF/FIG，带 JSON values)、Scale(1x/2x/3x/0.5x)、File name 文本、Export→`file.export`；入口 `catalog.rs:48` `"Export…"` + `menu_action()`(229-230) 拦截，不会静默用默认参数导出 | **预览缺失**；多选导出、逐格式参数、原生路径选择仍缺，EGUI `dialogs/export.rs` 的完整交互未移植 |
+| **A7** 首选项对话框 | 主题 / **语言** / **滚轮缩放** / **面板宽度重置**，复用 A19 壳 | 🔄 **部分完成** | `dialogs.rs:253-267` `Kind::Preferences`：Theme(3 项→`view.themeDark/Light/System`)、Interface size(3 项→`pref.uiScaleReset/Up/Down`)、Left/Right panel width 数值、Apply→`view.panelWidths`；入口 `catalog.rs:267` `"Preferences…"→app.preferences`，engine `cmd/view.rs:508` 发 `dialog.preferences`，`ui_action` 接住，Cmd+, 可用 | **语言选择、滚轮缩放开关缺**；面板宽度是「设值」不是「重置」，没有 Reset 按钮/命令 |
+| **A18 / B4** 标签关闭三问 | Don't Save / Cancel / Save + Alt+close + 拖拽重排 + 拖出成窗口 | ✅ **A18 完成** / 🔄 **B4 部分** | `tabs_view.rs:388,392` 关闭改为 `force: e.modifiers.alt`（Alt+close 才直接丢弃）；`lib.rs:1400-1420` 消费 `dialog.unsaved`，弹窗前先 `doc.switch {index}` 保证 Save 存对文档；`dialogs.rs:285-295` 三问 spec；拖拽重排 `tabs_view.rs:155-187`（`file.moveTab`）已有 | **拖出成窗口（A16）仍缺**；Save 只保存、不会自动再执行一次关闭（保存失败也不丢改动），保存后需再点 X；EGUI 的「保存后自动关闭 / Save as」流程未移植 |
+| **A1** 首页 Home（第 2 批第 1 项） | Recents 卡片 + Templates + Getting started | ⬜ **未开始** | 无 `crates/ui-gpui/src/home.rs`；`panels/extra.rs:1243` 测试仍断言 `ui_action("home", &empty, 0) == None`，注释原文「GPUI 没有 Home，不能假装接了」 | 整块未做，是 G 表第 8 行的目标 |
+
+**结论**：第 1 批 6 项里 **3 项完成**（A19、B1/C1 的 GPUI 侧、B9），**3 项部分完成**（A6 缺预览、A7 缺语言/滚轮缩放/重置、A18/B4 中 A18 已完成但拖出成窗口仍缺）；C1 的「全仓 UI 文案清理」另差 `ui-egui` 一处。第 2 批 A1 **未开始**。这些缺口已回填到 A/B/C 表与 H 节，避免计划表继续显示旧证据。
+
+**下一步（19:0x 核查后修订）**：先补第 1 批三处遗留缺口（A6 预览、A7 语言 / 滚轮缩放 / 面板宽度重置、B4 拖出成窗口属 A16），再进 G 表第 8 行 A1 首页 Home（Recents 卡片 / Templates / Getting started）；随后第 9–11 行 Comments / Plugins / Boards。`ui-egui` 的 `tr("Dev Mode")` 残留是否清理需先确认该 crate 是否解冻；涉及 `widgets/**` 冻结件的改动（A24 字段运算、调色板实时过滤）必须先与用户确认。
