@@ -81,6 +81,8 @@ mod home;
 
 mod comments;
 
+mod board_bar;
+
 /// A6: the Export dialog's bitmap preview, produced by the engine's renderer.
 mod export_preview;
 
@@ -4695,6 +4697,11 @@ impl Render for CanvasView {
 
         // A25: the plugin widget's property bar, above the selected widget.
         if let Some(bar) = widget_bar::bar(&self.app, self.fields.queue()) {
+            layers.push(bar);
+        }
+
+        // B3: the board selection's bar (colours first), above the selected board objects.
+        if let Some(bar) = board_bar::bar(&self.app, self.fields.queue()) {
             layers.push(bar);
         }
 

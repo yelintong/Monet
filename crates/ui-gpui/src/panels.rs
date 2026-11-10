@@ -2233,7 +2233,7 @@ mod visibility_tests {
         // 选一个还没自动布局的普通矩形 Blue（CanvasApp 默认预选了 AutoLayout·H，这里覆盖）。
         let blue = {
             let ds = app.session.ds().unwrap();
-            ds.doc.find_by_name(tr("Blue"), Some(ds.page)).into_iter().next().unwrap()
+            ds.doc.find_by_name("Blue", Some(ds.page)).into_iter().next().unwrap()
         };
         app.session.set_selection(vec![blue]);
         assert!(app.session.ds().unwrap().doc.node(blue).unwrap().layout.is_none(), "Blue has no auto layout before");
