@@ -1691,6 +1691,10 @@ impl CanvasView {
 
         self.tabs.home = true;
 
+        // A leftover `dismiss` (set when a previous extra panel was closed) would make
+        // `sync_ui_requests` clear `extra` on the very next frame — reset it so Home stays.
+        *self.extra_state.dismiss.borrow_mut() = false;
+
         self.extra = Some(panels::extra::ExtraKind::Home);
 
     }

@@ -1695,6 +1695,12 @@ pub(crate) fn variable_modes(f: &RightFields, d: &PanelData, row_w: f32) -> Opti
 
 pub(crate) fn section(f: &RightFields, d: &PanelData, row_w: f32) -> Option<PanelSection> {
     let s = d.section.as_ref()?;
+    // egui `section_panel::section`: the "Section color" block only exists for a Section layer
+    // (`is_section`); a rectangle / text / frame has no "Section" section at all. It was drawn
+    // for every layer here, which is the stray "Section" row the user saw.
+    if !s.is_section {
+        return None;
+    }
     let mut sec = PanelSection::new(tr("Section"));
     if s.is_section {
         // 8 个 Section color 色板（`section_panel.rs::SECTION_COLORS`）。
@@ -1792,7 +1798,7 @@ pub(crate) fn header(f: &RightFields, d: &PanelData, col: f32) -> Option<PanelSe
         false,
     );
     Some(
-        PanelSection::new(tr("Layer"))
+        PanelSection::new(h.label.clone())
             .header_trail(icon_row(vec![component, mask, boolean]))
             .child(field_row(vec![SharedString::from(h.label.clone())], kind.into_iter().collect::<Vec<IconButton>>())),
     )
