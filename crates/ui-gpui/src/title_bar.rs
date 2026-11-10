@@ -76,6 +76,13 @@ fn control_button(id: &'static str, icon: Icon, close: bool, area: WindowControl
         .cursor_pointer()
         .hover(move |s| s.bg(hover))
         .window_control_area(area)
+        // Fallback: if the OS does not take the area, a plain click still works.
+        .on_click(move |_e, window, _cx| match area {
+            WindowControlArea::Min => window.minimize_window(),
+            WindowControlArea::Max => window.zoom_window(),
+            WindowControlArea::Close => window.remove_window(),
+            WindowControlArea::Drag => {}
+        })
         .child(icon::paint(icon, ink, 20.0))
 }
 
@@ -94,10 +101,9 @@ pub fn title_bar(content: impl IntoElement, maximized: bool) -> Div {
         .flex_row()
         .items_center()
         .bg(rgba(tokens().panel))
-        // 整条标题栏都是系统可拖动的窗口标题区域；子 hitbox（标签 / 按钮）优先命中，
-        // 所以交互控件仍能正常收到点击（kit 文档：「Window dragging is handled
-        // automatically in appropriate areas」）。
-        .window_control_area(WindowControlArea::Drag)
+        // Do NOT put `Drag` on the whole bar: that makes the OS treat the entire title bar as
+        // HTCAPTION and swallows clicks on the Home button and the tabs. Only the left padding and
+        // a short strip before the window controls are drag regions.
         .child(
             div()
                 .flex_none()
@@ -106,6 +112,7 @@ pub fn title_bar(content: impl IntoElement, maximized: bool) -> Div {
                 .window_control_area(WindowControlArea::Drag),
         )
         .child(div().flex_1().min_w(pt(0.0)).h_full().flex().items_center().child(content))
+        .child(div().flex_none().w(pt(8.0)).h_full().window_control_area(WindowControlArea::Drag))
         .child(min)
         .child(max)
         .child(close)

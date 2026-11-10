@@ -4182,6 +4182,10 @@ impl Render for CanvasView {
 
         self.app.stats.record();
 
+        // i18n: the language can change from the Preferences dialog, the palette or a menu; sync
+        // the catalog every frame so the change takes effect at once (an atomic store, cheap).
+        figcraft_i18n::set(&self.app.session.prefs.language, None);
+
         // 每帧渲染开始时把 icon 按钮的稳定 id 序号归零。右栏/弹窗里的 icon 按钮每帧重建，
 
         // 只有按固定构建顺序重新编号，同一按钮才能在 mouse-down / mouse-up 两帧之间拿到同一个
