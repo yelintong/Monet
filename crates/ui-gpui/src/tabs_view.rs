@@ -206,7 +206,7 @@ fn open_overflow_menu(me: &Entity<CanvasView>, cmds: &Cmds, docs: &[TabDoc], act
     let on_pick: Rc<dyn Fn(&str, &mut Window, &mut App)> = Rc::new(move |label: &str, _window, cx| {
         if let Some((_, index)) = labels.iter().find(|(l, _)| l == label) {
             cmds_pick.push(Cmd { id: "doc.switch", params: Some(json!({ "index": index })) });
-            me_pick.update(cx, |cv, _| cv.tabs.home = false);
+            me_pick.update(cx, |cv, _| cv.close_home());
         }
     });
     // 通用 Menu 自己按「锚点底边 + 4pt」定位；给 40pt 高的锚点正好落在标签条下方 4pt。
@@ -282,7 +282,7 @@ pub(crate) fn tab_strip(
         .hover(move |s| s.bg(rgba(t.hover)))
         .on_click(move |_e: &ClickEvent, _window, cx: &mut App| {
             me_home.update(cx, |cv, cx| {
-                cv.tabs.home = true;
+                cv.show_home();
                 cx.notify();
             });
         })
@@ -338,7 +338,7 @@ pub(crate) fn tab_strip(
             .id(("tab-body", uid as usize))
             .on_click(move |_e: &ClickEvent, _window, cx: &mut App| {
                 cmds_switch.push(Cmd { id: "doc.switch", params: Some(json!({ "index": index })) });
-                me_switch.update(cx, |cv, _| cv.tabs.home = false);
+                me_switch.update(cx, |cv, _| cv.close_home());
             })
             .on_mouse_down(MouseButton::Left, move |e: &MouseDownEvent, _window, _cx| {
                 begin_tab_drag(&drag, &drag_cmds, index, e.position);
@@ -450,7 +450,7 @@ pub(crate) fn tab_strip(
             .child(
                 bar_button(Icon::Plus, t, "tab-new").on_click(move |_e: &ClickEvent, _window, cx: &mut App| {
                     cmds_new.push(Cmd { id: "file.new", params: Some(json!({})) });
-                    me_new.update(cx, |cv, _| cv.tabs.home = false);
+                    me_new.update(cx, |cv, _| cv.close_home());
                 }),
             ),
     );

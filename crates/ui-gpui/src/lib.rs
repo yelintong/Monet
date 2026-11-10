@@ -1686,6 +1686,28 @@ impl CanvasView {
 
     }
 
+    /// Show the Home screen (the tab strip's Home button): the Home panel plus the tab state.
+    pub(crate) fn show_home(&mut self) {
+
+        self.tabs.home = true;
+
+        self.extra = Some(panels::extra::ExtraKind::Home);
+
+    }
+
+    /// Leave the Home screen when a file tab is picked (the Home panel is the `extra` one).
+    pub(crate) fn close_home(&mut self) {
+
+        self.tabs.home = false;
+
+        if matches!(self.extra, Some(panels::extra::ExtraKind::Home)) {
+
+            self.extra = None;
+
+        }
+
+    }
+
     fn toggle_extra(&mut self, kind: panels::extra::ExtraKind) {
 
         if self.extra.as_ref() == Some(&kind) {
