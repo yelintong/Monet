@@ -16,7 +16,7 @@ use crate::motion::{Act, Queue};
 use crate::panels::{Cmd, ROW_EDITORS, RightFields, RowEditCtx, visibility};
 use crate::widgets::{
     ColorField, ColorText, Dropdown, HEADER_H, Icon, IconButton, MenuRow, PanelSection, SectionHeader, SectionHeaderVariant, field_row,
-    field_row_full, field_row_full_trailing, pt, rgba, sublabel_row, sublabel_row2, tokens, variable_button,
+    field_row_full, field_row_full_trailing, field_row_h, pt, rgba, sublabel_row, sublabel_row2, tokens, variable_button,
 };
 use figcraft_color::PaintKind;
 use figcraft_doc::anim::motion::AnimProperty;
@@ -1768,19 +1768,39 @@ pub(crate) fn section(f: &RightFields, d: &PanelData, row_w: f32) -> Option<Pane
     Some(sec)
 }
 
-pub(crate) fn header(f: &RightFields, d: &PanelData, col: f32) -> Option<PanelSection> {
+/// 选区标题行（egui `right.rs::header`）。
+///
+/// ⛔ **一行 40 pt，不是上下两段**：左边是类型名（Frame / Group 可下拉互转，Frame 旁边还有
+/// 一个「交换方向」图标），右边贴着三个快捷动作（组件 / 蒙版 / 布尔组）。egui 这里**没有区块
+/// 标题**——之前把它做成 `PanelSection::new(类型名)` 再在下面放一行同名 `field_row`，类型名出现
+/// 两次、还多了一条标题栏，与原文完全不同（用户 2026-11-10 现场指出）。
+pub(crate) fn header(f: &RightFields, d: &PanelData, col: f32) -> Option<crate::widgets::FieldRow> {
     let h = d.header.as_ref()?;
     let _ = col;
-    // 类型名 + 转换菜单（egui `header`：Frame/Group 互转；Frame 另有 swap orientation）。
-    let mut kind_rows: Vec<(String, &'static str, Value)> =
+    let t = tokens();
+    // 类型名：Frame / Group 才能下拉互转（egui `kind_items`）。
+    let kind_rows: Vec<(String, &'static str, Value)> =
         vec![(tr("Frame").into(), "object.convertToFrame", json!({})), (tr("Group").into(), "object.convertToGroup", json!({}))];
-    if h.is_frame {
-        kind_rows.push((tr("Swap orientation").into(), "frame.swapOrientation", json!({})));
+    let mut lead: Vec<gpui::AnyElement> = Vec::new();
+    if visibility::kind_menu(h.is_frame, h.is_group) {
+        lead.push(kind_dropdown(f, h.label.clone(), kind_rows).into_any_element());
+    } else {
+        // 其它类型没有下拉，连 chevron 都不画：就是一段 13 pt 半粗文字。
+        lead.push(
+            div()
+                .flex_none()
+                .text_size(pt(13.0))
+                .font_weight(gpui::FontWeight::SEMIBOLD)
+                .text_color(rgba(t.text))
+                .child(SharedString::from(h.label.clone()))
+                .into_any_element(),
+        );
     }
-    // egui `right.rs::header`: 类型下拉只在 `is_frame || is_group` 时存在，其它类型连
-    // chevron 都不画（`if is_group { menu_popup } if is_frame { … }`）。此前无条件显示。
-    let kind = visibility::kind_menu(h.is_frame, h.is_group).then(|| menu_icon(f, Icon::ChevronDown, 180.0, kind_rows, false));
-    // 快捷动作（egui `header`）：组件 / 蒙版 / 布尔组（带 4 种运算 + Flatten）。
+    if h.is_frame {
+        // 交换方向是**独立图标**（egui `header` 的 `swap_orient`），不是菜单里的一项。
+        lead.push(icon_cmd(Icon::Rotate, "frame.swapOrientation", json!({}), f, false).into_any_element());
+    }
+    // 快捷动作（egui `header` 末尾）：组件 / 蒙版 / 布尔组（4 种运算 + Flatten）。
     let component = icon_cmd(Icon::Component, "component.create", json!({}), f, false);
     let mask = icon_cmd(Icon::Image, "object.mask", json!({}), f, false);
     let boolean = menu_icon(
@@ -1797,11 +1817,34 @@ pub(crate) fn header(f: &RightFields, d: &PanelData, col: f32) -> Option<PanelSe
         ],
         false,
     );
-    Some(
-        PanelSection::new(h.label.clone())
-            .header_trail(icon_row(vec![component, mask, boolean]))
-            .child(field_row(vec![SharedString::from(h.label.clone())], kind.into_iter().collect::<Vec<IconButton>>())),
-    )
+    // egui 这一行是 `allocate_exact_size(vec2(w, 40.0))`，比普通字段行高 8 pt。
+    // ⚠️ `field_row` 的 trailing 是**按个数**占位的（`SLOT * trailing.len()`）：三个图标必须
+    // 逐个传进去。以前把 `icon_row([...])` 当成一个元素传，列宽只有 24 pt，于是只看得见第一个。
+    Some(field_row_h(
+        vec![div().flex().flex_row().items_center().gap(pt(4.0)).children(lead)],
+        vec![component, mask, boolean],
+        40.0,
+    ))
+}
+
+/// 类型名的文字下拉（egui `header` 里 `[类型名 ▾]` 那个 120 pt 按钮）：固定宽、不填满单元。
+fn kind_dropdown(f: &RightFields, label: String, rows: Vec<(String, &'static str, Value)>) -> Dropdown {
+    let menu: Vec<MenuRow> = rows.iter().map(|(l, _, _)| MenuRow::new(l.clone())).collect();
+    let mut d = Dropdown::new(label, 120.0, None);
+    if let Some(root) = f.root.clone() {
+        let cmds = f.cmds.clone();
+        d = d.on_click(move |anchor, _window, cx: &mut App| {
+            let rows = rows.clone();
+            let cmds = cmds.clone();
+            let on_pick = Rc::new(move |label: &str, _w: &mut Window, _cx: &mut App| {
+                if let Some((_, cmd, params)) = rows.iter().find(|(l, _, _)| l == label) {
+                    cmds.push(Cmd { id: cmd, params: Some(params.clone()) });
+                }
+            });
+            root.update(cx, |cv, cx| cv.open_menu(anchor, Some(180.0), menu.clone(), on_pick, cx));
+        });
+    }
+    d
 }
 
 /// Page 节「Local styles」里的一行（egui `style_picker::local_styles`）：类型图标 + 名字

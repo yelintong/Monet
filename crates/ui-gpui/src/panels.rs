@@ -1476,22 +1476,82 @@ pub(crate) fn left_rail(
         .flex_col()
         .items_center()
         .py(pt(RAIL_PAD_Y))
-        .gap(pt(4.0))
         .bg(rgba(t.panel))
         // 与左面板之间的那条静态 1px 分隔线（用户：侧栏与左工具栏的分隔线要保留）。
         // 用 rail 自身右缘描边、只此一条；border-box 内描边不改布局宽度，RAIL_W 命中几何不变。
         .border_r_1()
         .border_color(rgba(t.border))
-        // 第 1 项：主菜单。点击在它下方弹出下拉菜单（egui 的 left-rail Menu 同义）。
+        // ① 主菜单：Logo 一格 32×32（egui `layers::rail` 的第一个 `lr`）。
         // 尺寸/内边距必须与 `rail_menu_bounds()` 一致（菜单锚点按那套几何算）。
-        .child(IconButton::new(Icon::Menu).id("rail-menu").size(RAIL_BTN).on_click(on_menu))
-        // File（左栏当前显示的 Layers）：egui 里 tab 一律可点，点它就退出变量编辑器。
-        // 显式 `.id(...)` 保证 `on_click` 的 ElementId 跨帧稳定（否则按钮点了没反应）。
-        .child(IconButton::new(Icon::Panel).id("rail-file").size(RAIL_BTN).active(!variables_tab).on_click(on_file))
-        .child(IconButton::new(Icon::Section).id("rail-assets").size(RAIL_BTN))
-        // 第 4 项 = egui 左栏 rail 的「Variables」按钮（Logo + File + Assets + Variables）。
-        // 只有**全屏**变量面板才高亮；浮动小窗时左栏仍高亮 File。
-        .child(IconButton::new(Icon::Variable).id("rail-variables").size(RAIL_BTN).active(variables_tab).on_click(on_variables))
+        .child(IconButton::new(Icon::Logo).id("rail-menu").size(RAIL_BTN).on_click(on_menu))
+        // ② 16 pt 分隔带，中间一条 1 px 横线（egui：`y += 16.0` 之前画 `line_segment`）。
+        .child(
+            div()
+                .flex_none()
+                .h(pt(16.0))
+                .w_full()
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(div().w(pt(16.0)).h(pt(1.0)).bg(rgba(t.border))),
+        )
+        // ③ File / Assets / Variables：每项 56 pt —— 32×32 图标格 + 下面 9 pt 的文字标签。
+        //    egui 的 rail 是**带文字**的，之前这里只有图标（而且三个都是占位圆点）。
+        .child(rail_item(
+            "rail-file",
+            Icon::Page,
+            tr("File"),
+            !variables_tab,
+            Some(Box::new(on_file)),
+        ))
+        .child(rail_item("rail-assets", Icon::Assets, tr("Assets"), false, None))
+        .child(rail_item(
+            "rail-variables",
+            Icon::Variables,
+            tr("Variables"),
+            variables_tab,
+            Some(Box::new(on_variables)),
+        ))
+}
+
+/// 竖条的一项：56 pt 高的整列可点，32×32 的图标格（悬停/选中底色）+ 下面 9 pt 的文字
+/// （`ui-egui/src/panels/layers.rs::rail`：`ir` 32×32、文字在 `y + 47`）。
+fn rail_item(
+    id: &'static str,
+    icon: Icon,
+    label: &'static str,
+    active: bool,
+    on_click: Option<Box<dyn Fn(&gpui::ClickEvent, &mut gpui::Window, &mut gpui::App)>>,
+) -> Stateful<Div> {
+    let t = tokens();
+    let group: SharedString = format!("{id}-grp").into();
+    let cell = div()
+        .flex_none()
+        .size(pt(RAIL_BTN))
+        .rounded(pt(5.0))
+        .flex()
+        .items_center()
+        .justify_center()
+        .when(active, |d| d.bg(rgba(t.selected_row)))
+        .when(!active, |d| d.group_hover(group.clone(), |s| s.bg(rgba(t.hover))))
+        .child(crate::widgets::icon::paint(icon, rgba(if active { t.accent } else { t.icon }), 16.0));
+    let mut item = div()
+        .id(id)
+        .flex_none()
+        .w_full()
+        .h(pt(56.0))
+        .flex()
+        .flex_col()
+        .items_center()
+        .pt(pt(4.0))
+        .cursor_pointer()
+        .group(group)
+        .child(cell)
+        .child(div().mt(pt(3.0)).text_size(pt(9.0)).text_color(rgba(t.text)).child(tr(label)));
+    if let Some(f) = on_click {
+        item = item.on_click(move |e, w, cx| f(e, w, cx));
+    }
+    item
 }
 
 /// The left panel (skeleton — header only). The caller sets its width.

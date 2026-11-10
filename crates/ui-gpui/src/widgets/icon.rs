@@ -83,6 +83,12 @@ pub enum Icon {
     Instance,
     /// Outlined rectangle with a folded corner (the `Page` node kind).
     Page,
+    /// FigCraft's own mark: the curled tail of the chameleon (the rail's main-menu button).
+    Logo,
+    /// A diamond, a circle, a square and a triangle: the Assets panel.
+    Assets,
+    /// Four squares: the variables editor (`ui-egui/src/icons/draw.rs::Variables`).
+    Variables,
     /// A picture frame with a sun and a hill (the `Image` fill).
     Image,
     /// A 3×3 tile grid (the `Pattern` fill).
@@ -236,6 +242,9 @@ impl Icon {
         Icon::Component,
         Icon::Instance,
         Icon::Page,
+        Icon::Logo,
+        Icon::Assets,
+        Icon::Variables,
         Icon::Image,
         Icon::ViewGrid,
         Icon::Detach,
@@ -314,6 +323,9 @@ impl Icon {
             Icon::Search => "search",
             Icon::Dot => "dot",
             Icon::Variable => "variable",
+            Icon::Logo => "logo",
+            Icon::Assets => "assets",
+            Icon::Variables => "variables",
             Icon::LinkOn => "link-on",
             Icon::LinkOff => "link-off",
             Icon::Section => "section",
@@ -584,8 +596,80 @@ fn svg_canvas(icon: Icon) -> SvgCanvas {
             disc(&mut p, ox, oy, s, 7.0, 7.0, 4.5);
             thick_line(&mut p, ox, oy, s, 10.5, 10.5, 13.5, 13.5, 2.0);
         }
-        Icon::Dot | Icon::Variable | Icon::LinkOn | Icon::LinkOff | Icon::Panel | Icon::Menu | Icon::Settings | Icon::Trash => {
+        Icon::Dot => {
             disc(&mut p, ox, oy, s, 8.0, 8.0, 3.5);
+        }
+        // A hexagon with a dot: an original mark for "bind a value" (`draw.rs::Variable`).
+        Icon::Variable => {
+            let pts: Vec<(f32, f32)> = (0..6)
+                .map(|i| {
+                    let a = std::f32::consts::FRAC_PI_3 * i as f32 + std::f32::consts::FRAC_PI_6;
+                    (8.0 + 6.0 * a.cos(), 8.0 + 6.0 * a.sin())
+                })
+                .collect();
+            stroke_path(&mut p, ox, oy, s, &pts, true, 1.4);
+            disc(&mut p, ox, oy, s, 8.0, 8.0, 1.7);
+        }
+        Icon::LinkOn | Icon::LinkOff => {
+            let capsule = |a: (f32, f32), b: (f32, f32), r: f32| -> Vec<(f32, f32)> {
+                let (dx, dy) = (b.0 - a.0, b.1 - a.1);
+                let len = (dx * dx + dy * dy).sqrt().max(0.001);
+                let (nx, ny) = (-dy / len * r, dx / len * r);
+                let mut v = arc_pts(a.0, a.1, r, std::f32::consts::FRAC_PI_2, 3.0 * std::f32::consts::FRAC_PI_2, 8);
+                v.iter_mut().for_each(|q| *q = (q.0 + nx, q.1 + ny));
+                let mut back = arc_pts(b.0, b.1, r, 3.0 * std::f32::consts::FRAC_PI_2, 5.0 * std::f32::consts::FRAC_PI_2, 8);
+                back.iter_mut().for_each(|q| *q = (q.0 - nx, q.1 - ny));
+                v.extend(back);
+                v
+            };
+            let (l, r) = if matches!(icon, Icon::LinkOn) {
+                (((3.5, 8.0), (6.5, 8.0), 2.2), ((9.5, 8.0), (12.5, 8.0), 2.2))
+            } else {
+                (((3.5, 12.5), (5.5, 10.5), 2.2), ((10.5, 5.5), (12.5, 3.5), 2.2))
+            };
+            for (a, b, r) in [l, r] {
+                let pts = capsule(a, b, r);
+                stroke_path(&mut p, ox, oy, s, &pts, true, 1.4);
+            }
+            if matches!(icon, Icon::LinkOff) {
+                thick_line(&mut p, ox, oy, s, 9.5, 12.0, 9.5, 14.0, 1.4);
+                thick_line(&mut p, ox, oy, s, 12.0, 9.5, 14.0, 9.5, 1.4);
+                thick_line(&mut p, ox, oy, s, 2.0, 6.5, 4.0, 6.5, 1.4);
+                thick_line(&mut p, ox, oy, s, 6.5, 2.0, 6.5, 4.0, 1.4);
+            }
+        }
+        Icon::Menu => {
+            for y in [3.5, 7.5, 11.5] {
+                thick_line(&mut p, ox, oy, s, 2.0, y, 14.0, y, 1.5);
+            }
+        }
+        Icon::Panel | Icon::Settings | Icon::Trash => {
+            disc(&mut p, ox, oy, s, 8.0, 8.0, 3.5);
+        }
+        Icon::Logo => {
+            // FigCraft's mark: the chameleon's tail, one bold stroke of three half turns
+            // (`draw.rs::Logo`).
+            use std::f32::consts::FRAC_PI_2;
+            let mut tail = vec![(13.75, 13.0)];
+            tail.extend(arc_pts(7.25, 8.0, 5.0, FRAC_PI_2, 3.0 * FRAC_PI_2, 16));
+            tail.extend(arc_pts(7.25, 6.5, 3.5, 3.0 * FRAC_PI_2, 5.0 * FRAC_PI_2, 16));
+            tail.extend(arc_pts(7.25, 8.25, 1.75, FRAC_PI_2, 3.0 * FRAC_PI_2, 16));
+            stroke_path(&mut p, ox, oy, s, &tail, false, 1.7);
+            disc(&mut p, ox, oy, s, 13.75, 13.0, 0.85);
+            disc(&mut p, ox, oy, s, 7.25, 6.5, 0.85);
+        }
+        Icon::Assets => {
+            // A diamond, a circle, a square and a triangle (`draw.rs::Assets`).
+            stroke_path(&mut p, ox, oy, s, &[(5.0, 2.0), (8.0, 5.0), (5.0, 8.0), (2.0, 5.0)], true, 1.4);
+            ring(&mut p, ox, oy, s, 11.0, 5.0, 2.5, 1.4, 16);
+            stroke_path(&mut p, ox, oy, s, &[(2.5, 9.5), (7.5, 9.5), (7.5, 13.5), (2.5, 13.5)], true, 1.4);
+            stroke_path(&mut p, ox, oy, s, &[(11.0, 9.0), (13.5, 13.5), (8.5, 13.5)], true, 1.4);
+        }
+        Icon::Variables => {
+            // Four squares rather than dots: the editor's own mark (`draw.rs::Variables`).
+            for (x, y) in [(5.0, 5.0), (11.0, 5.0), (5.0, 11.0), (11.0, 11.0)] {
+                rect(&mut p, ox, oy, s, x - 2.0, y - 2.0, x + 2.0, y + 2.0);
+            }
         }
         Icon::Section => {
             // A dashed-outline section with its solid title strip (`ui-egui`: a rect at 2.5,5.5 →
@@ -1106,7 +1190,7 @@ mod tests {
     fn every_icon_emits_a_well_formed_svg() {
         let t = table();
         assert_eq!(t.len(), Icon::ALL.len());
-        assert_eq!(t.len(), 88, "Icon 变体数变了：请同步 ALL / asset_name / 本断言");
+        assert_eq!(t.len(), 91, "Icon 变体数变了：请同步 ALL / asset_name / 本断言");
         let mut names = HashSet::new();
         for a in t {
             assert!(names.insert(a.name), "duplicate asset name {}", a.name);

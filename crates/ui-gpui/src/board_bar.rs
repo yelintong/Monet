@@ -460,7 +460,11 @@ pub(crate) fn bar(app: &crate::CanvasApp, cmds: Cmds, shape_open: &Rc<RefCell<bo
                 .cursor_pointer()
                 .child(shape_cell(shape, 18.0, rgba(t.icon)))
                 .child(icon::paint(Icon::ChevronDown, rgba(t.icon), 12.0))
-                .on_click(move |_, _, _| *open.borrow_mut() = !*open.borrow()),
+                .on_click(move |_, _, _| {
+                    // 先读再写（同 `home::cycle_bool`：一条表达式里会 RefCell 双重借用 panic）。
+                    let next = !*open.borrow();
+                    *open.borrow_mut() = next;
+                }),
         );
     }
     if h.text {

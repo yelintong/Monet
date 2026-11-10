@@ -241,7 +241,6 @@ pub(crate) fn render(kind: &ExtraKind, app: &CanvasApp, cmds: &Cmds, state: &Ext
     if matches!(kind, ExtraKind::Home) {
         // 1:1 with `ui-egui/src/home.rs`: `CentralPanel` fills the window, with the sidebar on
         // the left and the scrolling content on the right — not a 760x520 centred popover.
-        let close = close.clone();
         // Start BELOW the title bar (TITLE_H): egui's Home is the `CentralPanel`, drawn under the
         // tab bar. A `size_full()` from y=0 covered the window controls, so the title bar
         // disappeared on the Home screen.
@@ -253,10 +252,9 @@ pub(crate) fn render(kind: &ExtraKind, app: &CanvasApp, cmds: &Cmds, state: &Ext
             .right(px(0.0))
             .bottom(px(0.0))
             .bg(rgba(t.panel))
-            .child(body)
-            .child(
-            div().absolute().top(pt(12.0)).right(pt(12.0)).child(IconButton::new(Icon::Close).size(24.0).on_click(move |_e, _w, _cx| close())),
-        );
+            // ⛔ 不要在这里放关闭按钮：egui 的 Home 是 `CentralPanel`，没有任何「关闭」控件
+            // （离开靠点标签栏的首页按钮或某个标签）。之前右上角浮着的那个 ✕ 是浮层外壳的残留。
+            .child(body);
     }
     let close_btn = {
         let close = close.clone();

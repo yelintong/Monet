@@ -41,7 +41,7 @@ pub(crate) fn body(app: &CanvasApp, cmds: &Cmds, state: &ExtraState) -> Div {
             .flex_row()
             .items_center()
             .gap(pt(10.0))
-            .child(crate::widgets::icon::paint(Icon::Component, rgba(t.accent), 24.0))
+            .child(crate::widgets::icon::paint(Icon::Logo, rgba(t.accent), 24.0))
             .child(div().text_size(pt(16.0)).font_weight(gpui::FontWeight::SEMIBOLD).text_color(rgba(t.text)).child(tr("FigCraft"))),
     );
     side = side.child(state.home_search.clone());
@@ -76,7 +76,7 @@ pub(crate) fn body(app: &CanvasApp, cmds: &Cmds, state: &ExtraState) -> Div {
     match section {
         2 => {
             main = main.child(heading(tr("Templates")));
-            let mut row = div().flex().flex_row().gap(pt(12.0));
+            let mut row = div().flex().flex_row().flex_wrap().gap(pt(12.0));
             row = row.child(action_card(Icon::Frame, tr("New design file"), tr("Start from a blank canvas"), "file.new", cmds));
             row = row.child(action_card(Icon::Rectangle, tr("New board"), tr("Sticky notes, shapes and connectors"), "file.newBoard", cmds));
             row = row.child(action_card(Icon::ViewGrid, tr("Start from a template"), tr("Start from a template"), "file.newFromTemplate", cmds));
@@ -88,11 +88,37 @@ pub(crate) fn body(app: &CanvasApp, cmds: &Cmds, state: &ExtraState) -> Div {
         }
         _ => {
             main = main.child(heading(tr("Recents")));
-            let mut cards = div().flex().flex_row().gap(pt(12.0));
+            let mut cards = div().flex().flex_row().flex_wrap().gap(pt(12.0));
             cards = cards.child(action_card(Icon::Frame, tr("New design file"), tr("Start from a blank canvas"), "file.new", cmds));
             cards = cards.child(action_card(Icon::Rectangle, tr("New board"), tr("Sticky notes, shapes and connectors"), "file.newBoard", cmds));
             cards = cards.child(action_card(Icon::Page, tr("Open file"), tr("Open .figcraft, .svg or images"), "file.open", cmds));
             main = main.child(cards);
+            if !app.session.prefs.getting_started_dismissed {
+                main = main.child(subheading(tr("Getting started")));
+                let mut tips = div().w_full().flex().flex_col().gap(pt(8.0)).p(pt(16.0)).rounded(pt(8.0)).bg(rgba(t.field));
+                for (i, (title, line)) in HOME_TIPS.iter().enumerate() {
+                    tips =
+                        tips.child(
+                            div()
+                                .w_full()
+                                .flex()
+                                .flex_row()
+                                .items_center()
+                                .gap(pt(10.0))
+                                .child(div().size(pt(20.0)).rounded(pt(10.0)).bg(rgba(t.panel)).flex().items_center().justify_center().child(
+                                    div().text_size(pt(10.0)).text_color(rgba(t.text_secondary)).child(SharedString::from((i + 1).to_string())),
+                                ))
+                                .child(
+                                    div()
+                                        .flex()
+                                        .flex_col()
+                                        .child(div().text_size(pt(12.0)).text_color(rgba(t.text)).child(tr(title)))
+                                        .child(div().text_size(pt(11.0)).text_color(rgba(t.text_secondary)).child(tr(line))),
+                                ),
+                        );
+                }
+                main = main.child(tips);
+            }
             // Toolbar: "Recent files" + a grid/list toggle + a name/edited sort
             // (egui `home_recents::View` + `Sort`).
             let grid = *state.home_view_grid.borrow();
@@ -129,32 +155,6 @@ pub(crate) fn body(app: &CanvasApp, cmds: &Cmds, state: &ExtraState) -> Div {
                     main = main.child(recent_row(path, cmds));
                 }
             }
-            if !app.session.prefs.getting_started_dismissed {
-                main = main.child(subheading(tr("Getting started")));
-                let mut tips = div().w_full().flex().flex_col().gap(pt(8.0)).p(pt(16.0)).rounded(pt(8.0)).bg(rgba(t.field));
-                for (i, (title, line)) in HOME_TIPS.iter().enumerate() {
-                    tips =
-                        tips.child(
-                            div()
-                                .w_full()
-                                .flex()
-                                .flex_row()
-                                .items_center()
-                                .gap(pt(10.0))
-                                .child(div().size(pt(20.0)).rounded(pt(10.0)).bg(rgba(t.panel)).flex().items_center().justify_center().child(
-                                    div().text_size(pt(10.0)).text_color(rgba(t.text_secondary)).child(SharedString::from((i + 1).to_string())),
-                                ))
-                                .child(
-                                    div()
-                                        .flex()
-                                        .flex_col()
-                                        .child(div().text_size(pt(12.0)).text_color(rgba(t.text)).child(tr(title)))
-                                        .child(div().text_size(pt(11.0)).text_color(rgba(t.text_secondary)).child(tr(line))),
-                                ),
-                        );
-                }
-                main = main.child(tips);
-            }
         }
     }
     div().flex().flex_row().w_full().h_full().child(side).child(main)
@@ -176,7 +176,10 @@ fn cycle_bool(label: &'static str, slot: Rc<RefCell<bool>>, cmds: &Cmds) -> Div 
         .text_color(rgba(t.text))
         .child(SharedString::from(label))
         .on_mouse_down(MouseButton::Left, move |_e, _, _| {
-            *slot.borrow_mut() = !*slot.borrow();
+            // ⛔ 先读再写：`*slot.borrow_mut() = !*slot.borrow()` 是一条表达式，左侧的 `RefMut`
+            // 还活着时右侧又借了一次，直接 panic（RefCell already borrowed），整个 app 会崩。
+            let next = !*slot.borrow();
+            *slot.borrow_mut() = next;
             wake.wake();
         })
 }
@@ -197,7 +200,9 @@ fn cycle_u8(label: &'static str, slot: Rc<RefCell<u8>>, n: u8, cmds: &Cmds) -> D
         .text_color(rgba(t.text))
         .child(SharedString::from(label))
         .on_mouse_down(MouseButton::Left, move |_e, _, _| {
-            *slot.borrow_mut() = (*slot.borrow() + 1) % n.max(1);
+            // 同上：先读再写。
+            let next = (*slot.borrow() + 1) % n.max(1);
+            *slot.borrow_mut() = next;
             wake.wake();
         })
 }

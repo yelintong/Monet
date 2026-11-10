@@ -413,3 +413,40 @@ EGUI 原文件再动手，禁止再出现简化替代**；完成后同步 `CONTR
 2. 画板的 `Options` 弹出层目前**只有横向一排格子**（与 `options_flyout` 同构），没有 EGUI 的 `a11y::own_focus` 键盘循环。
 3. 帮助「?」按钮已在画布右下（既有实现），本轮未动。
 4. 画板下 Motion 时间轴仍可显示（EGUI 同样没有 board 守卫，属上游既有行为，非本次引入）。
+
+---
+
+## N. 2026-11-10 22:5x 现场反馈修复（右栏标题行 / 动画默认关 / 画板隐藏侧栏 / 首页崩溃 / 竖条）
+
+> 用户现场指出四件事：① 右栏第 2 段（放组件名称那一行）做成了上下结构；② 打开任何东西都应默认
+> 关掉动画；③ 画板模式下把左右栏、动画、左侧竖条都关掉；④ 首页 bug 很多。
+
+### 修了什么
+
+| # | 问题 | 根因 | 修法 |
+|---|---|---|---|
+| 1 | 右栏类型名出现**两次**、还多一条区块标题 | `sections::header` 返回 `PanelSection::new(类型名)` + 下面再一行同名 `field_row` | 改成**一行 40 pt**（`field_row_h(…, 40.0)`）：左 `[类型名 ▾]`（Frame/Group 才可下拉）+ Frame 的「交换方向」独立图标，右三个快捷动作。`egui right.rs::header` 本来就没有区块标题 |
+| 2 | 右栏快捷动作只剩**一个**图标 | `field_row` 的 trailing 按 `SLOT * trailing.len()` 占位，却把 `icon_row([3 个])` 当成**一个**元素传进去 → 列宽只有 24 pt，后两个被裁 | 三个 `IconButton` **逐个**传进 trailing |
+| 3 | 打开文件时动画时间线自动展开 | `CanvasView::new` 里 `motion: true` | 改 `false`；并在 `run_command` 里对 `file.open*` / `file.new*` / `file.close` / `file.saveAs` 调 `set_motion_open(false)`（egui `FigApp::new` 是 `motion_open: false`） |
+| 4 | 画板下左右栏 / 动画栏 / 左侧竖条仍占位 | `dock()` / `show_sidebars` / `motion_bar_h()` 都没有 board 判断 | 画板：`left = 0`、`show_sidebars = false`、`motion_bar_h() = 0`；右栏仍由 `board_panel`（工具栏最右按钮 / `view.design`）控制。实测 `canvasRect` 宽度 == `vw`（画布铺满） |
+| 5 | **首页点「Grid / Edited」直接 panic 退出** | `*slot.borrow_mut() = !*slot.borrow()` 是一条表达式：左边 `RefMut` 还活着时右边又 `borrow()` → `RefCell already borrowed`，`panic in a function that cannot unwind` 直接杀进程 | 先读再写。同型 3 处全修（`home::cycle_bool` / `home::cycle_uint` / `board_bar` 的形状菜单开关） |
+| 6 | 首页右上角浮着一个 ✕ | 浮层外壳的关闭按钮被 Home 分支一起继承了 | 删掉：egui 的 Home 是 `CentralPanel`，没有任何关闭控件（离开靠标签栏） |
+| 7 | 首页三张动作卡溢出窗口右边 | 卡片行是 `flex_row` 不换行（260 pt × 3 > 主区宽） | `flex_wrap()`（egui `horizontal_wrapped`）；Templates 段同样 |
+| 8 | 首页段落顺序与 egui 不同 | GPUI 是 卡片 → Recent files → Getting started | 改成 egui `recents()` 的顺序：卡片 → Getting started → Recent files |
+| 9 | 左侧竖条是三个**黑点**、还没有文字 | `Icon::Variable / Panel / Menu` 都落在占位分支画一个圆点；`Icon::Assets / Logo / Variables` 根本不存在 | 按 `ui-egui/src/icons/draw.rs` 补 `Logo` / `Assets` / `Variables` 三个变体并实现 `Variable`(六边形+点) / `Menu`(三横) / `LinkOn` / `LinkOff`；竖条重写成 egui 结构：Logo + 16 pt 分隔带 + **File / Assets / Variables**（56 pt 项，32×32 图标格 + 9 pt 文字） |
+
+### 验证
+
+- `cargo test -p figcraft-ui-gpui --lib --features test-support` = **217 通过 / 3 失败**（仍是那三条基线）。
+- exe 实测：右栏 `[Frame ▾] ↻ … ◆ ⧉ ▦` 单行；左侧竖条 Logo + File/Assets/Variables 带文字；首页三卡换行、
+  无 ✕、顺序为 卡片 → Getting started → Recent files；画板下 `canvasRect` 宽度等于视口宽度（侧栏全让位）。
+- 崩溃路径：点 Grid 后进程存活（此前必崩）。
+
+### 诚实边界（本轮没做）
+
+1. **左栏仍缺 Pages 段和文件头**（文件名 / Drafts / 收起按钮）。egui `layers::left_panel` 是三段结构，
+   GPUI 只有「Layers 标题 + 树」。这是已知差距，不在本轮范围（用户澄清说的是右栏）。
+2. 首页 **Templates 段**仍是三张动作卡，没有 egui 的模板卡片网格 + 缩略图；**Online 段**是占位说明。
+3. 首页搜索框只在 **Enter** 提交（冻结的 `TextField` 只有 `set_on_commit`），不是边打边过滤。
+4. 「Join with a code」行未做（依赖 live join 组件）。
+5. 右栏 header 的 Frame 菜单里没有 egui 的 **frame 预设列表**（需要把选区 id 带进 `node.set`）。

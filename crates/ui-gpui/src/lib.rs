@@ -620,7 +620,13 @@ pub struct CanvasView {
 
     tool_last: Vec<(&'static str, figcraft_engine::ToolId)>,
 
-    /// Motion 时间线是否展开（Animation 模式）。启动即展开，与原来常驻的动画栏一致。
+    /// Motion 时间线是否展开（Animation 模式）。**默认收起** —— egui `FigApp::new` 是
+
+
+
+    /// `motion_open: false`，而且打开任何文件都会把它关掉（用户 2026-11-10）。
+
+
 
     motion: bool,
 
@@ -892,7 +898,7 @@ impl CanvasView {
 
             },
 
-            motion: true,
+            motion: false,
 
             motion_ui: motion::MotionUi::default(),
 
@@ -2453,11 +2459,23 @@ impl CanvasView {
 
         let no_selection = self.app.session.ds().map(|d| d.selection.is_empty()).unwrap_or(true);
 
-        // 画板的右栏默认收起（egui `right_panel_shown`：`!hidden && (!board || board_panel)`）。
+        // 画板：左栏 / 竖条 / 动画栏全收起，右栏也只在 `board_panel` 打开时出现
 
 
 
-        let board_hidden = self.is_board_doc() && !self.board_panel;
+        // （用户 2026-11-10：「画板模式下把左右栏都关掉，动画也关掉，包括侧面的那个竖条」）。
+
+
+
+        let board = self.is_board_doc();
+
+
+
+        let board_hidden = board && !self.board_panel;
+
+
+
+        let left = if board { 0.0 } else { left };
 
 
 
@@ -2756,6 +2774,30 @@ impl CanvasView {
     /// 跑一条命令（工具栏与右键菜单共用）：`ui-egui` 里是 `app.run(id, params)`。
 
     fn run_command(&mut self, id: &str, params: serde_json::Value, cx: &mut Context<Self>) {
+
+        // 打开 / 新建 / 关闭文件后，动画面板默认收起：Motion 是设计文件的编辑模式，不是常驻栏。
+
+
+
+        // （egui `FigApp::new` 的 `motion_open: false`；用户 2026-11-10：「打开任何东西的时候
+
+
+
+        // 默认应该是要把这个动画关掉的」。）
+
+
+
+        if id.starts_with("file.open") || id.starts_with("file.new") || id == "file.close" || id == "file.saveAs" {
+
+
+
+            self.set_motion_open(false, cx);
+
+
+
+        }
+
+
 
         if let Err(e) = self.app.session.execute(id, &params) {
 
@@ -4594,19 +4636,23 @@ impl Render for CanvasView {
         // Dock 布局值：本帧所有几何（画布原点 / 尺寸 / 弹层锚点）都从这一份值推导。
         // B9：两个标志只影响「画不画」与 Dock 宽度，不改控件本身，也不改记住的面板宽度。
         let (ui_hidden, ui_minimized) = self.ui_flags();
-        let show_sidebars = !ui_hidden && !ui_minimized;
+        // 画板文档的工具栏换成一整套画板工具组，宽度和飞出菜单的锚点都跟着变；左右栏与
 
 
 
-        // 画板文档的工具栏换成一整套画板工具组，宽度和飞出菜单的锚点都跟着变；右栏也按
-
-
-
-        // `board_panel` 决定显不显示。`self.popup` 下面要被可变借用，所以提前取好。
+        // 动画栏在画板上都默认收起。`self.popup` 下面要被可变借用，所以提前取好。
 
 
 
         let board = self.is_board_doc();
+
+
+
+        // 画板没有图层树 / 竖条 / 动画面板：整条侧栏让位给画布（用户 2026-11-10）。
+
+
+
+        let show_sidebars = !ui_hidden && !ui_minimized && !board;
 
 
 

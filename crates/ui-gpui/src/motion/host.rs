@@ -158,8 +158,11 @@ impl CanvasView {
     }
 
     /// The docked timeline's height for this frame.
+    ///
+    /// A board has no animation, so the timeline never takes the dock's height there — even if
+    /// `motion` was left open on a design file before switching (用户 2026-11-10).
     pub(crate) fn motion_bar_h(&self) -> f32 {
-        if self.motion {
+        if self.motion && !self.is_board_doc() {
             if self.motion_ui.timeline_h > 0.0 {
                 // 上限交给拖拽时按视口夹紧（`timeline::route_drag_move` 的 Height 分支），
                 // 这里不能再卡在默认高度上，否则「往上拖变高」永远看不出效果。
