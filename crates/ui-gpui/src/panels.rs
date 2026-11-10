@@ -56,8 +56,69 @@ pub(crate) fn rail_button_hit(x: f32, y: f32) -> bool {
 
 /// The bottom animation bar's height (egui's timeline is taller; this keeps the canvas usable).
 pub(crate) const ANIM_H: f32 = 220.0;
-/// A panel divider's hit width.
+/// A panel divider's **visible** width: the hairline you actually see. It stays 1 px so the
+/// layout geometry (canvas_x / canvas_w, and every hit-test that subtracts them) is untouched.
 pub(crate) const HANDLE_W: f32 = 1.0;
+/// The divider's **click** width: `1 px line + 1.5 px on each side = 4 px`, centred on the line.
+/// The hit area is a separate, top-layer overlay (see `CanvasView::divider_hotspots`) because
+/// GPUI hits the most-recently-painted hitbox first — the canvas painted right after the left
+/// divider would otherwise steal the 1.5 px that spill onto it.
+pub(crate) const HANDLE_HIT_W: f32 = 4.0;
+/// Overhang on each side of the visible hairline (`(HANDLE_HIT_W - HANDLE_W) / 2`).
+pub(crate) const HANDLE_OVERHANG: f32 = 1.5;
+
+/// Centre x of a divider, in window coordinates. `w` is that dock's current width.
+/// Both the visible hairline and the 4 px hit overlay derive from this one source.
+pub(crate) fn divider_center_x(side: crate::ResizeSide, viewport_w: f32, w: f32) -> f32 {
+    match side {
+        crate::ResizeSide::Left => RAIL_W + w + HANDLE_W / 2.0,
+        crate::ResizeSide::Right => viewport_w - w - HANDLE_W / 2.0,
+    }
+}
+
+/// Left edge of the 4 px hit overlay for a divider centred at `cx`.
+pub(crate) fn divider_hit_left(cx: f32) -> f32 {
+    cx - HANDLE_HIT_W / 2.0
+}
+
+#[cfg(test)]
+mod divider_tests {
+    use super::*;
+
+    #[test]
+    fn hit_width_is_line_plus_even_overhang() {
+        assert_eq!(HANDLE_HIT_W, HANDLE_W + HANDLE_OVERHANG * 2.0);
+        assert_eq!(HANDLE_OVERHANG, (HANDLE_HIT_W - HANDLE_W) / 2.0);
+    }
+
+    #[test]
+    fn hit_overlay_is_centred_on_the_visible_line() {
+        for centre in [56.0 + 280.0 + 0.5, 1280.0 - 280.0 - 0.5] {
+            let left = divider_hit_left(centre);
+            assert_eq!(left + HANDLE_HIT_W / 2.0, centre, "4 px 热区以可见线为中心");
+            // 线本身落在热区正中间，两侧各留 1.5 px。
+            assert_eq!(centre - (left + HANDLE_OVERHANG), HANDLE_W / 2.0);
+        }
+    }
+
+    #[test]
+    fn both_dividers_share_one_centre_source() {
+        use crate::ResizeSide;
+        // 左：rail + 左面板 + 半条线；右：视口宽 − 右面板 − 半条线。
+        let left = divider_center_x(ResizeSide::Left, 1280.0, 280.0);
+        let right = divider_center_x(ResizeSide::Right, 1280.0, 280.0);
+        assert_eq!(left, RAIL_W + 280.0 + HANDLE_W / 2.0);
+        assert_eq!(right, 1280.0 - 280.0 - HANDLE_W / 2.0);
+
+        // 两条覆盖条都是 [centre−2, centre+2]，宽 4；可见线 [centre−0.5, centre+0.5] 居中。
+        for centre in [left, right] {
+            let hit_l = divider_hit_left(centre);
+            assert_eq!((hit_l, hit_l + HANDLE_HIT_W), (centre - 2.0, centre + 2.0));
+            assert_eq!(centre - hit_l - HANDLE_OVERHANG, HANDLE_W / 2.0);
+            assert_eq!(hit_l + HANDLE_OVERHANG + HANDLE_W + HANDLE_OVERHANG, centre + 2.0);
+        }
+    }
+}
 /// Panel width limits, per the user's spec.
 pub(crate) const MIN_PANEL: f32 = 240.0;
 pub(crate) const MAX_PANEL: f32 = 500.0;

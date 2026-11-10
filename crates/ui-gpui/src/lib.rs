@@ -40,9 +40,13 @@ mod tabs;
 
 mod tabs_view;
 
-/// 窗口级标题栏壳：按 GPUI Kit 的 TitleBar 契约抄实现，不引入外部库。
+/// 系统级窗口标题区域：按 GPUI Kit 的 TitleBar 契约声明并渲染（含 WindowControlArea）。
 
 mod title_bar;
+
+/// 工作区 Dock 布局（参考 GPUI Kit 的 `DockLayout` / `DockPlacement`）：布局是一份值。
+
+mod dock;
 
 /// 画布右键菜单（`ui-egui/src/menus.rs` 的 context menu）。
 
@@ -352,7 +356,7 @@ fn palette_rows(query: &str) -> Vec<menu_card::Item> {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 
-enum ResizeSide {
+pub(crate) enum ResizeSide {
 
     Left,
 
@@ -2050,60 +2054,79 @@ impl CanvasView {
 
 
 
-    /// 一条面板分隔线：按下开始拖拽（双击复位 280），拖拽逻辑挂在根容器的 move/up 上。
+    /// 一条面板分隔线的**可见 1px 线**：留在 flex 流里占位，宽度就是 `HANDLE_W`，所以
+    /// 画布 / 面板的布局几何一个像素都不变。它不再接 `on_mouse_down`——命中交给
+    /// [`Self::divider_hotspot`] 那条 4px 覆盖条（后绘制、才压得住相邻的画布 / 面板）。
+    /// hover 变色用 group 由覆盖条联动：热区被 hover 时这条线才变强调色。
+    fn drag_handle() -> impl IntoElement {
+        div()
+            .flex_none()
+            .w(px(panels::HANDLE_W))
+            .h_full()
+            .bg(widgets::rgba(widgets::tokens().border))
+    }
 
-    fn drag_handle(side: ResizeSide, cx: &mut Context<Self>) -> impl IntoElement {
-
-        let t = widgets::tokens();
-
-        div().flex_none().w(px(panels::HANDLE_W)).h_full().bg(widgets::rgba(t.border)).hover(|s| s.bg(widgets::rgba(t.accent))).on_mouse_down(
-
-            MouseButton::Left,
-
-            cx.listener(move |this: &mut CanvasView, e: &MouseDownEvent, window, cx| {
-
-                if e.click_count >= 2 {
-
-                    match side {
-
-                        ResizeSide::Left => this.left_w = panels::DEFAULT_PANEL,
-
-                        ResizeSide::Right => this.right_w = panels::DEFAULT_PANEL,
-
+    /// 一条分隔条的 **4px 命中覆盖条**：以可见 1px 线为中心，左右各 `HANDLE_OVERHANG`。
+    /// 必须作为 `top_row` 的**最后**一个 child 绘制：GPUI「后绘制的 hitbox 先命中」
+    /// （`window.rs::hit_test` 逆序遍历 + `dispatch_mouse_event` 的 bubble 逆序），
+    /// 这样溢出到画布那 1.5px 才不会被紧随其后的画布抢走。它 `absolute` 定位、不占
+    /// flex 宽度；`stop_propagation` 防止同一次按下再触发画布的框选 / 面板点击。
+    /// `group` 名与 `drag_handle` 的 `group_hover` 对应，hover 时点亮那条 1px 线。
+    fn divider_hotspot(&self, side: ResizeSide, viewport_w: f32, cx: &mut Context<Self>) -> impl IntoElement {
+        let centre = panels::divider_center_x(side, viewport_w, match side {
+            ResizeSide::Left => self.left_w,
+            ResizeSide::Right => self.right_w,
+        });
+        let group: gpui::SharedString = match side {
+            ResizeSide::Left => "divider-hit-left".into(),
+            ResizeSide::Right => "divider-hit-right".into(),
+        };
+        let border = widgets::rgba(widgets::tokens().border);
+        let accent = widgets::rgba(widgets::tokens().accent);
+        div()
+            .absolute()
+            .left(px(panels::divider_hit_left(centre)))
+            .top(px(0.0))
+            .w(px(panels::HANDLE_HIT_W))
+            .h_full()
+            .group(group.clone())
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |this: &mut CanvasView, e: &MouseDownEvent, window, cx| {
+                    // 热区压在画布 / 面板之上，这一下必须只归分隔条：否则溢出到画布的
+                    // 1.5px 会同时启动框选。窗口级 move/up 路由仍按 `resizing` 状态机走。
+                    cx.stop_propagation();
+                    if e.click_count >= 2 {
+                        match side {
+                            ResizeSide::Left => this.left_w = panels::DEFAULT_PANEL,
+                            ResizeSide::Right => this.right_w = panels::DEFAULT_PANEL,
+                        }
+                        this.resizing = None;
+                        cx.notify();
+                        return;
                     }
-
-                    this.resizing = None;
-
+                    this.commit_edits(window, cx);
+                    this.focus.focus(window);
+                    this.resizing = Some(side);
+                    this.drag_start_x = f32::from(e.position.x);
+                    this.drag_start_w = match side {
+                        ResizeSide::Left => this.left_w,
+                        ResizeSide::Right => this.right_w,
+                    };
                     cx.notify();
-
-                    return;
-
-                }
-
-                // 分隔线同样把焦点交给画布：先提交所有草稿（同点画布的失焦路径）。
-
-                this.commit_edits(window, cx);
-
-                this.focus.focus(window);
-
-                this.resizing = Some(side);
-
-                this.drag_start_x = f32::from(e.position.x);
-
-                this.drag_start_w = match side {
-
-                    ResizeSide::Left => this.left_w,
-
-                    ResizeSide::Right => this.right_w,
-
-                };
-
-                cx.notify();
-
-            }),
-
-        )
-
+                }),
+            )
+            // 覆盖条内部居中的 1px 线：位置 = hit_left + 1.5 = 可见线原位，常态同色重合；
+            // hover 这条 4px 热区时才变强调色。group（父）先绘制、group_hover（子）后绘制。
+            .child(
+                div()
+                    .absolute()
+                    .left(px(panels::HANDLE_OVERHANG))
+                    .w(px(panels::HANDLE_W))
+                    .h_full()
+                    .bg(border)
+                    .group_hover(group, |s| s.bg(accent)),
+            )
     }
 
 
@@ -2158,9 +2181,9 @@ impl CanvasView {
 
     fn local(&self, p: gpui::Point<Pixels>) -> Pos2 {
 
-        let ox = panels::RAIL_W + self.left_w + panels::HANDLE_W;
+        let dock = dock::DockLayout::new(self.left_w, self.right_w, self.motion_bar_h());
 
-        pos2(f32::from(p.x) - ox, f32::from(p.y))
+        pos2(f32::from(p.x) - dock.center_x(), f32::from(p.y) - dock.titlebar_h)
 
     }
 
@@ -4030,11 +4053,14 @@ impl Render for CanvasView {
 
         // `Painter::paint` 再叠加画布元素在窗口中的原点——所以这里只给尺寸，min 保持 0。
 
-        let canvas_x = panels::RAIL_W + self.left_w + panels::HANDLE_W;
+        // Dock 布局值：本帧所有几何（画布原点 / 尺寸 / 弹层锚点）都从这一份值推导。
+        let dock = dock::DockLayout::new(self.left_w, self.right_w, self.motion_bar_h());
+        let canvas_x = dock.center_x();
 
-        let canvas_w = (f32::from(vp.width) - canvas_x - panels::HANDLE_W - self.right_w).max(1.0);
+        let canvas_w = dock.center_w(f32::from(vp.width));
 
-        let canvas_h = (f32::from(vp.height) - self.motion_bar_h()).max(1.0);
+        // 只扣系统级标题栏区域与 bottom dock；Dock 内容区从 y = TITLE_H 起。
+        let canvas_h = dock.canvas_size(f32::from(vp.width), f32::from(vp.height)).1;
 
         if std::env::var_os("FC_DEBUG_SIZE").is_some() {
 
@@ -5550,59 +5576,32 @@ impl Render for CanvasView {
 
         };
 
-        // ── 顶部标签条（P0-1）─────────────────────────────────────────────────────────────
-
-        // 根 `flex_col` 的第一个子项：40pt 高、占满窗宽。标签数据每帧从 `session.docs` 现读
-
-        // （与右栏 PanelData 同一套快照模式），命令走右栏的 Cmd 队列，由 sync_panel 统一执行。
-
+        // ── 系统级窗口标题区域（kit `TitleBar::new().child(TabBar)`）────────────────────
+        // 标签条塞在标题栏里，不是画布里的一条；标题栏是 Root 的第一个 child，
+        // 客户区（Dock）从 y = TITLE_H 起，几何由 dock::DockLayout 统一推导。
         let tab_docs = tabs_view::read_docs(&self.app.session);
-
         let tabs_active = self.app.session.active;
-
         let tabs_dark = self.app.theme.dark;
-
         let tabs_reduce_motion = self.app.session.prefs.reduce_motion;
-
-        let viewport_w = f32::from(window.viewport_size().width);
-
+        let viewport_w = f32::from(vp.width);
         let content_w = title_bar::content_width(viewport_w);
-
         let tabs_cmds = self.fields.queue();
-
         let tabs_me = cx.entity();
-
-        // kit `TitleBar::new().child(TabBar)`：标签条只是标题栏的内容，窗口壳负责高度 /
-
-        // 左留白 / 三个窗口控制按钮，不再在内容区另塞一条标题栏。
-
         let tab_bar = title_bar::title_bar(
-
             tabs_view::tab_strip(
-
                 &mut self.tabs,
-
                 &tab_docs,
-
                 tabs_active,
-
                 tabs_dark,
-
                 tabs_reduce_motion,
-
                 content_w,
-
                 &tabs_cmds,
-
                 &tabs_me,
-
             ),
-
-            // 三态标题栏：max 键在已最大化时画 WinRestore，动作由系统 HTMAXBUTTON toggle。
-
             window.is_maximized(),
-
         );
+
+
 
         // 新标签的 0.18s 入场动画期间要连续重绘，直到 opening 队列清空。
 
@@ -5640,15 +5639,19 @@ impl Render for CanvasView {
 
             .child(dbg_tint(self.render_left_panel(window, cx).w(px(self.left_w)), dbg, 0xF5A524))
 
-            .child(Self::drag_handle(ResizeSide::Left, cx))
+            .child(Self::drag_handle())
 
             .child(dbg_tint(canvas, dbg, 0x30A46C))
 
-            .child(Self::drag_handle(ResizeSide::Right, cx))
+            .child(Self::drag_handle())
 
             .child(dbg_tint(right_el, dbg, 0x0091FF))
 
-            .child(bar);
+            .child(bar)
+
+            // 4px 命中覆盖条必须最后绘制：后绘制的 hitbox 先命中，才压得住画布 / 面板。
+            .child(self.divider_hotspot(ResizeSide::Left, viewport_w, cx))
+            .child(self.divider_hotspot(ResizeSide::Right, viewport_w, cx));
 
 
 
@@ -5746,7 +5749,7 @@ impl Render for CanvasView {
 
             // (`用户 2026-11-06`：缩放窗口时飞出菜单、主菜单、右键菜单、Actions 面板都要跟着动).
 
-            let canvas_left = panels::RAIL_W + self.left_w + panels::HANDLE_W;
+            let canvas_left = dock.center_x();
 
             let canvas_w = self.app.canvas.rect.width();
 
@@ -5754,7 +5757,9 @@ impl Render for CanvasView {
 
             let bar_w = toolbar::width();
 
-            let pill_top = canvas_h - 12.0 - 48.0;
+            // 画布原点 y = 标题栏高度；弹层挂在 root 上用窗口坐标，必须加回这个原点，
+            // 否则 flyout / palette 整体上移 40pt。
+            let pill_top = dock.titlebar_h + canvas_h - 12.0 - 48.0;
 
             // The Design panel's left edge: the one x every detached window opens against.
 
@@ -6978,10 +6983,10 @@ pub fn run() {
 
         let bounds = Bounds::centered(None, size(px(1280.0), px(860.0)), cx);
 
-        // kit `TitleBar::window_options()` 的等价物：系统标题栏设为透明（Windows 上
-
-        // `hide_title_bar = true`），客户端区从 y=0 起，于是自绘的 40pt 标题栏就是唯一一条。
-
+        // kit `TitleBar::window_options()` 的等价物：声明窗口标题栏区域
+        // （appears_transparent = true → Windows hide_title_bar = true，系统不画默认标题栏）。
+        // 标题栏由 title_bar.rs 渲染并整条通过 WindowControlArea 交给系统管理；
+        // TabBar 内容放在标题栏里，Dock 内容区从 y = TITLE_H 起。
         let options = WindowOptions {
 
             window_bounds: Some(WindowBounds::Windowed(bounds)),
@@ -8034,7 +8039,7 @@ mod panel_resize_tests {
 
     use super::*;
 
-    use crate::panels::{HANDLE_W, MAX_PANEL, MIN_PANEL, RAIL_W};
+    use crate::panels::{HANDLE_HIT_W, HANDLE_OVERHANG, HANDLE_W, MAX_PANEL, MIN_PANEL, RAIL_W};
 
     use gpui::{MouseButton, Modifiers, Point, Size, TestAppContext, px};
 
@@ -8043,15 +8048,45 @@ mod panel_resize_tests {
     /// 左分隔条中心 x = RAIL_W + left_w + HANDLE_W/2；右分隔条中心 x = vw - right_w - HANDLE_W/2。
 
     fn handle_x(side: ResizeSide, vw: f32, w: f32) -> f32 {
+        panels::divider_center_x(side, vw, w)
+    }
 
-        match side {
+    /// 4px 热区实测：以可见 1px 线为中心，左右各溢出 `HANDLE_OVERHANG`(1.5px)。
+    /// 打在 [centre−2, centre+2] 内（含两侧溢出带）都要能启动 resize；打到
+    /// [centre±2.5]（覆盖条外，属于画布 / 面板）则不该由分隔条接管。
+    /// 这同时证明「后绘制的覆盖条压得住相邻的画布」——否则溢出那 1.5px 会被画布抢走。
+    #[gpui::test]
+    async fn divider_hit_area_is_four_px_centred_on_the_hairline(cx: &mut TestAppContext) {
+        let (view, window) = cx.add_window_view(|_window, cx| CanvasView::new(cx));
+        window.simulate_resize(Size::new(px(1280.0), px(860.0)));
+        window.simulate_mouse_move(Point::new(px(0.0), px(0.0)), None, Modifiers::default());
 
-            ResizeSide::Left => RAIL_W + w + HANDLE_W / 2.0,
+        let left0 = view.update(window, |cv, _cx| cv.test_left_w());
+        let centre = handle_x(ResizeSide::Left, 1280.0, left0);
+        let hy = px(430.0);
 
-            ResizeSide::Right => vw - w - HANDLE_W / 2.0,
-
+        // 覆盖条共 4px：中心、左侧溢出带、右侧溢出带各打一下，都应启动 resize。
+        for dx in [-HANDLE_OVERHANG + 0.2, 0.0, HANDLE_OVERHANG - 0.2] {
+            window.simulate_mouse_up(Point::new(px(centre + dx), hy), MouseButton::Left, Modifiers::default());
+            window.simulate_mouse_down(Point::new(px(centre + dx), hy), MouseButton::Left, Modifiers::default());
+            assert_eq!(
+                view.update(window, |cv, _cx| cv.test_resizing()),
+                Some(ResizeSide::Left),
+                "dx={dx} 落在 4px 热区内应启动 resize"
+            );
         }
 
+        // 覆盖条外 2.5px（> HANDLE_HIT_W/2 = 2.0）：归画布，不该由分隔条接管。
+        window.simulate_mouse_up(Point::new(px(centre + 2.5), hy), MouseButton::Left, Modifiers::default());
+        window.simulate_mouse_down(Point::new(px(centre + 2.5), hy), MouseButton::Left, Modifiers::default());
+        assert_eq!(
+            view.update(window, |cv, _cx| cv.test_resizing()),
+            None,
+            "4px 热区外不该启动 resize"
+        );
+
+        // 常量自洽：1 + 1.5×2 = 4。
+        assert_eq!(HANDLE_HIT_W, HANDLE_W + HANDLE_OVERHANG * 2.0);
     }
 
 

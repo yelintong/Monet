@@ -12,8 +12,8 @@
 //!   在 app 层；本轮关闭统一走 `file.close {force:true}`，与本地 egui 参考版一致）；
 //! - live / 断连标记（P0-2）、a11y（AccessKit，P4）、Home 首页内容（P1）。
 //!
-//! 坐标口径：`tab_strip` 是根视图 `flex_col` 的**第一个子项**，所以它的 (0,0) 就是窗口原点，
-//! 标签 x 与菜单 anchor 都直接用窗口坐标，无需探针。
+//! 坐标口径：`tab_strip` 是**窗口标题栏区域的 child**（kit `TitleBar::new().child(...)`），
+//! 它的 (0,0) 就是窗口原点；标签 x、拖拽落点、溢出菜单锚点都直接用窗口坐标。
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -453,9 +453,8 @@ pub(crate) fn tab_strip(
     );
 
     // 空白区 = 系统标题栏的拖拽区（上游 `drag_free_space()` 的 `StartDrag`）。
-    // GPUI 0.2.1 的等价能力是 `WindowControlArea::Drag`：Windows 平台把它映射成 HTCAPTION，
-    // 于是系统直接提供「按住拖窗 / 双击最大化↔还原 / 右键系统菜单」，无需 Win32 FFI。
-    // 只标这一块，不标整条 strip：标签、Home、+ / 主题 / 溢出按钮的点击与拖拽不受影响。
+    // 壳整条已标 `WindowControlArea::Drag`；这里再标一次，保证这块 flex_1 hitbox
+    // 命中时平台仍按 HTCAPTION 处理，标签 / Home / 按钮的子 hitbox 不受影响。
     strip = strip.child(
         div()
             .flex_1()

@@ -1,50 +1,43 @@
-//! 窗口级标题栏壳 —— 按 **GPUI Kit**（外部组件库 `gpui-kit` v0.7.0）的 `TitleBar` 契约实现。
+//! 系统级窗口标题区域 —— 按 **GPUI Kit** 的 `TitleBar` 契约实现（不引入外部 crate）。
 //!
-//! 不引入外部 crate：本项目已有自己的主题 / 命令 / 图标体系，照搬 kit 的**公开契约**即可：
-//! - `TitleBar::window_options()` / `title_bar_options()`：窗口配置里把系统标题栏设成透明，
-//!   标题栏区域完全交给应用自绘（kit 文档：「replace the default OS title bar」）。本项目对应
-//!   [`title_bar_options`]，在 `CanvasView::run()` 里塞进 `WindowOptions.titlebar`。
-//! - `TitleBar::new().child(…)`：左侧是应用内容（本项目放 `tabs_view::tab_strip` 的 TabBar 内容），
-//!   右侧是窗口控制按钮（kit：Windows/Linux 自绘，按钮固定宽度；macOS 用系统红绿灯 + 80pt 留白）。
-//! - kit 常量 `TITLE_BAR_HEIGHT = 34px`，但示例允许 `.h(px(40.))`；本项目按上游 figcraft 的 40pt。
-//! - 数值保持上游 `ui-egui/src/tabs.rs`：左留白 8pt、Home 到左轨右缘 56pt、窗口按钮 46pt×3。
+//! kit 的写法（`examples/window_title/src/main.rs` / docs/components/title-bar）：
+//! ```
+//! let options = TitleBar::window_options();          // 窗口配置：声明标题栏区域
+//! v_flex().size_full()
+//!     .child(TitleBar::new().child(tab_bar_content)) // 内容塞进标题栏
+//!     .child(div().id("window-body").size_full())    // 内容区在标题栏下面
+//! ```
+//! 所以这条标题栏**不是**客户区里再画的一条普通控件，而是窗口的标题栏区域：
+//! - [`title_bar_options`] 等价于 `TitleBar::window_options()` 里的 `titlebar` 配置：
+//!   `appears_transparent = true` → Windows `hide_title_bar = true`，系统不再画默认标题栏，
+//!   这块区域交给应用渲染（kit 文档：「replace the default OS title bar」）。
+//! - 整条区域用 `InteractiveElement::window_control_area(WindowControlArea::Drag)` 注册给
+//!   平台；Windows 在 `WM_NCHITTEST` 里把它映射成 `HTCAPTION`，于是系统直接提供
+//!   「按住拖窗 / 双击最大化↔还原 / 右键系统菜单」。三个按钮各映射
+//!   `HTMINBUTTON / HTMAXBUTTON / HTCLOSE`，动作同样由系统执行，不再挂 `on_click`
+//!   （否则双重触发，且 `zoom()` 只最大化不还原）。
+//! - 标签条等内容是 `TitleBar::new().child(...)` 的 child，**放在标题栏里**，不是画布里的一条。
 //!
-//! **为什么不是「在内容区再塞一条」**：GPUI 0.2.1 的 `WindowOptions.titlebar` 一旦设为
-//! `appears_transparent`，Windows 端 `hide_title_bar = true`，系统不再画标题栏，客户端区从
-//! y=0 起，这条 40pt 容器就是窗口唯一的标题栏（系统仍处理窗口边缘缩放）。之前保留原生标题栏
-//! 又在 flex_col 里插一条自绘 div，是两层标题栏，已修正。
-//!
-//! ## 窗口交互（P0-2，更正 2026-11-08 的旧判断）
-//! GPUI 0.2.1 **有** `InteractiveElement::window_control_area(WindowControlArea)`：
-//! Windows 平台在 `WM_NCHITTEST` 里把它映射成 `HTCAPTION / HTMINBUTTON / HTMAXBUTTON / HTCLOSE`
-//! （`platform/windows/events.rs::handle_hit_test_msg`），随后由平台的非客户区消息处理提供
-//! 「按住拖窗 / 双击最大化↔还原 / 右键系统菜单 / 最小化 / 关闭」；8 向边缘缩放则由同一函数里
-//! 的 `DefWindowProcW` 命中值（`HTLEFT..HTBOTTOMLEFT`）直接交给系统。
-//! 因此报告里「GPUI 无 `StartDrag` / `BeginResize`，属框架差异」**不成立**，也不需要 Win32 FFI。
-//!
-//! 三个按钮**不再挂 `on_click`**：GPUI 会把 NC down/up 转成客户区 MouseDown/MouseUp 派发，
-//! 同时平台层自己执行窗口动作；若再挂 `zoom_window()` 等回调会双重触发，且 Windows 的
-//! `zoom()` 只做 `SW_MAXIMIZE`（不还原），会把系统的 `SW_NORMAL` 覆盖掉。
-//! `WinRestore` 图标随 [`Window::is_maximized`] 切换，动作交给系统保证是 toggle。
-//!
-//! 仍未做（别假装完成）：关闭前的未保存三问（P1 对话框框架）、Native/Custom/Inset 三态标题栏、
-//! RTL mirrored 的左轨位置。
+//! 几何：标题栏占窗口 y ∈ [0, `TITLE_H`)，Dock 内容区从 `TITLE_H` 起。画布命中与浮层坐标
+//! 统一由 [`crate::dock::DockLayout`] 推导（`canvas_origin().y = TITLE_H`），不再出现
+//! 「漏减标题栏高度 → 画布点击热区整体偏移」。
 
 use gpui::{Div, Point, SharedString, TitlebarOptions, WindowControlArea, div, prelude::*, px};
 
 use crate::widgets::icon::{self, Icon};
 use crate::widgets::{pt, rgba, tokens};
 
-/// 标题栏高度（上游 `tabs.rs::HEIGHT`，kit 允许通过 `.h()` 覆盖默认的 34px）。
+/// 窗口标题栏高度（kit 默认 34px，示例允许 `.h(px(40.))`；本项目的 TabBar 用 40pt）。
 pub const TITLE_H: f32 = 40.0;
-/// 标题栏左留白（上游 `rect.min.x + 8.0`；kit 非 macOS 是 12pt）。
+/// 标题栏内容左留白（上游 `tabs.rs`：Home 键与左轨右缘对齐）。
 pub const LEFT_PAD: f32 = 8.0;
-/// 一个窗口控制按钮的宽度（上游 `windows_buttons::W = 46.0`；kit 是 34pt）。
+/// 一个窗口控制按钮的宽度（上游 `windows_buttons::W = 46.0`）。
 pub const CONTROL_W: f32 = 46.0;
-/// 三个窗口控制按钮的总宽度（上游 `window_buttons()` 返回 `W * 3.0`）。
+/// 三个窗口控制按钮的总宽度。
 pub const CONTROLS_W: f32 = CONTROL_W * 3.0;
 
-/// kit 的 `TitleBar::title_bar_options()`：隐藏系统标题栏，macOS 红绿灯留在 (9,9)。
+/// kit `TitleBar::title_bar_options()`：声明窗口标题、隐藏默认系统标题栏，
+/// macOS 红绿灯留在 (9,9)。放进 `WindowOptions.titlebar`。
 pub fn title_bar_options() -> TitlebarOptions {
     TitlebarOptions {
         title: Some(SharedString::from("FigCraft")),
@@ -53,12 +46,12 @@ pub fn title_bar_options() -> TitlebarOptions {
     }
 }
 
-/// 标题栏里留给 `TabBar` 内容的宽度：窗口宽 − 左留白 − 窗口控制按钮。
+/// 标题栏里留给 TabBar 内容的宽度：窗口宽 − 左留白 − 三个窗口控制按钮。
 pub fn content_width(viewport_w: f32) -> f32 {
     (viewport_w - LEFT_PAD - CONTROLS_W).max(0.0)
 }
 
-/// 最大化按钮的图标：窗口已最大化时显示还原（上游 `WinRestore`）。
+/// 最大化按钮图标：已最大化时画还原（上游 `WinRestore`）。
 pub fn maximize_icon(maximized: bool) -> Icon {
     if maximized {
         Icon::WinRestore
@@ -67,8 +60,7 @@ pub fn maximize_icon(maximized: bool) -> Icon {
     }
 }
 
-/// 一个窗口控制按钮：hover 底色，关闭键 hover 变红（上游 `window_buttons`）。
-/// 命中区通过 `window_control_area` 交给平台，动作由系统执行（见文件头）。
+/// 一个窗口控制按钮：hover 底色，关闭键 hover 变红。命中区交给平台，动作由系统执行。
 fn control_button(id: &'static str, icon: Icon, close: bool, area: WindowControlArea) -> gpui::Stateful<Div> {
     let t = tokens();
     let hover = if close { rgba(t.danger) } else { rgba(t.hover) };
@@ -87,9 +79,8 @@ fn control_button(id: &'static str, icon: Icon, close: bool, area: WindowControl
         .child(icon::paint(icon, ink, 20.0))
 }
 
-/// kit 的 `TitleBar::new().child(content)`：内容 + 右侧窗口控制区。
-/// `content` 是 `TabBar`（本项目的 `tabs_view::tab_strip`），不在这里关心标签逻辑。
-/// `maximized` 由调用方每帧传 `window.is_maximized()`，决定 max 键画方框还是双框。
+/// kit `TitleBar::new().child(content)`：整条注册成系统标题栏拖拽区，
+/// 左留白与内容空白区也标 Drag（覆盖子 hitbox 的空隙），右侧三个按钮各归系统。
 pub fn title_bar(content: impl IntoElement, maximized: bool) -> Div {
     let min = control_button("title-min", Icon::WinMinimize, false, WindowControlArea::Min);
     let max = control_button("title-max", maximize_icon(maximized), false, WindowControlArea::Max);
@@ -103,7 +94,10 @@ pub fn title_bar(content: impl IntoElement, maximized: bool) -> Div {
         .flex_row()
         .items_center()
         .bg(rgba(tokens().panel))
-        // 左留白也是拖拽区（不是 padding，padding 不属于任何可标 area 的子 hitbox）。
+        // 整条标题栏都是系统可拖动的窗口标题区域；子 hitbox（标签 / 按钮）优先命中，
+        // 所以交互控件仍能正常收到点击（kit 文档：「Window dragging is handled
+        // automatically in appropriate areas」）。
+        .window_control_area(WindowControlArea::Drag)
         .child(
             div()
                 .flex_none()
@@ -125,7 +119,7 @@ mod tests {
     fn content_width_reserves_the_shell_padding_and_three_controls() {
         assert_eq!(content_width(1280.0), 1280.0 - LEFT_PAD - CONTROLS_W);
         assert_eq!(CONTROLS_W, 3.0 * CONTROL_W);
-        assert_eq!(content_width(0.0), 0.0, "窄窗不产生负宽度");
+        assert_eq!(content_width(0.0), 0.0);
     }
 
     #[test]
@@ -135,9 +129,10 @@ mod tests {
     }
 
     #[test]
-    fn title_bar_options_hides_the_system_title_bar() {
+    fn title_bar_options_declares_the_window_titlebar_region() {
         let o = title_bar_options();
-        assert!(o.appears_transparent, "自绘标题栏必须让系统标题栏透明");
+        assert!(o.appears_transparent, "kit 契约：隐藏默认系统标题栏，区域交给应用渲染");
         assert!(o.title.is_some());
+        assert!(o.traffic_light_position.is_some());
     }
 }
