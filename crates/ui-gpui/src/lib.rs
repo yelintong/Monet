@@ -1439,6 +1439,19 @@ impl CanvasView {
 
             if let Some(kind) = dialogs::ui_action(&r.kind, &r.data) {
 
+                // A18：`file.close` 拒绝脏文档时带上被关闭标签的下标。先切到那个标签，
+                // 否则三问里的 Save 会保存当前活动文档（可能不是用户要关的那个）。
+
+                if kind == dialogs::Kind::Unsaved {
+
+                    if let Some(i) = r.data.get("index").and_then(serde_json::Value::as_u64) {
+
+                        let _ = self.app.session.execute("doc.switch", &serde_json::json!({ "index": i }));
+
+                    }
+
+                }
+
                 self.open_dialog(kind, &r.data, cx);
 
                 continue;

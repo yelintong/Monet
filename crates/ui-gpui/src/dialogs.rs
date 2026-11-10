@@ -289,7 +289,9 @@ pub(crate) fn spec(kind: Kind, data: &Value) -> Spec {
                 .message(format!("Document {index} has unsaved changes. Save before closing?"))
                 .button(Button::submit("Don't Save", "file.close", json!({ "index": index, "force": true })))
                 .button(Button::close("Cancel"))
-                .button(Button::primary("Save", "file.save", json!({ "index": index })))
+                // `file.save` 保存的是当前活动文档；sync_ui_requests 在弹出本对话框前
+                // 已经 `doc.switch` 到被关闭的标签，所以这里不需要（引擎也不接受）index。
+                .button(Button::primary("Save", "file.save", json!({})))
         }
         Kind::Rename => Spec::new("Rename")
             .width(360.0)

@@ -8,8 +8,8 @@
 //! - 演示标签组 / present 状态机（P2）；
 //! - 拖离成新窗口（P2：多窗口）；窗口按钮 / 无边框拖窗 / 双击最大化 / 8 向边缘缩放在
 //!   P0-2 用 `WindowControlArea` 落地（**更正**：GPUI 0.2.1 有等价能力，不是框架差异）；
-//! - 未保存关闭的 Save / Don't Save / Cancel 三问（P1：GPUI 还没有对话框框架，且引擎的保存
-//!   在 app 层；本轮关闭统一走 `file.close {force:true}`，与本地 egui 参考版一致）；
+//! - ~~未保存关闭三问~~（**A18 已接，2026-11-10**）：关闭走 `file.close {index}`，引擎对脏文档
+//!   发 `dialog.unsaved`，由 `dialogs.rs` 的通用三问对话框处理；Alt+close 才带 `force:true` 直接丢弃；
 //! - live / 断连标记（P0-2）、a11y（AccessKit，P4）、Home 首页内容（P1）。
 //!
 //! 坐标口径：`tab_strip` 是**窗口标题栏区域的 child**（kit `TitleBar::new().child(...)`），
@@ -381,12 +381,15 @@ pub(crate) fn tab_strip(
             .items_center()
             .justify_center()
             .hover(move |s| s.bg(rgba(t.pressed)))
-            .on_mouse_down(MouseButton::Left, move |_e: &MouseDownEvent, _window, cx: &mut App| {
-                cmds_close.push(Cmd { id: "file.close", params: Some(json!({ "index": index, "force": true })) });
+            // A18：普通关闭不带 force，让引擎判断文档是否脏 —— 脏了会发 `dialog.unsaved`，
+            // 由通用对话框弹 Don't Save / Cancel / Save。只有 Alt+close 才直接丢弃
+            // （`e.modifiers.alt`），与 ui-egui 的 Alt+close 语义一致。
+            .on_mouse_down(MouseButton::Left, move |e: &MouseDownEvent, _window, cx: &mut App| {
+                cmds_close.push(Cmd { id: "file.close", params: Some(json!({ "index": index, "force": e.modifiers.alt })) });
                 cx.stop_propagation();
             })
-            .on_mouse_down(MouseButton::Middle, move |_e: &MouseDownEvent, _window, cx: &mut App| {
-                cmds_middle.push(Cmd { id: "file.close", params: Some(json!({ "index": index, "force": true })) });
+            .on_mouse_down(MouseButton::Middle, move |e: &MouseDownEvent, _window, cx: &mut App| {
+                cmds_middle.push(Cmd { id: "file.close", params: Some(json!({ "index": index, "force": e.modifiers.alt })) });
                 cx.stop_propagation();
             })
             .child(icon::paint(Icon::Close, rgba(t.text_secondary), CLOSE_ICON));

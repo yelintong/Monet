@@ -1525,6 +1525,10 @@ pub(crate) fn right_panel(
         .flex()
         .flex_col()
         .bg(rgba(t.panel))
+            // 48 pt 顶栏（头像 / Present / Share）：egui `right.rs:103-127` 画在 tabs 之上，
+            // 且 Motion 模式下同样保留。以前只有 lib.rs 的 Motion 分支画了它，普通右栏漏掉，
+            // 于是退出 Motion 后整条头像/分享栏就「消失」了。这里补回，与 Motion 分支同序。
+            .child(right::topbar::top_bar(f, data))
             // 「显示 / 隐藏」开关无论有无选中都在：view.* 是文档级命令，不需要选区。
             .child(right::sections::view_bar(f, data))
             .child(body)

@@ -57,7 +57,7 @@
 
 | # | 位置 | EGUI 做法 | GPUI 现状（证据） | 差距 | 优先级 |
 |---|---|---|---|---|---|
-| B1 | 右栏第三个 tab | `"Developer Mode"`（#2135 商标改名，`right_tab_label()` + `naming_tests`） | 仍叫 `"Inspect"`（`panels/right/sections.rs:243`），全仓无 `"Developer Mode"` | **命名不合规**（DEV MODE 是 Figma 注册商标），且缺 a11y 读取的 `right_tab_label` | **P0** |
+| B1 | ~~右栏第三个 tab~~ | `"Developer Mode"`（#2135 商标改名，`right_tab_label()` + 命名回归测试） | 改名与命名回归测试已落地；**2026-11-10 用户要求从右栏 tabs 行去掉该按钮**，现只剩 Design / Prototype。`naming.rs` 的常量/函数保留给 a11y 与其它入口，Developer Mode 面板仍可从底部工具栏 Inspect 或 Shift+D 进入 | 命名合规完成；可见 tab 按用户要求移除 | ✅ |
 | B2 | Actions 调色板（Cmd+K） | 三个 tab `All / Assets / Plugins & widgets`、`Recents`、前缀优先排序、最多 60 行（`menus/palette.rs:90,162,170`） | 单一平铺列表 `palette_rows()`（`lib.rs:311`），无 tab / Recents / 排序 | 找不到插件与资产，长列表体验差 | P1 |
 | B3 | 工具条 | 设计模式 6 组 + **画板模式 8 组**（bmove/marker/sticky/bshape/connector/text/section…） | 设计模式 6 组齐全；画板组全无（`toolbar.rs:17-20` 明写未移植） | 见 A2 / A27 | P1 |
 | B4 | 标签条 | 拖拽重排、关闭询问、拖出成窗口、Alt+close 直接丢弃 | `tabs.rs` / `tabs_view.rs` 有拖拽与重排；关闭询问与拖出成窗口未见 | 见 A16/A18 | P1 |
@@ -74,7 +74,7 @@
 
 | # | 上游变更 | 说明 | GPUI 现状 | 优先级 |
 |---|---|---|---|---|
-| C1 | #2135 / #2165 **Dev Mode → Developer Mode** | 商标原因改名，新增 `right_tab_label()` 与 `naming_tests.rs`；locales 里法/葡/荷的错误译名一并修正。**注意本地 `ui-egui/src/app.rs:352` 仍是 `tr("Dev Mode")`**（该 crate 刻意不同步），`right_tab_label` / `naming_tests.rs` 本地不存在，需以 `docs/feature-names.md` 为准 | 仍用 `"Inspect"`，无命名测试 | **P0** |
+| C1 | #2135 / #2165 **Dev Mode → Developer Mode** | 商标原因改名，新增 `right_tab_label()` 与 `naming_tests.rs`；locales 里法/葡/荷的错误译名一并修正。**注意本地 `ui-egui/src/app.rs:352` 仍是 `tr("Dev Mode")`**（该 crate 刻意不同步），`right_tab_label` / `naming_tests.rs` 本地不存在，需以 `docs/feature-names.md` 为准 | 已补 `right_tab_label()` + 命名回归测试，UI 文案改为 Developer Mode；随后按用户要求从右栏 tabs 行移除该按钮，常量与测试保留 | ✅ |
 | C2 | craft-update `c5a1cbf` → `1b34eba`：更新器上报 installing/ready/installed/failed，**退出时安装** | `start_pending_update()` 由 `FigApp` 提供，`main.rs` 退出时调用 | 无更新器 UI、无退出安装 | P1（依赖 A14） |
 | C3 | `docs/feature-names.md` 新增 | 命名规范（不再用 Figma-class 比较措辞）；Developer Mode 一节 | 已同步文档，UI 文案尚未按规范对齐 | P2 |
 | C4 | MCP display names 测试 | 非 UI（已同步） | 已同步 | — |
@@ -160,7 +160,7 @@
 | 3 | `crates/ui-gpui/src/dialogs.rs`（新） | A19（A6/A7/A8/A10/A11/A12/A13/A15/A17/A18/A20 共用的壳） | `Popover` 外壳、`field_row`/`field_row_full` 统一网格、`text_field`/`number_field`、`CmdQueue`、通用 Escape/遮罩行为 | ✅ |
 | 4 | `crates/ui-gpui/src/lib.rs` | A19 挂接 / B9 | `sync_ui_requests` + 渲染分层 + `DockLayout`；`ui_hidden`/`ui_minimized` 只改布局值，不动几何公式 | ✅ |
 | 5 | `crates/ui-gpui/src/main_menu.rs` | A6 / A7 / A11 菜单入口 | **无需改此文件**：菜单命令统一在 `lib.rs::click_menu` 拦截，仍是既有主菜单行模型 | ✅ |
-| 6 | `crates/ui-gpui/src/tabs_view.rs` | A18 / B4 | 引擎 `dialog.unsaved` 请求已走通用壳；标签条自身的 Alt+close / 三问接线仍未做 | 🔄 |
+| 6 | `crates/ui-gpui/src/tabs_view.rs` | A18 / B4 | 关闭去掉写死的 `force:true`，只有 Alt+close 才直接丢弃；引擎 `dialog.unsaved` → 通用三问（Don't Save / Cancel / Save），弹窗前 `doc.switch` 到目标标签 | ✅ |
 | 7 | `crates/ui-gpui/src/lib.rs`（`palette_rows`） | B2 | 既有 `menu_card`/`Palette` 弹层 | ⬜ |
 | 8 | `crates/ui-gpui/src/home.rs`（新） | A1 | 通用对话框/浮层 + `TextField`/`IconButton` | ⬜ |
 | 9 | `crates/ui-gpui/src/comments.rs`（新） | A3 | 通用浮层 + 输入框系列 | ⬜ |
@@ -170,6 +170,8 @@
 | 13 | `crates/ui-gpui/src/a11y.rs`（新）/ `bidi.rs` / `ui_scale.rs` | A21 / A22 | 通用焦点环 / 名称渲染钩子 | ⬜ |
 | 14 | `crates/ui-gpui/src/services.rs`（新） | A23 | 平台能力接口（保持 UI 可替换） | ⬜ |
 | 15 | `crates/ui-gpui/src/widgets/field_math.rs`（新，需解冻确认） | A24 | 通用数字字段（**冻结件，改前必须先问用户**） | ⬜ |
+| 16 | `crates/ui-gpui/src/panels.rs` | 右栏 48 pt 顶栏（头像 / Present / Share）恢复 | 既有 `right::topbar::top_bar` 通用顶栏，只补一行调用，与 Motion 分支同序 | ✅ |
+| 17 | `crates/ui-gpui/src/panels/right/sections.rs` | 右栏 tabs 去掉第三个「开发模式」按钮 | 既有 `tab(...)`，只减少一项数据；面板功能仍由底部工具栏 Inspect / Shift+D 进入 | ✅ |
 
 ---
 
@@ -198,4 +200,20 @@
 - A13 缺失字体、A15 取样色、A14 更新、A11 About、A4 插件目前是**带说明的提示窗口**，因为引擎没有对应命令或依赖 C2 升版；按钮只有 Close，不提交不存在的命令。
 - A1 Home / A2 Boards / A3 Comments / A16 多窗口 / A21 a11y / A22 bidi·ui_scale / A24 字段运算 / A28 Live / B2 调色板 / B8 Present 子模块仍未开始。
 
-**下一步建议**：按 G 表第 6 → 7 → 8 行继续（标签关闭三问接线、调色板三 tab、Home），再进第 3 批。涉及 `widgets/**` 冻结件的改动（A24）必须先与用户确认。
+### 17:25–17:33 按现场反馈追加调整
+
+| 事项 | 处理 |
+|---|---|
+| 提交 GitHub | `e9de7cb4`（第一批）+ `e9640ac1`（Cargo.lock）已推送 `fork/GPUI-smooth`。git 的 `http.proxy` 写死在失效端口 65311，实际监听的是 54834；临时 `-c http.proxy=… -c http.schannelCheckRevoke=false` 后推送成功 |
+| 用户头像 / Present / Share 栏「会丢失」 | 根因：`panels.rs::right_panel` 的 `wrap()` 只画 `view_bar` + body，48 pt 顶栏**只在 `lib.rs` 的 Motion 分支**画过。已在 `wrap()` 补上 `right::topbar::top_bar(f, data)`，顺序与 Motion 分支一致；两条分支互斥，不会重复画 |
+| 「下面这一栏不要开发模式按钮」 | 用户确认为**右栏 tabs 行的第三个标签**。已移除，只留 Design / Prototype；`naming.rs` 的 `right_tab_label` / 常量 / 命名回归测试保留给 a11y 与其它入口，Developer Mode 面板本身没删（底部工具栏 Inspect、Shift+D 仍可进入） |
+| 验证 | `cargo check -p figcraft-ui-gpui --lib` 通过；重编前先关闭占用 `run.exe` 的旧窗口（否则 LNK1104），新 exe 17:32 生成，17:33 启动窗口 `FigCraft`（PID 4204，Responding=True） |
+
+### G 表第 6 行落地（A18 标签关闭三问）
+
+- **根因**：`tabs_view.rs` 的 X / 中键关闭一直写死 `file.close {force:true}`，把引擎的脏文档检查整个绕过去，所以三问永远弹不出来。
+- **修法**：改为 `force: e.modifiers.alt`（Alt+close 才直接丢弃）；普通关闭由引擎对脏文档发 `dialog.unsaved`，已接好的通用对话框弹 Don't Save / Cancel / Save。`sync_ui_requests` 在弹窗前执行 `doc.switch {index}`，避免 Save 存到别的活动文档；Save 按钮改为不带 index 的 `file.save`（引擎不接受 index）。
+- **诚实的边界**：Save 只保存，不会自动再执行一次关闭（这样即使保存失败也不会丢改动）；保存后再点 X 即可关闭。EGUI 的「保存后自动关闭 / Save as」流程仍未移植。
+- **验证**：`cargo check -p figcraft-ui-gpui --lib` 通过；`cargo test --lib --features test-support -- naming dialogs` 9 条全绿；重编 exe（17:36）并重启窗口（PID 3500，Responding=True）。
+
+**下一步**：G 表第 7 行 —— Actions 调色板三 tab（`All / Assets / Plugins & widgets`）+ Recents + 前缀优先排序 + 最多 60 行；随后第 8 行 Home。涉及 `widgets/**` 冻结件的改动（A24）必须先与用户确认。

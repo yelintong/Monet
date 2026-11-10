@@ -238,11 +238,11 @@ pub(crate) fn view_bar(f: &RightFields, d: &PanelData) -> gpui::Div {
         .flex_row()
         .items_center()
         .gap(pt(2.0))
-        // #2135 / docs/feature-names.md：第三个 tab 的显示名必须是 "Developer Mode"。
-        // 所有前端表面（含将来的 a11y 树）都从 naming::right_tab_label 取，避免改名漂移。
+        // 2026-11-10 用户要求：这一栏不放「开发模式」按钮，只留 Design / Prototype。
+        // Developer Mode 面板本身没有删，仍可从底部工具栏的 Inspect 或 Shift+D 进入；
+        // 标签文案仍由 naming::right_tab_label 统一提供（a11y / 命名回归测试继续用它）。
         .child(tab(crate::naming::right_tab_label(0), 0))
-        .child(tab(crate::naming::right_tab_label(1), 1))
-        .child(tab(crate::naming::right_tab_label(2), 2));
+        .child(tab(crate::naming::right_tab_label(1), 1));
     div()
         .flex_none()
         .w_full()
