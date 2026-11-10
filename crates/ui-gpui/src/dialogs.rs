@@ -464,12 +464,31 @@ pub(crate) fn spec(kind: Kind, data: &Value) -> Spec {
             .message("The eyedropper sampled this colour. Creating a style from it is not wired yet.")
             .field(Field::Note { text: str_field("color", data, "#000000") })
             .button(Button::close("Close")),
-        Kind::Plugins => Spec::new("Plugins")
-            .width(440.0)
-            .message("Browse and manage plugins. Use the Actions palette to run one.")
-            .field(Field::Text { key: "query", label: "Search", value: String::new() })
-            .field(Field::Note { text: "Installed plugins appear in the Actions palette under Plugins & widgets.".to_string() })
-            .button(Button::close("Close")),
+        Kind::Plugins => {
+            // 1:1 with `ui-egui/src/dialogs/plugins_ui.rs::installed_tab`: the installed plugins
+            // (name + summary + Remove), then "Import plugin from manifest…". The Browse tab fetches
+            // a plugin directory over the network (a background task), which is not wired here.
+            let list = data["plugins"].as_array().cloned().unwrap_or_default();
+            let mut spec = Spec::new("Plugins").width(440.0).field(Field::Section { title: "Installed" });
+            if list.is_empty() {
+                spec = spec.field(Field::Note {
+                    text: "No plugins yet. Import a development plugin from its figcraft-plugin.json.".to_string(),
+                });
+            }
+            for p in &list {
+                let id = p["id"].as_str().unwrap_or("").to_string();
+                let name = p["name"].as_str().unwrap_or("").to_string();
+                let version = p["version"].as_str().unwrap_or("").to_string();
+                let desc = p["description"].as_str().unwrap_or("").to_string();
+                let title = if version.is_empty() { name.clone() } else { format!("{name}  {version}") };
+                spec = spec.field(Field::Note { text: title });
+                if !desc.is_empty() {
+                    spec = spec.field(Field::Note { text: desc });
+                }
+                spec = spec.field(Field::Action { label: "Remove", id: "plugin.remove", params: json!({ "id": id }) });
+            }
+            spec.button(Button::run("Import plugin from manifest…", "plugin.import")).button(Button::close("Close"))
+        }
         Kind::SaveAs => Spec::new("Save as")
             .width(400.0)
             .field(Field::Text { key: "path", label: "File name", value: str_field("path", data, "") })

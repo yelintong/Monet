@@ -75,6 +75,8 @@ mod menu_card;
 /// B2: the Actions palette's data (tabs, Recents, grouped commands, ranking). No widgets here.
 mod palette;
 
+mod widget_bar;
+
 /// A6: the Export dialog's bitmap preview, produced by the engine's renderer.
 mod export_preview;
 
@@ -1596,19 +1598,37 @@ impl CanvasView {
 
         // A7: the Preferences form shows the live values; its request carries none, so snapshot
         // the prefs into `data` (the spec is a pure function of it).
-        let data: std::borrow::Cow<'_, serde_json::Value> = if kind == dialogs::Kind::Preferences {
-            let p = &self.app.session.prefs;
-            std::borrow::Cow::Owned(serde_json::json!({ "prefs": {
-                "keep_tool": p.keep_tool, "highlight_on_hover": p.highlight_on_hover,
-                "rename_duplicates": p.rename_duplicates, "show_dimensions": p.show_dimensions,
-                "number_keys_opacity": p.number_keys_opacity, "reduce_motion": p.reduce_motion,
-                "auto_save": p.auto_save, "start_on_home": p.start_on_home,
-                "user_name": p.user_name, "publish_server": p.publish_server,
-                "nudge_small": p.nudge_small, "nudge_big": p.nudge_big,
-                "theme": p.theme, "language": p.language,
-            }}))
-        } else {
-            std::borrow::Cow::Borrowed(data)
+        let data: std::borrow::Cow<'_, serde_json::Value> = match kind {
+            dialogs::Kind::Preferences => {
+                let p = &self.app.session.prefs;
+                std::borrow::Cow::Owned(serde_json::json!({ "prefs": {
+                    "keep_tool": p.keep_tool, "highlight_on_hover": p.highlight_on_hover,
+                    "rename_duplicates": p.rename_duplicates, "show_dimensions": p.show_dimensions,
+                    "number_keys_opacity": p.number_keys_opacity, "reduce_motion": p.reduce_motion,
+                    "auto_save": p.auto_save, "start_on_home": p.start_on_home,
+                    "user_name": p.user_name, "publish_server": p.publish_server,
+                    "nudge_small": p.nudge_small, "nudge_big": p.nudge_big,
+                    "theme": p.theme, "language": p.language,
+                }}))
+            }
+            dialogs::Kind::Plugins => {
+                // A4: the Installed list is the live `prefs.plugins`, not a stub.
+                let plugins: Vec<serde_json::Value> = self
+                    .app
+                    .session
+                    .prefs
+                    .plugins
+                    .iter()
+                    .map(|p| {
+                        serde_json::json!({
+                            "id": p.manifest.id, "name": p.manifest.name,
+                            "version": p.manifest.version, "description": p.manifest.description,
+                        })
+                    })
+                    .collect();
+                std::borrow::Cow::Owned(serde_json::json!({ "plugins": plugins }))
+            }
+            _ => std::borrow::Cow::Borrowed(data),
         };
 
         let root = cx.entity();
@@ -4603,6 +4623,11 @@ impl Render for CanvasView {
         .size_full();
 
         layers.push(shapes.into_any_element());
+
+        // A25: the plugin widget's property bar, above the selected widget.
+        if let Some(bar) = widget_bar::bar(&self.app, self.fields.queue()) {
+            layers.push(bar);
+        }
 
 
 
