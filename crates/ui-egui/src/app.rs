@@ -349,7 +349,7 @@ impl FigApp {
                     let label = match self.ui.right_tab {
                         RightTab::Design => i18n::tr("Design"),
                         RightTab::Prototype => i18n::tr("Prototype"),
-                        RightTab::Inspect => i18n::tr("Dev Mode"),
+                        RightTab::Inspect => i18n::tr("Developer Mode"),
                     };
                     a11y::region(&mut self.ui.nav, ui, a11y::Region::Properties, egui::accesskit::Role::Pane, label);
                     right::right_panel(self, ui)

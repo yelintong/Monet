@@ -75,6 +75,13 @@ mod menu_card;
 /// B2: the Actions palette's data (tabs, Recents, grouped commands, ranking). No widgets here.
 mod palette;
 
+/// A6: the Export dialog's bitmap preview, produced by the engine's renderer.
+mod export_preview;
+
+/// The completion audit: plan status is derived from code capabilities, not hand-written.
+#[cfg(test)]
+mod parity_contract;
+
 mod panels;
 
 /// 左面板控件树（Layers 树）：可展开/折叠、选中、显隐/锁定，含父子级拖动排序（复用 `drag` 通用件）。
@@ -1565,7 +1572,11 @@ impl CanvasView {
 
         let cmds = self.fields.queue();
 
-        self.dialog = Some(dialogs::DialogState::new(kind, data, &cmds, cx));
+        // A6: only the Export dialog needs a bitmap, and it comes from the engine renderer.
+
+        let preview = (kind == dialogs::Kind::Export).then(|| export_preview::make(&self.app.session)).flatten();
+
+        self.dialog = Some(dialogs::DialogState::new(kind, data, &cmds, cx, preview));
 
         // 从主菜单点开的对话框要把菜单本身收掉，否则菜单会盖在对话框上。
 

@@ -22,13 +22,13 @@
 
 | # | 界面 | EGUI 参照 | GPUI 现状（证据） | 影响 | 优先级 | 规模 |
 |---|---|---|---|---|---|---|
-| A1 | **首页 Home**（Recents / Online / Templates / Getting started） | `home.rs` + `home/` | `panels/extra.rs:1243` 测试直接写 `"GPUI 没有 Home，不能假装接了"`，`ui_action("home")` 返回 `None` | 启动即落在画布，无最近文件/模板入口 | P1 | 大 |
+| A1 | **首页 Home**（Recents / Online / Templates / Getting started） | `home.rs` + `home/` | ✅ `doc.home` → `home` ui_request → `ExtraKind::Home`；`home_body` 读 `prefs.recent_files` / `getting_started_dismissed`，命令全走引擎（`file.openRecent` 等），复用面板 `pill`/`note` | Online 区与缩略图网格仍未做 | P1 | 大 |
 | A2 | **画板模式 Boards**（笔/荧光笔/橡皮/便签/画板形状/连接线 + 画板画布） | `canvas/board_bar.rs`、`canvas/board_facilitate.rs`、`canvas/board_connect.rs`、`widgets/board_picker.rs`、`engine/src/boards`（**原文写的 `panels/boards/*` 目录不存在**） | 工具条无 `Marker/Highlighter/Eraser/Sticky/BoardShape/Connector` 任何 id（`toolbar.rs:60-82` 只有设计模式 6 组）；`board.timer` / `board.vote` / `addConnected` / `facilitate` / `BoardTimer` 全部 0 命中 | 整块白板功能不可用（计时器、投票、自动连线、模板选择器也一起缺） | P1 | 大 |
 | A3 | **评论 Comments**（评论工具之外的评论列表/气泡/回复） | `comments_*`、`canvas/comments.rs` | 只有工具按钮 `ToolId::Comment`（`toolbar.rs:80`），无评论面板/线程 UI | 能点工具，无处查看/回复评论 | P1 | 中 |
 | A4 | **插件面板 Plugins**（浏览、安装、启用） | `dialogs/plugins_ui.rs`、`plugin_panel` | 只有主菜单 `"Plugins"` 字样（`main_menu.rs:37`），无浏览/管理面板 | 插件生态入口缺失 | P1 | 中 |
 | A5 | **图标面板 Icons**（图标库插入） | `icons_panel.rs` | 0 处引用 | 图标字体插入路径缺失 | P2 | 中 |
-| A6 | **导出对话框 Export**（格式/倍数/预览/多选导出） | `dialogs/export.rs:64 export_dialog` | 🔄 已通过 A19 通用壳接上：`dialogs.rs:239-251` 的 `Kind::Export` 有 Format(5)/Scale(4)/File name + `file.export`，菜单 `catalog.rs:48` 与 `menu_action()` 可达 | **预览、多选导出、逐格式参数、原生路径选择仍缺**（见 I 节） | P0 | 中 |
-| A7 | **首选项 Preferences 对话框** | `dialogs.rs:211 show`（Preferences 分支） | 🔄 已通过 A19 通用壳接上：`dialogs.rs:253-267` 的 `Kind::Preferences` 有 Theme / Interface size / 左右面板宽度 + Apply→`view.panelWidths`；入口 `catalog.rs:267` 与 Cmd+, 可用 | **语言、滚轮缩放、面板宽度重置仍缺**（见 I 节） | P0 | 中 |
+| A6 | **导出对话框 Export**（格式/倍数/预览/多选导出） | `dialogs/export.rs:64 export_dialog` | ✅ A19 通用壳 + `Field::Preview` 位图预览（`export_preview.rs` 调 `figcraft_render::render_node`） | 多选导出、逐格式参数、原生路径选择仍缺；预览为 0.25 倍位图，不随格式实时切换 | P0 | 中 |
+| A7 | **首选项 Preferences 对话框** | `dialogs.rs:211 show`（Preferences 分支） | ✅ 补上 Language（`pref.language`）、Scroll wheel（`pref.scrollWheelZoom`）、`Reset widths`（`view.panelWidths` 空参数 = 引擎自带的重置语义） | 语言框只列 6 个常用项，其余 BCP 47 代码引擎仍支持但 UI 未列 | P0 | 中 |
 | A8 | **批量重命名 Batch rename** | `dialogs/batch_rename.rs` | 搜 `"Rename layers"` 0 命中 | 多选改名只能逐个 | P2 | 小 |
 | A9 | **分支 UI Branch** | `dialogs/branch_ui.rs` | 搜 `branch` 只命中控制通道/文本编辑，无 UI | 分支管理不可用 | P2 | 中 |
 | A10 | **色彩配置 Color profile** | `dialogs/color_profile.rs` | 仅 `panels/right/sections.rs:1823` 注释提到 Page 设置 | 色域 / 配置文件不可设 | P2 | 小 |
@@ -60,7 +60,7 @@
 | B1 | ~~右栏第三个 tab~~ | `"Developer Mode"`（#2135 商标改名，`right_tab_label()` + 命名回归测试） | 改名与命名回归测试已落地；**2026-11-10 用户要求从右栏 tabs 行去掉该按钮**，现只剩 Design / Prototype。`naming.rs` 的常量/函数保留给 a11y 与其它入口，Developer Mode 面板仍可从底部工具栏 开发 或 Shift+D 进入 | 命名合规完成；可见 tab 按用户要求移除；底部模式切换第 4 格 `Inspect`→`开发`（修掉退役名），动画/开发模式下右栏 tabs 行改为显示「动画」/「开发」文本（见下方进度） | ✅ |
 | B2 | ~~Actions 调色板（Cmd+K）~~ | 三个 tab `All / Assets / Plugins & widgets`、`Recents`、前缀优先排序、最多 60 行（`menus/palette.rs:90,162,170`） | 2026-11-10 落地 `palette.rs`：三 tab + Recents（读引擎 `prefs.recent_actions`）+ 按顶层菜单分组 + 搜索时前缀优先/60 行上限 + Assets/Plugins/widgets 真实数据 | 键盘上下键选中、Enter 运行高亮行、实时过滤（冻结的 `TextField` 只有 commit 回调）未移植；见 H 节 18:4x | ✅ |
 | B3 | 工具条 | 设计模式 6 组 + **画板模式 8 组**（bmove/marker/sticky/bshape/connector/text/section…） | 设计模式 6 组齐全；画板组全无（`toolbar.rs:17-20` 明写未移植） | 见 A2 / A27 | P1 |
-| B4 | 标签条 | 拖拽重排、关闭询问、拖出成窗口、Alt+close 直接丢弃 | 拖拽重排（`tabs_view.rs:155-187`）与关闭询问均已接（G 表第 6 行）；**拖出成窗口（A16）仍缺** | 见 A16/A18 与 I 节 | 🔄 |
+| B4 | 标签条 | 拖拽重排、关闭询问、拖出成窗口、Alt+close 直接丢弃 | 拖拽重排与关闭询问均已接；**拖出成窗口仍缺**：引擎有 `window.new` 请求，但 GPUI 需重构 `Session` 所有权才能共享会话（见 J 节） | 见 A16 与 J 节 | 🔄 |
 | B5 | ~~协作 Live~~ | ~~59 个文件规模~~ → 实为 `live.rs` + `live/agent.rs` 共 1672 行 | ~~26 个文件规模~~ → **0 个文件**，整块缺失 | **已移到 A28**；原文「需逐项比对」严重低估 | P1（见 A28） |
 | B6 | 变量面板 | Full / Floating + 表格列、重命名、导出 | `variables_full` 有（`lib.rs:585`），`WindowKind::VariablesTable` 有 | 列行为/多选/导出细节待逐项核 | P2 |
 | B7 | 属性面板（右栏 sections） | `panels/right/{effects,inspect,menu,paints,stroke}.rs` 分模块 | 集中在 `panels/right/sections.rs`（+inspect.rs/proto.rs/component.rs） | 需按 section 逐条比对；`fill_rule.rs`（442 行）只有 Non-zero/Even-odd 菜单（GPUI `sections.rs:669-670`），`reverseLoop` 与填充区域蓝/橙可视化、点击反转环仍缺 | P2 |
@@ -74,7 +74,7 @@
 
 | # | 上游变更 | 说明 | GPUI 现状 | 优先级 |
 |---|---|---|---|---|
-| C1 | #2135 / #2165 **Dev Mode → Developer Mode** | 商标原因改名，新增 `right_tab_label()` 与 `naming_tests.rs`；locales 里法/葡/荷的错误译名一并修正。**注意本地 `ui-egui/src/app.rs:352` 仍是 `tr("Dev Mode")`**（该 crate 刻意不同步），`right_tab_label` / `naming_tests.rs` 本地不存在，需以 `docs/feature-names.md` 为准 | GPUI 侧 ✅：`right_tab_label()` + 4 条命名回归、标签 `"开发"`、右栏第三 tab 按用户要求移除、底部切换器第 4 格 `Inspect`→`开发`。⚠️ **全仓清理未彻底**：`ui-egui/src/app.rs:352` 仍是 `tr("Dev Mode")` 的真实 UI 文案（该 crate 刻意不同步且本地破损），见 I 节 | ✅（GPUI）/ ⚠️（ui-egui 残留） |
+| C1 | #2135 / #2165 **Dev Mode → Developer Mode** | 商标原因改名，新增 `right_tab_label()` 与 `naming_tests.rs`；locales 里法/葡/荷的错误译名一并修正。**注意本地 `ui-egui/src/app.rs:352` 仍是 `tr("Dev Mode")`**（该 crate 刻意不同步），`right_tab_label` / `naming_tests.rs` 本地不存在，需以 `docs/feature-names.md` 为准 | ✅ GPUI 侧同前；**全仓 UI 文案已清**：`ui-egui` 的 `app.rs` / `canvas.rs` / `menus.rs` 三处 `tr("Dev Mode…")` 改为 `tr("Developer Mode…")`，并同步 `devmode_tail_tests.rs` 断言。ui-gpui 里的 "Dev Mode" 只剩注释 / RETIRED 测试表 / 搜索别名（标识符，合规） | ✅ |
 | C2 | craft-update `c5a1cbf` → `1b34eba`：更新器上报 installing/ready/installed/failed，**退出时安装** | `start_pending_update()` 由 `FigApp` 提供，`main.rs` 退出时调用 | 无更新器 UI、无退出安装 | P1（依赖 A14） |
 | C3 | `docs/feature-names.md` 新增 | 命名规范（不再用 Figma-class 比较措辞）；Developer Mode 一节 | 已同步文档，UI 文案尚未按规范对齐 | P2 |
 | C4 | MCP display names 测试 | 非 UI（已同步） | 已同步 | — |
@@ -84,7 +84,7 @@
 
 ## D. 建议实施顺序
 
-> **2026-11-10 19:0x 逐项核查结果见 I 节**：下面写的是「建议」，不等于已落地 —— A6/A7 目前只是 A19 通用壳版本，A1 仍未开始。
+> **2026-11-10 19:0x 逐项核查见 I 节，19:1x 补全结果见 J 节**：下面写的是「建议」；第 1 批除 B4 拖出成窗口外均已落地，A1 Home 已接上。
 
 ### 第 1 批（合规 + 通用底座，1–2 天）
 0. **A19**：通用对话框框架（一次做成数据驱动，十个对话框共用一套壳 + 一套控件 + 一套 Escape/遮罩行为）。**必须排在最前**，否则 A6/A7/A18 各自造轮子。
@@ -164,7 +164,7 @@
 | 5 | `crates/ui-gpui/src/main_menu.rs` | A6 / A7 / A11 菜单入口 | **无需改此文件**：菜单命令统一在 `lib.rs::click_menu` 拦截，仍是既有主菜单行模型 | ✅ |
 | 6 | `crates/ui-gpui/src/tabs_view.rs` | A18 / B4 | 关闭去掉写死的 `force:true`，只有 Alt+close 才直接丢弃；引擎 `dialog.unsaved` → 通用三问（Don't Save / Cancel / Save），弹窗前 `doc.switch` 到目标标签 | ✅ |
 | 7 | `crates/ui-gpui/src/palette.rs`（新）+ `menu_card.rs` + `lib.rs` | B2 | 既有 `menu_card::rows` / `Palette` 弹层；`Item.key` 让运行时 action key 复用同一套 `OnPick` | ✅ |
-| 8 | `crates/ui-gpui/src/home.rs`（新） | A1 | 通用对话框/浮层 + `TextField`/`IconButton` | ⬜ |
+| 8 | `crates/ui-gpui/src/panels/extra.rs`（`ExtraKind::Home` + `home_body`） | A1 | 既有整面板 chrome + `pill`/`note`；数据与命令全来自引擎 | ✅ |
 | 9 | `crates/ui-gpui/src/comments.rs`（新） | A3 | 通用浮层 + 输入框系列 | ⬜ |
 | 10 | `crates/ui-gpui/src/plugins.rs`（新） | A4 / A25 | 通用浮层 + `widget_bar` 复用同一行模型 | ⬜ |
 | 11 | `crates/ui-gpui/src/toolbar.rs` + `boards/*`（新） | A2 / B3 / A27 | `GROUPS` 既有工具组模型（只加数据，不改控件） | ⬜ |
@@ -247,13 +247,48 @@
 | 条目 | 计划要求 | 实际状态 | 证据（文件:行） | 未完成 / 诚实边界 |
 |---|---|---|---|---|
 | **A19** 通用对话框框架 | 十个对话框共用一套壳 + 一套控件 + 一套 Escape/遮罩，数据驱动 | ✅ **完成** | `dialogs.rs` 687 行：`Kind` **15 种**、`Field::{Text,Number,Choice,Note}`、`Spec`/`Button`/`DialogState`、`ui_action()`/`menu_action()`、`render()`(452)、`popup_backdrop`(543)；壳用 `widgets::popover::Popover`、行用 `field_row`/`field_row_full`、按钮统一推 `CmdQueue`。`lib.rs`：状态(608)、`sync_ui_requests` 消费全部 `dialog.*`(1400)、带「…」菜单拦截(3317)、Escape(5289)/X/遮罩统一、render 挂层(6632)。**5 条单测**，**未改任何 `widgets/**` 冻结件** | A13/A15/A14/A11/A4 因引擎无对应命令，仍是「带说明的提示窗口」（按钮只有 Close），不等于 EGUI 的完整交互 |
-| **B1 / C1** 命名合规 | 右栏第三 tab 改名、补 `right_tab_label()` 与命名回归测试、清掉全仓 UI 文案 `"Dev Mode"` 残留 | ✅ **GPUI 侧完成** / ⚠️ **全仓清理差一处** | `naming.rs`：`DEVELOPER_MODE = "开发"`、`RIGHT_TAB_LABELS`、`right_tab_label()` + **4 条**命名回归；右栏 tabs 按用户要求**移除**第三按钮（只剩 Design / Prototype），底部模式切换第 4 格 `Inspect`→`开发`，动画/开发模式 tabs 行显示「动画」/「开发」文本。`ui-gpui` 内 `"Dev Mode"` 只出现在注释、`RETIRED` 测试表与 `catalog::SEARCH_ALIASES` 搜索别名（标识符/测试，不是显示文案） | ⚠️ `crates/ui-egui/src/app.rs:352` 仍是 `i18n::tr("Dev Mode")` 的**真实 UI 文案**（该 crate 刻意不同步、本地 62 个既有编译错误）；`crates/i18n/src/tests.rs:19` 只是注释提及。C1 的「清掉全仓 UI 文案残留」严格说**没做完**，是否动 ui-egui 需先确认它解冻 |
+| **B1 / C1** 命名合规 | 右栏第三 tab 改名、补 `right_tab_label()` 与命名回归测试、清掉全仓 UI 文案 `"Dev Mode"` 残留 | ✅ **完成** | `naming.rs`（`"开发"` + 4 条回归）；`ui-egui` 的 `app.rs:352` / `canvas.rs:238` / `menus.rs:56` 三处真实 UI 文案已改为 `Developer Mode…`，`devmode_tail_tests.rs:322` 断言同步 | 无（注释、RETIRED 测试表、`SEARCH_ALIASES` 里的旧名是标识符/测试，按规范保留） |
 | **B9** Hide UI / Minimize UI | 把 `ui_hidden` / `ui_minimized` 接到 render 层 | ✅ **完成** | `lib.rs::ui_flags()`(2231-2233) 读 `ds().view.ui_hidden/ui_minimized`；`dock()`(2239) 给有效宽度且**不改记住的 `left_w`/`right_w`**；render 条件渲染侧栏 / 标签条 / 工具栏 / 时间轴 / 分隔条命中区(4219-4222、5847、6674、6682) | 无 |
-| **A6** 导出对话框 | 格式 / 倍数 / **预览**，复用 A19 壳 | 🔄 **部分完成** | `dialogs.rs:239-251` `Kind::Export`：Format(PNG/JPG/SVG/PDF/FIG，带 JSON values)、Scale(1x/2x/3x/0.5x)、File name 文本、Export→`file.export`；入口 `catalog.rs:48` `"Export…"` + `menu_action()`(229-230) 拦截，不会静默用默认参数导出 | **预览缺失**；多选导出、逐格式参数、原生路径选择仍缺，EGUI `dialogs/export.rs` 的完整交互未移植 |
-| **A7** 首选项对话框 | 主题 / **语言** / **滚轮缩放** / **面板宽度重置**，复用 A19 壳 | 🔄 **部分完成** | `dialogs.rs:253-267` `Kind::Preferences`：Theme(3 项→`view.themeDark/Light/System`)、Interface size(3 项→`pref.uiScaleReset/Up/Down`)、Left/Right panel width 数值、Apply→`view.panelWidths`；入口 `catalog.rs:267` `"Preferences…"→app.preferences`，engine `cmd/view.rs:508` 发 `dialog.preferences`，`ui_action` 接住，Cmd+, 可用 | **语言选择、滚轮缩放开关缺**；面板宽度是「设值」不是「重置」，没有 Reset 按钮/命令 |
-| **A18 / B4** 标签关闭三问 | Don't Save / Cancel / Save + Alt+close + 拖拽重排 + 拖出成窗口 | ✅ **A18 完成** / 🔄 **B4 部分** | `tabs_view.rs:388,392` 关闭改为 `force: e.modifiers.alt`（Alt+close 才直接丢弃）；`lib.rs:1400-1420` 消费 `dialog.unsaved`，弹窗前先 `doc.switch {index}` 保证 Save 存对文档；`dialogs.rs:285-295` 三问 spec；拖拽重排 `tabs_view.rs:155-187`（`file.moveTab`）已有 | **拖出成窗口（A16）仍缺**；Save 只保存、不会自动再执行一次关闭（保存失败也不丢改动），保存后需再点 X；EGUI 的「保存后自动关闭 / Save as」流程未移植 |
-| **A1** 首页 Home（第 2 批第 1 项） | Recents 卡片 + Templates + Getting started | ⬜ **未开始** | 无 `crates/ui-gpui/src/home.rs`；`panels/extra.rs:1243` 测试仍断言 `ui_action("home", &empty, 0) == None`，注释原文「GPUI 没有 Home，不能假装接了」 | 整块未做，是 G 表第 8 行的目标 |
+| **A6** 导出对话框 | 格式 / 倍数 / **预览**，复用 A19 壳 | ✅ **完成** | `dialogs.rs::Kind::Export` 的 Format / Scale / File name + `Field::Preview`；`export_preview.rs` 用 `figcraft_render::render_node` + `to_rgba8` + 项目既有 `wrap_rgba`，显示走 `img(ImageSource::Render)` 并放进 `field_row_full` | 多选导出、逐格式参数、原生路径选择仍缺；预览固定 160×100 显示框、0.25 倍栅格，不随格式实时切换 |
+| **A7** 首选项对话框 | 主题 / **语言** / **滚轮缩放** / **面板宽度重置**，复用 A19 壳 | ✅ **完成** | `dialogs.rs::Kind::Preferences` 新增 Language（`pref.language` 带每选项参数）、Scroll wheel（`pref.scrollWheelZoom`）、`Reset widths` 按钮（`Action::Run` → `view.panelWidths` 空参数，引擎自带的重置语义）；全部复用 `Field::Choice` chips + `field_row` | 语言只列 6 个常用项（引擎支持更多 BCP 47 代码）；首选项无实时预览 |
+| **A18 / B4** 标签关闭三问 | Don't Save / Cancel / Save + Alt+close + 拖拽重排 + 拖出成窗口 | ✅ **A18 完成** / 🔄 **B4 部分** | A18 同前（`force: alt`、`dialog.unsaved`、`doc.switch`、三问）；拖拽重排 `tabs_view.rs:155-187` 已有 | **拖出成窗口仍缺**：引擎确有 `window.new` 请求（`cmd/view.rs:365`），但 GPUI 要开 OS 多窗口须重构 `Session` 所有权以共享会话，属于「自己弄」，按本轮约束不做（见 J 节） |
+| **A1** 首页 Home（第 2 批第 1 项） | Recents 卡片 + Templates + Getting started | ✅ **完成** | `doc.home` → `home` ui_request → `panels::extra::ui_action` → `ExtraKind::Home`；`home_body` 读 `prefs.recent_files` / `getting_started_dismissed`，按钮推 `file.openRecent` / `file.new` / `file.newBoard` / `file.newFromTemplate` / `help.gettingStarted`，行用面板既有 `pill` / `note` | Online（服务器文件）区、缩略图卡片网格、`home_sort`/`home_order` 排序 UI 未做；Recents 为文本行 |
 
-**结论**：第 1 批 6 项里 **3 项完成**（A19、B1/C1 的 GPUI 侧、B9），**3 项部分完成**（A6 缺预览、A7 缺语言/滚轮缩放/重置、A18/B4 中 A18 已完成但拖出成窗口仍缺）；C1 的「全仓 UI 文案清理」另差 `ui-egui` 一处。第 2 批 A1 **未开始**。这些缺口已回填到 A/B/C 表与 H 节，避免计划表继续显示旧证据。
+<!-- PARITY_CONTRACT_STATUS — 由 crates/ui-gpui/src/parity_contract.rs 自动核对；
+     状态只能随代码一起改，测试会双向检查「代码做到没 / 文档标没标」。
+A19=done
+B1C1=done
+B9=done
+B2=done
+A6=done
+A7=done
+A18B4=partial
+A1=done
+-->
 
-**下一步（19:0x 核查后修订）**：先补第 1 批三处遗留缺口（A6 预览、A7 语言 / 滚轮缩放 / 面板宽度重置、B4 拖出成窗口属 A16），再进 G 表第 8 行 A1 首页 Home（Recents 卡片 / Templates / Getting started）；随后第 9–11 行 Comments / Plugins / Boards。`ui-egui` 的 `tr("Dev Mode")` 残留是否清理需先确认该 crate 是否解冻；涉及 `widgets/**` 冻结件的改动（A24 字段运算、调色板实时过滤）必须先与用户确认。
+**结论（19:1x 补全后）**：核查出的缺口已补 —— A6 预览、A7 三项、C1 全仓文案、A1 Home 全部落地；第 1 批 6 项现为 **5 项完成 + 1 项部分（B4 拖出成窗口）**。B4 是**有意不做**：引擎只有 `window.new` 请求，GPUI 侧缺 OS 多窗口的会话共享，按「不自己弄」的约束留待 A16。所有状态已回填 A/B/C/G 表，并由 J 节的契约测试自动守护。
+
+**下一步（19:1x 补全后修订）**：第 1 批仅剩 B4 拖出成窗口（A16，需共享 `Session` 的多窗口架构，见 J 节）；随后第 9–11 行 Comments / Plugins / Boards、B8 Present 子模块。涉及 `widgets/**` 冻结件的改动（A24 字段运算、调色板实时过滤）必须先与用户确认。新增能力时按 J 节同步 `CONTRACTS` / 代码 / 状态块。
+
+---
+
+## J. 防回归机制（2026-11-10 19:1x 起生效）
+
+> 用户要求：「写机制，确保这个问题以后不会再犯」。问题 = 计划表里的状态是**人手写**的，
+> 代码落后了表格也不会失效（A6/A7 被当成完成、A1 一行没写却排在「下一步」）。
+
+**机制**：`crates/ui-gpui/src/parity_contract.rs`（`#[cfg(test)] mod`，随 `cargo test` 跑）。
+
+1. **唯一事实源** `CONTRACTS`：每个条目声明「完成」所依赖的**能力 token**（字段 key、引擎命令 id、通用件名、ui_request 分派结果、按钮标签）。
+2. **能力只从代码派生** `capabilities()`：遍历 `dialogs::Kind::ALL` 的真实 `spec()` 取所有字段 / `Field::Preview` / 选项命令 / 按钮；`include_str!` 扫描 `dialogs.rs` / `lib.rs` / `palette.rs` / `naming.rs` 与 ui-egui 的 UI 文案；再查 `panels::extra::ui_action("home" | "window.new", …)` 的分派结果。**没有任何手写的「已完成」清单**。
+3. **文档状态机器可读**：I 节末尾的 `<!-- PARITY_CONTRACT_STATUS … -->` 块。测试**双向**比对：代码没做到却标 `done`、代码做到了却还标 `partial`，都会失败并指名缺哪个 token。
+4. **不许自己造命令**：`every_dialog_command_is_a_real_engine_command` 断言每个对话框按钮 / 选项推的 id 都能被 `figcraft_engine::find_command` 找到 —— 落实「尽可能使用引擎底下已有的能力，而不是自己弄」。
+5. **通用控件**：新字段一律走既有 `field_row` / `field_row_full` / `choice_chips` / `pill` / `note`，预览只是把项目已有的 `img(ImageSource::Render(..))` 放进一个 `field_row_full`；**没有修改任何 `widgets/**` 冻结件**，也没有新增专属控件。
+
+**负向验证**（2026-11-10）：把 `A6=done` 临时改成 `partial` 后跑测试，得到
+`A6: code satisfied=true (missing []), document says 'partial'. Update the code AND the status block together`，随后恢复文档。守卫确实会拦住过时状态，不是空跑。
+
+**维护规则**：新增/删减能力 → 先改 `CONTRACTS`，再改代码，最后同步状态块与 I 节表格；三者不一致时
+`cargo test -p figcraft-ui-gpui --lib --features test-support -- parity_contract` 会失败。**不要只改文档来让测试变绿。**
+
+**仍诚实保留的缺口**：`A18B4=partial` 依赖 `detach_window`。引擎确实有 `window.new` 请求（`cmd/view.rs:365`），但 GPUI 侧接 OS 多窗口要重构 `Session` 所有权以共享会话，属于「自己弄」，本轮按用户约束不做；契约保留这个 token，真正接上才会自动翻成 `done`。

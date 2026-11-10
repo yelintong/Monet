@@ -49,6 +49,8 @@ pub(crate) enum ExtraKind {
     /// `dev.compare {id, version, show}` 带过来的目标。
     DevCompare { id: Option<figcraft_doc::NodeId>, version: Option<String> },
     Assets,
+    /// A1: `doc.home` 的首页（Recents / Templates / Getting started）。
+    Home,
 }
 
 impl ExtraKind {
@@ -58,6 +60,7 @@ impl ExtraKind {
             Self::Versions => "Version history",
             Self::DevCompare { .. } => "Compare changes",
             Self::Assets => "Assets",
+            Self::Home => "Home",
         }
     }
 }
@@ -75,8 +78,8 @@ pub(crate) enum UiAction {
     PreviewClose,
 }
 
-/// egui `handle_ui_requests` 里 GPUI 能落地的那部分（Home / 多窗口 / 评论 / 演示 / 对话框
-/// 这些 GPUI 还没有对应 UI，返回 `None`，不假装已实现）。
+/// egui `handle_ui_requests` 里 GPUI 能落地的那部分（多窗口 / 评论 / 演示 / 对话框
+/// 这些 GPUI 还没有对应 UI，返回 `None`，不假装已实现）。`doc.home` 的 Home 已接上。
 pub(crate) fn ui_action(kind: &str, data: &Value, tab: u8) -> Option<UiAction> {
     let width = |k: &str| data.get(k).and_then(Value::as_f64).map(|w| (w as f32).clamp(240.0, 500.0));
     Some(match kind {
@@ -93,6 +96,7 @@ pub(crate) fn ui_action(kind: &str, data: &Value, tab: u8) -> Option<UiAction> {
         },
         "panel.widths" => UiAction::Widths { left: width("left"), right: width("right") },
         "palette.actions" => UiAction::Palette,
+        "home" => UiAction::Toggle(ExtraKind::Home),
         "present" => UiAction::Present(data.get("start").and_then(figcraft_engine::params::id_of), false),
         "preview" => UiAction::Present(data.get("start").and_then(figcraft_engine::params::id_of), true),
         "preview.close" => UiAction::PreviewClose,
@@ -205,6 +209,7 @@ pub(crate) fn render(
         ExtraKind::Versions => versions_body(app, cmds, state, cx),
         ExtraKind::DevCompare { id, version } => compare_body(app, cmds, state, *id, version.as_deref()),
         ExtraKind::Assets => assets_body(app, cmds, state, cx),
+        ExtraKind::Home => home_body(app, cmds),
     };
     let close_btn = {
         let close = close.clone();
@@ -1176,6 +1181,65 @@ fn icon_cmd(icon: Icon, id: &'static str, params: Value, cmds: &Cmds) -> IconBut
     IconButton::new(icon).size(24.0).on_click(move |_e, _w, _cx| c.push(Cmd { id, params: Some(params.clone()) }))
 }
 
+/// A1 Home: Recents / Templates / Getting started.
+///
+/// Everything is engine-owned: `prefs.recent_files` and `prefs.getting_started_dismissed` for the
+/// data, `file.openRecent` / `file.new` / `file.newBoard` / `file.newFromTemplate` /
+/// `help.gettingStarted` for the actions. Rows use this panel's existing `pill` / `note` helpers
+/// and every write goes through `CmdQueue` — no new control and no direct document writes.
+fn home_body(app: &CanvasApp, cmds: &Cmds) -> Div {
+    let mut col = div().flex().flex_col().w_full().gap(pt(12.0)).p(pt(16.0));
+
+    col = col.child(note("Recents"));
+    let recents = &app.session.prefs.recent_files;
+    if recents.is_empty() {
+        col = col.child(note("No recent files yet. Open or save a file to see it here."));
+    } else {
+        for path in recents.iter().take(8) {
+            let name = std::path::Path::new(path)
+                .file_name()
+                .map(|s| s.to_string_lossy().into_owned())
+                .unwrap_or_else(|| path.clone());
+            let c = cmds.clone();
+            let p = path.clone();
+            col = col.child(
+                div()
+                    .w_full()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .child(pill(&name, false, move |_, _, _| {
+                        c.push(Cmd { id: "file.openRecent", params: Some(json!({ "path": p.clone() })) });
+                    })),
+            );
+        }
+    }
+
+    col = col.child(note("Templates"));
+    for (label, id) in [
+        ("New design file", "file.new"),
+        ("New board", "file.newBoard"),
+        ("New from template…", "file.newFromTemplate"),
+    ] {
+        let c = cmds.clone();
+        col = col.child(pill(label, label == "New from template…", move |_, _, _| {
+            c.push(Cmd { id, params: None });
+        }));
+    }
+
+    col = col.child(note("Getting started"));
+    col = col.child(note(if app.session.prefs.getting_started_dismissed {
+        "Tips are hidden. Use Help > Getting started to show them again."
+    } else {
+        "Tips are shown. Pick a tool, draw a frame, then try Prototype mode."
+    }));
+    let c = cmds.clone();
+    col = col.child(pill("Getting started", false, move |_, _, _| {
+        c.push(Cmd { id: "help.gettingStarted", params: None });
+    }));
+    col
+}
+
 fn note(text: &'static str) -> Div {
     let t = tokens();
     div().w_full().p(pt(16.0)).text_size(pt(11.0)).text_color(rgba(t.text_secondary)).child(SharedString::from(text))
@@ -1240,7 +1304,7 @@ mod tests {
         );
         assert_eq!(ui_action("panel.widths", &json!({"left": 320.0}), 0), Some(UiAction::Widths { left: Some(320.0), right: None }));
         assert_eq!(ui_action("palette.actions", &empty, 0), Some(UiAction::Palette));
-        assert_eq!(ui_action("home", &empty, 0), None, "GPUI 没有 Home，不能假装接了");
+        assert_eq!(ui_action("home", &empty, 0), Some(UiAction::Toggle(ExtraKind::Home)));
         assert_eq!(
             ui_action("present", &json!({"start": 7}), 0),
             Some(UiAction::Present(Some(figcraft_doc::NodeId(7)), false)),
@@ -1261,6 +1325,7 @@ mod tests {
             ExtraKind::Versions,
             ExtraKind::DevCompare { id: None, version: Some("v1".into()) },
             ExtraKind::Assets,
+            ExtraKind::Home,
         ] {
             assert!(!k.title().is_empty());
         }

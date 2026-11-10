@@ -25,10 +25,14 @@ use crate::panels::{Cmd, Cmds};
 use crate::widgets::menu::popup_backdrop;
 use crate::widgets::popover::{Open, popover_window, title_text};
 use crate::widgets::{Slot, TextField, field_row, field_row_full, number_field, pt, rgba, text_field, tokens};
-use gpui::{AnyElement, App, Div, Entity, MouseButton, MouseDownEvent, Pixels, Point, SharedString, Size, Window, div, prelude::*, px, size};
+use gpui::{
+    AnyElement, App, Div, Entity, ImageSource, MouseButton, MouseDownEvent, Pixels, Point, RenderImage, SharedString, Size, Window, div, img,
+    prelude::*, px, size,
+};
 use serde_json::{Map, Value, json};
 use std::cell::RefCell;
 use std::rc::Rc;
+use std::sync::Arc;
 
 /// Which dialog to open. The data that came with the request is passed separately to [`spec`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -65,6 +69,28 @@ pub(crate) enum Kind {
     Message,
 }
 
+impl Kind {
+    /// The one list of dialogs. `parity_contract`'s capability audit and this module's own
+    /// shape test both read it, so a new dialog cannot be added without being audited.
+    pub(crate) const ALL: [Kind; 15] = [
+        Kind::Export,
+        Kind::Preferences,
+        Kind::About,
+        Kind::Find,
+        Kind::Unsaved,
+        Kind::Rename,
+        Kind::ColorProfile,
+        Kind::MissingFonts,
+        Kind::ImportReport,
+        Kind::SampledColor,
+        Kind::Plugins,
+        Kind::SaveAs,
+        Kind::Branch,
+        Kind::Updates,
+        Kind::Message,
+    ];
+}
+
 /// A field of a dialog. `key` is the name the engine command receives in its params object.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum Field {
@@ -86,18 +112,27 @@ pub(crate) enum Field {
         values: Option<Vec<Value>>,
         /// Optional engine command per option; picking one runs it immediately.
         commands: Option<Vec<&'static str>>,
+        /// Optional params for that command, one per option (`{"language": "zh-Hans"}`).
+        /// Without these the command runs with no parameters.
+        command_params: Option<Vec<Value>>,
         active: usize,
     },
     /// A read-only line of prose (reports, hints, contributor lists).
     Note {
         text: String,
     },
+    /// A read-only bitmap preview. The image is produced by the engine's renderer, never by a
+    /// new UI control: `render` puts the project's existing `img(ImageSource::Render(..))`
+    /// inside one `field_row_full`.
+    Preview {
+        label: &'static str,
+    },
 }
 
 impl Field {
     /// A plain choice whose label is its value.
     fn choice(key: &'static str, label: &'static str, options: Vec<&'static str>, active: usize) -> Self {
-        Self::Choice { key, label, options, values: None, commands: None, active }
+        Self::Choice { key, label, options, values: None, commands: None, command_params: None, active }
     }
     /// Give the choice engine values (numbers, ids, …) instead of the labels.
     fn values(mut self, v: Vec<Value>) -> Self {
@@ -113,6 +148,13 @@ impl Field {
         }
         self
     }
+    /// The params each of those commands takes (one entry per option).
+    fn with_params(mut self, p: Vec<Value>) -> Self {
+        if let Self::Choice { command_params, .. } = &mut self {
+            *command_params = Some(p);
+        }
+        self
+    }
 }
 
 /// What a button does. `Submit` sends one engine command, with `base` merged with every field
@@ -120,7 +162,15 @@ impl Field {
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum Action {
     Close,
-    Submit { id: &'static str, base: Value },
+    Submit {
+        id: &'static str,
+        base: Value,
+    },
+    /// Send this engine command with no parameters — field values are deliberately not merged.
+    /// `view.panelWidths` with an empty object IS the engine's "reset to default" behaviour.
+    Run {
+        id: &'static str,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -139,6 +189,9 @@ impl Button {
     }
     fn submit(label: &'static str, id: &'static str, base: Value) -> Self {
         Self { label, primary: false, action: Action::Submit { id, base } }
+    }
+    fn run(label: &'static str, id: &'static str) -> Self {
+        Self { label, primary: false, action: Action::Run { id } }
     }
 }
 
@@ -248,6 +301,7 @@ pub(crate) fn spec(kind: Kind, data: &Value) -> Spec {
                     .values(vec![json!(1.0), json!(2.0), json!(3.0), json!(0.5)]),
             )
             .field(Field::Text { key: "path", label: "File name", value: str_field("path", data, "") })
+            .field(Field::Preview { label: "Nothing to preview: select a layer first." })
             .button(Button::primary("Export", "file.export", json!({})))
             .with_cancel(),
         Kind::Preferences => Spec::new("Preferences")
@@ -261,9 +315,27 @@ pub(crate) fn spec(kind: Kind, data: &Value) -> Spec {
                 Field::choice("uiScale", "Interface size", vec!["Default", "Larger", "Smaller"], 0)
                     .commands(vec!["pref.uiScaleReset", "pref.uiScaleUp", "pref.uiScaleDown"]),
             )
+            .field(
+                Field::choice("language", "Language", vec!["System", "English", "简体中文", "日本語", "Deutsch", "Français"], 0)
+                    .commands(vec!["pref.language"; 6])
+                    .with_params(vec![
+                        json!({"language": "system"}),
+                        json!({"language": "en"}),
+                        json!({"language": "zh-Hans"}),
+                        json!({"language": "ja"}),
+                        json!({"language": "de"}),
+                        json!({"language": "fr"}),
+                    ]),
+            )
+            .field(
+                Field::choice("wheel", "Scroll wheel", vec!["Zoom", "Scroll"], 0)
+                    .commands(vec!["pref.scrollWheelZoom", "pref.scrollWheelZoom"])
+                    .with_params(vec![json!({"on": true}), json!({"on": false})]),
+            )
             .field(Field::Number { key: "left", label: "Left panel width", value: 280.0 })
             .field(Field::Number { key: "right", label: "Right panel width", value: 280.0 })
             .button(Button::primary("Apply", "view.panelWidths", json!({})))
+            .button(Button::run("Reset widths", "view.panelWidths"))
             .with_cancel(),
         Kind::About => Spec::new("About FigCraft")
             .width(420.0)
@@ -400,10 +472,12 @@ pub(crate) struct DialogState {
     rendered: Vec<Rendered>,
     cmds: Cmds,
     dismiss: Rc<RefCell<bool>>,
+    /// Produced by `figcraft_render` in `CanvasView::open_dialog`; `None` shows the fallback label.
+    preview: Option<Arc<RenderImage>>,
 }
 
 impl DialogState {
-    pub(crate) fn new(kind: Kind, data: &Value, cmds: &Cmds, cx: &mut App) -> Self {
+    pub(crate) fn new(kind: Kind, data: &Value, cmds: &Cmds, cx: &mut App, preview: Option<Arc<RenderImage>>) -> Self {
         let spec = spec(kind, data);
         let mut rendered = Vec::with_capacity(spec.fields.len());
         for f in &spec.fields {
@@ -413,11 +487,11 @@ impl DialogState {
                 }
                 Field::Number { value, .. } => (Some(number_field(cx, 200.0, Some(*value), "", 1.0, Slot::None)), Rc::new(RefCell::new(0usize))),
                 Field::Choice { active, .. } => (None, Rc::new(RefCell::new(*active))),
-                Field::Note { .. } => (None, Rc::new(RefCell::new(0usize))),
+                Field::Note { .. } | Field::Preview { .. } => (None, Rc::new(RefCell::new(0usize))),
             };
             rendered.push(Rendered { field: f.clone(), input, active });
         }
-        Self { spec, rendered, cmds: cmds.clone(), dismiss: Rc::new(RefCell::new(false)) }
+        Self { spec, rendered, cmds: cmds.clone(), dismiss: Rc::new(RefCell::new(false)), preview }
     }
 
     /// The root view polls this once per frame (same mechanism as `ExtraState::dismiss`).
@@ -443,7 +517,7 @@ impl DialogState {
                 Field::Text { key, .. } => r.input.clone().map(|e| Source::Text(key, e)).unwrap_or(Source::Note),
                 Field::Number { key, .. } => r.input.clone().map(|e| Source::Number(key, e)).unwrap_or(Source::Note),
                 Field::Choice { key, options, values, .. } => Source::Choice(key, options.clone(), values.clone(), r.active.clone()),
-                Field::Note { .. } => Source::Note,
+                Field::Note { .. } | Field::Preview { .. } => Source::Note,
             })
             .collect()
     }
@@ -462,6 +536,7 @@ impl DialogState {
         for r in &self.rendered {
             let label_text = match &r.field {
                 Field::Text { label, .. } | Field::Number { label, .. } | Field::Choice { label, .. } => *label,
+                Field::Preview { label } => *label,
                 Field::Note { .. } => "",
             };
             let label = || {
@@ -479,9 +554,17 @@ impl DialogState {
                     let control = r.input.clone().map(|e| e.into_any_element()).unwrap_or_else(|| div().into_any_element());
                     field_row(vec![label(), control], Vec::<AnyElement>::new())
                 }
-                Field::Choice { options, commands, .. } => {
-                    let chips = choice_chips(options, commands.as_deref(), r.active.clone(), self.cmds.clone());
+                Field::Choice { options, commands, command_params, .. } => {
+                    let chips = choice_chips(options, commands.as_deref(), command_params.as_deref(), r.active.clone(), self.cmds.clone());
                     field_row(vec![label(), chips.into_any_element()], Vec::<AnyElement>::new())
+                }
+                Field::Preview { label } => {
+                    field_row_full(div().w_full().h(pt(112.0)).flex().items_center().justify_center().bg(rgba(t.field)).rounded(pt(6.0)).child(
+                        match &self.preview {
+                            Some(image) => img(ImageSource::Render(image.clone())).w(px(160.0)).h(px(100.0)).into_any_element(),
+                            None => div().text_size(pt(10.0)).text_color(rgba(t.text_secondary)).child(*label).into_any_element(),
+                        },
+                    ))
                 }
                 Field::Note { text } => field_row_full(
                     div()
@@ -507,9 +590,13 @@ impl DialogState {
                 let action = b.action.clone();
                 els.push(
                     dialog_button(b.label, b.primary, move |_: &MouseDownEvent, _, cx: &mut App| {
-                        if let Action::Submit { id, base } = &action {
-                            let params = merge_params(base, &collect_sources(&sources_btn, cx));
-                            cmds_btn.push(Cmd { id, params: Some(params) });
+                        match &action {
+                            Action::Submit { id, base } => {
+                                let params = merge_params(base, &collect_sources(&sources_btn, cx));
+                                cmds_btn.push(Cmd { id, params: Some(params) });
+                            }
+                            Action::Run { id } => cmds_btn.push(Cmd { id, params: None }),
+                            Action::Close => {}
                         }
                         *flag.borrow_mut() = true;
                         cmds_btn.wake();
@@ -525,10 +612,12 @@ impl DialogState {
             body = body.child(row);
         }
 
+        let preview_extra = self.spec.fields.iter().filter(|f| matches!(f, Field::Preview { .. })).count() as f32 * 80.0;
         let height = 40.0
             + 32.0
             + self.spec.message.as_ref().map(|_| 32.0).unwrap_or(0.0)
             + self.spec.fields.len() as f32 * 32.0
+            + preview_extra
             + self.spec.buttons.len().div_ceil(2) as f32 * 32.0;
         let at = Point {
             x: px(((f32::from(viewport.width) - self.spec.width) * 0.5).max(0.0)),
@@ -547,7 +636,13 @@ impl DialogState {
 /// A row of option chips. It lives *inside* one `field_row` cell — the row's columns still belong
 /// to the unified grid, this is only the control drawn in the second column. Picking an option
 /// that names a command runs it immediately (the generic "a choice is a command" behaviour).
-fn choice_chips(options: &[&'static str], commands: Option<&[&'static str]>, active: Rc<RefCell<usize>>, queue: Cmds) -> Div {
+fn choice_chips(
+    options: &[&'static str],
+    commands: Option<&[&'static str]>,
+    params: Option<&[Value]>,
+    active: Rc<RefCell<usize>>,
+    queue: Cmds,
+) -> Div {
     let t = tokens();
     let mut row = div().w_full().flex().flex_row().gap(pt(4.0));
     for (i, option) in options.iter().enumerate() {
@@ -555,6 +650,7 @@ fn choice_chips(options: &[&'static str], commands: Option<&[&'static str]>, act
         let flag = active.clone();
         let cmds = queue.clone();
         let command = commands.and_then(|c| c.get(i)).copied();
+        let command_params = params.and_then(|p| p.get(i)).cloned();
         let chip = div()
             .flex_1()
             .min_w(px(0.0))
@@ -570,7 +666,7 @@ fn choice_chips(options: &[&'static str], commands: Option<&[&'static str]>, act
             .on_mouse_down(MouseButton::Left, move |_: &MouseDownEvent, _, _| {
                 *flag.borrow_mut() = i;
                 if let Some(id) = command {
-                    cmds.push(Cmd { id, params: None });
+                    cmds.push(Cmd { id, params: command_params.clone() });
                 } else {
                     cmds.wake();
                 }
