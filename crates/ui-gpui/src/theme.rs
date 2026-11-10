@@ -8,6 +8,7 @@
 
 #![allow(dead_code)]
 
+use figcraft_i18n::tr;
 use crate::canvas::geom::Color32;
 
 /// FigCraft 的品牌强调色。Figma `them` 集合给出蓝/绿/黄/粉；绿沿用现有 FigCraft 身份，故为默认。
@@ -43,10 +44,10 @@ impl Accent {
     /// 人类可读标签（设置控件与菜单用）。
     pub fn label(self) -> &'static str {
         match self {
-            Accent::Blue => "Blue",
-            Accent::Green => "Green",
-            Accent::Yellow => "Yellow",
-            Accent::Pink => "Pink",
+            Accent::Blue => tr("Blue"),
+            Accent::Green => tr("Green"),
+            Accent::Yellow => tr("Yellow"),
+            Accent::Pink => tr("Pink"),
         }
     }
 

@@ -7,6 +7,7 @@
 //! - 没有 `toast` → 命令出错时直接忽略（原文弹提示）；
 //! - `right_tab` / `picker`（面板状态）暂缺 → [`available`] 只查工具与编辑态。
 
+use figcraft_i18n::tr;
 use std::sync::Arc;
 
 use figcraft_doc::{Document, NodeId};
@@ -145,8 +146,8 @@ fn fmt_num(v: f64) -> String {
 
 fn start_drag(app: &mut CanvasApp, ids: Vec<NodeId>, p: Pos2, action: Action) {
     let label = match action {
-        Action::Spacing { .. } => "Spacing",
-        Action::Reorder { .. } => "Reorder selection",
+        Action::Spacing { .. } => tr("Spacing"),
+        Action::Reorder { .. } => tr("Reorder selection"),
     };
     if app.session.begin_interaction(label).is_ok() {
         let (uid, page) = match app.session.ds() {

@@ -11,6 +11,7 @@
 //! `style:<id>`, `plugin:<plugin>/<command>`, `widget:<plugin>`); `CanvasView::pick_palette`
 //! turns it back into an engine command.
 
+use figcraft_i18n::tr;
 use figcraft_engine::Session;
 use figcraft_engine::catalog::{MENU, SEP};
 use std::collections::HashSet;
@@ -30,9 +31,9 @@ impl Tab {
     /// The labels keep the EGUI wording; the third tab is deliberately wider than the others.
     pub fn label(self) -> &'static str {
         match self {
-            Tab::All => "All",
-            Tab::Assets => "Assets",
-            Tab::Plugins => "Plugins & widgets",
+            Tab::All => tr("All"),
+            Tab::Assets => tr("Assets"),
+            Tab::Plugins => tr("Plugins & widgets"),
         }
     }
 
@@ -126,7 +127,7 @@ pub fn command_sections(q: &str) -> Vec<Section> {
         }
         let menu = menu_of.get(id).copied();
         let group = menu.map(|m| m.menu.split('/').next().unwrap_or(m.menu));
-        if group == Some("Plugins") {
+        if group == Some(tr("Plugins")) {
             continue;
         }
         let label = match menu {
@@ -150,7 +151,7 @@ pub fn command_sections(q: &str) -> Vec<Section> {
     }
     let mut groups: Vec<Section> = Vec::new();
     for (group, row) in hits {
-        let name = group.unwrap_or_else(|| "Other".to_string());
+        let name = group.unwrap_or_else(|| tr("Other").to_string());
         match groups.iter_mut().find(|s| s.name == name) {
             Some(s) => s.rows.push(row),
             None => groups.push(Section::new(name, vec![row])),
@@ -185,14 +186,14 @@ fn recent_rows(session: &Session, q: &str) -> Vec<Row> {
                 if !matches(&ql, &label, pid) {
                     return None;
                 }
-                return Some(Row { key: key.clone(), label, hint: Some("Plugin".into()), disabled: false });
+                return Some(Row { key: key.clone(), label, hint: Some(tr("Plugin").into()), disabled: false });
             }
             if let Some(pid) = key.strip_prefix("widget:") {
                 let p = session.prefs.plugins.iter().find(|p| p.manifest.id == pid && p.manifest.widget)?;
                 if !matches(&ql, &p.manifest.name, pid) {
                     return None;
                 }
-                return Some(Row { key: key.clone(), label: p.manifest.name.clone(), hint: Some("Widget".into()), disabled: false });
+                return Some(Row { key: key.clone(), label: p.manifest.name.clone(), hint: Some(tr("Widget").into()), disabled: false });
             }
             None
         })
@@ -213,7 +214,7 @@ fn plugin_rows(session: &Session, q: &str) -> Vec<Row> {
             rows.push(Row { key: format!("plugin:{}/{}", m.id, c.id), label, hint: Some("Plugin".into()), disabled: false });
         }
     }
-    for m in menu_items().filter(|m| m.menu.split('/').next() == Some("Plugins")) {
+    for m in menu_items().filter(|m| m.menu.split('/').next() == Some(tr("Plugins"))) {
         let label = figcraft_i18n::menu_item(m.id, m.label).into_owned();
         let extra = format!("{} {}", m.label, m.id);
         if matches(&ql, &label, &extra) {
@@ -253,10 +254,10 @@ fn asset_sections(session: &Session, q: &str) -> Vec<Section> {
         .collect();
     let mut out = Vec::new();
     if !components.is_empty() {
-        out.push(Section::new("Components", components));
+        out.push(Section::new(tr("Components"), components));
     }
     if !styles.is_empty() {
-        out.push(Section::new("Styles", styles));
+        out.push(Section::new(tr("Styles"), styles));
     }
     out
 }
@@ -267,7 +268,7 @@ fn asset_sections(session: &Session, q: &str) -> Vec<Section> {
 pub fn sections(q: &str, tab: Tab, session: &Session) -> Vec<Section> {
     let mut out = match tab {
         Tab::All => {
-            let mut v = vec![Section::new("Recents", recent_rows(session, q))];
+            let mut v = vec![Section::new(tr("Recents"), recent_rows(session, q))];
             v.extend(command_sections(q));
             v
         }
@@ -275,8 +276,8 @@ pub fn sections(q: &str, tab: Tab, session: &Session) -> Vec<Section> {
         Tab::Plugins => Vec::new(),
     };
     if tab != Tab::Assets {
-        out.push(Section::new("Plugins", plugin_rows(session, q)));
-        out.push(Section::new("Widgets", widget_rows(session, q)));
+        out.push(Section::new(tr("Plugins"), plugin_rows(session, q)));
+        out.push(Section::new(tr("Widgets"), widget_rows(session, q)));
     }
     out.retain(|s| !s.rows.is_empty());
     out
@@ -378,7 +379,7 @@ mod tests {
     #[test]
     fn items_turn_sections_into_headers_and_keyed_rows() {
         let sections =
-            vec![Section::new("Recents", vec![Row { key: "command:file.save".into(), label: "Save".into(), hint: None, disabled: false }])];
+            vec![Section::new(tr("Recents"), vec![Row { key: "command:file.save".into(), label: tr("Save").into(), hint: None, disabled: false }])];
         let items = items(&sections);
         assert_eq!(items.len(), 2);
         assert!(items[0].disabled, "the section header is not pickable");

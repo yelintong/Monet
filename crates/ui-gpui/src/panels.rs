@@ -5,6 +5,7 @@
 //! are introduced. The right panel restores the egui Design panel's section order; sections whose
 //! controls have not been ported yet are shown as greyed (`Dim`) headers with an empty body.
 
+use figcraft_i18n::tr_noop;
 use figcraft_i18n::tr;
 use crate::CanvasView;
 use crate::canvas::geom::Color32;
@@ -802,12 +803,12 @@ impl RightFields {
             y: n(cx, "Y", 0.0, "", 1.0, Some(Prop::Y)),
             w: n(cx, "W", 100.0, "", 1.0, Some(Prop::W)),
             h: n(cx, "H", 100.0, "", 1.0, Some(Prop::H)),
-            rotation: n(cx, "R", 0.0, "°", 1.0, Some(Prop::Rotation)),
+            rotation: n(cx, tr("R"), 0.0, "°", 1.0, Some(Prop::Rotation)),
             arc_start: n(cx, "S", 0.0, "°", 1.0, Some(Prop::ArcStart)),
             arc_sweep: n(cx, "W", 360.0, "°", 1.0, Some(Prop::ArcSweep)),
-            arc_ratio: n(cx, "R", 100.0, "%", 1.0, Some(Prop::ArcInner)),
+            arc_ratio: n(cx, tr("R"), 100.0, "%", 1.0, Some(Prop::ArcInner)),
             star_points: n(cx, "P", 5.0, "", 1.0, Some(Prop::PointCount)),
-            star_ratio: n(cx, "R", 50.0, "%", 1.0, Some(Prop::StarRatio)),
+            star_ratio: n(cx, tr("R"), 50.0, "%", 1.0, Some(Prop::StarRatio)),
             opacity: n(cx, "O", 100.0, "%", 1.0, Some(Prop::Opacity)),
             corner: n(cx, "C", 0.0, "", 1.0, Some(Prop::Corner)),
             font_size: n(cx, "S", 16.0, "", 1.0, Some(Prop::FontSize)),
@@ -838,7 +839,7 @@ impl RightFields {
             vpt_y: nf_cmd(cx, "Y", 1.0, "vector.edit.position", "y", false, &cmds),
             vpt_w: nf_cmd(cx, "W", 1.0, "vector.edit.resize", "width", true, &cmds),
             vpt_h: nf_cmd(cx, "H", 1.0, "vector.edit.resize", "height", true, &cmds),
-            vpt_radius: nf_cmd(cx, "R", 1.0, "vector.edit.cornerRadius", "radius", true, &cmds),
+            vpt_radius: nf_cmd(cx, tr("R"), 1.0, "vector.edit.cornerRadius", "radius", true, &cmds),
             // Fill colour row: `color_input` = ONE `Field-color` shell, and its hex and opacity are
             // bare editors (`text_field_edit`) — not fields of their own.
             fill_hex: TextEdit::build(cx, |te, _| {
@@ -876,15 +877,15 @@ impl RightFields {
                 te.set_align(crate::widgets::input::TextAlign::Right);
             }),
             // ── Auto layout：gap / padding[4] / 主轴+交叉轴对齐（用现成 TextField + Dropdown）──
-            gap: nf_set(cx, "Gap", 10.0, "", 1.0, "gap", &cmds, wake),
-            cross_gap: nf_set(cx, "Gap", 10.0, "", 1.0, "crossGap", &cmds, wake),
-            dim_min_w: nf_set(cx, "Min W", 0.0, "", 1.0, "minWidth", &cmds, wake),
-            dim_max_w: nf_set(cx, "Max W", 0.0, "", 1.0, "maxWidth", &cmds, wake),
-            dim_min_h: nf_set(cx, "Min H", 0.0, "", 1.0, "minHeight", &cmds, wake),
-            dim_max_h: nf_set(cx, "Max H", 0.0, "", 1.0, "maxHeight", &cmds, wake),
+            gap: nf_set(cx, tr("Gap"), 10.0, "", 1.0, "gap", &cmds, wake),
+            cross_gap: nf_set(cx, tr("Gap"), 10.0, "", 1.0, "crossGap", &cmds, wake),
+            dim_min_w: nf_set(cx, tr("Min W"), 0.0, "", 1.0, "minWidth", &cmds, wake),
+            dim_max_w: nf_set(cx, tr("Max W"), 0.0, "", 1.0, "maxWidth", &cmds, wake),
+            dim_min_h: nf_set(cx, tr("Min H"), 0.0, "", 1.0, "minHeight", &cmds, wake),
+            dim_max_h: nf_set(cx, tr("Max H"), 0.0, "", 1.0, "maxHeight", &cmds, wake),
             pad: pad_rc.clone(),
             pad_t: nf_pad(cx, "T", 0, &pad_rc, &cmds, wake),
-            pad_r: nf_pad(cx, "R", 1, &pad_rc, &cmds, wake),
+            pad_r: nf_pad(cx, tr("R"), 1, &pad_rc, &cmds, wake),
             pad_b: nf_pad(cx, "B", 2, &pad_rc, &cmds, wake),
             pad_l: nf_pad(cx, "L", 3, &pad_rc, &cmds, wake),
             pad_h: nf_set(cx, "H", 10.0, "", 1.0, "paddingHorizontal", &cmds, wake),
@@ -893,7 +894,7 @@ impl RightFields {
             align_main_label: std::cell::RefCell::new(SharedString::from("min")),
             align_cross_label: std::cell::RefCell::new(SharedString::from("min")),
             // Blend-mode dropdown: a button that opens the blend menu on click (egui `dropdown`).
-            blend_label: std::cell::RefCell::new(SharedString::from("Normal")),
+            blend_label: std::cell::RefCell::new(SharedString::from(tr("Normal"))),
             blend_open: std::rc::Rc::new(std::cell::RefCell::new(false)),
             root: None,
             popup_slot: Rc::new(std::cell::RefCell::new(None)),
@@ -1065,7 +1066,7 @@ impl RightFields {
                 }
                 None => {
                     tf.set_value("");
-                    tf.set_placeholder("Mixed");
+                    tf.set_placeholder(tr("Mixed"));
                 }
             });
         }
@@ -1087,7 +1088,7 @@ impl RightFields {
                 }
                 None => {
                     tf.set_value("");
-                    tf.set_placeholder("Auto");
+                    tf.set_placeholder(tr("Auto"));
                 }
             });
         };
@@ -1100,7 +1101,7 @@ impl RightFields {
             }
             None => {
                 tf.set_value("");
-                tf.set_placeholder("Mixed");
+                tf.set_placeholder(tr("Mixed"));
             }
         });
         // 字号走 `Prop::FontSize` 的 retained 字段，这里从快照回填（几何链只把它设成 None）。
@@ -1111,7 +1112,7 @@ impl RightFields {
             }
             None => {
                 tf.set_value("");
-                tf.set_placeholder("Mixed");
+                tf.set_placeholder(tr("Mixed"));
             }
         });
     }
@@ -1127,7 +1128,7 @@ impl RightFields {
                 }
                 None => {
                     tf.set_value("");
-                    tf.set_placeholder("Mixed");
+                    tf.set_placeholder(tr("Mixed"));
                 }
             });
         }
@@ -1247,7 +1248,7 @@ impl RightFields {
                 }
                 None => {
                     tf.set_value("");
-                    tf.set_placeholder("Mixed");
+                    tf.set_placeholder(tr("Mixed"));
                 }
             });
         };
@@ -1278,7 +1279,7 @@ impl RightFields {
                 }
                 None => {
                     tf.set_value("");
-                    tf.set_placeholder("Mixed");
+                    tf.set_placeholder(tr("Mixed"));
                 }
             });
         };
@@ -1407,14 +1408,14 @@ fn distribute_rows() -> Vec<MenuRow> {
 /// `mainAlign` / `crossAlign`; here the same values come from two `Dropdown`s (no picker widget).
 const MAIN_ALIGN: &[(&str, &str)] = &[
     ("Packed", "min"),
-    ("Center", "center"),
-    ("End", "max"),
-    ("Space between", "spaceBetween"),
-    ("Space around", "spaceAround"),
-    ("Space evenly", "spaceEvenly"),
+    (tr_noop("Center"), "center"),
+    (tr_noop("End"), "max"),
+    (tr_noop("Space between"), "spaceBetween"),
+    (tr_noop("Space around"), "spaceAround"),
+    (tr_noop("Space evenly"), "spaceEvenly"),
 ];
 /// Cross-axis alignment options: `CrossAlign` serde names → labels.
-const CROSS_ALIGN: &[(&str, &str)] = &[("Packed", "min"), ("Center", "center"), ("End", "max"), ("Baseline", "baseline")];
+const CROSS_ALIGN: &[(&str, &str)] = &[("Packed", "min"), (tr_noop("Center"), "center"), (tr_noop("End"), "max"), ("Baseline", "baseline")];
 
 fn align_rows(kind: &'static str) -> Vec<MenuRow> {
     let opts = if kind == "mainAlign" { MAIN_ALIGN } else { CROSS_ALIGN };
@@ -1430,7 +1431,7 @@ fn align_value(kind: &'static str, label: &str) -> &'static str {
 /// The label shown on an alignment dropdown for a given serde value (`"Mixed"` when absent).
 fn align_label(kind: &'static str, value: Option<&'static str>) -> SharedString {
     let opts = if kind == "mainAlign" { MAIN_ALIGN } else { CROSS_ALIGN };
-    SharedString::from(value.and_then(|v| opts.iter().find(|(_, sv)| *sv == v).map(|(l, _)| *l)).unwrap_or("Mixed").to_string())
+    SharedString::from(value.and_then(|v| opts.iter().find(|(_, sv)| *sv == v).map(|(l, _)| *l)).unwrap_or(tr("Mixed")).to_string())
 }
 
 /// The 1 pt divider between sections.
@@ -1649,8 +1650,8 @@ pub(crate) fn right_panel(
                     })),
                 )
             };
-            let h = bar(&[(Icon::AlignLeft, "Align left"), (Icon::AlignHCenter, "Align horizontal centers"), (Icon::AlignRight, "Align right")], 0);
-            let v = bar(&[(Icon::AlignTop, "Align top"), (Icon::AlignVCenter, "Align vertical centers"), (Icon::AlignBottom, "Align bottom")], 3);
+            let h = bar(&[(Icon::AlignLeft, tr("Align left")), (Icon::AlignHCenter, tr("Align horizontal centers")), (Icon::AlignRight, tr("Align right"))], 0);
+            let v = bar(&[(Icon::AlignTop, tr("Align top")), (Icon::AlignVCenter, tr("Align vertical centers")), (Icon::AlignBottom, tr("Align bottom"))], 3);
             // egui `right.rs::position_fields`: `if sel.len() > 2 { DistributeH }`。
             // 少于 3 个图层时这个按钮**根本不画**，不是画出来再禁用。此前这里无条件显示，
             // 是「按钮什么时候显示 / 什么时候隐藏没接好」最直白的一处。
@@ -1678,7 +1679,7 @@ pub(crate) fn right_panel(
             // `widgets::segmented`): Rotate 90° / Flip H / Flip V — each a `object.*` command.
             let rot_cmds = f.cmds.clone();
             let rotate = segmented(
-                &[(Icon::Rotate, "Rotate 90° right"), (Icon::FlipH, "Flip horizontal"), (Icon::FlipV, "Flip vertical")],
+                &[(Icon::Rotate, tr("Rotate 90° right")), (Icon::FlipH, tr("Flip horizontal")), (Icon::FlipV, tr("Flip vertical"))],
                 None,
                 Some(Rc::new(move |i: usize, _w: &mut Window, _cx: &mut App| {
                     const C: [&str; 3] = ["object.rotateRight", "object.flipH", "object.flipV"];
@@ -1706,31 +1707,31 @@ pub(crate) fn right_panel(
             let pos_sec = if data.in_frame {
                 let pretty_h = |v: Option<&'static str>| -> &'static str {
                     match v {
-                        Some("leftRight") => "Left & right",
+                        Some("leftRight") => tr("Left & right"),
                         Some(s) => s,
-                        None => "Mixed",
+                        None => tr("Mixed"),
                     }
                 };
                 let pretty_v = |v: Option<&'static str>| -> &'static str {
                     match v {
-                        Some("topBottom") => "Top & bottom",
+                        Some("topBottom") => tr("Top & bottom"),
                         Some(s) => s,
-                        None => "Mixed",
+                        None => tr("Mixed"),
                     }
                 };
                 let h_opts: Vec<(String, &'static str, Value)> = vec![
-                    ("Left".into(), "node.set", serde_json::json!({ "props": { "constraints": { "horizontal": "left" } } })),
-                    ("Right".into(), "node.set", serde_json::json!({ "props": { "constraints": { "horizontal": "right" } } })),
-                    ("Left & right".into(), "node.set", serde_json::json!({ "props": { "constraints": { "horizontal": "leftRight" } } })),
-                    ("Center".into(), "node.set", serde_json::json!({ "props": { "constraints": { "horizontal": "center" } } })),
-                    ("Scale".into(), "node.set", serde_json::json!({ "props": { "constraints": { "horizontal": "scale" } } })),
+                    (tr("Left").into(), "node.set", serde_json::json!({ "props": { "constraints": { "horizontal": "left" } } })),
+                    (tr("Right").into(), "node.set", serde_json::json!({ "props": { "constraints": { "horizontal": "right" } } })),
+                    (tr("Left & right").into(), "node.set", serde_json::json!({ "props": { "constraints": { "horizontal": "leftRight" } } })),
+                    (tr("Center").into(), "node.set", serde_json::json!({ "props": { "constraints": { "horizontal": "center" } } })),
+                    (tr("Scale").into(), "node.set", serde_json::json!({ "props": { "constraints": { "horizontal": "scale" } } })),
                 ];
                 let v_opts: Vec<(String, &'static str, Value)> = vec![
-                    ("Top".into(), "node.set", serde_json::json!({ "props": { "constraints": { "vertical": "top" } } })),
-                    ("Bottom".into(), "node.set", serde_json::json!({ "props": { "constraints": { "vertical": "bottom" } } })),
-                    ("Top & bottom".into(), "node.set", serde_json::json!({ "props": { "constraints": { "vertical": "topBottom" } } })),
-                    ("Center".into(), "node.set", serde_json::json!({ "props": { "constraints": { "vertical": "center" } } })),
-                    ("Scale".into(), "node.set", serde_json::json!({ "props": { "constraints": { "vertical": "scale" } } })),
+                    (tr("Top").into(), "node.set", serde_json::json!({ "props": { "constraints": { "vertical": "top" } } })),
+                    (tr("Bottom").into(), "node.set", serde_json::json!({ "props": { "constraints": { "vertical": "bottom" } } })),
+                    (tr("Top & bottom").into(), "node.set", serde_json::json!({ "props": { "constraints": { "vertical": "topBottom" } } })),
+                    (tr("Center").into(), "node.set", serde_json::json!({ "props": { "constraints": { "vertical": "center" } } })),
+                    (tr("Scale").into(), "node.set", serde_json::json!({ "props": { "constraints": { "vertical": "scale" } } })),
                 ];
                 pos_sec
                     .child(sublabel_row(tr("Constraints")))
@@ -1766,7 +1767,7 @@ pub(crate) fn right_panel(
                     cmds.push(Cmd { id, params: None });
                 })
             });
-            let mut sec = PanelSection::new(if sel.has_al { "Auto layout" } else { "Layout" });
+            let mut sec = PanelSection::new(if sel.has_al { tr("Auto layout") } else { tr("Layout") });
             if let Some(b) = layout_btn {
                 sec = sec.header_trail(b);
             }
@@ -1783,7 +1784,7 @@ pub(crate) fn right_panel(
                 };
                 let dir_cmds = f.cmds.clone();
                 let dir = segmented(
-                    &[(Icon::AlignVCenter, "Vertical"), (Icon::AlignHCenter, "Horizontal"), (Icon::ViewGrid, "Grid")],
+                    &[(Icon::AlignVCenter, tr("Vertical")), (Icon::AlignHCenter, tr("Horizontal")), (Icon::ViewGrid, tr("Grid"))],
                     active,
                     Some(Rc::new(move |i: usize, _w: &mut Window, _cx: &mut App| {
                         let m = match i {
@@ -1816,12 +1817,12 @@ pub(crate) fn right_panel(
             if any_max {
                 let left = if dims.max_w.is_some() || lo[1] { f.dim_max_w.clone().into_any_element() } else { div().into_any_element() };
                 let right = if dims.max_h.is_some() || lo[3] { f.dim_max_h.clone().into_any_element() } else { div().into_any_element() };
-                sec = sec.child(sublabel_row2("Max W", "Max H")).child(field_row(vec![left, right], Vec::<IconButton>::new()));
+                sec = sec.child(sublabel_row2(tr("Max W"), tr("Max H"))).child(field_row(vec![left, right], Vec::<IconButton>::new()));
             }
             if any_min {
                 let left = if dims.min_w.is_some() || lo[0] { f.dim_min_w.clone().into_any_element() } else { div().into_any_element() };
                 let right = if dims.min_h.is_some() || lo[2] { f.dim_min_h.clone().into_any_element() } else { div().into_any_element() };
-                sec = sec.child(sublabel_row2("Min W", "Min H")).child(field_row(vec![left, right], Vec::<IconButton>::new()));
+                sec = sec.child(sublabel_row2(tr("Min W"), tr("Min H"))).child(field_row(vec![left, right], Vec::<IconButton>::new()));
             }
 
             // ③ 对齐 picker + 间距 + 内边距（egui `alignment` / `spacing`，仅 has_al）。
@@ -1829,7 +1830,7 @@ pub(crate) fn right_panel(
                 // egui `alignment`：picker 一列跨两行，右侧是 gap 字段（1 个或 2 个），再右边一个 24。
                 let picker = right::picker::alignment_picker(f, sel.layout_dir, &data.layout);
                 // egui `alignment` 的标题：栅格时左标题写 "Grid"，否则 "Align"；右侧恒为 "Spacing"。
-                let left_cap = if sel.layout_dir == LayoutDir::Grid { "Grid" } else { "Align" };
+                let left_cap = if sel.layout_dir == LayoutDir::Grid { tr("Grid") } else { tr("Align") };
                 // `two_gaps = mode == Grid || wrap`：只有这时才显示两个 gap；普通流只有一个 gap
                 // （`gap_and_mode`），第二个字段位置留空。
                 let two_gaps = sel.layout_dir == LayoutDir::Grid || data.layout.wrap;
@@ -1880,7 +1881,7 @@ pub(crate) fn right_panel(
                     let w = crate::popovers::WindowState::layout(settings_queue.clone(), &settings_data, cx, anchor);
                     popups.request(w);
                 });
-                sec = sec.child(sublabel_row2(left_cap, "Spacing")).child(crate::widgets::field_row_h(
+                sec = sec.child(sublabel_row2(left_cap, tr("Spacing"))).child(crate::widgets::field_row_h(
                     vec![picker, right_col],
                     vec![layout_dots],
                     crate::widgets::ROW_H * 2.0,
@@ -1917,7 +1918,7 @@ pub(crate) fn right_panel(
     if sel.all_ellipse && !points_selected {
         body = body
             .child(
-                section("Arc", false, &[])
+                section(tr("Arc"), false, &[])
                     .child(field_row(vec![f.arc_start.clone(), f.arc_sweep.clone()], Vec::<IconButton>::new()))
                     .child(field_row(vec![f.arc_ratio.clone()], Vec::<IconButton>::new())),
             )
@@ -1927,7 +1928,7 @@ pub(crate) fn right_panel(
     // ── Star：仅当全部选中都是 Polygon/Star（原版 `points_section`） ──────────────
     if sel.all_points && !points_selected {
         body = body
-            .child(section("Star", false, &[]).child(field_row(vec![f.star_points.clone(), f.star_ratio.clone()], Vec::<IconButton>::new())))
+            .child(section(tr("Star"), false, &[]).child(field_row(vec![f.star_points.clone(), f.star_ratio.clone()], Vec::<IconButton>::new())))
             .child(sep());
     }
 
@@ -2232,7 +2233,7 @@ mod visibility_tests {
         // 选一个还没自动布局的普通矩形 Blue（CanvasApp 默认预选了 AutoLayout·H，这里覆盖）。
         let blue = {
             let ds = app.session.ds().unwrap();
-            ds.doc.find_by_name("Blue", Some(ds.page)).into_iter().next().unwrap()
+            ds.doc.find_by_name(tr("Blue"), Some(ds.page)).into_iter().next().unwrap()
         };
         app.session.set_selection(vec![blue]);
         assert!(app.session.ds().unwrap().doc.node(blue).unwrap().layout.is_none(), "Blue has no auto layout before");

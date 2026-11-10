@@ -10,6 +10,7 @@
 //! 这是**表格 / 弹窗**，不是右栏 `PanelSection` 行，所以不受「统一网格 / 禁止手算列宽」约束；
 //! 列宽来自 egui 的 `NAME_W = 240` / `ADD_W = 40`，mode 列等分剩余宽度。
 
+use figcraft_i18n::tr_noop;
 use figcraft_i18n::tr;
 use crate::canvas::geom::Color32;
 use crate::drag::{self, Config as DragCfg, Row as DragRow, Target as DragTarget};
@@ -65,7 +66,7 @@ const SEARCH_W: f32 = 174.0;
 /// 过滤按钮与搜索框拼接后的总宽（egui `SEARCH_W + FILTER_W`）。
 const FILTER_W: f32 = 25.0;
 const VALUE_FIELD_W: f32 = 150.0;
-const TYPES: [(&str, VarKind); 4] = [("Color", VarKind::Color), ("Number", VarKind::Number), ("String", VarKind::String), ("Boolean", VarKind::Boolean)];
+const TYPES: [(&str, VarKind); 4] = [(tr_noop("Color"), VarKind::Color), (tr_noop("Number"), VarKind::Number), (tr_noop("String"), VarKind::String), (tr_noop("Boolean"), VarKind::Boolean)];
 
 /// `figcraft_doc::VariableType` 的显示形态（egui `kind_glyph`）。
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -245,7 +246,7 @@ pub fn read(doc: &figcraft_doc::Document) -> VariablesData {
                         overrides: c.modes.iter().map(|m| v.overrides.contains(&m.id)).collect(),
                         description: v.description.clone(),
                         hidden: v.hidden_from_publishing,
-                        code: ["WEB", "iOS", "ANDROID"]
+                        code: ["WEB", tr("iOS"), "ANDROID"]
                             .iter()
                             .map(|k| (k.to_string(), v.code_syntax.get(*k).cloned().unwrap_or_default()))
                             .collect(),
@@ -300,7 +301,7 @@ pub fn read_libraries(cache: &figcraft_engine::library::Cache, doc: &figcraft_do
                                 overrides: c.modes.iter().map(|m| v.overrides.contains(&m.id)).collect(),
                                 description: v.description.clone(),
                                 hidden: v.hidden_from_publishing,
-                                code: ["WEB", "iOS", "ANDROID"]
+                                code: ["WEB", tr("iOS"), "ANDROID"]
                                     .iter()
                                     .map(|k| (k.to_string(), v.code_syntax.get(*k).cloned().unwrap_or_default()))
                                     .collect(),
@@ -343,7 +344,7 @@ pub fn sample() -> VariablesData {
         overrides: vec![false; values.len()],
         description: String::new(),
         hidden: false,
-        code: vec![("WEB".into(), String::new()), ("iOS".into(), String::new()), ("ANDROID".into(), String::new())],
+        code: vec![("WEB".into(), String::new()), (tr("iOS").into(), String::new()), ("ANDROID".into(), String::new())],
         scopes: None,
         inherited: false,
         values,
@@ -353,17 +354,17 @@ pub fn sample() -> VariablesData {
         collections: vec![CollectionSnap {
             id: "coll-sample".into(),
             name: "Design tokens".into(),
-            modes: vec![ModeSnap { id: "m-light".into(), name: "Light".into() }, ModeSnap { id: "m-dark".into(), name: "Dark".into() }],
+            modes: vec![ModeSnap { id: "m-light".into(), name: tr("Light").into() }, ModeSnap { id: "m-dark".into(), name: tr("Dark").into() }],
             library: None,
             extends: None,
             editable: true,
-            groups: vec!["Brand".into(), "Text".into()],
+            groups: vec!["Brand".into(), tr("Text").into()],
             rows: vec![
-                row("v-radius", "Radius", "", VarKind::Number, vec![VarCell::Number("8".into()), VarCell::Number("12".into())]),
+                row("v-radius", tr("Radius"), "", VarKind::Number, vec![VarCell::Number("8".into()), VarCell::Number("12".into())]),
                 row("v-primary", "Primary", "Brand", VarKind::Color, vec![color(0x0D, 0x99, 0xFF, "0D99FF"), color(0x60, 0xA5, 0xFA, "60A5FA")]),
                 row("v-on", "On primary", "Brand", VarKind::Color, vec![color(0xFF, 0xFF, 0xFF, "FFFFFF"), VarCell::Alias("Brand/Primary".into())]),
-                row("v-font", "Font family", "Text", VarKind::String, vec![VarCell::Text("Inter".into()), VarCell::Text("Inter".into())]),
-                row("v-bold", "Use bold", "Text", VarKind::Boolean, vec![VarCell::Bool(true), VarCell::Bool(false)]),
+                row("v-font", "Font family", tr("Text"), VarKind::String, vec![VarCell::Text("Inter".into()), VarCell::Text("Inter".into())]),
+                row("v-bold", "Use bold", tr("Text"), VarKind::Boolean, vec![VarCell::Bool(true), VarCell::Bool(false)]),
             ],
         }],
     }
@@ -1154,9 +1155,9 @@ impl VariablesEditor {
                             x: f32::from(e.position.x),
                             y: f32::from(e.position.y),
                             items: vec![
-                                MenuItem::new("Variables JSON…", "ui.export", json!({ "format": "json" })),
-                                MenuItem::new("CSS custom properties…", "ui.export", json!({ "format": "css" })),
-                                MenuItem::new("Dart constants for Flutter…", "ui.export", json!({ "format": "dart" })),
+                                MenuItem::new(tr("Variables JSON…"), "ui.export", json!({ "format": "json" })),
+                                MenuItem::new(tr("CSS custom properties…"), "ui.export", json!({ "format": "css" })),
+                                MenuItem::new(tr("Dart constants for Flutter…"), "ui.export", json!({ "format": "dart" })),
                             ],
                         });
                     }
@@ -1223,7 +1224,7 @@ impl VariablesEditor {
             c.collection_rename = None;
             c.collection_rename_id = Some(id.to_string());
         }
-        let f = text_field(cx, 160.0, initial, "Collection", Slot::None, Slot::None);
+        let f = text_field(cx, 160.0, initial, tr("Collection"), Slot::None, Slot::None);
         let cmds = self.cmds.clone();
         let st = st.clone();
         let cid = id.to_string();
@@ -1252,7 +1253,7 @@ impl VariablesEditor {
             k.group_rename = None;
             k.group_rename_id = Some(group.to_string());
         }
-        let f = text_field(cx, 160.0, initial, "Group", Slot::None, Slot::None);
+        let f = text_field(cx, 160.0, initial, tr("Group"), Slot::None, Slot::None);
         let cmds = self.cmds.clone();
         let st = st.clone();
         let old = group.to_string();
@@ -1317,7 +1318,7 @@ impl VariablesEditor {
                     let cmds = self.cmds.clone();
                     let taken: Vec<String> = data.collections.iter().map(|c| c.name.clone()).collect();
                     move |_, _, _| {
-                        let name = unique("Collection", |n| taken.iter().any(|x| x == n));
+                        let name = unique(tr("Collection"), |n| taken.iter().any(|x| x == n));
                         cmds.push(Cmd { id: "variable.createCollection", params: Some(json!({ "name": name, "modes": ["Mode 1"] })) });
                     }
                 })),
@@ -1373,7 +1374,7 @@ impl VariablesEditor {
                                 x: f32::from(e.position.x), y: f32::from(e.position.y),
                                 items: vec![
                                     MenuItem::new("Rename collection", "ui.renameCollection", json!({ "collection": cid })),
-                                    MenuItem::new("Delete collection", "variable.deleteCollection", json!({ "collection": cid })),
+                                    MenuItem::new(tr("Delete collection"), "variable.deleteCollection", json!({ "collection": cid })),
                                 ],
                             });
                         }
@@ -1427,7 +1428,7 @@ impl VariablesEditor {
                             move |e: &MouseDownEvent, _, _| {
                                 st.borrow_mut().menu = Some(Menu {
                                     x: f32::from(e.position.x), y: f32::from(e.position.y),
-                                    items: vec![MenuItem::new("Extend collection", "library.extendCollection", json!({ "library": lid_r, "collection": cid }))],
+                                    items: vec![MenuItem::new(tr("Extend collection"), "library.extendCollection", json!({ "library": lid_r, "collection": cid }))],
                                 });
                             }
                         })
@@ -1554,8 +1555,8 @@ impl VariablesEditor {
                             st.borrow_mut().menu = Some(Menu {
                                 x: f32::from(e.position.x), y: f32::from(e.position.y),
                                 items: vec![
-                                    MenuItem::new("Rename group", "ui.renameGroup", json!({ "group": g_toggle })),
-                                    MenuItem::new("Delete group", "ui.deleteGroup", json!({ "variables": vars })),
+                                    MenuItem::new(tr("Rename group"), "ui.renameGroup", json!({ "group": g_toggle })),
+                                    MenuItem::new(tr("Delete group"), "ui.deleteGroup", json!({ "variables": vars })),
                                 ],
                             });
                         }
@@ -1748,12 +1749,12 @@ impl VariablesEditor {
                             return;
                         }
                         let mut items = vec![
-                            MenuItem::new("Rename mode", "ui.renameMode", json!({ "mode": mid.clone() })),
-                            MenuItem::new("Add mode", "variable.addMode", json!({ "collection": cid.clone(), "name": "Mode" })),
+                            MenuItem::new(tr("Rename mode"), "ui.renameMode", json!({ "mode": mid.clone() })),
+                            MenuItem::new(tr("Add mode"), "variable.addMode", json!({ "collection": cid.clone(), "name": tr("Mode") })),
                             MenuItem::new("Duplicate mode", "variable.addMode", json!({ "collection": cid.clone(), "name": format!("{} copy", mname), "from": mid.clone() })),
                         ];
                         if mi > 0 {
-                            items.push(MenuItem::new("Set as default", "variable.moveMode", json!({ "collection": cid.clone(), "mode": mid.clone(), "to": 0 })));
+                            items.push(MenuItem::new(tr("Set as default"), "variable.moveMode", json!({ "collection": cid.clone(), "mode": mid.clone(), "to": 0 })));
                             items.push(MenuItem::new("Move left", "variable.moveMode", json!({ "collection": cid.clone(), "mode": mid.clone(), "to": mi - 1 })));
                         }
                         if mi + 1 < n_modes {
@@ -1764,7 +1765,7 @@ impl VariablesEditor {
                             items.push(MenuItem::new("Paste column", "ui.pasteColumn", json!({ "mode": mid.clone() })));
                         }
                         if n_modes > 1 {
-                            items.push(MenuItem::new("Delete mode", "variable.removeMode", json!({ "collection": cid.clone(), "mode": mid.clone() })));
+                            items.push(MenuItem::new(tr("Delete mode"), "variable.removeMode", json!({ "collection": cid.clone(), "mode": mid.clone() })));
                         }
                         st.borrow_mut().menu = Some(Menu { x: f32::from(e.position.x), y: f32::from(e.position.y), items });
                     }
@@ -1806,7 +1807,7 @@ impl VariablesEditor {
             add_cell = add_cell.child(IconButton::new(Icon::Plus).id("vars-add-mode").size(24.0).on_click({
                     let cmds = self.cmds.clone();
                     let cid = c.id.clone();
-                    move |_, _, _| cmds.push(Cmd { id: "variable.addMode", params: Some(json!({ "collection": cid, "name": "Mode" })) })
+                    move |_, _, _| cmds.push(Cmd { id: "variable.addMode", params: Some(json!({ "collection": cid, "name": tr("Mode") })) })
                 }));
         }
         add_cell = add_cell.child(div().absolute().left_0().top_0().w(pt(1.0)).h_full().bg(rgba(t.border)));
@@ -2055,21 +2056,21 @@ impl VariablesEditor {
                 move |e: &MouseDownEvent, _, _| {
                     let items = if movable {
                         let mut v = vec![
-                            MenuItem::new("Edit variable", "ui.details", json!({ "variable": rid.clone() })),
-                            MenuItem::new("Rename", "ui.rename", json!({ "variable": rid.clone() })),
-                            MenuItem::new("Copy", "ui.copy", json!({})),
+                            MenuItem::new(tr("Edit variable"), "ui.details", json!({ "variable": rid.clone() })),
+                            MenuItem::new(tr("Rename"), "ui.rename", json!({ "variable": rid.clone() })),
+                            MenuItem::new(tr("Copy"), "ui.copy", json!({})),
                         ];
                         if has_clip {
                             v.push(MenuItem::new("Paste", "ui.paste", json!({})));
                         }
-                        v.push(MenuItem::new("Duplicate", "variable.duplicate", json!({ "variable": rid.clone() })));
+                        v.push(MenuItem::new(tr("Duplicate"), "variable.duplicate", json!({ "variable": rid.clone() })));
                         if has_override {
-                            v.push(MenuItem::new("Reset overrides", "variable.resetOverride", json!({ "variable": rid.clone() })));
+                            v.push(MenuItem::new(tr("Reset overrides"), "variable.resetOverride", json!({ "variable": rid.clone() })));
                         }
-                        v.push(MenuItem::new("Delete", "variable.delete", json!({ "variable": rid.clone() })));
+                        v.push(MenuItem::new(tr("Delete"), "variable.delete", json!({ "variable": rid.clone() })));
                         v
                     } else {
-                        vec![MenuItem::new("Copy", "ui.copy", json!({}))]
+                        vec![MenuItem::new(tr("Copy"), "ui.copy", json!({}))]
                     };
                     st.borrow_mut().menu = Some(Menu { x: f32::from(e.position.x), y: f32::from(e.position.y), items });
                 }
@@ -2168,7 +2169,7 @@ impl VariablesEditor {
         }
         caches.borrow_mut().rename_field = None;
         caches.borrow_mut().rename_field_id = Some(rid.to_string());
-        let f = text_field(cx, NAME_W - 80.0, initial, "Name", Slot::None, Slot::None);
+        let f = text_field(cx, NAME_W - 80.0, initial, tr("Name"), Slot::None, Slot::None);
         let cmds = cmds.clone();
         let st = st.clone();
         let rid = rid.to_string();
@@ -2204,7 +2205,7 @@ impl VariablesEditor {
         }
         caches.borrow_mut().mode_rename_field = None;
         caches.borrow_mut().mode_rename_field_id = Some(mid.to_string());
-        let f = text_field(cx, 160.0, initial, "Mode", Slot::None, Slot::None);
+        let f = text_field(cx, 160.0, initial, tr("Mode"), Slot::None, Slot::None);
         let cmds = cmds.clone();
         let st = st.clone();
         let cid = cid.to_string();
@@ -2360,7 +2361,7 @@ impl VariablesEditor {
                     d = d.child(hex.clone());
                     d = d.child(div().text_color(rgba(t.text_secondary)).child(format!("{alpha}%")));
                 }
-                VarCell::Bool(b) => d = d.child(if *b { "True" } else { "False" }),
+                VarCell::Bool(b) => d = d.child(if *b { tr("True") } else { tr("False") }),
                 VarCell::Alias(name) => {
                     d = d.child(paint_icon(Icon::Arrow, rgba(t.text_secondary), 12.0)).child(name.clone());
                 }
@@ -2426,7 +2427,7 @@ impl VariablesEditor {
                             div().into_any_element()
                         }),
                 );
-                d = d.child(if on { "True" } else { "False" });
+                d = d.child(if on { tr("True") } else { tr("False") });
                 d.on_mouse_down(MouseButton::Left, move |_: &MouseDownEvent, _, _| {
                     cmds.push(Cmd { id: "variable.set", params: Some(json!({ "variable": vid, "mode": mid, "value": !on })) });
                 })
@@ -2510,7 +2511,7 @@ impl VariablesEditor {
         // "+ Create variable" 是**整块**可点的按钮（图标 + 文本一起响应），且用 `unique()` 命名，
         // 不会每次都建出同名 "Variable"。
         let taken: Vec<String> = c.rows.iter().map(|r| r.full_name.clone()).collect();
-        let name = unique("Variable", |n| taken.iter().any(|x| x == n));
+        let name = unique(tr("Variable"), |n| taken.iter().any(|x| x == n));
         let cid = c.id.clone();
         let items: Vec<MenuItem> = TYPES
             .iter()
@@ -2852,9 +2853,9 @@ impl VariablesEditor {
             return div().into_any_element();
         };
         let mut body = div().w_full().flex().flex_col().gap(pt(6.0));
-        body = body.child(detail_label("Name"));
+        body = body.child(detail_label(tr("Name")));
         body = body.child(self.details_field(cx, &format!("d-name-{}", row.id), &row.full_name, &row.id, "name"));
-        body = body.child(detail_label("Description"));
+        body = body.child(detail_label(tr("Description")));
         body = body.child(self.details_field(cx, &format!("d-desc-{}", row.id), &row.description, &row.id, "description"));
         // Hide from publishing
         let hidden = row.hidden;
@@ -2888,7 +2889,7 @@ impl VariablesEditor {
                     }
                 }),
         );
-        body = body.child(detail_label("Code syntax"));
+        body = body.child(detail_label(tr("Code syntax")));
         for (k, v) in row.code.clone() {
             let key = format!("d-code-{}-{}", row.id, k);
             body = body.child(
@@ -2903,7 +2904,7 @@ impl VariablesEditor {
             );
         }
         // Scoping：egui `details()` 的 "All supported properties" + 逐项范围。
-        body = body.child(detail_label("Scoping: where pickers offer it"));
+        body = body.child(detail_label(tr("Scoping: where pickers offer it")));
         let all_scopes = row.scopes.is_none();
         body = body.child(
             div()
@@ -2953,7 +2954,7 @@ impl VariablesEditor {
             .width(280.0)
             .pad(16.0)
             .surface(Surface::Panel)
-            .title(title_text("Edit variable"))
+            .title(title_text(tr("Edit variable")))
             .body(body)
             .show(viewport, dismiss)
             .1

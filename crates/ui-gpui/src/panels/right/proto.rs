@@ -53,7 +53,7 @@ fn flows_section(f: &RightFields, p: &ProtoData, cx: &mut App, n: &mut usize) ->
         .variant(if empty { SectionHeaderVariant::Dim } else { SectionHeaderVariant::Normal })
         .header_trail(icon_row(vec![plus]));
     if empty {
-        return sec.child(field_row_full(note("Select a frame and add a starting point to present it as a flow.")));
+        return sec.child(field_row_full(note(tr("Select a frame and add a starting point to present it as a flow."))));
     }
     for flow in &p.flows {
         sec = sec.child(field_row_full(flow_line(f, flow, cx, n)));
@@ -135,7 +135,7 @@ fn settings_section(f: &RightFields, p: &ProtoData, cx: &mut App, n: &mut usize)
 
     // ── Responsive ──
     let resp = icon_cmd(Icon::Check, "proto.settings", json!({ "responsive": !s.responsive }), f, s.responsive);
-    sec = sec.child(field_row(vec![plain_label("Responsive")], vec![resp]));
+    sec = sec.child(field_row(vec![plain_label(tr("Responsive"))], vec![resp]));
 
     // ── Background（色块 + hex 输入）──
     sec = sec.child(sublabel_row(tr("Background")));
@@ -219,9 +219,9 @@ fn interactions_section(f: &RightFields, p: &ProtoData, cx: &mut App, n: &mut us
         ]);
         let plus = icon_cmd(Icon::Plus, "command.batch", json!({ "label": "Replace interactions", "commands": replace }), f, false);
         let mut sec = PanelSection::new(tr("Interactions")).header_trail(icon_row(vec![plus]));
-        sec = sec.child(field_row_full(note("Mixed interactions: click + to replace them")));
+        sec = sec.child(field_row_full(note(tr("Mixed interactions: click + to replace them"))));
         let remove = icon_cmd(Icon::Minus, "proto.interaction.clear", json!({}), f, false);
-        return sec.child(field_row(vec![plain_label("Remove all")], vec![remove]));
+        return sec.child(field_row(vec![plain_label(tr("Remove all"))], vec![remove]));
     };
     let empty = list.is_empty();
     // 「+」= 加一条默认点击导航（egui `action_of("Navigate to")`，没有别的 frame 时退回 Back）。
@@ -257,16 +257,16 @@ fn editor_rows(f: &RightFields, it: &InteractionRow, i: usize, cx: &mut App, n: 
     // ── Trigger ──
     out.push(sublabel_row(tr("Trigger")));
     let triggers: Vec<(&'static str, &'static str, Value)> = vec![
-        ("On click", "onClick", json!({ "type": "onClick" })),
-        ("While hovering", "onHover", json!({ "type": "onHover" })),
-        ("While pressing", "onPress", json!({ "type": "onPress" })),
-        ("On drag", "onDrag", json!({ "type": "onDrag" })),
-        ("Mouse enter", "mouseEnter", json!({ "type": "mouseEnter" })),
-        ("Mouse leave", "mouseLeave", json!({ "type": "mouseLeave" })),
-        ("Mouse down", "mouseDown", json!({ "type": "mouseDown" })),
-        ("Mouse up", "mouseUp", json!({ "type": "mouseUp" })),
-        ("After delay", "afterDelay", json!({ "type": "afterDelay", "ms": 300 })),
-        ("Key / Gamepad", "keyPress", json!({ "type": "keyPress", "key": "Space" })),
+        (tr("On click"), "onClick", json!({ "type": "onClick" })),
+        (tr("While hovering"), "onHover", json!({ "type": "onHover" })),
+        (tr("While pressing"), "onPress", json!({ "type": "onPress" })),
+        (tr("On drag"), "onDrag", json!({ "type": "onDrag" })),
+        (tr("Mouse enter"), "mouseEnter", json!({ "type": "mouseEnter" })),
+        (tr("Mouse leave"), "mouseLeave", json!({ "type": "mouseLeave" })),
+        (tr("Mouse down"), "mouseDown", json!({ "type": "mouseDown" })),
+        (tr("Mouse up"), "mouseUp", json!({ "type": "mouseUp" })),
+        (tr("After delay"), "afterDelay", json!({ "type": "afterDelay", "ms": 300 })),
+        ("Key / Gamepad", "keyPress", json!({ "type": "keyPress", "key": tr("Space") })),
     ];
     let rows: Vec<(String, &'static str, Value)> =
         triggers.iter().map(|(label, _, v)| (label.to_string(), "proto.interaction.set", json!({ "index": i, "trigger": v }))).collect();
@@ -316,7 +316,7 @@ fn editor_rows(f: &RightFields, it: &InteractionRow, i: usize, cx: &mut App, n: 
     }
 
     // ── Actions：每条一行（摘要 + 删除），另有「+ Navigate to」加一条 ──
-    out.push(sublabel_row(if it.actions.len() > 1 { "Actions" } else { "Action" }));
+    out.push(sublabel_row(if it.actions.len() > 1 { tr("Actions") } else { tr("Action") }));
     for (k, (label, action)) in it.actions.iter().enumerate() {
         // 删掉第 k 条：把剩下的整组写回（`proto.interaction.set {actions}`）。
         let mut rest: Vec<Value> = it.actions.iter().map(|(_, a)| a.clone()).collect();
@@ -337,26 +337,26 @@ fn editor_rows(f: &RightFields, it: &InteractionRow, i: usize, cx: &mut App, n: 
         None => json!({ "index": i, "action": { "type": "back" } }),
     };
     let add = icon_cmd(Icon::Plus, "proto.interaction.set", add_params, f, false);
-    out.push(field_row_full_trailing(plain_label("Add action"), vec![add]));
+    out.push(field_row_full_trailing(plain_label(tr("Add action")), vec![add]));
 
     // ── Transition / Easing / Duration ──
     out.push(sublabel_row(tr("Transition")));
     let transitions: [(&'static str, Value); 8] = [
-        ("Instant", json!({ "type": "instant" })),
-        ("Dissolve", json!({ "type": "dissolve" })),
-        ("Smart animate", json!({ "type": "smartAnimate" })),
-        ("Move in", json!({ "type": "moveIn", "direction": "left" })),
-        ("Move out", json!({ "type": "moveOut", "direction": "left" })),
-        ("Push", json!({ "type": "push", "direction": "left" })),
-        ("Slide in", json!({ "type": "slideIn", "direction": "left" })),
-        ("Slide out", json!({ "type": "slideOut", "direction": "left" })),
+        (tr("Instant"), json!({ "type": "instant" })),
+        (tr("Dissolve"), json!({ "type": "dissolve" })),
+        (tr("Smart animate"), json!({ "type": "smartAnimate" })),
+        (tr("Move in"), json!({ "type": "moveIn", "direction": "left" })),
+        (tr("Move out"), json!({ "type": "moveOut", "direction": "left" })),
+        (tr("Push"), json!({ "type": "push", "direction": "left" })),
+        (tr("Slide in"), json!({ "type": "slideIn", "direction": "left" })),
+        (tr("Slide out"), json!({ "type": "slideOut", "direction": "left" })),
     ];
     let trows: Vec<(String, &'static str, Value)> =
         transitions.iter().map(|(l, v)| (l.to_string(), "proto.interaction.set", json!({ "index": i, "transition": v }))).collect();
     out.push(field_row_full(pick_dropdown(f, it.transition.clone(), 0.0, trows)));
 
     out.push(sublabel_row(tr("Easing")));
-    let easings = ["Linear", "Ease in", "Ease out", "Ease in and out", "Ease in back", "Ease out back", "Ease in and out back", "Gentle", "Quick", "Bouncy", "Slow"];
+    let easings = [tr("Linear"), "Ease in", "Ease out", "Ease in and out", "Ease in back", "Ease out back", "Ease in and out back", "Gentle", "Quick", "Bouncy", "Slow"];
     let erows: Vec<(String, &'static str, Value)> = easings
         .iter()
         .zip([
@@ -452,35 +452,35 @@ fn scroll_section(f: &RightFields, s: &ScrollData) -> PanelSection {
     let mut sec = PanelSection::new(tr("Scroll behavior"));
     if s.in_frame {
         let rows: Vec<(String, &'static str, Value)> = [
-            ("Scroll with parent", "scrolls"),
-            ("Fixed", "fixed"),
-            ("Sticky", "sticky"),
+            (tr("Scroll with parent"), "scrolls"),
+            (tr("Fixed"), "fixed"),
+            (tr("Sticky"), "sticky"),
         ]
         .into_iter()
         .map(|(l, v)| (l.to_string(), "node.set", json!({ "props": { "scrollPosition": v } })))
         .collect();
         let label = match s.position {
-            "fixed" => "Fixed",
-            "sticky" => "Sticky",
-            _ => "Scroll with parent",
+            "fixed" => tr("Fixed"),
+            "sticky" => tr("Sticky"),
+            _ => tr("Scroll with parent"),
         };
         sec = sec.child(field_row(vec![pick_dropdown(f, label, 0.0, rows).into_any_element()], Vec::<IconButton>::new()));
     }
     if s.is_frame {
         let rows: Vec<(String, &'static str, Value)> = [
-            ("No scrolling", "none"),
-            ("Horizontal", "horizontal"),
-            ("Vertical", "vertical"),
-            ("Both directions", "both"),
+            (tr("No scrolling"), "none"),
+            (tr("Horizontal"), "horizontal"),
+            (tr("Vertical"), "vertical"),
+            (tr("Both directions"), "both"),
         ]
         .into_iter()
         .map(|(l, v)| (l.to_string(), "node.set", json!({ "props": { "overflow": v } })))
         .collect();
         let label = match s.overflow {
-            "horizontal" => "Horizontal",
-            "vertical" => "Vertical",
-            "both" => "Both directions",
-            _ => "No scrolling",
+            "horizontal" => tr("Horizontal"),
+            "vertical" => tr("Vertical"),
+            "both" => tr("Both directions"),
+            _ => tr("No scrolling"),
         };
         sec = sec.child(field_row(vec![pick_dropdown(f, label, 0.0, rows).into_any_element()], Vec::<IconButton>::new()));
     }

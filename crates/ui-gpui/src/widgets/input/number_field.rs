@@ -17,6 +17,7 @@
 //! produces a number — typing, arrow stepping, scrubbing and a value pushed in from the document —
 //! goes through [`NumberConfig::clamp`], so an out-of-range value can never enter the field.
 
+use figcraft_i18n::tr;
 use crate::widgets::input::Slot;
 use crate::widgets::input::text_field::TextField;
 use gpui::{App, Entity, SharedString};
@@ -45,7 +46,7 @@ pub fn number_field_ranged(
     TextField::build(cx, width, move |tf, _| {
         tf.set_value(shown);
         if mixed {
-            tf.set_placeholder("Mixed");
+            tf.set_placeholder(tr("Mixed"));
         }
         tf.set_lead(lead);
         tf.set_numeric(suffix, step);

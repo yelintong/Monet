@@ -60,7 +60,7 @@ pub(crate) fn read_rows(doc: &Document, me: &str, filter: Filter, sort: Sort, se
                 meta.push(format!("{} replies", c.replies.len()));
             }
             if c.resolved {
-                meta.push("Resolved".to_string());
+                meta.push(tr("Resolved").to_string());
             }
             CommentRow {
                 id: c.id,
@@ -258,7 +258,7 @@ pub(crate) fn ago(created: u64) -> String {
     if created == 0 {
         String::new()
     } else if d < 60 {
-        "now".to_string()
+        tr("now").to_string()
     } else if d < 3600 {
         format!("{}m", d / 60)
     } else if d < 86_400 {

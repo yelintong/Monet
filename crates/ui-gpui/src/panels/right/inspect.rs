@@ -29,8 +29,8 @@ pub(crate) fn panel(f: &RightFields, d: &PanelData, cx: &mut App, n: &mut usize)
     let Some(data) = d.inspect.as_ref() else {
         // 无选中：两条提示 + 就绪列表 + 分类 + 测量（egui 同款顺序）。
         let mut sec = PanelSection::new(tr("Inspect")).variant(SectionHeaderVariant::Dim);
-        sec = sec.child(field_row_full(note("Select a layer to see its properties and code")));
-        sec = sec.child(field_row_full(note("Hover other layers to measure the distance")));
+        sec = sec.child(field_row_full(note(tr("Select a layer to see its properties and code"))));
+        sec = sec.child(field_row_full(note(tr("Hover other layers to measure the distance"))));
         body = body.child(sec);
         body = body.child(crate::panels::sep()).child(super::devmode::ready_list(f, d));
         body = body.child(crate::panels::sep()).child(super::devmode::categories(f, d, cx, n));
@@ -49,18 +49,18 @@ pub(crate) fn panel(f: &RightFields, d: &PanelData, cx: &mut App, n: &mut usize)
         let mut sec = PanelSection::new(tr("Status"));
         // 状态走 `node.set {"props": {"devStatus": …}}`：用一个本地下拉选中后推命令。
         let statuses: Vec<(String, &'static str, serde_json::Value)> = [
-            ("No status", "node.set", serde_json::json!({"props": {"devStatus": "none"}})),
-            ("Ready for dev", "node.set", serde_json::json!({"props": {"devStatus": "readyForDev"}})),
-            ("Completed", "node.set", serde_json::json!({"props": {"devStatus": "completed"}})),
+            (tr("No status"), "node.set", serde_json::json!({"props": {"devStatus": "none"}})),
+            (tr("Ready for dev"), "node.set", serde_json::json!({"props": {"devStatus": "readyForDev"}})),
+            (tr("Completed"), "node.set", serde_json::json!({"props": {"devStatus": "completed"}})),
         ]
         .into_iter()
         .map(|(l, c, p)| (l.to_string(), c, p))
         .collect();
-        let current = if s.changed && s.status == "Ready for dev" { "Changed".to_string() } else { s.status.clone() };
+        let current = if s.changed && s.status == tr("Ready for dev") { tr("Changed").to_string() } else { s.status.clone() };
         sec = sec.child(field_row_full(super::sections::pick_dropdown(f, current, 0.0, statuses)));
         // Focus view / Compare changes
-        let focus = action_button(f, "Focus view", "dev.focus", serde_json::json!({}));
-        let compare = action_button(f, "Compare changes", "dev.compare", serde_json::json!({ "show": true }));
+        let focus = action_button(f, tr("Focus view"), "dev.focus", serde_json::json!({}));
+        let compare = action_button(f, tr("Compare changes"), "dev.compare", serde_json::json!({ "show": true }));
         sec = sec.child(field_row(vec![focus.into_any_element(), compare.into_any_element()], Vec::<IconButton>::new()));
         body = body.child(sec);
     }
@@ -180,7 +180,7 @@ fn connect_section(f: &RightFields, data: &InspectData, cx: &mut App, n: &mut us
         };
         sec = sec.header_trail(icon_row(vec![btn]));
         let text = if data.connectable {
-            "Link this component to its code component: instances then show your real snippet with their values."
+            tr("Link this component to its code component: instances then show your real snippet with their values.")
         } else {
             "Choose React, Leptos, Vue, SwiftUI, Compose or ArkUI above to connect this component to its code."
         };
@@ -204,7 +204,7 @@ fn connect_section(f: &RightFields, data: &InspectData, cx: &mut App, n: &mut us
         .text_size(pt(10.0))
         .font_weight(gpui::FontWeight::SEMIBOLD)
         .text_color(gpui::white())
-        .child(SharedString::from("Connected"));
+        .child(SharedString::from(tr("Connected")));
     sec = sec.child(field_row_full(
         div()
             .flex()
@@ -217,8 +217,8 @@ fn connect_section(f: &RightFields, data: &InspectData, cx: &mut App, n: &mut us
     ));
 
     // ── Import path / 组件名 ──
-    let import = link_field(f, cx, n, &base, "importPath", &link.import_path, "Import path");
-    let name = link_field(f, cx, n, &base, "name", &link.name, "Component name");
+    let import = link_field(f, cx, n, &base, "importPath", &link.import_path, tr("Import path"));
+    let name = link_field(f, cx, n, &base, "name", &link.name, tr("Component name"));
     sec = sec.child(field_row_full(
         div()
             .flex()
@@ -234,7 +234,7 @@ fn connect_section(f: &RightFields, data: &InspectData, cx: &mut App, n: &mut us
     let template = link_field(f, cx, n, &base, "template", &link.template, "<Button size={size}>{label}</Button>");
     sec = sec.child(field_row_full(div().w_full().child(template)));
     Some(sec.child(field_row_full(note(
-        "{property} is its value; {property ? \"a\" : \"b\"} picks a string. Other {…} stays as written.",
+        tr("{property} is its value; {property ? \"a\" : \"b\"} picks a string. Other {…} stays as written."),
     ))))
 }
 

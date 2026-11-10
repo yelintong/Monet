@@ -177,7 +177,7 @@ pub fn editor(cx: &mut App, ease: Ease, target: EaseTarget, queue: &Queue, salt:
     let t = tokens();
     let spring = ease.is_spring();
     let mut body = div().flex().flex_col().w_full().gap(pt(8.0));
-    let mut grid = panel_section("Easing");
+    let mut grid = panel_section(tr("Easing"));
 
     // ── Curve | Spring tabs ──
     let mut tabs = div().flex().flex_row().w_full().h(pt(24.0)).rounded(pt(6.0)).bg(rgba(t.field));
@@ -289,7 +289,7 @@ pub fn editor(cx: &mut App, ease: Ease, target: EaseTarget, queue: &Queue, salt:
     body = body.child(grid);
 
     // ── 预设 ──
-    let mut sec = panel_section("Presets");
+    let mut sec = panel_section(tr("Presets"));
     for (name, preset) in Ease::PRESETS {
         let q = queue.clone();
         let chosen = preset == ease;
@@ -332,7 +332,7 @@ pub fn panel(cx: &mut App, doc: &Document, ui: &MotionUi, queue: &Queue, _window
         let q = queue.clone();
         IconButton::new(Icon::ChevronLeft).on_click(move |_, _, _| q.push(Act::SetEasingTarget(false)))
     };
-    let mut grid = panel_section("Easing");
+    let mut grid = panel_section(tr("Easing"));
     let mut body = div().flex().flex_col().w_full();
     grid = grid.child(field_row(vec![
         back.into_any_element(),

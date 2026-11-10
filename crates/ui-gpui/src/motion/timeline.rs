@@ -15,6 +15,7 @@
 //! The docked Motion timeline: ruler, layer rows, property tracks, keyframe diamonds,
 //! segments, clip bars and the playhead.
 
+use figcraft_i18n::tr;
 use figcraft_doc::anim::motion::{AnimProperty, TimelineSettings};
 use figcraft_doc::{Document, NodeId};
 use gpui::{
@@ -1440,7 +1441,7 @@ mod tests {
         let id: NodeId = serde_json::from_value(v["id"].clone()).expect("id");
         s.execute("select.set", &serde_json::json!({ "ids": [id] })).expect("select");
         for t in [0u32, 500] {
-            s.execute("motion.keyframe", &serde_json::json!({ "property": "Position", "time": t }))
+            s.execute("motion.keyframe", &serde_json::json!({ "property": tr("Position"), "time": t }))
                 .expect("keyframe");
         }
         let doc = s.doc().expect("doc").clone();

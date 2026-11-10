@@ -6,6 +6,7 @@
 //! 差异（GPUI 侧适配）：文字用 GPUI 文本元素渲染，不能像 egui 那样把已画出的图元整体旋转，
 //! 因此旋转帧的标签仍放在几何算出的角点，但保持水平（记为已知限制）。
 
+use figcraft_i18n::tr;
 use figcraft_doc::{Document, NodeId, NodeKind};
 use figcraft_geom::Point;
 
@@ -91,7 +92,7 @@ pub fn draw(app: &CanvasApp, painter: &mut Painter, t: &Tokens, doc: &Document, 
         let height = (p01 - p00).length();
         if edge.len > 120.0 && height > 60.0 {
             let center = at(n.width / 2.0, n.height / 2.0);
-            painter.text(center, Align2::CENTER_CENTER, "Contents hidden", regular(11.0), t.text_tertiary);
+            painter.text(center, Align2::CENTER_CENTER, tr("Contents hidden"), regular(11.0), t.text_tertiary);
         }
     }
     Some([area.min, pos2(area.max.x, area.min.y), area.max, pos2(area.min.x, area.max.y)])

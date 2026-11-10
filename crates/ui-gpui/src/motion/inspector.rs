@@ -103,7 +103,7 @@ pub fn panel(
         });
         plus_root.update(cx, |cv, cx| cv.open_menu(anchor, None, rows, on_pick, cx));
     });
-    let anim_section = panel_section("Animation")
+    let anim_section = panel_section(tr("Animation"))
         .header_trail(
             div()
                 .flex()
@@ -122,7 +122,7 @@ pub fn panel(
 
     // ── Transform ─────────────────────────────────────────────────────────────
     body = body.child(
-        panel_section("Transform")
+        panel_section(tr("Transform"))
             .child(sublabel_row(tr("Position")))
             .child(field_row(vec![field(fields, 0).into_any_element(), field(fields, 1).into_any_element()], no_trailing()))
             .child(sublabel_row(tr("Scale")))
@@ -135,8 +135,8 @@ pub fn panel(
     // ── Layout: W | H + proportions lock as the trailing 24 pt control ─────────
     let locked = doc.node(layer).is_some_and(|n| n.constrain_proportions);
     body = body.child(
-        panel_section("Layout")
-            .child(sublabel_row2("Width", "Height"))
+        panel_section(tr("Layout"))
+            .child(sublabel_row2(tr("Width"), tr("Height")))
             .child(field_row(
                 vec![field(fields, 5).into_any_element(), field(fields, 6).into_any_element()],
                 vec![IconButton::new(if locked { Icon::LinkOn } else { Icon::LinkOff }).active(locked).into_any_element()],
@@ -146,8 +146,8 @@ pub fn panel(
 
     // ── Appearance ────────────────────────────────────────────────────────────
     body = body.child(
-        panel_section("Appearance")
-            .child(sublabel_row2("Opacity", "Corner radius"))
+        panel_section(tr("Appearance"))
+            .child(sublabel_row2(tr("Opacity"), tr("Corner radius")))
             .child(field_row(vec![field(fields, 7).into_any_element(), field(fields, 8).into_any_element()], no_trailing())),
     );
     body = body.child(separator());

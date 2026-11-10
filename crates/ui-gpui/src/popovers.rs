@@ -9,6 +9,7 @@
 //! library (search field, number fields, icon buttons, text), and every action goes through the
 //! very same `CmdQueue` the right panel uses, so the engine sees the exact same commands.
 
+use figcraft_i18n::tr;
 use crate::canvas::geom::Color32;
 use crate::panels::right::data::PanelData;
 use crate::panels::right::variables::{self, VariablesData, VariablesEditor};
@@ -193,7 +194,7 @@ impl WindowState {
 
     // ── ① 自动布局设置（egui `panels/layout_panel.rs::settings`, 标题 "Layout"）───────────────
     pub(crate) fn layout(cmds: Cmds, data: &PanelData, cx: &mut App, anchor: Point<Pixels>) -> Self {
-        let mut w = Self::base(WindowKind::Layout, "Layout", cmds, Open::Anchor(anchor));
+        let mut w = Self::base(WindowKind::Layout, tr("Layout"), cmds, Open::Anchor(anchor));
         w.pad = 12.0;
         w.height = 200.0;
         let wrap = data.layout.wrap;
@@ -214,20 +215,20 @@ impl WindowState {
         let settings = vec![
             Setting::Options {
                 tab: 0,
-                label: "Strokes".into(),
+                label: tr("Strokes").into(),
                 active: 0,
                 options: vec![
-                    Opt::new("Included", "node.set", json!({ "props": { "strokesIncluded": true } })),
-                    Opt::new("Excluded", "node.set", json!({ "props": { "strokesIncluded": false } })),
+                    Opt::new(tr("Included"), "node.set", json!({ "props": { "strokesIncluded": true } })),
+                    Opt::new(tr("Excluded"), "node.set", json!({ "props": { "strokesIncluded": false } })),
                 ],
             },
             Setting::Options {
                 tab: 0,
-                label: "Canvas stacking".into(),
+                label: tr("Canvas stacking").into(),
                 active: 0,
                 options: vec![
-                    Opt::new("Last on top", "node.set", json!({ "props": { "reverseZ": false } })),
-                    Opt::new("First on top", "node.set", json!({ "props": { "reverseZ": true } })),
+                    Opt::new(tr("Last on top"), "node.set", json!({ "props": { "reverseZ": false } })),
+                    Opt::new(tr("First on top"), "node.set", json!({ "props": { "reverseZ": true } })),
                 ],
             },
             Setting::Options {
@@ -235,8 +236,8 @@ impl WindowState {
                 label: "Text baselines".into(),
                 active: usize::from(text_baseline),
                 options: vec![
-                    Opt::new("Off", "node.set", json!({ "props": { "crossAlign": "min" } })),
-                    Opt::new("Align", "node.set", json!({ "props": { "crossAlign": "baseline" } })),
+                    Opt::new(tr("Off"), "node.set", json!({ "props": { "crossAlign": "min" } })),
+                    Opt::new(tr("Align"), "node.set", json!({ "props": { "crossAlign": "baseline" } })),
                 ],
             },
             Setting::Options {
@@ -245,12 +246,12 @@ impl WindowState {
                 active: gap_active(main, wrap),
                 options: if wrap {
                     vec![
-                        Opt::new("Fixed", "node.set", json!({ "props": { "contentAlign": "auto" } })),
-                        Opt::new("Auto", "node.set", json!({ "props": { "contentAlign": "spaceBetween" } })),
+                        Opt::new(tr("Fixed"), "node.set", json!({ "props": { "contentAlign": "auto" } })),
+                        Opt::new(tr("Auto"), "node.set", json!({ "props": { "contentAlign": "spaceBetween" } })),
                     ]
                 } else {
                     vec![
-                        Opt::new("Fixed", "node.set", json!({ "props": { "mainAlign": "min" } })),
+                        Opt::new(tr("Fixed"), "node.set", json!({ "props": { "mainAlign": "min" } })),
                         Opt::new("Between", "node.set", json!({ "props": { "mainAlign": "spaceBetween" } })),
                         Opt::new("Evenly", "node.set", json!({ "props": { "mainAlign": "spaceEvenly" } })),
                         Opt::new("Around", "node.set", json!({ "props": { "mainAlign": "spaceAround" } })),
@@ -265,10 +266,10 @@ impl WindowState {
 
     // ── ② 描边高级设置（egui `panels/right/stroke.rs::stroke_settings_body`, 标题 "Stroke"）───
     pub(crate) fn stroke(cmds: Cmds, data: &PanelData, cx: &mut App, anchor: Point<Pixels>) -> Self {
-        let mut w = Self::base(WindowKind::Stroke, "Stroke", cmds.clone(), Open::Anchor(anchor));
+        let mut w = Self::base(WindowKind::Stroke, tr("Stroke"), cmds.clone(), Open::Anchor(anchor));
         w.pad = 12.0;
         w.height = 320.0;
-        w.tabs = Some((vec!["Basic".into(), "Brush".into()], Rc::new(RefCell::new(0u8))));
+        w.tabs = Some((vec!["Basic".into(), tr("Brush").into()], Rc::new(RefCell::new(0u8))));
         let weight = data.stroke_weight.unwrap_or(1.0);
         let dash = Rc::new(RefCell::new([weight * 4.0, weight * 4.0]));
         let mk_number = |cx: &mut App, value: f64, apply: Rc<dyn Fn(f64) -> Value>| -> Entity<TextField> {
@@ -309,58 +310,58 @@ impl WindowState {
         );
         let miter_field = mk_number(cx, 28.6, Rc::new(|v| json!({ "props": { "miterAngle": v } })));
         let profiles = vec![
-            Opt::new("Uniform", "stroke.widthProfile", json!({ "preset": "uniform" })),
-            Opt::new("Wedge", "stroke.widthProfile", json!({ "preset": "wedge" })),
-            Opt::new("Taper", "stroke.widthProfile", json!({ "preset": "taper" })),
-            Opt::new("Eye", "stroke.widthProfile", json!({ "preset": "eye" })),
+            Opt::new(tr("Uniform"), "stroke.widthProfile", json!({ "preset": "uniform" })),
+            Opt::new(tr("Wedge"), "stroke.widthProfile", json!({ "preset": "wedge" })),
+            Opt::new(tr("Taper"), "stroke.widthProfile", json!({ "preset": "taper" })),
+            Opt::new(tr("Eye"), "stroke.widthProfile", json!({ "preset": "eye" })),
         ];
         let settings = vec![
-            Setting::Caption { tab: 0, text: "Stroke style".into() },
+            Setting::Caption { tab: 0, text: tr("Stroke style").into() },
             Setting::Options {
                 tab: 0,
-                label: "Pattern".into(),
+                label: tr("Pattern").into(),
                 active: 0,
                 options: vec![
-                    Opt::new("Solid", "node.set", json!({ "props": { "dashes": [] } })),
-                    Opt::new("Dash", "node.set", json!({ "props": { "dashes": [weight * 4.0, weight * 4.0] } })),
+                    Opt::new(tr("Solid"), "node.set", json!({ "props": { "dashes": [] } })),
+                    Opt::new(tr("Dash"), "node.set", json!({ "props": { "dashes": [weight * 4.0, weight * 4.0] } })),
                 ],
             },
-            Setting::Number { tab: 0, label: "Dash".into(), field: dash_field },
-            Setting::Number { tab: 0, label: "Gap".into(), field: gap_field },
+            Setting::Number { tab: 0, label: tr("Dash").into(), field: dash_field },
+            Setting::Number { tab: 0, label: tr("Gap").into(), field: gap_field },
             Setting::Options {
                 tab: 0,
-                label: "Join".into(),
+                label: tr("Join").into(),
                 active: 0,
                 options: vec![
-                    Opt::new("Miter", "node.set", json!({ "props": { "strokeJoin": "miter" } })),
-                    Opt::new("Bevel", "node.set", json!({ "props": { "strokeJoin": "bevel" } })),
-                    Opt::new("Round", "node.set", json!({ "props": { "strokeJoin": "round" } })),
+                    Opt::new(tr("Miter"), "node.set", json!({ "props": { "strokeJoin": "miter" } })),
+                    Opt::new(tr("Bevel"), "node.set", json!({ "props": { "strokeJoin": "bevel" } })),
+                    Opt::new(tr("Round"), "node.set", json!({ "props": { "strokeJoin": "round" } })),
                 ],
             },
-            Setting::Number { tab: 0, label: "Miter angle".into(), field: miter_field },
+            Setting::Number { tab: 0, label: tr("Miter angle").into(), field: miter_field },
             Setting::Options {
                 tab: 0,
                 label: "End caps".into(),
                 active: 0,
                 options: vec![
-                    Opt::new("None", "node.set", json!({ "props": { "strokeCap": "butt" } })),
-                    Opt::new("Round", "node.set", json!({ "props": { "strokeCap": "round" } })),
-                    Opt::new("Square", "node.set", json!({ "props": { "strokeCap": "square" } })),
+                    Opt::new(tr("None"), "node.set", json!({ "props": { "strokeCap": "butt" } })),
+                    Opt::new(tr("Round"), "node.set", json!({ "props": { "strokeCap": "round" } })),
+                    Opt::new(tr("Square"), "node.set", json!({ "props": { "strokeCap": "square" } })),
                 ],
             },
-            Setting::Options { tab: 0, label: "Width profile".into(), active: 0, options: profiles.clone() },
-            Setting::Caption { tab: 1, text: "Brush".into() },
+            Setting::Options { tab: 0, label: tr("Width profile").into(), active: 0, options: profiles.clone() },
+            Setting::Caption { tab: 1, text: tr("Brush").into() },
             Setting::Options {
                 tab: 1,
-                label: "Brush".into(),
+                label: tr("Brush").into(),
                 active: 0,
                 options: vec![
-                    Opt::new("None", "stroke.brush", json!({ "preset": Value::Null })),
-                    Opt::new("Stretch", "stroke.brush", json!({ "preset": "stretch" })),
-                    Opt::new("Scatter", "stroke.brush", json!({ "preset": "scatter" })),
+                    Opt::new(tr("None"), "stroke.brush", json!({ "preset": Value::Null })),
+                    Opt::new(tr("Stretch"), "stroke.brush", json!({ "preset": "stretch" })),
+                    Opt::new(tr("Scatter"), "stroke.brush", json!({ "preset": "scatter" })),
                 ],
             },
-            Setting::Options { tab: 1, label: "Width profile".into(), active: 0, options: profiles },
+            Setting::Options { tab: 1, label: tr("Width profile").into(), active: 0, options: profiles },
         ];
         w.settings = Rc::new(RefCell::new(settings));
         w
@@ -368,7 +369,7 @@ impl WindowState {
 
     // ── ④ 变量弹窗（egui `panels/variable_ui.rs::picker`, 标题 "Variables"）─────────────────
     pub(crate) fn variables(cmds: Cmds, cx: &mut App, anchor: Point<Pixels>, rows: Vec<Row>) -> Self {
-        let mut w = Self::base(WindowKind::Variables, "Variables", cmds, Open::Anchor(anchor));
+        let mut w = Self::base(WindowKind::Variables, tr("Variables"), cmds, Open::Anchor(anchor));
         w.surface = Surface::Menu;
         w.pad = 8.0;
         w.height = 300.0;
@@ -381,7 +382,7 @@ impl WindowState {
     // 只搬右边的表格：左侧集合/分组 sidebar、顶部搜索、编辑与拖拽都还没做。
     // 标题用集合名（egui 的浮动面板标题），右侧放变量总数的计数 chip。
     pub(crate) fn variables_table(cmds: Cmds, anchor: Point<Pixels>, data: VariablesData) -> Self {
-        let mut w = Self::base(WindowKind::VariablesTable, "Variables", cmds, Open::Anchor(anchor));
+        let mut w = Self::base(WindowKind::VariablesTable, tr("Variables"), cmds, Open::Anchor(anchor));
         w.width = variables::WINDOW_W;
         w.height = variables::WINDOW_H;
         // 表格自己控制左右 inset，卡片 body 不再加通用 16 pt 内边距。
@@ -515,7 +516,7 @@ impl WindowState {
         on_pick: Rc<dyn Fn(Color32, &mut Window, &mut App)>,
         cmds: Cmds,
     ) -> Self {
-        let mut w = Self::base(WindowKind::Color, "Custom", cmds, Open::Anchor(origin));
+        let mut w = Self::base(WindowKind::Color, tr("Custom"), cmds, Open::Anchor(origin));
         // egui 的取色器用 `pad(0)` 让 240 pt 的内容贴住窗口；这里同样给 12 pt 内边距，
         // 内容自己按 240 pt 排（SV 方块 / 色相 / 透明度 / Hex / 页面色板）。
         w.width = 264.0;
@@ -620,7 +621,7 @@ impl WindowState {
                     .items_center()
                     .gap(pt(8.0))
                     .child(div().size(pt(12.0)).rounded(pt(3.0)).bg(rgba(c)).border_1().border_color(rgba(t.border)))
-                    .child(title_text("Custom"))
+                    .child(title_text(tr("Custom")))
                     .into_any_element()
             }
             // A custom title with a live control: create a style straight from the header.
@@ -634,7 +635,7 @@ impl WindowState {
                     .gap(pt(4.0))
                     .child(div().flex_1().child(title_text(self.title.clone())))
                     .child(IconButton::new(Icon::Plus).size(20.0).on_click(move |_, _, _| {
-                        cmds.push(Cmd { id: "style.create", params: Some(json!({ "type": "text", "name": "Text style" })) });
+                        cmds.push(Cmd { id: "style.create", params: Some(json!({ "type": "text", "name": tr("Text style") })) });
                     }))
                     .into_any_element()
             }
@@ -1131,7 +1132,7 @@ mod tests {
 
     #[test]
     fn a_row_carries_its_command() {
-        let r = Row::new("Brand/Primary", "variable.bind", json!({ "field": "fill" })).group("Collection").trail("Color");
+        let r = Row::new("Brand/Primary", "variable.bind", json!({ "field": "fill" })).group(tr("Collection")).trail(tr("Color"));
         assert_eq!(r.cmd, "variable.bind");
         assert_eq!(r.group.as_ref().map(|g| g.to_string()), Some("Collection".to_string()));
         assert_eq!(r.params["field"], "fill");
@@ -1155,7 +1156,7 @@ mod tests {
     #[test]
     fn a_drag_never_parks_the_card_outside_the_window() {
         let wake: Rc<dyn Fn()> = Rc::new(|| {});
-        let mut w = WindowState::base(WindowKind::Layout, "Layout", Cmds::new(&wake), Open::Anchor(Point { x: px(0.0), y: px(0.0) }));
+        let mut w = WindowState::base(WindowKind::Layout, tr("Layout"), Cmds::new(&wake), Open::Anchor(Point { x: px(0.0), y: px(0.0) }));
         w.viewport = size(px(1200.0), px(800.0));
         w.width = WIDTH;
         w.height = 200.0;

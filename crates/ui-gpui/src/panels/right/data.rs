@@ -7,6 +7,8 @@
 //! 由 `CanvasView::panel_data()` 每帧把这些列表读成快照传给 `right_panel`。所有字段都是已经
 //! 格式化好的 `String`（或 `Paint`），面板只负责用通用组件画出来 + 推命令，不再碰 doc。
 
+use figcraft_i18n::tr_noop;
+use figcraft_i18n::tr;
 use figcraft_doc::{Document, NodeId, NodeKind};
 use serde_json::Value;
 
@@ -257,7 +259,7 @@ pub struct ProtoData {
 impl Default for ProtoSettingsData {
     fn default() -> Self {
         Self {
-            device: "None".into(),
+            device: tr("None").into(),
             devices: Vec::new(),
             rotates: false,
             landscape: false,
@@ -287,7 +289,7 @@ pub fn read_proto(doc: &Document, ids: &[NodeId], page: Option<NodeId>) -> Proto
 
     // ── Prototype settings ──
     let model = settings.model();
-    let mut devices: Vec<&'static str> = vec!["None"];
+    let mut devices: Vec<&'static str> = vec![tr_noop("None")];
     devices.extend(PrototypeSettings::DEVICES.iter().map(|d| d.name));
     devices.push(PrototypeSettings::CUSTOM_DEVICE);
     let custom = (settings.device == PrototypeSettings::CUSTOM_DEVICE).then(|| {
@@ -657,10 +659,10 @@ pub struct DevModeData {
 pub fn side_label(side: figcraft_doc::Side) -> &'static str {
     use figcraft_doc::Side;
     match side {
-        Side::Top => "Along the top",
-        Side::Right => "Along the right",
-        Side::Bottom => "Along the bottom",
-        Side::Left | Side::Auto => "Along the left",
+        Side::Top => tr("Along the top"),
+        Side::Right => tr("Along the right"),
+        Side::Bottom => tr("Along the bottom"),
+        Side::Left | Side::Auto => tr("Along the left"),
     }
 }
 
@@ -735,7 +737,7 @@ pub fn read_dev(doc: &Document, ids: &[NodeId], page: Option<NodeId>, ready_filt
         .enumerate()
         .map(|(index, a)| {
             let mut category_menu: Vec<(String, Option<String>, Value)> =
-                vec![("No category".into(), None, serde_json::json!({ "id": id, "index": index, "category": null }))];
+                vec![(tr("No category").into(), None, serde_json::json!({ "id": id, "index": index, "category": null }))];
             for c in cats {
                 category_menu.push((
                     c.name.clone(),
@@ -839,14 +841,14 @@ pub fn read_component(doc: &Document, ids: &[NodeId]) -> Option<ComponentData> {
                 .or(Some(*component))
                 .and_then(|c| doc.node(c))
                 .map(|c| c.name.clone())
-                .unwrap_or_else(|| "Main component deleted".into());
+                .unwrap_or_else(|| tr("Main component deleted").into());
             let nested = components::inside_instance(doc, *id);
             let components = list_components(doc);
             let mut out = ComponentData {
                 is_instance: true,
                 nested,
                 missing,
-                title: if nested { "Nested instance" } else { "Instance" },
+                title: if nested { tr("Nested instance") } else { tr("Instance") },
                 main_name,
                 main_id: Some(*component),
                 components,
@@ -907,7 +909,7 @@ pub fn read_component(doc: &Document, ids: &[NodeId]) -> Option<ComponentData> {
                             out.props.push(ComponentProp {
                                 name: k.clone(),
                                 kind: "swap",
-                                value: cur.and_then(|c| doc.node(c)).map(|x| x.name.clone()).unwrap_or_else(|| "None".into()),
+                                value: cur.and_then(|c| doc.node(c)).map(|x| x.name.clone()).unwrap_or_else(|| tr("None").into()),
                                 options,
                             });
                         }
@@ -925,13 +927,13 @@ pub fn read_component(doc: &Document, ids: &[NodeId]) -> Option<ComponentData> {
             Some(out)
         }
         figcraft_doc::NodeKind::ComponentSet { description } => Some(ComponentData {
-            title: "Component set",
+            title: tr("Component set"),
             description: description.clone(),
             editable_description: true,
             ..Default::default()
         }),
         figcraft_doc::NodeKind::Component { description, .. } => Some(ComponentData {
-            title: "Component",
+            title: tr("Component"),
             description: description.clone(),
             editable_description: true,
             ..Default::default()
@@ -1295,7 +1297,7 @@ pub fn read(doc: &Document, ids: &[NodeId], page: Option<NodeId>, ready_filter: 
         label: match &kinds {
             Some(l) if ids.len() == 1 => l.clone(),
             Some(l) => format!("{l}s"),
-            None => "Mixed".into(),
+            None => tr("Mixed").into(),
         },
         is_frame: ids.len() == 1 && first.is_some_and(|n| matches!(n.kind, figcraft_doc::NodeKind::Frame)),
         is_group: ids.iter().all(|i| doc.node(*i).is_some_and(|n| matches!(n.kind, figcraft_doc::NodeKind::Group))),
@@ -1320,9 +1322,9 @@ pub fn read(doc: &Document, ids: &[NodeId], page: Option<NodeId>, ready_filter: 
     d.fills = paint_rows(doc, ids, true);
     d.strokes = paint_rows(doc, ids, false);
     d.stroke_align = common(doc, ids, |n| n.stroke.align).map(|a| match a {
-        figcraft_doc::StrokeAlign::Inside => "Inside",
-        figcraft_doc::StrokeAlign::Center => "Center",
-        figcraft_doc::StrokeAlign::Outside => "Outside",
+        figcraft_doc::StrokeAlign::Inside => tr("Inside"),
+        figcraft_doc::StrokeAlign::Center => tr("Center"),
+        figcraft_doc::StrokeAlign::Outside => tr("Outside"),
     });
     d.stroke_weight = common(doc, ids, |n| n.stroke.weight);
 
@@ -1415,7 +1417,7 @@ pub fn read(doc: &Document, ids: &[NodeId], page: Option<NodeId>, ready_filter: 
     if ids.iter().all(|i| figcraft_engine::devinspect::has_status(doc, *i)) {
         let is_section = ids.iter().all(|i| doc.node(*i).is_some_and(|n| matches!(n.kind, figcraft_doc::NodeKind::Section { .. })));
         let status = common(doc, ids, |n| (n.dev_status, n.dev_changed))
-            .map(|(s, changed)| if changed && s == figcraft_doc::DevStatus::ReadyForDev { "Changed".to_string() } else { s.label().to_string() });
+            .map(|(s, changed)| if changed && s == figcraft_doc::DevStatus::ReadyForDev { tr("Changed").to_string() } else { s.label().to_string() });
         d.section = status.map(|status| SectionData {
             is_section,
             status,
@@ -1612,8 +1614,8 @@ fn grid_label(g: &figcraft_doc::LayoutGrid) -> String {
     let trim = |v: f64| format!("{v}");
     match g.kind {
         GridKind::Grid => format!("Grid ({})", trim(g.size)),
-        GridKind::Columns if g.count == 0 => "Auto columns".into(),
-        GridKind::Rows if g.count == 0 => "Auto rows".into(),
+        GridKind::Columns if g.count == 0 => tr("Auto columns").into(),
+        GridKind::Rows if g.count == 0 => tr("Auto rows").into(),
         GridKind::Diagonal if g.count == 0 => "Auto 45° lines".into(),
         GridKind::Rings if g.count == 0 => "Auto rings".into(),
         GridKind::Columns => format!("{} columns", g.count.max(1)),

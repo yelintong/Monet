@@ -11,6 +11,7 @@
 //! 还没搬：`handles.rs` 里的渐变 / 模糊 / 裁剪手柄（要面板的颜色选择器 `colorpicker::PickerTarget`
 //! 与 Dev Mode 的 `RightTab`），等面板搬过来再接。
 
+use figcraft_i18n::tr;
 use figcraft_doc::{ContentAlign, LayoutMode, NodeId};
 use figcraft_engine::ToolId;
 use figcraft_geom::Point;
@@ -398,7 +399,7 @@ pub fn input(app: &mut CanvasApp, pos: Pos2, pressed: bool, down: bool, released
         }
         app.spacing_cursor = Some(Shown::System(if *side % 2 == 0 { gpui::CursorStyle::ResizeUpDown } else { gpui::CursorStyle::ResizeLeftRight }));
         if pressed {
-            let _ = app.session.begin_interaction("Padding");
+            let _ = app.session.begin_interaction(tr("Padding"));
             app.handles.moved = false;
             app.handles.drag = Some(Drag::Padding { id: z.id, side: *side, start: pos, value: *v });
             return true;
@@ -412,7 +413,7 @@ pub fn input(app: &mut CanvasApp, pos: Pos2, pressed: bool, down: bool, released
         }
         app.spacing_cursor = Some(Shown::System(if g.vertical { gpui::CursorStyle::ResizeUpDown } else { gpui::CursorStyle::ResizeLeftRight }));
         if pressed {
-            let _ = app.session.begin_interaction("Gap");
+            let _ = app.session.begin_interaction(tr("Gap"));
             app.handles.moved = false;
             app.handles.drag = Some(Drag::Gap { id: z.id, start: pos, value: g.value, vertical: g.vertical, key: g.key });
             return true;

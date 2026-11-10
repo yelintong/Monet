@@ -23,6 +23,7 @@
 //! lifts it when its bottom would pass the screen; [`Open::At`] puts its top-left exactly there.
 //! `at()` overrides both (a dragged card). Everything is clamped inside the viewport.
 
+use figcraft_i18n::tr;
 use crate::canvas::geom::Color32;
 use crate::widgets::icon::{Icon, paint as paint_icon};
 use crate::widgets::{pt, rgba, tokens};
@@ -322,7 +323,7 @@ mod tests {
     #[test]
     fn the_title_is_a_slot_not_a_string() {
         // A custom title (a swatch-like box + a label) must be accepted by `title()` unchanged.
-        let custom = div().flex().flex_row().gap(pt(4.0)).child(div().size(pt(8.0)).bg(rgba(Color32::from_rgb(1, 2, 3)))).child("Custom");
+        let custom = div().flex().flex_row().gap(pt(4.0)).child(div().size(pt(8.0)).bg(rgba(Color32::from_rgb(1, 2, 3)))).child(tr("Custom"));
         let pop = popover_window(Open::At(Point { x: px(20.0), y: px(20.0) })).title(custom).body(div());
         assert!(pop.title.is_some(), "title() stores an arbitrary element");
         assert!(pop.body.is_some());

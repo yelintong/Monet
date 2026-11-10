@@ -76,7 +76,7 @@ fn people(f: &RightFields, live: &LiveData) -> Div {
             let Some(root) = root.clone() else { return };
             let p = window.mouse_position();
             let anchor = Bounds { origin: p, size: gpui::size(px(1.0), px(0.0)) };
-            let label = if spotlighting { "Stop spotlighting" } else { "Spotlight me" };
+            let label = if spotlighting { tr("Stop spotlighting") } else { tr("Spotlight me") };
             let rows = vec![crate::widgets::MenuRow::new(label)];
             let cmds = cmds.clone();
             let on = !spotlighting;
@@ -118,7 +118,7 @@ fn people(f: &RightFields, live: &LiveData) -> Div {
         .chain(live.peers.iter().map(|(id, name, _)| {
             let mut r = crate::widgets::MenuRow::new(name.clone());
             if live.follow == Some(*id) {
-                r = r.trail("Following");
+                r = r.trail(tr("Following"));
             }
             r
         }))
@@ -283,7 +283,7 @@ fn play_glyph(size: f32, color: Color32) -> impl IntoElement {
 /// `menu` 卡片里的行按钮（输入框那套 join/端口/密钥属于高级设置，尚未搬）。
 pub(crate) fn share_card(anchor: Bounds<Pixels>, live: &LiveData, cmds: &crate::panels::Cmds, dismiss: Rc<dyn Fn(&mut Window, &mut App)>) -> AnyElement {
     let t = tokens();
-    let title = if live.active { "Live session" } else { "Share this file" };
+    let title = if live.active { tr("Live session") } else { tr("Share this file") };
     let mut col = div().flex().flex_col().gap(pt(2.0)).w(pt(284.0));
     col = col.child(
         div()
@@ -338,24 +338,24 @@ pub(crate) fn share_card(anchor: Bounds<Pixels>, live: &LiveData, cmds: &crate::
             );
         }
         if let Some(code) = live.code.clone() {
-            col = col.child(copy_row("Copy code", &code, cmds, &dismiss));
+            col = col.child(copy_row(tr("Copy code"), &code, cmds, &dismiss));
         }
         if let Some(link) = live.link.clone() {
-            col = col.child(copy_row("Copy link", &link, cmds, &dismiss));
+            col = col.child(copy_row(tr("Copy link"), &link, cmds, &dismiss));
         }
-        col = col.child(menu_row("Stop sharing", None, push("collab.stop", json!({}))));
+        col = col.child(menu_row(tr("Stop sharing"), None, push("collab.stop", json!({}))));
     } else if live.host {
         // ── 主人、没在分享码：给链接，能停会话 ───────────────────────────────────
         if let Some(link) = live.info_link.clone() {
             col = col.child(copy_row("Copy invite link", &link, cmds, &dismiss));
         }
-        col = col.child(menu_row("Stop session", None, push("collab.stop", json!({}))));
+        col = col.child(menu_row(tr("Stop session"), None, push("collab.stop", json!({}))));
     } else {
         // ── 客人：说明能做什么，能离开 ──────────────────────────────────────────
         if live.view_only {
             col = col.child(note("View only · your edits are refused"));
         }
-        col = col.child(menu_row("Leave session", None, push("collab.leave", json!({}))));
+        col = col.child(menu_row(tr("Leave session"), None, push("collab.leave", json!({}))));
     }
 
     // 底部：egui 的 Export… 行还没搬（GPUI 没有导出预览窗口），这里就不放假按钮。
@@ -369,17 +369,17 @@ pub(crate) fn share_card(anchor: Bounds<Pixels>, live: &LiveData, cmds: &crate::
 fn status_line(live: &LiveData) -> Option<String> {
     let others = live.peers.len();
     let people = match others {
-        0 => "nobody else here yet".to_string(),
+        0 => tr("nobody else here yet").to_string(),
         1 => "1 person joined".to_string(),
         n => format!("{n} people joined"),
     };
     let line = match (live.status, live.shared, live.host, live.view_only) {
         ("off", ..) => String::new(),
         ("failed", ..) => live.reason.clone().unwrap_or_else(|| "Couldn't connect".into()),
-        ("connecting", ..) => "Starting to share…".to_string(),
+        ("connecting", ..) => tr("Starting to share…").to_string(),
         ("reconnecting", ..) => "Connection lost, reconnecting…".to_string(),
         ("live", false, true, _) => format!("Live · {people}"),
-        ("live", false, false, _) => "Joined".to_string(),
+        ("live", false, false, _) => tr("Joined").to_string(),
         ("live", true, _, _) if live.online => format!("Sharing online · {people}"),
         ("live", true, ..) => format!("Sharing on your network · {people}"),
         _ => String::new(),

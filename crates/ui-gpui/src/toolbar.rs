@@ -288,7 +288,7 @@ pub(crate) fn bar(
     } else {
         Some(1)
     };
-    let modes = [(Icon::Pencil, "Draw"), (Icon::Frame, "Design"), (Icon::Animation, "Animation"), (Icon::Code, "开发")];
+    let modes = [(Icon::Pencil, tr("Draw")), (Icon::Frame, tr("Design")), (Icon::Animation, tr("Animation")), (Icon::Code, "开发")];
     let mut seg = div().flex_none().w(pt(MODE_CELLS as f32 * CELL)).h(pt(CELL)).flex().flex_row().items_center().rounded(pt(5.0)).bg(rgba(t.field));
     for (i, (icon, name)) in modes.iter().enumerate() {
         // 四段全部可点：Inspect 现在有面板（右栏 Inspect 标签 + ui_requests 通道）。

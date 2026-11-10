@@ -14,6 +14,7 @@
 //! control (`swatch(ui, paint, size)`), **not** a slot variant of a field: `color_field` uses it in
 //! its lead slot for any paint that is not a plain solid, and other panels place one directly.
 
+use figcraft_i18n::tr;
 use crate::widgets::icon::{Icon, draw_centred};
 use crate::widgets::{pt, rgba, tokens};
 use figcraft_color::{Paint, PaintKind};
@@ -143,9 +144,9 @@ pub fn paint_name(paint: &Paint) -> String {
             let alpha = color.a * paint.opacity;
             if alpha < 0.999 { format!("{hex} {}%", (alpha * 100.0).round()) } else { hex }
         }
-        PaintKind::Gradient(_) => "Gradient".into(),
-        PaintKind::Image(_) => "Image".into(),
-        PaintKind::Pattern(_) => "Pattern".into(),
+        PaintKind::Gradient(_) => tr("Gradient").into(),
+        PaintKind::Image(_) => tr("Image").into(),
+        PaintKind::Pattern(_) => tr("Pattern").into(),
     }
 }
 

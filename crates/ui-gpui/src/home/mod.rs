@@ -5,6 +5,7 @@
 //! section are the parts of `home/home_recents.rs` / `home/online.rs` still to come; this file is
 //! where they land.
 
+use figcraft_i18n::tr_noop;
 use crate::CanvasApp;
 use crate::panels::extra::ExtraState;
 use crate::panels::{Cmd, Cmds};
@@ -17,12 +18,12 @@ use std::rc::Rc;
 
 /// `ui-egui/src/home.rs::TIPS`: the six Getting-started rows (title, one-line hint).
 const HOME_TIPS: [(&str, &str); 6] = [
-    ("Draw a frame", "Pick the Frame tool, then drag on the canvas or choose a device size"),
-    ("Add auto layout", "Select layers and they space themselves as their content changes"),
-    ("Make a component", "Turn a layer into a component, reuse it, and change every copy at once"),
-    ("Prototype", "Link frames on the Prototype tab, then present the flow"),
-    ("Share with a code", "Start sharing with the Share button, then pass on the code it gives"),
-    ("Export", "Export frames and layers as PNG, JPG, SVG or PDF"),
+    (tr_noop("Draw a frame"), tr_noop("Pick the Frame tool, then drag on the canvas or choose a device size")),
+    (tr_noop("Add auto layout"), tr_noop("Select layers and they space themselves as their content changes")),
+    (tr_noop("Make a component"), tr_noop("Turn a layer into a component, reuse it, and change every copy at once")),
+    (tr_noop("Prototype"), tr_noop("Link frames on the Prototype tab, then present the flow")),
+    (tr_noop("Share with a code"), tr_noop("Start sharing with the Share button, then pass on the code it gives")),
+    (tr_noop("Export"), tr_noop("Export frames and layers as PNG, JPG, SVG or PDF")),
 ];
 
 /// The whole Home screen: sidebar + main.
@@ -44,7 +45,7 @@ pub(crate) fn body(app: &CanvasApp, cmds: &Cmds, state: &ExtraState) -> Div {
             .child(div().text_size(pt(16.0)).font_weight(gpui::FontWeight::SEMIBOLD).text_color(rgba(t.text)).child(tr("FigCraft"))),
     );
     side = side.child(state.home_search.clone());
-    for (i, (icon, label)) in [(Icon::Page, "Recents"), (Icon::LinkOn, "Online"), (Icon::ViewGrid, "Templates")].into_iter().enumerate() {
+    for (i, (icon, label)) in [(Icon::Page, tr("Recents")), (Icon::LinkOn, tr("Online")), (Icon::ViewGrid, tr("Templates"))].into_iter().enumerate() {
         let on = section == i;
         let slot = state.home_section.clone();
         let wake = cmds.clone();

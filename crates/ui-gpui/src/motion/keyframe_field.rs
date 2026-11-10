@@ -12,6 +12,8 @@
 //! The Motion inspector's keyframe field: one `Input` template with a diamond in its trailing
 //! slot. Any panel that needs "a value plus an action button" can reuse [`KeyframeField`].
 
+use figcraft_i18n::tr_noop;
+use figcraft_i18n::tr;
 use figcraft_doc::anim::motion::AnimProperty;
 use figcraft_doc::{Document, NodeId};
 use gpui::{App, Context, Div, Entity, MouseButton, Render, Window, div, prelude::*};
@@ -35,10 +37,10 @@ pub const FIELDS: [(AnimProperty, usize, &str); 12] = [
     (AnimProperty::Width, 0, "W"),
     (AnimProperty::Height, 0, "H"),
     (AnimProperty::Opacity, 0, "%"),
-    (AnimProperty::CornerRadius, 0, "R"),
-    (AnimProperty::FillColor, 0, "Fill"),
-    (AnimProperty::StrokeColor, 0, "Stroke"),
-    (AnimProperty::ShadowBlur, 0, "Blur"),
+    (AnimProperty::CornerRadius, 0, tr_noop("R")),
+    (AnimProperty::FillColor, 0, tr_noop("Fill")),
+    (AnimProperty::StrokeColor, 0, tr_noop("Stroke")),
+    (AnimProperty::ShadowBlur, 0, tr_noop("Blur")),
 ];
 
 /// One field: `Input(lead | edit | trail)` where `trail` is the keyframe diamond.
@@ -88,7 +90,7 @@ impl KeyframeField {
         self.edit.update(cx, |e, _| {
             e.set_value(text);
             if placeholder {
-                e.set_placeholder("Mixed");
+                e.set_placeholder(tr("Mixed"));
             }
             if let Some(n) = node {
                 e.set_on_commit(move |s, _window, _cx| {

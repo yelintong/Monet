@@ -9,6 +9,7 @@
 //! egui gives for an unavailable command (`available(id)`); the UI-layer commands that live in
 //! egui's own clipboard (Copy as CSS / SVG / PNG, Copy link) are the ones that come out grey here.
 
+use figcraft_i18n::tr_noop;
 use crate::app::CanvasApp;
 use crate::menu_card::Item;
 use figcraft_doc::{Document, NodeId, NodeKind};
@@ -21,7 +22,7 @@ pub(crate) const ROW_H: f32 = 28.0;
 pub(crate) const WIDTH: f32 = 240.0;
 
 /// The marker row that opens the Copy-as submenu (`COPY_AS` in the original).
-const COPY_AS: &str = "Copy as";
+const COPY_AS: &str = tr_noop("Copy as");
 
 /// Select what a right-click at `p` (page coordinates) lands on, and return the selection the menu
 /// acts on. Mirrors `open_context_menu`: the hit layer is resolved to a select target (a group's

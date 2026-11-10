@@ -3,6 +3,7 @@
 //! 对应原文 `FigApp` 里画布用到的部分（`session` / `canvas` / `to_screen` / `to_page`），
 //! 让搬过来的画布代码不用改调用点。
 
+use figcraft_i18n::tr;
 use figcraft_doc::color::{Color, Paint};
 use figcraft_doc::{AutoLayout, Document, LayoutMode, NodeId, NodeKind};
 use figcraft_engine::Session;
@@ -112,12 +113,12 @@ pub fn sample_doc() -> Document {
 
     let frame = doc.create(page, NodeKind::Frame, "Frame 1", 40.0, 40.0, 420.0, 320.0).unwrap_or(page);
 
-    let blue = doc.create(frame, NodeKind::Rectangle, "Blue", 40.0, 40.0, 220.0, 140.0).unwrap_or(frame);
+    let blue = doc.create(frame, NodeKind::Rectangle, tr("Blue"), 40.0, 40.0, 220.0, 140.0).unwrap_or(frame);
     if let Some(n) = doc.node_mut(blue) {
         // 替换（不是 push）：`Node::new` 已给矩形一个默认 `DEFAULT_SHAPE` 填充，push 会留下它。
         n.fills = vec![Paint::solid(Color::from_rgba8(0x33, 0x88, 0xFF, 255))];
     }
-    let red = doc.create(frame, NodeKind::Rectangle, "Red", 170.0, 160.0, 150.0, 110.0).unwrap_or(frame);
+    let red = doc.create(frame, NodeKind::Rectangle, tr("Red"), 170.0, 160.0, 150.0, 110.0).unwrap_or(frame);
     if let Some(n) = doc.node_mut(red) {
         n.fills = vec![Paint::solid(Color::from_rgba8(0xFF, 0x55, 0x55, 255))];
     }

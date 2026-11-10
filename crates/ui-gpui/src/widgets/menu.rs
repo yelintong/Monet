@@ -23,6 +23,7 @@
 //! of the panel (the root view renders them last). A full-window transparent backdrop catches
 //! outside clicks; rows highlight on hover; a click picks an item and dismisses.
 
+use figcraft_i18n::tr;
 use crate::canvas::geom::Color32;
 use crate::widgets::input::text_field::TextField;
 use crate::widgets::{pt, rgba, tokens};
@@ -427,8 +428,8 @@ mod tests {
     #[test]
     fn separators_count_toward_the_height_the_overflow_guard_uses() {
         let rows = vec![
-            MenuRow::new("Fit"),
-            MenuRow::new("Fill").separator(),
+            MenuRow::new(tr("Fit")),
+            MenuRow::new(tr("Fill")).separator(),
             MenuRow::new("100%").checked(Some(true)),
         ];
         let (rows_h, content_w) = menu_metrics(&rows);
@@ -440,7 +441,7 @@ mod tests {
 
     #[test]
     fn a_long_label_widens_the_content_estimate() {
-        let short = menu_metrics(&[MenuRow::new("Fit")]).1;
+        let short = menu_metrics(&[MenuRow::new(tr("Fit"))]).1;
         let long = menu_metrics(&[MenuRow::new("Zoom to selection 100%")]).1;
         assert!(long > short, "长标签要能把卡片撑宽，不然会被 overflow_hidden 裁掉");
         // 中文按全角 11pt 估宽，不该被当成 6.5pt 的窄 ASCII。

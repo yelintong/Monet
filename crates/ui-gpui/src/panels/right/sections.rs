@@ -8,6 +8,7 @@
 //! 所有写回都通过 `Cmd` 通道（`sync_panel` 统一 `execute`），与 egui 的 `app.run/set_props` 同构。
 //! 动态列表的输入框由父模块的**编辑器池**提供（retained tree 不能每帧新建 `Entity`）。
 
+use figcraft_i18n::tr_noop;
 use figcraft_i18n::tr;
 use super::data::{PaintRow, PanelData, ViewData};
 use crate::canvas::geom::Color32;
@@ -163,13 +164,13 @@ fn checked_dropdown(f: &RightFields, label: impl Into<SharedString>, width: f32,
 fn view_rows(v: &ViewData) -> Vec<ViewMenuRow> {
     let mut rows = Vec::new();
     for (label, cmd) in [
-        ("Zoom in", "view.zoomIn"),
-        ("Zoom out", "view.zoomOut"),
-        ("Zoom to fit", "view.zoomFit"),
-        ("Zoom to 50%", "view.zoom50"),
-        ("Zoom to 100%", "view.zoom100"),
-        ("Zoom to 200%", "view.zoom200"),
-        ("Zoom to selection", "view.zoomSelection"),
+        (tr("Zoom in"), "view.zoomIn"),
+        (tr("Zoom out"), "view.zoomOut"),
+        (tr("Zoom to fit"), "view.zoomFit"),
+        (tr("Zoom to 50%"), "view.zoom50"),
+        (tr("Zoom to 100%"), "view.zoom100"),
+        (tr("Zoom to 200%"), "view.zoom200"),
+        (tr("Zoom to selection"), "view.zoomSelection"),
     ] {
         rows.push(ViewMenuRow::plain(label, cmd));
     }
@@ -180,11 +181,11 @@ fn view_rows(v: &ViewData) -> Vec<ViewMenuRow> {
     }
     // egui `toggles`：这些命令不传参数，引擎 `flag()` 自己按当前值取反。
     for (label, cmd, on, separator) in [
-        ("Pixel grid", "view.pixelGrid", v.pixel_grid, true),
-        ("Snap to pixel grid", "view.snapPixel", v.snap_pixel, false),
-        ("Layout grids", "view.layoutGrids", v.layout_grids, false),
-        ("Rulers", "view.rulers", v.rulers, false),
-        ("Outlines", "view.outlines", v.outlines, false),
+        (tr("Pixel grid"), "view.pixelGrid", v.pixel_grid, true),
+        (tr("Snap to pixel grid"), "view.snapPixel", v.snap_pixel, false),
+        (tr("Layout grids"), "view.layoutGrids", v.layout_grids, false),
+        (tr("Rulers"), "view.rulers", v.rulers, false),
+        (tr("Outlines"), "view.outlines", v.outlines, false),
     ] {
         rows.push(ViewMenuRow::toggle(label, cmd, json!({}), on, separator));
     }
@@ -309,8 +310,8 @@ pub(crate) fn dim_trail_menu(
     // egui `dim_field`：Fill/Hug 时 trail 显示对应单词，否则一个 chevron。
     let cur = if horizontal { dims.sizing_w } else { dims.sizing_h };
     let trail_slot = match cur {
-        Some("fill") => crate::widgets::Slot::Text(SharedString::from("Fill")),
-        Some("hug") => crate::widgets::Slot::Text(SharedString::from("Hug")),
+        Some("fill") => crate::widgets::Slot::Text(SharedString::from(tr("Fill"))),
+        Some("hug") => crate::widgets::Slot::Text(SharedString::from(tr("Hug"))),
         _ => crate::widgets::Slot::Icon(Icon::ChevronDown),
     };
     field.update(cx, move |tf, _| {
@@ -418,11 +419,11 @@ fn open_list_window(
     rows: Vec<(String, &'static str, Value)>,
 ) {
     let trail = match kind {
-        ListWindow::Variables => "Variable",
-        ListWindow::Styles => "Style",
+        ListWindow::Variables => tr("Variable"),
+        ListWindow::Styles => tr("Style"),
     };
     let list: Vec<crate::popovers::Row> =
-        rows.into_iter().map(|(label, cmd, params)| crate::popovers::Row::new(label, cmd, params).group("This file").trail(trail)).collect();
+        rows.into_iter().map(|(label, cmd, params)| crate::popovers::Row::new(label, cmd, params).group(tr("This file")).trail(trail)).collect();
     let w = match kind {
         ListWindow::Variables => crate::popovers::WindowState::variables(queue, cx, anchor, list),
         ListWindow::Styles => crate::popovers::WindowState::styles(queue, cx, anchor, title, list),
@@ -444,7 +445,7 @@ fn variables_window_button(f: &RightFields, icon: Icon, rows: Vec<(String, &'sta
             cx,
             window.mouse_position(),
             ListWindow::Variables,
-            SharedString::from("Variables"),
+            SharedString::from(tr("Variables")),
             rows.clone(),
         );
     })
@@ -478,11 +479,11 @@ fn style_menu(f: &RightFields, d: &PanelData, ty: &'static str, target: Option<&
     // egui 的 style_picker 是一个带标题栏的 detached panel（不是下拉菜单）：
     // 这里用同一个通用窗口恢复它，标题栏的插槽里放「新建样式」按钮。
     let title = match ty {
-        "text" => "Text styles",
-        "paint" => "Color styles",
-        "effect" => "Effect styles",
-        "grid" => "Grid styles",
-        _ => "Styles",
+        "text" => tr("Text styles"),
+        "paint" => tr("Color styles"),
+        "effect" => tr("Effect styles"),
+        "grid" => tr("Grid styles"),
+        _ => tr("Styles"),
     };
     let root = f.popups();
     let queue = f.queue();
@@ -556,7 +557,7 @@ fn bound_color_field(
                 }
             })
             .collect();
-        open_list_window(root.clone(), queue.clone(), cx, pos, ListWindow::Variables, SharedString::from("Variables"), rows);
+        open_list_window(root.clone(), queue.clone(), cx, pos, ListWindow::Variables, SharedString::from(tr("Variables")), rows);
     })
     .on_detach(move |_window, _cx| {
         cmds.push(Cmd { id: detach.0, params: Some(detach.1.clone()) });
@@ -598,7 +599,7 @@ fn selection_bind(f: &RightFields, row: &super::data::SelectionColorRow, d: &Pan
                 cx,
                 window.mouse_position(),
                 ListWindow::Variables,
-                SharedString::from("Variables"),
+                SharedString::from(tr("Variables")),
                 rows.clone(),
             );
         })
@@ -673,7 +674,7 @@ pub(crate) fn paints(
     keyed: bool,
     motion_q: &Queue,
 ) -> Section {
-    let title = if fills { "Fill" } else { "Stroke" };
+    let title = if fills { tr("Fill") } else { tr("Stroke") };
     let add_cmd = if fills { "fill.add" } else { "stroke.add" };
     let list = if fills { d.fills.clone() } else { d.strokes.clone() };
     // Header icons（egui `paints.rs::paints` 的 `[Styles, (FillRule), Plus]`）：
@@ -772,9 +773,9 @@ pub(crate) fn paints(
     if !fills {
         if let Some(align) = d.stroke_align {
             let rows = [
-                ("Inside", "node.set", json!({"props": {"strokeAlign": "inside"}})),
-                ("Center", "node.set", json!({"props": {"strokeAlign": "center"}})),
-                ("Outside", "node.set", json!({"props": {"strokeAlign": "outside"}})),
+                (tr("Inside"), "node.set", json!({"props": {"strokeAlign": "inside"}})),
+                (tr("Center"), "node.set", json!({"props": {"strokeAlign": "center"}})),
+                (tr("Outside"), "node.set", json!({"props": {"strokeAlign": "outside"}})),
             ]
             .into_iter()
             .map(|(l, c, p)| (l.to_string(), c, p))
@@ -788,12 +789,12 @@ pub(crate) fn paints(
                 Icon::AbsolutePosition,
                 200.0,
                 vec![
-                    ("All".into(), "node.set", json!({ "props": { "strokeSides": Value::Null } })),
-                    ("Top".into(), "node.set", json!({ "props": { "strokeSides": [w, 0.0, 0.0, 0.0] } })),
-                    ("Right".into(), "node.set", json!({ "props": { "strokeSides": [0.0, w, 0.0, 0.0] } })),
-                    ("Bottom".into(), "node.set", json!({ "props": { "strokeSides": [0.0, 0.0, w, 0.0] } })),
-                    ("Left".into(), "node.set", json!({ "props": { "strokeSides": [0.0, 0.0, 0.0, w] } })),
-                    ("Custom".into(), "node.set", json!({ "props": { "strokeSides": [w, w, w, w] } })),
+                    (tr("All").into(), "node.set", json!({ "props": { "strokeSides": Value::Null } })),
+                    (tr("Top").into(), "node.set", json!({ "props": { "strokeSides": [w, 0.0, 0.0, 0.0] } })),
+                    (tr("Right").into(), "node.set", json!({ "props": { "strokeSides": [0.0, w, 0.0, 0.0] } })),
+                    (tr("Bottom").into(), "node.set", json!({ "props": { "strokeSides": [0.0, 0.0, w, 0.0] } })),
+                    (tr("Left").into(), "node.set", json!({ "props": { "strokeSides": [0.0, 0.0, 0.0, w] } })),
+                    (tr("Custom").into(), "node.set", json!({ "props": { "strokeSides": [w, w, w, w] } })),
                 ],
                 false,
             );
@@ -836,7 +837,7 @@ pub(crate) fn effects(
     let icons = vec![style_menu(f, d, "effect", None, Icon::Dot), icon_cmd(Icon::Plus, "effect.add", json!({ "type": "dropShadow" }), f, false)];
     // 空 / Mixed：只有置灰头部（同 Fill / Stroke）。
     let Some(rows) = d.effects.clone().filter(|v| !v.is_empty()) else {
-        return Section::empty("Effects", icon_row(icons));
+        return Section::empty(tr("Effects"), icon_row(icons));
     };
     let mut sec = PanelSection::new(tr("Effects")).header_trail(icon_row(icons));
     // egui `effects.rs`：`style_picker::chip(StyleSlot::Effect)` 紧跟在 header 后面。
@@ -985,7 +986,7 @@ pub(crate) fn grids(f: &RightFields, d: &PanelData, col: f32) -> Section {
     let icons = vec![style_menu(f, d, "grid", None, Icon::Dot), icon_cmd(Icon::Plus, "grid.add", json!({}), f, false)];
     // 空 / Mixed：只有置灰头部（同 Fill / Stroke）。
     let Some(rows) = d.grids.clone().filter(|v| !v.is_empty()) else {
-        return Section::empty("Layout grid", icon_row(icons));
+        return Section::empty(tr("Layout grid"), icon_row(icons));
     };
     let mut sec = PanelSection::new(tr("Layout grid")).header_trail(icon_row(icons));
     // egui `effects.rs::grids`：`style_picker::chip(StyleSlot::Grid)` 紧跟 header。
@@ -1035,7 +1036,7 @@ pub(crate) fn export(f: &RightFields, d: &PanelData, col: f32, n: &mut usize, cx
         if mixed { icon_cmd(Icon::Plus, "node.set", replace.clone(), f, false) } else { icon_cmd(Icon::Plus, "export.add", json!({}), f, false) };
     // 空 / Mixed：只有置灰头部（同 Fill / Stroke）。mixed 时 `+` 已经是「整体替换成一条默认设置」。
     let Some(rows) = d.exports.clone().filter(|v| !v.is_empty()) else {
-        return Section::empty("Export", plus);
+        return Section::empty(tr("Export"), plus);
     };
     let mut sec = PanelSection::new(tr("Export")).header_trail(plus);
     let tick = |label: &str, on: bool| format!("{label}{}", if on { " ✓" } else { "" });
@@ -1079,23 +1080,23 @@ pub(crate) fn export(f: &RightFields, d: &PanelData, col: f32, n: &mut usize, cx
             }
         }
         opts.push((
-            tick("Ignore overlapping layers", row.contents_only),
+            tick(tr("Ignore overlapping layers"), row.contents_only),
             "export.update",
             json!({ "index": index, "contentsOnly": !row.contents_only }),
         ));
         opts.push((
-            tick("Include bounding box", row.include_bounding_box),
+            tick(tr("Include bounding box"), row.include_bounding_box),
             "export.update",
             json!({ "index": index, "includeBoundingBox": !row.include_bounding_box }),
         ));
         if row.format == "svg" {
             opts.push((
-                tick("Outline text", row.svg_outline_text),
+                tick(tr("Outline text"), row.svg_outline_text),
                 "export.update",
                 json!({ "index": index, "svgOutlineText": !row.svg_outline_text }),
             ));
             opts.push((
-                tick("Include id attribute", row.svg_id_attribute),
+                tick(tr("Include id attribute"), row.svg_id_attribute),
                 "export.update",
                 json!({ "index": index, "svgIdAttribute": !row.svg_id_attribute }),
             ));
@@ -1107,7 +1108,7 @@ pub(crate) fn export(f: &RightFields, d: &PanelData, col: f32, n: &mut usize, cx
         }
         if row.format == "xml" {
             opts.push((
-                tick("Include id attribute", row.svg_id_attribute),
+                tick(tr("Include id attribute"), row.svg_id_attribute),
                 "export.update",
                 json!({ "index": index, "svgIdAttribute": !row.svg_id_attribute }),
             ));
@@ -1123,8 +1124,8 @@ pub(crate) fn export(f: &RightFields, d: &PanelData, col: f32, n: &mut usize, cx
             // egui `print_params`: bleed / cropMarks / bleedMarks / cmyk 都走 `export.update`。
             let bleed = if row.bleed > 0.0 { json!(0) } else { json!("3mm") };
             opts.push((tick("3 mm bleed", row.bleed > 0.0), "export.update", json!({ "index": index, "bleed": bleed })));
-            opts.push((tick("Crop marks", row.crop_marks), "export.update", json!({ "index": index, "cropMarks": !row.crop_marks })));
-            opts.push((tick("Bleed marks", row.bleed_marks), "export.update", json!({ "index": index, "bleedMarks": !row.bleed_marks })));
+            opts.push((tick(tr("Crop marks"), row.crop_marks), "export.update", json!({ "index": index, "cropMarks": !row.crop_marks })));
+            opts.push((tick(tr("Bleed marks"), row.bleed_marks), "export.update", json!({ "index": index, "bleedMarks": !row.bleed_marks })));
             opts.push((tick("CMYK", row.cmyk), "export.update", json!({ "index": index, "cmyk": !row.cmyk })));
         }
         let dots = menu_icon(f, Icon::Menu, 220.0, opts, false);
@@ -1140,7 +1141,7 @@ pub(crate) fn export(f: &RightFields, d: &PanelData, col: f32, n: &mut usize, cx
             Icon::Plus,
             220.0,
             vec![
-                ("Export layers".into(), "file.exportLayers", json!({})),
+                (tr("Export layers").into(), "file.exportLayers", json!({})),
                 ("Export assets".into(), "file.exportLayers", json!({ "assets": true })),
                 ("Export layers as ZIP".into(), "file.exportLayers", json!({ "zip": true })),
                 ("Export assets as ZIP".into(), "file.exportLayers", json!({ "assets": true, "zip": true })),
@@ -1185,7 +1186,7 @@ pub(crate) fn appearance(
     });
     let mut sec = PanelSection::new(tr("Appearance"))
         .header_trail(icon_row(vec![eye, bind, blend]))
-        .child(sublabel_row2("Opacity", "Corner radius"))
+        .child(sublabel_row2(tr("Opacity"), tr("Corner radius")))
         .child(field_row(vec![opacity.clone(), corner.clone()], Vec::<IconButton>::new()));
     // 仅当 header 的 blend 开关打开时才显示 blend-mode 下拉行（egui `blend_open`）。
     if *f.blend_open.borrow() {
@@ -1224,7 +1225,7 @@ pub(crate) fn typography(f: &RightFields, d: &PanelData) -> PanelSection {
         .collect();
     sec = sec.child(field_row_full(pick_dropdown(
         f,
-        t.font_family.clone().unwrap_or_else(|| "Mixed".into()),
+        t.font_family.clone().unwrap_or_else(|| tr("Mixed").into()),
         240.0,
         families,
     )));
@@ -1245,7 +1246,7 @@ pub(crate) fn typography(f: &RightFields, d: &PanelData) -> PanelSection {
     let style_label = match t.font_style.clone() {
         Some(s) => s,
         None if styles.is_empty() => "Pick a font family".to_string(),
-        None => "Mixed".to_string(),
+        None => tr("Mixed").to_string(),
     };
     sec = sec.child(field_row(
         vec![pick_dropdown(f, style_label, 160.0, styles).into_any_element(), f.font_size.clone().into_any_element()],
@@ -1260,17 +1261,17 @@ pub(crate) fn typography(f: &RightFields, d: &PanelData) -> PanelSection {
 
     // ── 段落间距 + 自动缩放 ──
     let resize_rows = vec![
-        ("Auto width".to_string(), "node.set", json!({ "props": { "textAutoResize": "widthAndHeight" } })),
-        ("Auto height".to_string(), "node.set", json!({ "props": { "textAutoResize": "height" } })),
-        ("Fixed size".to_string(), "node.set", json!({ "props": { "textAutoResize": "none" } })),
-        ("Truncate text".to_string(), "node.set", json!({ "props": { "textAutoResize": "truncate" } })),
+        (tr("Auto width").to_string(), "node.set", json!({ "props": { "textAutoResize": "widthAndHeight" } })),
+        (tr("Auto height").to_string(), "node.set", json!({ "props": { "textAutoResize": "height" } })),
+        (tr("Fixed size").to_string(), "node.set", json!({ "props": { "textAutoResize": "none" } })),
+        (tr("Truncate text").to_string(), "node.set", json!({ "props": { "textAutoResize": "truncate" } })),
     ];
     let resize_label = match t.auto_resize {
-        Some("widthAndHeight") => "Auto width",
-        Some("height") => "Auto height",
-        Some("none") => "Fixed size",
-        Some("truncate") => "Truncate text",
-        _ => "Mixed",
+        Some("widthAndHeight") => tr("Auto width"),
+        Some("height") => tr("Auto height"),
+        Some("none") => tr("Fixed size"),
+        Some("truncate") => tr("Truncate text"),
+        _ => tr("Mixed"),
     };
     sec = sec.child(field_row(
         vec![f.paragraph_spacing.clone().into_any_element(), pick_dropdown(f, resize_label, 140.0, resize_rows).into_any_element()],
@@ -1279,28 +1280,28 @@ pub(crate) fn typography(f: &RightFields, d: &PanelData) -> PanelSection {
 
     // ── 水平 / 垂直对齐 ──
     let align_h_rows = vec![
-        ("Align left".to_string(), "node.set", json!({ "props": { "textAlign": "left" } })),
-        ("Align center".to_string(), "node.set", json!({ "props": { "textAlign": "center" } })),
-        ("Align right".to_string(), "node.set", json!({ "props": { "textAlign": "right" } })),
-        ("Justify".to_string(), "node.set", json!({ "props": { "textAlign": "justified" } })),
+        (tr("Align left").to_string(), "node.set", json!({ "props": { "textAlign": "left" } })),
+        (tr("Align center").to_string(), "node.set", json!({ "props": { "textAlign": "center" } })),
+        (tr("Align right").to_string(), "node.set", json!({ "props": { "textAlign": "right" } })),
+        (tr("Justify").to_string(), "node.set", json!({ "props": { "textAlign": "justified" } })),
     ];
     let align_v_rows = vec![
-        ("Align top".to_string(), "node.set", json!({ "props": { "textAlignVertical": "top" } })),
-        ("Align middle".to_string(), "node.set", json!({ "props": { "textAlignVertical": "middle" } })),
-        ("Align bottom".to_string(), "node.set", json!({ "props": { "textAlignVertical": "bottom" } })),
+        (tr("Align top").to_string(), "node.set", json!({ "props": { "textAlignVertical": "top" } })),
+        (tr("Align middle").to_string(), "node.set", json!({ "props": { "textAlignVertical": "middle" } })),
+        (tr("Align bottom").to_string(), "node.set", json!({ "props": { "textAlignVertical": "bottom" } })),
     ];
     let ah = match t.align_h {
-        Some("left") => "Align left",
-        Some("center") => "Align center",
-        Some("right") => "Align right",
-        Some("justified") => "Justify",
-        _ => "Mixed",
+        Some("left") => tr("Align left"),
+        Some("center") => tr("Align center"),
+        Some("right") => tr("Align right"),
+        Some("justified") => tr("Justify"),
+        _ => tr("Mixed"),
     };
     let av = match t.align_v {
-        Some("top") => "Align top",
-        Some("middle") => "Align middle",
-        Some("bottom") => "Align bottom",
-        _ => "Mixed",
+        Some("top") => tr("Align top"),
+        Some("middle") => tr("Align middle"),
+        Some("bottom") => tr("Align bottom"),
+        _ => tr("Mixed"),
     };
     sec.child(field_row(
         vec![
@@ -1322,7 +1323,7 @@ pub(crate) fn vector_points(f: &RightFields, d: &PanelData, cx: &mut App, n: &mu
     if let Some(w) = &v.width_point {
         let round = |x: f64| x;
         let mut sec = PanelSection::new(tr("Width point"));
-        sec = sec.child(sublabel_row2("Position", "Width"));
+        sec = sec.child(sublabel_row2(tr("Position"), tr("Width")));
         let tf = f.row_field(
             cx,
             slot(n),
@@ -1356,7 +1357,7 @@ pub(crate) fn vector_points(f: &RightFields, d: &PanelData, cx: &mut App, n: &mu
             },
         );
         sec = sec.child(field_row(vec![tf, wf], Vec::<IconButton>::new()));
-        sec = sec.child(sublabel_row2("Left side", "Right side"));
+        sec = sec.child(sublabel_row2(tr("Left side"), tr("Right side")));
         let lf = f.row_field(
             cx,
             slot(n),
@@ -1391,11 +1392,11 @@ pub(crate) fn vector_points(f: &RightFields, d: &PanelData, cx: &mut App, n: &mu
         );
         return sec.child(field_row(vec![lf, rf], Vec::<IconButton>::new()));
     }
-    let mut sec = PanelSection::new(if v.count > 1 { "Points" } else { "Point" });
+    let mut sec = PanelSection::new(if v.count > 1 { tr("Points") } else { tr("Point") });
     if v.count == 0 {
         return sec.child(field_row_full(
             div().text_size(pt(11.0)).text_color(rgba(tokens().text_secondary)).child(SharedString::from(
-                "Select points to edit their position, radius and mirroring",
+                tr("Select points to edit their position, radius and mirroring"),
             )),
         ));
     }
@@ -1413,18 +1414,18 @@ pub(crate) fn vector_points(f: &RightFields, d: &PanelData, cx: &mut App, n: &mu
 
     // Handle mirroring（egui `menu_popup` + `HandleMirroring::id`）。
     let mirror_label = match v.mirroring {
-        Some(HandleMirroring::None) => "No mirroring",
-        Some(HandleMirroring::Angle) => "Mirror angle",
-        Some(HandleMirroring::AngleAndLength) => "Mirror angle and length",
-        None => "Mixed",
+        Some(HandleMirroring::None) => tr("No mirroring"),
+        Some(HandleMirroring::Angle) => tr("Mirror angle"),
+        Some(HandleMirroring::AngleAndLength) => tr("Mirror angle and length"),
+        None => tr("Mixed"),
     };
     let mirror_rows: Vec<(String, &'static str, Value)> = [HandleMirroring::None, HandleMirroring::Angle, HandleMirroring::AngleAndLength]
         .into_iter()
         .map(|m| {
             let label = match m {
-                HandleMirroring::None => "No mirroring",
-                HandleMirroring::Angle => "Mirror angle",
-                HandleMirroring::AngleAndLength => "Mirror angle and length",
+                HandleMirroring::None => tr("No mirroring"),
+                HandleMirroring::Angle => tr("Mirror angle"),
+                HandleMirroring::AngleAndLength => tr("Mirror angle and length"),
             };
             (label.to_string(), "vector.edit.mirroring", json!({ "mode": m.id() }))
         })
@@ -1432,31 +1433,31 @@ pub(crate) fn vector_points(f: &RightFields, d: &PanelData, cx: &mut App, n: &mu
     sec = sec.child(sublabel_row(tr("Mirroring"))).child(field_row_full(pick_dropdown(f, mirror_label, 200.0, mirror_rows)));
 
     // 这些点上的端点 / 连接样式（`Some(None)` = 跟图层一致，`None` = Mixed）。
-    let mut cap_rows: Vec<(String, &'static str, Value)> = vec![("Same as layer".into(), "vector.edit.strokeCap", json!({ "cap": Value::Null }))];
+    let mut cap_rows: Vec<(String, &'static str, Value)> = vec![(tr_noop("Same as layer").into(), "vector.edit.strokeCap", json!({ "cap": Value::Null }))];
     for c in StrokeCap::ALL {
         cap_rows.push((c.label().to_string(), "vector.edit.strokeCap", json!({ "cap": c })));
     }
     let mut join_rows: Vec<(String, &'static str, Value)> =
-        vec![("Same as layer".into(), "vector.edit.strokeJoin", json!({ "join": Value::Null }))];
+        vec![(tr("Same as layer").into(), "vector.edit.strokeJoin", json!({ "join": Value::Null }))];
     let join_name = |j: StrokeJoin| match j {
-        StrokeJoin::Miter => "Miter",
-        StrokeJoin::Bevel => "Bevel",
-        StrokeJoin::Round => "Round",
+        StrokeJoin::Miter => tr("Miter"),
+        StrokeJoin::Bevel => tr("Bevel"),
+        StrokeJoin::Round => tr("Round"),
     };
     for j in StrokeJoin::ALL {
         join_rows.push((join_name(j).to_string(), "vector.edit.strokeJoin", json!({ "join": j })));
     }
     let cap_label = match v.cap {
-        None => "Mixed",
-        Some(None) => "Same as layer",
+        None => tr("Mixed"),
+        Some(None) => tr("Same as layer"),
         Some(Some(c)) => c.label(),
     };
     let join_label = match v.join {
-        None => "Mixed",
-        Some(None) => "Same as layer",
+        None => tr("Mixed"),
+        Some(None) => tr("Same as layer"),
         Some(Some(j)) => join_name(j),
     };
-    sec.child(sublabel_row2("End point", "Join")).child(field_row(
+    sec.child(sublabel_row2(tr("End point"), tr("Join"))).child(field_row(
         vec![
             pick_dropdown(f, cap_label, 140.0, cap_rows).into_any_element(),
             pick_dropdown(f, join_label, 140.0, join_rows).into_any_element(),
@@ -1482,7 +1483,7 @@ pub(crate) fn frame_presets(f: &RightFields, _d: &PanelData) -> PanelSection {
     for cat in cats {
         let open = {
             let map = f.preset_open.borrow();
-            map.iter().find(|(c, _)| *c == cat).map(|(_, o)| *o).unwrap_or(cat == "Phone")
+            map.iter().find(|(c, _)| *c == cat).map(|(_, o)| *o).unwrap_or(cat == tr("Phone"))
         };
         let toggle_cmds = f.cmds.clone();
         let map = f.preset_open.clone();
@@ -1552,7 +1553,7 @@ pub(crate) fn scale(f: &RightFields, d: &PanelData, cx: &mut App) -> PanelSectio
     sec = sec
         .child(sublabel_row(tr("Dimensions")))
         .child(field_row(vec![f.scale_w.clone(), f.scale_h.clone()], Vec::<IconButton>::new()))
-        .child(sublabel_row2("Scale", "Anchor"))
+        .child(sublabel_row2(tr("Scale"), tr("Anchor")))
         .child(field_row(
             vec![f.scale_k.clone().into_any_element(), anchor_picker(f, s.anchor).into_any_element()],
             Vec::<IconButton>::new(),
@@ -1610,7 +1611,7 @@ pub(crate) fn grid_track_rows(f: &RightFields, d: &PanelData, cx: &mut App, n: &
     if t.columns.is_empty() && t.rows.is_empty() {
         return sec;
     }
-    for (axis, tracks, caption) in [("columns", &t.columns, "Column sizes"), ("rows", &t.rows, "Row sizes")] {
+    for (axis, tracks, caption) in [("columns", &t.columns, tr("Column sizes")), ("rows", &t.rows, tr("Row sizes"))] {
         if tracks.is_empty() {
             continue;
         }
@@ -1633,14 +1634,14 @@ pub(crate) fn grid_track_rows(f: &RightFields, d: &PanelData, cx: &mut App, n: &
                     nest: None, nest_key: None, paint_color: None,
                 },
             );
-            let sizes: Vec<(String, &'static str, Value)> = [("Fixed", "fixed"), ("Hug contents", "hug"), ("Fill (fr)", "fill")]
+            let sizes: Vec<(String, &'static str, Value)> = [(tr_noop("Fixed"), "fixed"), (tr_noop("Hug contents"), "hug"), (tr_noop("Fill (fr)"), "fill")]
                 .into_iter()
                 .map(|(l, v)| (l.to_string(), "layout.setTrack", json!({ "axis": axis, "index": i, "sizing": v })))
                 .collect();
             let label = match track.sizing {
-                "fixed" => "Fixed",
-                "hug" => "Hug",
-                _ => "Fill",
+                "fixed" => tr("Fixed"),
+                "hug" => tr("Hug"),
+                _ => tr("Fill"),
             };
             let line = div()
                 .flex()
@@ -1698,14 +1699,14 @@ pub(crate) fn section(f: &RightFields, d: &PanelData, row_w: f32) -> Option<Pane
     if s.is_section {
         // 8 个 Section color 色板（`section_panel.rs::SECTION_COLORS`）。
         let colors = [
-            ("White", "#FFFFFF"),
-            ("Gray", "#EDEDED"),
-            ("Red", "#FFE0DE"),
-            ("Orange", "#FFE8D1"),
-            ("Yellow", "#FFF4C2"),
-            ("Green", "#DDF5E3"),
-            ("Blue", "#DCEBFF"),
-            ("Violet", "#EBE3FF"),
+            (tr("White"), "#FFFFFF"),
+            (tr("Gray"), "#EDEDED"),
+            (tr("Red"), "#FFE0DE"),
+            (tr("Orange"), "#FFE8D1"),
+            (tr("Yellow"), "#FFF4C2"),
+            (tr("Green"), "#DDF5E3"),
+            (tr("Blue"), "#DCEBFF"),
+            (tr("Violet"), "#EBE3FF"),
         ];
         let mut swatches = div().flex().flex_row().items_center().gap(pt(6.0));
         for (_, hex) in colors {
@@ -1725,11 +1726,11 @@ pub(crate) fn section(f: &RightFields, d: &PanelData, row_w: f32) -> Option<Pane
         sec = sec.child(field_row(
             vec![pick_dropdown(
                 f,
-                if s.hide_contents { "Hide contents ✓" } else { "Hide contents" },
+                if s.hide_contents { "Hide contents ✓" } else { tr("Hide contents") },
                 row_w,
                 vec![
-                    ("Show contents".into(), "section.toggleContents", json!({ "hidden": false })),
-                    ("Hide contents".into(), "section.toggleContents", json!({ "hidden": true })),
+                    ("Show contents".into(), "section.toggleContents", json!({ tr("hidden"): false })),
+                    (tr("Hide contents").into(), "section.toggleContents", json!({ tr("hidden"): true })),
                 ],
             )],
             Vec::<IconButton>::new(),
@@ -1741,21 +1742,21 @@ pub(crate) fn section(f: &RightFields, d: &PanelData, row_w: f32) -> Option<Pane
             s.status.clone(),
             row_w,
             vec![
-                ("No status".into(), "node.set", json!({ "props": { "devStatus": "none" } })),
-                ("Ready for dev".into(), "node.set", json!({ "props": { "devStatus": "readyForDev" } })),
-                ("Completed".into(), "node.set", json!({ "props": { "devStatus": "completed" } })),
+                (tr("No status").into(), "node.set", json!({ "props": { "devStatus": "none" } })),
+                (tr("Ready for dev").into(), "node.set", json!({ "props": { "devStatus": "readyForDev" } })),
+                (tr("Completed").into(), "node.set", json!({ "props": { "devStatus": "completed" } })),
             ],
         )],
         Vec::<IconButton>::new(),
     ));
     if s.changed {
         sec = sec.child(field_row(
-            vec![pick_dropdown(f, "Resolve — back to Ready for dev", row_w, vec![("Resolve".into(), "dev.resolveChange", json!({}))])],
+            vec![pick_dropdown(f, "Resolve — back to Ready for dev", row_w, vec![(tr("Resolve").into(), "dev.resolveChange", json!({}))])],
             Vec::<IconButton>::new(),
         ));
     }
     sec = sec.child(field_row(
-        vec![pick_dropdown(f, "Resize to fit", row_w, vec![("Resize to fit".into(), "object.resizeToFit", json!({}))])],
+        vec![pick_dropdown(f, tr("Resize to fit"), row_w, vec![(tr("Resize to fit").into(), "object.resizeToFit", json!({}))])],
         Vec::<IconButton>::new(),
     ));
     Some(sec)
@@ -1766,9 +1767,9 @@ pub(crate) fn header(f: &RightFields, d: &PanelData, col: f32) -> Option<PanelSe
     let _ = col;
     // 类型名 + 转换菜单（egui `header`：Frame/Group 互转；Frame 另有 swap orientation）。
     let mut kind_rows: Vec<(String, &'static str, Value)> =
-        vec![("Frame".into(), "object.convertToFrame", json!({})), ("Group".into(), "object.convertToGroup", json!({}))];
+        vec![(tr("Frame").into(), "object.convertToFrame", json!({})), (tr("Group").into(), "object.convertToGroup", json!({}))];
     if h.is_frame {
-        kind_rows.push(("Swap orientation".into(), "frame.swapOrientation", json!({})));
+        kind_rows.push((tr("Swap orientation").into(), "frame.swapOrientation", json!({})));
     }
     // egui `right.rs::header`: 类型下拉只在 `is_frame || is_group` 时存在，其它类型连
     // chevron 都不画（`if is_group { menu_popup } if is_frame { … }`）。此前无条件显示。
@@ -1781,12 +1782,12 @@ pub(crate) fn header(f: &RightFields, d: &PanelData, col: f32) -> Option<PanelSe
         Icon::ViewGrid,
         180.0,
         vec![
-            ("Union".into(), "bool.union", json!({})),
-            ("Subtract".into(), "bool.subtract", json!({})),
-            ("Intersect".into(), "bool.intersect", json!({})),
-            ("Exclude".into(), "bool.exclude", json!({})),
+            (tr("Union").into(), "bool.union", json!({})),
+            (tr("Subtract").into(), "bool.subtract", json!({})),
+            (tr("Intersect").into(), "bool.intersect", json!({})),
+            (tr("Exclude").into(), "bool.exclude", json!({})),
             // egui `right.rs::header`: Flatten runs `vector.flatten`, not `bool.flatten`.
-            ("Flatten".into(), "vector.flatten", json!({})),
+            (tr("Flatten").into(), "vector.flatten", json!({})),
         ],
         false,
     );
@@ -1809,10 +1810,10 @@ fn local_style_row(f: &RightFields, ty: &'static str, name: SharedString, rows: 
         _ => Icon::Ellipse,
     };
     let title = match ty {
-        "text" => "Text styles",
-        "paint" => "Color styles",
-        "effect" => "Effect styles",
-        _ => "Grid styles",
+        "text" => tr("Text styles"),
+        "paint" => tr("Color styles"),
+        "effect" => tr("Effect styles"),
+        _ => tr("Grid styles"),
     };
     let popups = f.popups();
     let queue = f.queue();
@@ -1908,7 +1909,7 @@ pub(crate) fn page(f: &RightFields, d: &PanelData, row_w: f32, n: &mut usize, cx
     //       分成四组，每组一个小标题 + 该类型的样式行。空文档只有置灰标题。──
     let mut styles = PanelSection::new(tr("Local styles"))
         .variant(if p.local_styles == 0 { SectionHeaderVariant::Dim } else { SectionHeaderVariant::Normal });
-    for (ty, caption) in [("text", "Text"), ("paint", "Color"), ("effect", "Effect"), ("grid", "Grid")] {
+    for (ty, caption) in [("text", tr("Text")), ("paint", tr("Color")), ("effect", "Effect"), ("grid", tr("Grid"))] {
         let list: Vec<(String, String)> =
             d.styles.iter().filter(|(_, _, t)| *t == ty).map(|(id, name, _)| (id.clone(), name.clone())).collect();
         if list.is_empty() {

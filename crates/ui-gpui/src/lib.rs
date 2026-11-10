@@ -230,25 +230,25 @@ fn canonical_key(key: &str) -> String {
 
         "down" => "ArrowDown",
 
-        "space" => "Space",
+        "space" => tr("Space"),
 
         "escape" => "Escape",
 
-        "enter" => "Enter",
+        "enter" => tr("Enter"),
 
         "tab" => "Tab",
 
         "backspace" => "Backspace",
 
-        "delete" => "Delete",
+        "delete" => tr("Delete"),
 
         "pageup" => "PageUp",
 
         "pagedown" => "PageDown",
 
-        "home" => "Home",
+        "home" => tr("Home"),
 
-        "end" => "End",
+        "end" => tr("End"),
 
         other => {
 
@@ -894,13 +894,13 @@ impl CanvasView {
 
                 crate::popovers::Row::new("Brand/Primary", "variable.bind", serde_json::json!({ "field": "fill" }))
 
-                    .group("Collection")
+                    .group(tr("Collection"))
 
-                    .trail("Color"),
+                    .trail(tr("Color")),
 
-                crate::popovers::Row::new("Space/Medium", "variable.bind", serde_json::json!({ "field": "gap" })).group("Collection").trail("Number"),
+                crate::popovers::Row::new("Space/Medium", "variable.bind", serde_json::json!({ "field": "gap" })).group(tr("Collection")).trail(tr("Number")),
 
-                crate::popovers::Row::new("Body/Large", "style.apply", serde_json::json!({ "style": "body-large" })).group("This file").trail("Text"),
+                crate::popovers::Row::new("Body/Large", "style.apply", serde_json::json!({ "style": "body-large" })).group(tr("This file")).trail(tr("Text")),
 
             ];
 
@@ -912,7 +912,7 @@ impl CanvasView {
 
                 "variables" => Some(popovers::WindowState::variables(queue, cx, anchor, rows)),
 
-                "styles" => Some(popovers::WindowState::styles(queue, cx, anchor, "Text styles", rows)),
+                "styles" => Some(popovers::WindowState::styles(queue, cx, anchor, tr("Text styles"), rows)),
 
                 // 变量编辑器右侧列表：文档里没有变量时用合成数据，方便核对表格外观。
 
@@ -1608,7 +1608,7 @@ impl CanvasView {
 
         // A19 SaveAs: a native "Save as…" picker (like egui's `pick_file`), not a fake path field.
         if kind == dialogs::Kind::SaveAs {
-            if let Some(path) = rfd::FileDialog::new().set_file_name("Untitled.figcraft").add_filter("FigCraft", &["figcraft"]).save_file() {
+            if let Some(path) = rfd::FileDialog::new().set_file_name("Untitled.figcraft").add_filter(tr("FigCraft"), &["figcraft"]).save_file() {
                 let _ = self.app.session.execute("file.saveAs", &serde_json::json!({ "path": path.to_string_lossy() }));
             }
             if matches!(self.popup, Some(Popup::MainMenu(_))) {
@@ -1930,7 +1930,7 @@ impl CanvasView {
 
             row = row.child(
 
-                widgets::Dropdown::new(gpui::SharedString::from("Compare changes"), 0.0, None).fill().on_click(move |_a, _w, _cx| {
+                widgets::Dropdown::new(gpui::SharedString::from(tr("Compare changes")), 0.0, None).fill().on_click(move |_a, _w, _cx| {
 
                     c.push(panels::Cmd { id: "dev.compare", params: Some(serde_json::json!({ "id": id, "show": true })) });
 
@@ -1944,9 +1944,9 @@ impl CanvasView {
 
             for (icon, dir, tip) in [
 
-                (widgets::Icon::ChevronLeft, "previous", "Previous ready for dev"),
+                (widgets::Icon::ChevronLeft, "previous", tr("Previous ready for dev")),
 
-                (widgets::Icon::ChevronRight, "next", "Next ready for dev"),
+                (widgets::Icon::ChevronRight, "next", tr("Next ready for dev")),
 
             ] {
 
@@ -5531,25 +5531,25 @@ impl Render for CanvasView {
 
                         "backspace" => Some("Backspace"),
 
-                        "delete" => Some("Delete"),
+                        "delete" => Some(tr("Delete")),
 
-                        "enter" => Some("Enter"),
+                        "enter" => Some(tr("Enter")),
 
                         "escape" => Some("Escape"),
 
                         "tab" => Some("Tab"),
 
-                        "left" => Some("Left"),
+                        "left" => Some(tr("Left")),
 
-                        "right" => Some("Right"),
+                        "right" => Some(tr("Right")),
 
-                        "up" => Some("Up"),
+                        "up" => Some(tr("Up")),
 
-                        "down" => Some("Down"),
+                        "down" => Some(tr("Down")),
 
-                        "home" => Some("Home"),
+                        "home" => Some(tr("Home")),
 
-                        "end" => Some("End"),
+                        "end" => Some(tr("End")),
 
                         _ => None,
 
@@ -8037,11 +8037,11 @@ mod context_geom_tests {
 
         vec![
 
-            Item::new("a", "Copy"),
+            Item::new("a", tr("Copy")),
 
             Item::new("b", "Paste"),
 
-            Item::new("copy.as", "Copy as").sub(vec![Item::new("x", "CSS")]),
+            Item::new("copy.as", tr("Copy as")).sub(vec![Item::new("x", "CSS")]),
 
         ]
 

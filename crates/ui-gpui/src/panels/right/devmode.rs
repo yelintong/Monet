@@ -10,6 +10,7 @@
 //! - egui 的分类色是 8 格**色板弹窗**，`MenuRow` 只画文字，子菜单又画不了色块 → 8 个 hex 下拉项。
 //! - 图标：measure 用 `Line`，ready 的「在专注视图打开」用 `Frame`，link 用 `LinkOn`。
 
+use figcraft_i18n::tr_noop;
 use figcraft_i18n::tr;
 use super::data::{AnnotationRow, DevResourceRow, InspectRow, MeasurementRow, PanelData, ReadyRow};
 use super::inspect::local_dropdown;
@@ -23,7 +24,7 @@ use serde_json::{Value, json};
 use std::rc::Rc;
 
 /// egui `FILTERS`：Ready for dev 列表的四种过滤。
-const READY_FILTERS: [&str; 4] = ["Ready for dev", "Changed", "Completed", "Any status"];
+const READY_FILTERS: [&str; 4] = [tr_noop("Ready for dev"), tr_noop("Changed"), tr_noop("Completed"), tr_noop("Any status")];
 
 // ───────────────────────────────────────────────────────────────────────────────────────────────
 // Ready for dev（无选中）
@@ -40,7 +41,7 @@ pub(crate) fn ready_list(f: &RightFields, d: &PanelData) -> PanelSection {
     let picks: Vec<(String, usize)> = READY_FILTERS.iter().enumerate().map(|(i, l)| (l.to_string(), i)).collect();
     sec = sec.child(field_row_full(local_dropdown(f, READY_FILTERS[filter.min(3)].into(), 0.0, picks, f.dev_filter.clone())));
     if rows.is_empty() {
-        return sec.child(field_row_full(note("Nothing here yet. Set a frame's status to list it.")));
+        return sec.child(field_row_full(note(tr("Nothing here yet. Set a frame's status to list it."))));
     }
     for (i, r) in rows.into_iter().enumerate() {
         sec = sec.child(field_row_full(ready_line(f, r, i)));
@@ -97,7 +98,7 @@ pub(crate) fn categories(f: &RightFields, d: &PanelData, cx: &mut App, n: &mut u
 
     // ── 画布过滤器：All categories / No category / 每个分类 ──
     let filter = (*f.dev_cat_filter.borrow()).min(d.dev.categories.len() + 1);
-    let mut picks: Vec<(String, usize)> = vec![("All categories".into(), 0), ("No category".into(), 1)];
+    let mut picks: Vec<(String, usize)> = vec![(tr("All categories").into(), 0), (tr("No category").into(), 1)];
     picks.extend(d.dev.categories.iter().enumerate().map(|(i, c)| (c.name.clone(), i + 2)));
     sec = sec.child(field_row_full(local_dropdown(
         f,
@@ -110,7 +111,7 @@ pub(crate) fn categories(f: &RightFields, d: &PanelData, cx: &mut App, n: &mut u
     if d.dev.categories.is_empty() {
         return sec.child(field_row_full(note("No categories yet. Add one to group annotations.")));
     }
-    sec = sec.child(field_row_full(sublabel("Categories")));
+    sec = sec.child(field_row_full(sublabel(tr("Categories"))));
     for c in &d.dev.categories {
         // 色块（画出来的当前色）+ 名字（可编辑）+ 换色下拉 + 删除。
         let dot = match figcraft_color::Color::from_hex(&c.color) {
@@ -191,7 +192,7 @@ pub(crate) fn annotations(f: &RightFields, d: &PanelData, cx: &mut App, n: &mut 
                 nest_key: None,
             },
         );
-        edit.update(cx, |te, _| te.set_placeholder("Add a note for developers"));
+        edit.update(cx, |te, _| te.set_placeholder(tr("Add a note for developers")));
         sec = sec.child(field_row_full(div().w_full().child(edit)));
         // 钉住的属性（只读，值随图层变）。
         for p in &a.pins {
@@ -200,7 +201,7 @@ pub(crate) fn annotations(f: &RightFields, d: &PanelData, cx: &mut App, n: &mut 
         // 钉更多 / 取消钉住。
         if !a.pin_menu.is_empty() {
             let rows: Vec<(String, bool, Value)> = a.pin_menu.clone();
-            sec = sec.child(field_row_full(checked_dropdown(f, "Pin a property", rows)));
+            sec = sec.child(field_row_full(checked_dropdown(f, tr("Pin a property"), rows)));
         }
     }
     // 新注解从一条便签开始，属性之后再钉（egui 注释里的同一句）。
@@ -221,7 +222,7 @@ pub(crate) fn annotations(f: &RightFields, d: &PanelData, cx: &mut App, n: &mut 
                 nest_key: None,
             },
         );
-        edit.update(cx, |te, _| te.set_placeholder("Add an annotation for developers"));
+        edit.update(cx, |te, _| te.set_placeholder(tr("Add an annotation for developers")));
         sec = sec.child(field_row_full(div().w_full().child(edit)));
     }
     Some(sec)
@@ -232,7 +233,7 @@ fn annotation_head(f: &RightFields, a: &AnnotationRow, node: figcraft_doc::NodeI
     let t = tokens();
     let cats: Vec<(String, &'static str, Value)> =
         a.category_menu.iter().map(|(l, _, p)| (l.clone(), "annotation.edit", p.clone())).collect();
-    let label = a.category.as_ref().map(|c| c.0.clone()).unwrap_or_else(|| "No category".into());
+    let label = a.category.as_ref().map(|c| c.0.clone()).unwrap_or_else(|| tr("No category").into());
     let dd = pick_dropdown(f, label, 116.0, cats);
     let del = icon_cmd(Icon::Minus, "annotation.remove", json!({ "id": node, "index": a.index }), f, false);
     div()
@@ -382,10 +383,10 @@ pub(crate) fn dev_resources(f: &RightFields, d: &PanelData, cx: &mut App, n: &mu
                 nest_key: None,
             },
         );
-        url.update(cx, |te, _| te.set_placeholder("Paste a link (https://…)"));
+        url.update(cx, |te, _| te.set_placeholder(tr("Paste a link (https://…)")));
         sec = sec.child(field_row_full(div().w_full().child(url)));
     } else if empty && d.dev.can_add_resource {
-        sec = sec.child(field_row_full(note("Link docs, code or tickets for developers.")));
+        sec = sec.child(field_row_full(note(tr("Link docs, code or tickets for developers."))));
     }
     Some(sec)
 }
@@ -453,20 +454,20 @@ pub(crate) fn measurements(f: &RightFields, d: &PanelData) -> Option<PanelSectio
     if dev.can_measure_between
         && let [a, b] = dev.sel.as_slice()
     {
-        rows.push(("Between the selected layers".into(), "devMode.addMeasurement", json!({ "from": a, "to": b })));
+        rows.push((tr("Between the selected layers").into(), "devMode.addMeasurement", json!({ "from": a, "to": b })));
     }
     if dev.can_measure_around {
-        rows.push(("To the layer around it".into(), "devMode.addMeasurement", json!({ "from": node })));
+        rows.push((tr("To the layer around it").into(), "devMode.addMeasurement", json!({ "from": node })));
     }
     for (label, side) in [
-        ("Along the top", "top"),
-        ("Along the right", "right"),
-        ("Along the bottom", "bottom"),
-        ("Along the left", "left"),
+        (tr("Along the top"), "top"),
+        (tr("Along the right"), "right"),
+        (tr("Along the bottom"), "bottom"),
+        (tr("Along the left"), "left"),
     ] {
         rows.push((label.into(), "devMode.addMeasurement", json!({ "from": node, "side": side })));
     }
-    Some(sec.child(field_row(vec![pick_dropdown(f, "Add measurement", 0.0, rows).into_any_element()], Vec::<IconButton>::new())))
+    Some(sec.child(field_row(vec![pick_dropdown(f, tr("Add measurement"), 0.0, rows).into_any_element()], Vec::<IconButton>::new())))
 }
 
 /// 一条测量：图标 + 测的是什么 + 距离 + 删除。

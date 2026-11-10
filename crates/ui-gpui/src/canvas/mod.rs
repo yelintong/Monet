@@ -25,6 +25,7 @@ pub mod selection_spacing;
 pub use geom::*;
 pub use painter::Painter;
 
+use figcraft_i18n::tr;
 use std::sync::Arc;
 
 use figcraft_doc::{Document, NodeId, NodeKind};
@@ -477,7 +478,7 @@ mod pop_out_tests {
     fn blue(doc: &Document) -> NodeId {
         let page = doc.pages[0];
         let frame = doc.node(page).and_then(|n| n.children.first().copied()).expect("Frame 1");
-        doc.node(frame).and_then(|n| n.children.first().copied()).expect("Blue")
+        doc.node(frame).and_then(|n| n.children.first().copied()).expect(tr("Blue"))
     }
 
     fn shift(doc: &mut Document, id: NodeId, dx: f64) {

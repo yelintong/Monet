@@ -94,7 +94,7 @@ fn instance_section(f: &RightFields, c: &ComponentData, cx: &mut App, n: &mut us
             f,
             c.exposed,
         );
-        sec = sec.child(field_row(vec![plain_label("Expose properties to instances")], vec![expose]));
+        sec = sec.child(field_row(vec![plain_label(tr("Expose properties to instances"))], vec![expose]));
     }
 
     // ── 组件属性 ──
@@ -150,7 +150,7 @@ fn instance_section(f: &RightFields, c: &ComponentData, cx: &mut App, n: &mut us
                 pick_dropdown(f, p.value.clone(), 0.0, rows).into_any_element()
             }
             // Slot：填充走挑选组件填进去，此轮先显示名字（见报告）。
-            _ => div().text_size(pt(11.0)).text_color(rgba(t.text_secondary)).child(SharedString::from("Slot")).into_any_element(),
+            _ => div().text_size(pt(11.0)).text_color(rgba(t.text_secondary)).child(SharedString::from(tr("Slot"))).into_any_element(),
         };
         let line = div().flex().flex_row().items_center().gap(pt(8.0)).w_full().child(label).child(div().flex_1().min_w(px(0.0)).child(control));
         sec = sec.child(field_row_full(line));

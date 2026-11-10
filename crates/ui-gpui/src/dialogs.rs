@@ -355,7 +355,7 @@ pub(crate) fn spec(kind: Kind, data: &Value) -> Spec {
             let on = |k: &str| p[k].as_bool().unwrap_or(false);
             let text = |k: &str| p[k].as_str().unwrap_or("").to_string();
             let toggle = |key: &'static str, label: &'static str, cmd: &'static str, on: bool| {
-                Field::choice(key, label, vec!["On", "Off"], if on { 0 } else { 1 }).commands(vec![cmd, cmd])
+                Field::choice(key, label, vec!["On", tr("Off")], if on { 0 } else { 1 }).commands(vec![cmd, cmd])
             };
             let theme = text("theme");
             let theme_active = ["light", "dark", "system"].iter().position(|t| theme.eq_ignore_ascii_case(t)).unwrap_or(2);
@@ -364,14 +364,14 @@ pub(crate) fn spec(kind: Kind, data: &Value) -> Spec {
             let lang_active = lang_codes.iter().position(|c| lang.eq_ignore_ascii_case(c)).unwrap_or(0);
             Spec::new(tr("Preferences"))
                 .width(360.0)
-                .field(toggle("keepTool", "Keep tool selected after use", "pref.keepTool", on("keep_tool")))
-                .field(toggle("highlightHover", "Highlight layers on hover", "pref.highlightHover", on("highlight_on_hover")))
-                .field(toggle("renameDuplicates", "Rename duplicated layers", "pref.renameDuplicates", on("rename_duplicates")))
-                .field(toggle("showDimensions", "Show dimensions on objects", "pref.showDimensions", on("show_dimensions")))
-                .field(toggle("numberKeysOpacity", "Use number keys for opacity", "pref.numberKeysOpacity", on("number_keys_opacity")))
-                .field(toggle("reduceMotion", "Reduce motion", "pref.reduceMotion", on("reduce_motion")))
-                .field(toggle("autoSave", "Save files automatically", "pref.autoSave", on("auto_save")))
-                .field(toggle("startOnHome", "Start on the Home screen", "pref.startOnHome", on("start_on_home")))
+                .field(toggle("keepTool", tr("Keep tool selected after use"), "pref.keepTool", on("keep_tool")))
+                .field(toggle("highlightHover", tr("Highlight layers on hover"), "pref.highlightHover", on("highlight_on_hover")))
+                .field(toggle("renameDuplicates", tr("Rename duplicated layers"), "pref.renameDuplicates", on("rename_duplicates")))
+                .field(toggle("showDimensions", tr("Show dimensions on objects"), "pref.showDimensions", on("show_dimensions")))
+                .field(toggle("numberKeysOpacity", tr("Use number keys for opacity"), "pref.numberKeysOpacity", on("number_keys_opacity")))
+                .field(toggle("reduceMotion", tr("Reduce motion"), "pref.reduceMotion", on("reduce_motion")))
+                .field(toggle("autoSave", tr("Save files automatically"), "pref.autoSave", on("auto_save")))
+                .field(toggle("startOnHome", tr("Start on the Home screen"), "pref.startOnHome", on("start_on_home")))
                 .field(Field::Text { key: "name", label: tr("Your name in comments"), value: text("user_name") })
                 .button(Button::submit_only(tr("Set name"), "pref.userName", json!({}), vec!["name"]))
                 .field(Field::Text { key: "url", label: tr("Server for online sharing"), value: text("publish_server") })
@@ -381,15 +381,15 @@ pub(crate) fn spec(kind: Kind, data: &Value) -> Spec {
                 .field(Field::Number { key: "big", label: tr("Big nudge"), value: p["nudge_big"].as_f64().unwrap_or(10.0) })
                 .button(Button::submit_only(tr("Apply nudge"), "pref.nudge", json!({}), vec!["small", "big"]))
                 .field(
-                    Field::choice("uiScale", tr("Interface size"), vec!["Default", "Larger", "Smaller"], 0)
+                    Field::choice("uiScale", tr("Interface size"), vec![tr("Default"), "Larger", "Smaller"], 0)
                         .commands(vec!["pref.uiScaleReset", "pref.uiScaleUp", "pref.uiScaleDown"]),
                 )
                 .field(
-                    Field::choice("theme", tr("Theme"), vec!["Light", "Dark", "System"], theme_active)
+                    Field::choice("theme", tr("Theme"), vec![tr("Light"), tr("Dark"), tr("System")], theme_active)
                         .commands(vec!["view.themeLight", "view.themeDark", "view.themeSystem"]),
                 )
                 .field(
-                    Field::choice("language", tr("Language"), vec!["System", "English", "简体中文", "日本語", "Deutsch", "Français"], lang_active)
+                    Field::choice("language", tr("Language"), vec![tr("System"), "English", "简体中文", "日本語", "Deutsch", "Français"], lang_active)
                         .commands(vec!["pref.language"; 6])
                         .with_params(vec![
                             json!({"language": "system"}),
@@ -469,7 +469,7 @@ pub(crate) fn spec(kind: Kind, data: &Value) -> Spec {
             let mut spec = Spec::new(tr("Plugins")).width(440.0).field(Field::Section { title: tr("Installed") });
             if list.is_empty() {
                 spec = spec.field(Field::Note {
-                    text: "No plugins yet. Import a development plugin from its figcraft-plugin.json.".to_string(),
+                    text: tr("No plugins yet. Import a development plugin from its figcraft-plugin.json.").to_string(),
                 });
             }
             for p in &list {
@@ -521,7 +521,7 @@ pub(crate) fn spec(kind: Kind, data: &Value) -> Spec {
             .field(Field::Note { text: tr("No update command is registered by the engine yet.").to_string() })
             .button(Button::close(tr("Close"))),
         Kind::Message => {
-            let title = str_field("title", data, "FigCraft");
+            let title = str_field("title", data, tr("FigCraft"));
             let message = str_field("message", data, "The command asked the interface to show this message.");
             Spec::new(title).width(360.0).message(message).button(Button::close(tr("Done")))
         }

@@ -60,11 +60,11 @@ pub(crate) enum ExtraKind {
 impl ExtraKind {
     pub(crate) fn title(&self) -> &'static str {
         match self {
-            Self::Shortcuts => "Keyboard shortcuts",
-            Self::Versions => "Version history",
-            Self::DevCompare { .. } => "Compare changes",
-            Self::Assets => "Assets",
-            Self::Home => "Home",
+            Self::Shortcuts => tr("Keyboard shortcuts"),
+            Self::Versions => tr("Version history"),
+            Self::DevCompare { .. } => tr("Compare changes"),
+            Self::Assets => tr("Assets"),
+            Self::Home => tr("Home"),
         }
     }
 }
@@ -167,7 +167,7 @@ pub(crate) struct ExtraState {
 impl ExtraState {
     pub(crate) fn new(cx: &mut App, cmds: &Cmds) -> Self {
         let query = Rc::new(RefCell::new(String::new()));
-        let search = search_field(cx, 180.0, "", "Search shortcuts");
+        let search = search_field(cx, 180.0, "", tr("Search shortcuts"));
         let q = query.clone();
         let wake = cmds.clone();
         search.update(cx, move |tf, _| {
@@ -177,13 +177,13 @@ impl ExtraState {
             });
         });
         let ver_name = TextField::build(cx, 240.0, |tf, _| {
-            tf.set_placeholder("Title");
+            tf.set_placeholder(tr("Title"));
         });
         let ver_desc = TextField::build(cx, 240.0, |tf, _| {
-            tf.set_placeholder("Describe what changed");
+            tf.set_placeholder(tr("Describe what changed"));
         });
         let assets_query = Rc::new(RefCell::new(String::new()));
-        let assets_search = search_field(cx, 200.0, "", "Search assets");
+        let assets_search = search_field(cx, 200.0, "", tr("Search assets"));
         let aq = assets_query.clone();
         let aw = cmds.clone();
         assets_search.update(cx, move |tf, _| {
@@ -193,7 +193,7 @@ impl ExtraState {
             });
         });
         let home_query = Rc::new(RefCell::new(String::new()));
-        let home_search = search_field(cx, 220.0, "", "Search files and templates");
+        let home_search = search_field(cx, 220.0, "", tr("Search files and templates"));
         let hq = home_query.clone();
         let hw = cmds.clone();
         home_search.update(cx, move |tf, _| {
@@ -492,10 +492,10 @@ fn versions_body(app: &CanvasApp, cmds: &Cmds, state: &ExtraState, cx: &mut App)
                         )
                         .child(div().text_size(pt(10.0)).text_color(rgba(t.text_secondary)).child(SharedString::from(time_ago(p.time)))),
                 )
-                .child(pill("Back to current", false, move |_e, _w, _cx| {
+                .child(pill(tr("Back to current"), false, move |_e, _w, _cx| {
                     pr.push(Cmd { id: "version.exitPreview", params: None });
                 }))
-                .child(pill("Restore", true, move |_e, _w, _cx| {
+                .child(pill(tr("Restore"), true, move |_e, _w, _cx| {
                     pe.push(Cmd { id: "version.restore", params: Some(json!({ "id": pid })) });
                 })),
         ));
@@ -517,7 +517,7 @@ fn versions_body(app: &CanvasApp, cmds: &Cmds, state: &ExtraState, cx: &mut App)
         let vn = state.ver_name.clone();
         let vd = state.ver_desc.clone();
         let cm = cmds.clone();
-        let submit = pill("Save", true, move |_e, w, cx| {
+        let submit = pill(tr("Save"), true, move |_e, w, cx| {
             let name = vn.read(cx).value(cx).trim().to_string();
             let desc = vd.read(cx).value(cx).trim().to_string();
             match vt.borrow().clone() {
@@ -530,7 +530,7 @@ fn versions_body(app: &CanvasApp, cmds: &Cmds, state: &ExtraState, cx: &mut App)
         });
         let vt2 = state.ver_form.clone();
         let vp2 = state.ver_prefilled.clone();
-        let cancel = pill("Cancel", false, move |_e, _w, _cx| {
+        let cancel = pill(tr("Cancel"), false, move |_e, _w, _cx| {
             *vt2.borrow_mut() = None;
             *vp2.borrow_mut() = None;
         });
@@ -556,12 +556,12 @@ fn versions_body(app: &CanvasApp, cmds: &Cmds, state: &ExtraState, cx: &mut App)
         if *state.ver_confirm.borrow() == Some(v.id.clone()) {
             let vc = state.ver_confirm.clone();
             let cm = cmds.clone();
-            let yes = pill("Delete", true, move |_e, _w, _cx| {
+            let yes = pill(tr("Delete"), true, move |_e, _w, _cx| {
                 cm.push(Cmd { id: "version.delete", params: Some(json!({ "id": vid })) });
                 *vc.borrow_mut() = None;
             });
             let vc2 = state.ver_confirm.clone();
-            let no = pill("Cancel", false, move |_e, _w, _cx| {
+            let no = pill(tr("Cancel"), false, move |_e, _w, _cx| {
                 *vc2.borrow_mut() = None;
             });
             sec = sec.child(field_row_full(
@@ -736,7 +736,7 @@ fn compare_body(app: &CanvasApp, cmds: &Cmds, state: &ExtraState, id: Option<fig
     let opts: Vec<Option<String>> = std::iter::once(None).chain(ds.versions.iter().map(|v| Some(v.id.clone()))).collect();
     let cur_idx = opts.iter().position(|o| o == &chosen).unwrap_or(0);
     let cur_name =
-        chosen.as_ref().and_then(|v| ds.versions.iter().find(|x| &x.id == v).map(|x| x.name.clone())).unwrap_or_else(|| "When marked ready".into());
+        chosen.as_ref().and_then(|v| ds.versions.iter().find(|x| &x.id == v).map(|x| x.name.clone())).unwrap_or_else(|| tr("When marked ready").into());
     let vstate = state.dev_version.clone();
     let vwake = cmds.clone();
     let mut version_dd = Dropdown::new(SharedString::from(cur_name), 200.0, None).fill();
@@ -748,8 +748,8 @@ fn compare_body(app: &CanvasApp, cmds: &Cmds, state: &ExtraState, id: Option<fig
     let mstate = state.dev_mode.clone();
     let mwake = cmds.clone();
     let mode_label = match *mstate.borrow() {
-        DevMode::SideBySide => "Side by side",
-        DevMode::Overlay => "Overlay",
+        DevMode::SideBySide => tr("Side by side"),
+        DevMode::Overlay => tr("Overlay"),
     };
     let mut mode_dd = Dropdown::new(SharedString::from(mode_label), 130.0, None).fill();
     mode_dd = mode_dd.on_click(move |_anchor, _window, _cx| {
@@ -938,7 +938,7 @@ fn assets_body(app: &CanvasApp, cmds: &Cmds, state: &ExtraState, _cx: &mut App) 
     let tab_components = {
         let st = state.assets_tab.clone();
         let wake = cmds.clone();
-        pill("Components", on_components, move |_e, _w, _cx| {
+        pill(tr("Components"), on_components, move |_e, _w, _cx| {
             *st.borrow_mut() = false;
             wake.wake();
         })
@@ -946,7 +946,7 @@ fn assets_body(app: &CanvasApp, cmds: &Cmds, state: &ExtraState, _cx: &mut App) 
     let tab_styles = {
         let st = state.assets_tab.clone();
         let wake = cmds.clone();
-        pill("Styles", on_styles, move |_e, _w, _cx| {
+        pill(tr("Styles"), on_styles, move |_e, _w, _cx| {
             *st.borrow_mut() = true;
             wake.wake();
         })
@@ -1056,7 +1056,7 @@ fn component_tile(doc: &figcraft_doc::Document, cmds: &Cmds, id: figcraft_doc::N
                 .child(div().text_size(pt(9.0)).text_color(rgba(t.text_secondary)).child(SharedString::from(if is_set {
                     "Set"
                 } else {
-                    "Component"
+                    tr("Component")
                 }))),
         )
 }

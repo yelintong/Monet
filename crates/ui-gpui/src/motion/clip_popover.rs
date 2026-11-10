@@ -8,6 +8,8 @@
 //! The clip's floating settings window over the canvas. It is a `Popover` with a `title_text`
 //! header and a `PanelSection` body; the view owns open/close and the dragged position.
 
+use figcraft_i18n::tr_noop;
+use figcraft_i18n::tr;
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -36,7 +38,7 @@ pub struct ClipFields {
     id: u32,
 }
 
-const NUM_LABELS: [&str; 7] = ["Delay", "Duration", "Amount", "From X", "From Y", "To X", "To Y"];
+const NUM_LABELS: [&str; 7] = [tr_noop("Delay"), tr_noop("Duration"), "Amount", "From X", "From Y", "To X", "To Y"];
 
 /// egui `amount_unit` / `amount_label`：不同动画类型的幅度单位（° / % / 距离）。
 fn amount_unit(kind: ClipKind) -> (f32, &'static str) {
@@ -51,9 +53,9 @@ fn amount_label(kind: ClipKind) -> &'static str {
     match kind {
         ClipKind::Position => "Distance",
         ClipKind::Rotation => "Angle",
-        ClipKind::Opacity => "Opacity",
-        ClipKind::Scale => "Scale",
-        ClipKind::Size => "Size",
+        ClipKind::Opacity => tr("Opacity"),
+        ClipKind::Scale => tr("Scale"),
+        ClipKind::Size => tr("Size"),
     }
 }
 
@@ -272,9 +274,9 @@ pub fn panel(
 
     let (_labels, visible, _factor) = labels_for(&c);
     let mut sec = panel_section("Clip")
-        .child(crate::widgets::panel_section::sublabel_row2("Animation", "Type"))
+        .child(crate::widgets::panel_section::sublabel_row2(tr("Animation"), tr("Type")))
         .child(field_row(vec![kind_row, mode_row], none()))
-        .child(crate::widgets::panel_section::sublabel_row2("Direction", "Easing"))
+        .child(crate::widgets::panel_section::sublabel_row2(tr("Direction"), tr("Easing")))
         .child(field_row(vec![dir_row, ease_row], none()));
     // 数值行按可见性两两配对（Custom 才显示 From/To，vec2 类型才有 Y）。
     let shown: Vec<usize> = (0..7).filter(|i| visible[*i]).collect();

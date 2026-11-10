@@ -22,6 +22,7 @@
 //! 统一由 [`crate::dock::DockLayout`] 推导（`canvas_origin().y = TITLE_H`），不再出现
 //! 「漏减标题栏高度 → 画布点击热区整体偏移」。
 
+use figcraft_i18n::tr;
 use gpui::{Div, Point, SharedString, TitlebarOptions, WindowControlArea, div, prelude::*, px};
 
 use crate::widgets::icon::{self, Icon};
@@ -40,7 +41,7 @@ pub const CONTROLS_W: f32 = CONTROL_W * 3.0;
 /// macOS 红绿灯留在 (9,9)。放进 `WindowOptions.titlebar`。
 pub fn title_bar_options() -> TitlebarOptions {
     TitlebarOptions {
-        title: Some(SharedString::from("FigCraft")),
+        title: Some(SharedString::from(tr("FigCraft"))),
         appears_transparent: true,
         traffic_light_position: Some(Point::new(px(9.0), px(9.0))),
     }

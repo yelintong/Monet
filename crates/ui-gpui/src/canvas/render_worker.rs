@@ -21,6 +21,7 @@
 
 #![allow(dead_code)]
 
+use figcraft_i18n::tr;
 use std::sync::Arc;
 
 use figcraft_color::ColorProfile;
@@ -703,7 +704,7 @@ mod live_clip_tests {
         let mut doc = crate::app::sample_doc();
         let page = doc.pages[0];
         let frame = doc.node(page).and_then(|n| n.children.first().copied()).expect("Frame 1");
-        let blue = doc.node(frame).and_then(|n| n.children.first().copied()).expect("Blue");
+        let blue = doc.node(frame).and_then(|n| n.children.first().copied()).expect(tr("Blue"));
         // Drag it left so half of it is past the frame's left edge.
         let t = doc.get_mut(blue).expect("a node");
         t.transform = figcraft_geom::Affine::translate((-110.0, 0.0)) * t.transform;
