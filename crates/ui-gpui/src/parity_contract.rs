@@ -48,6 +48,13 @@ pub const CONTRACTS: &[Contract] = &[
     },
     Contract { id: "A18B4", requires: &["file.close", "file.save", "detach_window"] },
     Contract { id: "A1", requires: &["home", "action_card", "home_section", "home-screen"] },
+    Contract {
+        id: "A2B3A27",
+        // A board swaps in its own nine groups, its own tail (templates + the Design panel's
+        // button) and a row of **choices** for its one-tool groups. Reverting any of that to a
+        // hand-written pill or to chips removes a token and fails the contract.
+        requires: &["BOARD_GROUPS", "board_panel", "board_templates", "choices(", "command_for", "board.setColor", "board.setStyle"],
+    },
 ];
 
 /// Every engine command a dialog can push (buttons + per-option choice commands).
@@ -139,6 +146,27 @@ fn capabilities() -> BTreeSet<String> {
         }
     }
 
+    // A2/B3/A27: the board toolbar and its two pickers, derived from the sources that draw them.
+    let toolbar_src = include_str!("toolbar.rs");
+    for token in ["BOARD_GROUPS", "board_panel", "board_templates"] {
+        if toolbar_src.contains(token) {
+            out.insert(token.into());
+        }
+    }
+    let board_bar_src = include_str!("board_bar.rs");
+    if board_bar_src.contains("pub(crate) fn choices(") {
+        out.insert("choices(".into());
+    }
+    for token in ["board.setColor", "board.setStyle"] {
+        if board_bar_src.contains(token) {
+            out.insert(token.into());
+        }
+    }
+    let picker_src = include_str!("board_picker.rs");
+    if picker_src.contains("fn command_for") && picker_src.contains("board.template") && picker_src.contains("board.table") {
+        out.insert("command_for".into());
+    }
+
     // C1: the GPUI label is compliant AND no egui front-end UI string still uses the retired name.
     let egui_ui =
         [include_str!("../../ui-egui/src/app.rs"), include_str!("../../ui-egui/src/canvas.rs"), include_str!("../../ui-egui/src/menus.rs")].concat();
@@ -183,6 +211,26 @@ mod tests {
                 figcraft_engine::find_command(id).is_some(),
                 "dialogs.rs pushes `{id}`, which is not registered in the engine — wire it to an existing command instead of inventing one"
             );
+        }
+    }
+
+    /// The toolbar's board groups push `tool.{their first tool}` when a choice is picked, and the
+    /// templates picker pushes `board.template` / `board.table`: a typo in any of them would
+    /// silently do nothing, so every one has to be a registered engine command.
+    #[test]
+    fn every_board_toolbar_command_is_a_real_engine_command() {
+        for g in crate::toolbar::BOARD_GROUPS {
+            let id = format!("tool.{}", g.tools.first().map(|t| t.0.id()).unwrap_or("move"));
+            assert!(
+                figcraft_engine::find_command(&id).is_some(),
+                "toolbar group `{}` pushes `{id}`, which is not registered in the engine",
+                g.key
+            );
+        }
+        let last = figcraft_engine::board_templates::TEMPLATES.len();
+        for i in [0, last] {
+            let (id, _) = crate::board_picker::command_for(i);
+            assert!(figcraft_engine::find_command(id).is_some(), "board_picker pushes `{id}`, which is not registered in the engine");
         }
     }
 

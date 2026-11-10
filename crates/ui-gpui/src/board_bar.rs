@@ -4,8 +4,8 @@
 //! `ui-egui/src/canvas/board_bar.rs`; `cap_art` from `ui-egui/src/panels/right/stroke.rs`.
 
 use crate::panels::{Cmd, Cmds};
-use crate::widgets::{Icon, icon, pt, rgba, tokens};
-use figcraft_doc::{BOARD_COLORS, BoardItem, BoardShape, NodeId, Routing, StrokeCap};
+use crate::widgets::{Icon, icon, rgba, tokens};
+use figcraft_doc::{BOARD_COLORS, BoardItem, BoardShape, NodeId, Routing, Stamp, StrokeCap};
 use figcraft_engine::board::TEXT_SIZES;
 use gpui::{AnyElement, Div, IntoElement, Pixels, Point, SharedString, canvas, div, point, prelude::*, px};
 use serde_json::json;
@@ -228,6 +228,162 @@ fn cap_art(cap: StrokeCap, start: bool, ink: gpui::Rgba) -> impl IntoElement {
 }
 
 /// A thin separator between two parts.
+// ── choices: what a board tool's flyout offers (ui-egui/src/canvas/board_bar.rs) ─────────────
+
+/// A choice a board tool's flyout offers: a sticky note's colour, a shape, or a stamp.
+pub(crate) struct Choice {
+    /// The label as the catalogue has it (English); translate with `tr` when drawing.
+    pub label: &'static str,
+    /// What running the tool with this choice asks for.
+    pub params: serde_json::Value,
+    /// Whether the tool is already on this choice.
+    pub on: bool,
+    pub mark: Mark,
+}
+
+/// How a choice draws itself.
+#[derive(Clone, Copy)]
+pub(crate) enum Mark {
+    Color(figcraft_color::Color),
+    Shape(BoardShape),
+    Stamp(Stamp),
+}
+
+/// The choices `options` offers, with the tool's current one marked (`choices` in the original).
+pub(crate) fn choices(options: crate::toolbar::Options, board: &figcraft_engine::board::BoardTool) -> Vec<Choice> {
+    use crate::toolbar::Options;
+    match options {
+        Options::Colors => BOARD_COLORS
+            .iter()
+            .map(|(n, c)| Choice { label: color_label(n), params: json!({ "color": n }), on: board.sticky == *c, mark: Mark::Color(*c) })
+            .collect(),
+        Options::Shapes => BoardShape::ALL
+            .iter()
+            .map(|b| Choice { label: b.label(), params: json!({ "shape": b.id() }), on: board.shape == *b, mark: Mark::Shape(*b) })
+            .collect(),
+        Options::Stamps => Stamp::ALL
+            .iter()
+            .map(|b| Choice { label: b.label(), params: json!({ "stamp": b.id() }), on: board.stamp == *b, mark: Mark::Stamp(*b) })
+            .collect(),
+        Options::None => Vec::new(),
+    }
+}
+
+/// A board colour's name as the UI says it (`color_label` in the original).
+fn color_label(name: &str) -> &'static str {
+    match name {
+        "yellow" => "Yellow",
+        "orange" => "Orange",
+        "red" => "Red",
+        "pink" => "Pink",
+        "violet" => "Violet",
+        "blue" => "Blue",
+        "green" => "Green",
+        _ => "Gray",
+    }
+}
+
+/// A choice's mark drawn in a `size` square: a colour chip, a shape's outline, or a stamp badge
+/// (`paint_choice` in the original).
+pub(crate) fn choice_mark(mark: Mark, size: f32, ink: gpui::Rgba) -> AnyElement {
+    match mark {
+        Mark::Color(c) => {
+            let t = tokens();
+            div()
+                .size(px(size))
+                .rounded(px(4.0))
+                .bg(rgba(color_of(c)))
+                .border_1()
+                .border_color(rgba(t.border))
+                .into_any_element()
+        }
+        Mark::Shape(s) => canvas(
+            move |_, _, _| (),
+            move |bounds, _, window, _| {
+                if let Some(path) = shape_path_at(s, size - 2.0, at(bounds.origin, 1.0, 1.0)) {
+                    window.paint_path(path, ink);
+                }
+            },
+        )
+        .size(px(size))
+        .into_any_element(),
+        Mark::Stamp(s) => {
+            let parts: Vec<(figcraft_geom::BezPath, bool)> = s
+                .mark()
+                .iter()
+                .filter_map(|m| figcraft_geom::BezPath::from_svg(m.d).ok().map(|b| (b, m.filled)))
+                .collect();
+            let disc = color_of(s.color());
+            canvas(
+                move |_, _, _| (),
+                move |bounds, _, window, _| {
+                    let w = f32::from(bounds.size.width);
+                    let h = f32::from(bounds.size.height);
+                    let r = w.min(h) / 2.0;
+                    let o = point(bounds.origin.x + px(w / 2.0 - r), bounds.origin.y + px(h / 2.0 - r));
+                    // A square whose four corners are r **is** the same circle, and it is the one
+                    // primitive a filled Bézier circle can't spoil (see `canvas::painter`).
+                    let quad = gpui::fill(
+                        gpui::Bounds { origin: o, size: gpui::size(px(r * 2.0), px(r * 2.0)) },
+                        rgba(disc),
+                    )
+                    .corner_radii(gpui::Corners {
+                        top_left: px(r),
+                        top_right: px(r),
+                        bottom_right: px(r),
+                        bottom_left: px(r),
+                    });
+                    window.paint_quad(quad);
+                    outline_marks(&parts, figcraft_doc::STAMP_SIZE, r * 2.0, gpui::rgb(0xffffff), 3.0, o, window);
+                },
+            )
+            .size(px(size))
+            .into_any_element()
+        }
+    }
+}
+
+/// SVG path data outlines on a `size`-unit box, drawn into a `box_size` square at `origin`: each
+/// part filled, or stroked `width` box units wide (`ui-egui/src/icons/draw.rs::paint_outlines`).
+fn outline_marks(
+    parts: &[(figcraft_geom::BezPath, bool)],
+    size: f64,
+    box_size: f32,
+    ink: gpui::Rgba,
+    width: f32,
+    origin: Point<Pixels>,
+    window: &mut gpui::Window,
+) {
+    use figcraft_geom::kurbo::PathEl;
+    let s = box_size / size as f32;
+    let o = point(origin.x + px(box_size / 2.0 - size as f32 * s / 2.0), origin.y + px(box_size / 2.0 - size as f32 * s / 2.0));
+    for (path, filled) in parts {
+        let mut b = if *filled {
+            gpui::PathBuilder::fill()
+        } else {
+            gpui::PathBuilder::stroke(px((width * s).max(0.5)))
+        };
+        for el in path.elements() {
+            match *el {
+                PathEl::MoveTo(p) => b.move_to(at(o, p.x as f32 * s, p.y as f32 * s)),
+                PathEl::LineTo(p) => b.line_to(at(o, p.x as f32 * s, p.y as f32 * s)),
+                PathEl::QuadTo(c, p) => {
+                    b.curve_to(at(o, p.x as f32 * s, p.y as f32 * s), at(o, c.x as f32 * s, c.y as f32 * s))
+                }
+                PathEl::CurveTo(c1, c2, p) => b.cubic_bezier_to(
+                    at(o, p.x as f32 * s, p.y as f32 * s),
+                    at(o, c1.x as f32 * s, c1.y as f32 * s),
+                    at(o, c2.x as f32 * s, c2.y as f32 * s),
+                ),
+                PathEl::ClosePath => b.close(),
+            }
+        }
+        if let Ok(p) = b.build() {
+            window.paint_path(p, ink);
+        }
+    }
+}
+
 fn divider(t: &crate::theme::Tokens) -> impl IntoElement {
     div().flex_none().w(px(1.0)).h(px(20.0)).mx(px(2.0)).bg(rgba(t.border))
 }

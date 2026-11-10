@@ -14,10 +14,10 @@
 //! the group's shown one. Choosing one both runs `tool.set` and remembers it for that group, so the
 //! caret's button keeps showing the last tool picked.
 //!
-//! Differences from the original, all because the port has no other front-end yet: boards are not
-//! supported (the shell only ever opens the built-in sample document), so the board groups and
-//! their swatch flyouts are not ported; the Inspect (Dev Mode) segment has no panel to switch to, so
-//! it is drawn greyed rather than pretending to work.
+//! A board document gets its own nine groups ([`BOARD_GROUPS`], the original's order) and its own
+//! tail: the templates picker and the Design panel's button, in place of the mode switcher (a board
+//! has no prototypes and no Dev Mode). Its one-tool groups (sticky notes, shapes, stamps) open a
+//! flyout of **choices** rather than of tools — see [`Group::options`].
 
 use figcraft_i18n::tr;
 use crate::menu_card::Item;
@@ -52,21 +52,47 @@ pub(crate) const FLYOUT_ROW_H: f32 = 32.0;
 /// A tool group: its key (the flyout's identity), the tools it holds and the mark it shows.
 pub(crate) struct Group {
     pub key: &'static str,
+    /// The flyout button's name, for its tooltip / screen readers (`ui-egui`'s `a11y::menu_button`).
+    pub name: &'static str,
     pub tools: &'static [(ToolId, Icon)],
+    /// What a one-tool group's flyout offers instead of tools (boards: colours, shapes, stamps).
+    pub options: Options,
+}
+
+/// The choices a board tool's flyout shows (`ui-egui/src/toolbar.rs::Options`).
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Options {
+    None,
+    Colors,
+    Shapes,
+    Stamps,
 }
 
 impl Group {
+    /// A caret when the group has more than one tool **or** choices to offer — a board's sticky
+    /// note, shape and stamp groups are one tool each, but their caret opens the picker.
     fn has_flyout(&self) -> bool {
-        self.tools.len() > 1
+        self.tools.len() > 1 || self.options != Options::None
     }
 }
 
 /// The six groups, in the original's order (`ui-egui/src/toolbar.rs::GROUPS`).
 pub(crate) const GROUPS: &[Group] = &[
-    Group { key: "move", tools: &[(ToolId::Move, Icon::Move), (ToolId::Hand, Icon::Hand), (ToolId::Scale, Icon::Scale)] },
-    Group { key: "frame", tools: &[(ToolId::Frame, Icon::Frame), (ToolId::Section, Icon::Section), (ToolId::Slice, Icon::Slice)] },
+    Group {
+        key: "move",
+        name: "Move tools",
+        tools: &[(ToolId::Move, Icon::Move), (ToolId::Hand, Icon::Hand), (ToolId::Scale, Icon::Scale)],
+        options: Options::None,
+    },
+    Group {
+        key: "frame",
+        name: "Frame tools",
+        tools: &[(ToolId::Frame, Icon::Frame), (ToolId::Section, Icon::Section), (ToolId::Slice, Icon::Slice)],
+        options: Options::None,
+    },
     Group {
         key: "shape",
+        name: "Shape tools",
         tools: &[
             (ToolId::Rectangle, Icon::Rectangle),
             (ToolId::Line, Icon::Line),
@@ -75,11 +101,66 @@ pub(crate) const GROUPS: &[Group] = &[
             (ToolId::Polygon, Icon::Polygon),
             (ToolId::Star, Icon::Star),
         ],
+        options: Options::None,
     },
-    Group { key: "pen", tools: &[(ToolId::Pen, Icon::Pen), (ToolId::Pencil, Icon::Pencil), (ToolId::ShapeBuilder, Icon::ShapeBuilder)] },
-    Group { key: "text", tools: &[(ToolId::Text, Icon::Text), (ToolId::TextOnPath, Icon::TextOnPath)] },
-    Group { key: "comment", tools: &[(ToolId::Comment, Icon::Comment)] },
+    Group {
+        key: "pen",
+        name: "Drawing tools",
+        tools: &[(ToolId::Pen, Icon::Pen), (ToolId::Pencil, Icon::Pencil), (ToolId::ShapeBuilder, Icon::ShapeBuilder)],
+        options: Options::None,
+    },
+    Group {
+        key: "text",
+        name: "Text",
+        tools: &[(ToolId::Text, Icon::Text), (ToolId::TextOnPath, Icon::TextOnPath)],
+        options: Options::None,
+    },
+    Group { key: "comment", name: "Comment", tools: &[(ToolId::Comment, Icon::Comment)], options: Options::None },
 ];
+
+/// A board's tool groups, in the original's order (`ui-egui/src/toolbar.rs::BOARD_GROUPS`).
+pub(crate) const BOARD_GROUPS: &[Group] = &[
+    Group {
+        key: "bmove",
+        name: "Move tools",
+        tools: &[(ToolId::Move, Icon::Move), (ToolId::Hand, Icon::Hand)],
+        options: Options::None,
+    },
+    Group {
+        key: "ink",
+        name: "Drawing tools",
+        tools: &[(ToolId::Marker, Icon::Marker), (ToolId::Highlighter, Icon::Highlighter), (ToolId::Eraser, Icon::Eraser)],
+        options: Options::None,
+    },
+    Group {
+        key: "sticky",
+        name: "Sticky note colors",
+        tools: &[(ToolId::Sticky, Icon::Board)],
+        options: Options::Colors,
+    },
+    Group { key: "bshape", name: "Shapes", tools: &[(ToolId::BoardShape, Icon::Shapes)], options: Options::Shapes },
+    Group {
+        key: "connector",
+        name: "Connector",
+        tools: &[(ToolId::Connector, Icon::Connector)],
+        options: Options::None,
+    },
+    Group { key: "text", name: "Text", tools: &[(ToolId::Text, Icon::Text)], options: Options::None },
+    Group { key: "section", name: "Section", tools: &[(ToolId::Section, Icon::Section)], options: Options::None },
+    Group { key: "stamp", name: "Stamps", tools: &[(ToolId::Stamp, Icon::Stamp)], options: Options::Stamps },
+    Group { key: "comment", name: "Comment", tools: &[(ToolId::Comment, Icon::Comment)], options: Options::None },
+];
+
+/// The groups the toolbar shows for the open document: a board's, else the design tools'.
+pub(crate) fn groups(board: bool) -> &'static [Group] {
+    if board { BOARD_GROUPS } else { GROUPS }
+}
+
+/// Group `key`, looked up in both sets: a popup stores only the key, so the renderer needs a way
+/// back to the group's options and its tool.
+pub(crate) fn group(key: &str) -> Option<&'static Group> {
+    GROUPS.iter().chain(BOARD_GROUPS).find(|g| g.key == key)
+}
 
 /// The bar's click channel: the view handles every [`Intent`] in one place.
 pub(crate) type OnIntent = Rc<dyn Fn(Intent, &mut Window, &mut App)>;
@@ -93,6 +174,10 @@ pub(crate) enum Intent {
     Flyout(&'static str),
     /// Toggle the Actions palette.
     Actions,
+    /// Toggle the board's templates picker (`crate::board_picker`).
+    Templates,
+    /// Show or hide the Design panel on a board (`view.design`).
+    DesignPanel,
     /// Switch to mode `i` of the Draw · Design · Animation · Inspect switcher.
     Mode(usize),
 }
@@ -100,10 +185,15 @@ pub(crate) enum Intent {
 /// The bar's natural width: the groups with their carets, Actions, the divider and the mode
 /// switcher, one `GAP` apart (`main_width` in the original). The flyout's anchor and the test both
 /// need it.
-pub(crate) fn width() -> f32 {
-    let groups_w: f32 = GROUPS.iter().map(group_w).sum();
-    let items = GROUPS.len() as f32 + 3.0;
-    PAD * 2.0 + groups_w + CELL + 1.0 + MODE_CELLS as f32 * CELL + GAP * (items - 1.0)
+pub(crate) fn width(groups: &[Group], board: bool) -> f32 {
+    let groups_w: f32 = groups.iter().map(group_w).sum();
+    let items = groups.len() as f32 + 3.0;
+    // A board swaps the 4-cell mode switcher for two cells: the templates picker and the Design
+    // panel's button. (`ui-egui`'s `main_width` still counts only the Design panel's cell — its
+    // templates button is built but never mounted, so nothing ever needed the extra cell. The port
+    // does mount it, so the tail is both cells and the point between them.)
+    let tail = if board { 2.0 * CELL + GAP } else { MODE_CELLS as f32 * CELL };
+    PAD * 2.0 + groups_w + CELL + 1.0 + tail + GAP * (items - 1.0)
 }
 
 /// A group's width: its cell, plus the caret and the point between them when it has a flyout.
@@ -112,9 +202,9 @@ fn group_w(g: &Group) -> f32 {
 }
 
 /// Group `key`'s left edge **inside the pill** — where its tool cell starts.
-pub(crate) fn group_left(key: &str) -> Option<f32> {
+pub(crate) fn group_left(groups: &[Group], key: &str) -> Option<f32> {
     let mut x = PAD;
-    for g in GROUPS {
+    for g in groups {
         if g.key == key {
             return Some(x);
         }
@@ -126,12 +216,12 @@ pub(crate) fn group_left(key: &str) -> Option<f32> {
 /// The flyout caret's left edge **inside the pill**: the tool cell plus the point between them.
 /// The flyout card is aligned to this, not to the cell (`用户 2026-11-06`：菜单左边和那 16pt 的
 /// 点击按钮左边对齐). `None` for a single-tool group, which has no caret.
-pub(crate) fn caret_left(key: &str) -> Option<f32> {
-    let g = GROUPS.iter().find(|g| g.key == key)?;
+pub(crate) fn caret_left(groups: &[Group], key: &str) -> Option<f32> {
+    let g = groups.iter().find(|g| g.key == key)?;
     if !g.has_flyout() {
         return None;
     }
-    Some(group_left(key)? + CELL + CARET_GAP)
+    Some(group_left(groups, key)? + CELL + CARET_GAP)
 }
 
 /// A cell's top inside the 48 pt pill: the cells are centred, so 8 pt of the pill is above them.
@@ -140,11 +230,15 @@ pub(crate) const CELL_TOP: f32 = (PILL_H - CELL) / 2.0;
 pub(crate) const FLYOUT_GAP: f32 = 4.0;
 
 /// Which group the current tool belongs to, and which tool that group shows.
-pub(crate) fn shown<'a>(g: &'a Group, current: ToolId, last: &'a [ToolId]) -> (ToolId, Icon) {
+///
+/// `last` is keyed by **group key** — exactly like egui's `tb_last`, which stores one
+/// `egui::Id::unique(("tb_last", key))` per group. Keying by position would make a board's 9
+/// groups and a design file's 6 groups share slots and remember each other's tools.
+pub(crate) fn shown(g: &Group, current: ToolId, last: &[(&'static str, ToolId)]) -> (ToolId, Icon) {
     if let Some(hit) = g.tools.iter().find(|(t, _)| *t == current) {
         return *hit;
     }
-    let remembered = GROUPS.iter().position(|x| x.key == g.key).and_then(|i| last.get(i)).copied();
+    let remembered = last.iter().find(|(k, _)| *k == g.key).map(|(_, t)| *t);
     let tool = remembered.filter(|t| g.tools.iter().any(|(x, _)| x == t)).or_else(|| g.tools.first().map(|x| x.0)).unwrap_or(ToolId::Move);
     g.tools.iter().find(|(t, _)| *t == tool).copied().unwrap_or((tool, Icon::Move))
 }
@@ -155,8 +249,8 @@ pub(crate) fn pretty_shortcut(spec: &str) -> String {
 }
 
 /// A group's flyout rows: one row per tool, the current one checked.
-pub(crate) fn flyout_items(key: &str, current: ToolId) -> Vec<Item> {
-    let Some(g) = GROUPS.iter().find(|g| g.key == key) else { return Vec::new() };
+pub(crate) fn flyout_items(groups: &[Group], key: &str, current: ToolId) -> Vec<Item> {
+    let Some(g) = groups.iter().find(|g| g.key == key) else { return Vec::new() };
     g.tools
         .iter()
         .map(|(tool, icon)| {
@@ -172,7 +266,7 @@ pub(crate) fn flyout_items(key: &str, current: ToolId) -> Vec<Item> {
 /// centre). `canvas_left` / `canvas_w` are that box in window coordinates.
 pub(crate) fn bar(
     tool: ToolId,
-    last: &[ToolId],
+    last: &[(&'static str, ToolId)],
     flyout: Option<&'static str>,
     actions_open: bool,
     motion: bool,
@@ -182,8 +276,12 @@ pub(crate) fn bar(
     canvas_left: f32,
     canvas_w: f32,
     on: OnIntent,
+    board: bool,
+    // 画板的 Design 面板是否展开（`ui-egui` 的 `app.ui.board_panel`）。
+    board_panel: bool,
 ) -> Div {
     let t = tokens();
+    let groups = groups(board);
     // No `max_w`: the pill is purely content-sized (auto width). A clamp here would shrink the
     // frame while the `flex_none` cells keep their fixed size, so the controls overflow the pill
     // (`用户 2026-11-06`：框缩回去、控件超出). The wrapper still centres it over the canvas.
@@ -227,7 +325,7 @@ pub(crate) fn bar(
     }
 
     // ── the tool groups ─────────────────────────────────────────────────────────────────────
-    for g in GROUPS {
+    for g in groups {
         let in_group = g.tools.iter().any(|(t, _)| *t == tool);
         let (id, icon) = shown(g, tool, last);
         let key = g.key;
@@ -238,7 +336,7 @@ pub(crate) fn bar(
             let open = flyout == Some(key);
             let on_fly = on.clone();
             let caret = div()
-                .id(("caret", GROUPS.iter().position(|x| x.key == key).unwrap_or(0) as u64))
+                .id(("caret", groups.iter().position(|x| x.key == key).unwrap_or(0) as u64))
                 .flex_none()
                 .w(pt(CARET_W))
                 .h(pt(CELL))
@@ -250,6 +348,11 @@ pub(crate) fn bar(
                 .hover(|s| s.bg(rgba(if open { t.pressed } else { t.hover })))
                 .when(open, |d| d.bg(rgba(t.pressed)))
                 .on_mouse_down(MouseButton::Left, move |_: &MouseDownEvent, w, cx| on_fly(Intent::Flyout(key), w, cx))
+                .tooltip({
+                    // 组的名字（egui `a11y::menu_button(&cresp, tr(g.name), open)`）。
+                    let name: SharedString = tr(g.name).into();
+                    move |_window, cx| cx.new(|_| Tip { text: name.clone() }).into()
+                })
                 .child(paint_icon(Icon::ChevronUp, rgba(t.text_secondary), CARET));
             group = group.child(caret);
         }
@@ -275,6 +378,22 @@ pub(crate) fn bar(
     );
 
     pill = pill.child(divider());
+
+    if board {
+        // ── a board's tail: templates, then the Design panel's button ────────────────────────
+        // A board has no prototypes and no Dev Mode, and its Design panel starts hidden; this
+        // button is the only way to bring it back (`ui-egui/src/toolbar.rs::main_toolbar`).
+        let on_tpl = on.clone();
+        let open = flyout == Some(crate::board_picker::KEY);
+        pill = pill.child(tool_cell("board_templates", Icon::Templates, open, tr("Templates").into(), move |w, cx| {
+            on_tpl(Intent::Templates, w, cx)
+        }));
+        let on_panel = on.clone();
+        pill = pill.child(tool_cell("board_panel", Icon::Panels, board_panel, tr("Design panel").into(), move |w, cx| {
+            on_panel(Intent::DesignPanel, w, cx)
+        }));
+        return placed(pill, groups, board, canvas_left, canvas_w);
+    }
 
     // ── the mode switcher: Draw · Design · Animation · 开发 ──────────────────────────────────
     // Draw is Design with the pencil; Animation is the Motion timeline; 开发 (Dev Mode) opens the
@@ -307,21 +426,21 @@ pub(crate) fn bar(
         let cell = cell.tooltip(move |_window, cx| cx.new(|_| Tip { text: tip.clone() }).into());
         seg = seg.child(cell.child(paint_icon(*icon, rgba(color), MODE_GLYPH)));
     }
-    placed(pill.child(seg), canvas_left, canvas_w)
+    placed(pill.child(seg), groups, board, canvas_left, canvas_w)
 }
 
 /// The pill's left edge in window coordinates. **The one formula** both the pill's own placement
 /// ([`placed`]) and the flyout's anchor (`flyout_at`) use — so they can never disagree when the
 /// window narrows (`用户 2026-11-06`：窗口缩小一点，弹窗位置就不对了). The pill is content-sized and
 /// is never clamped, so a narrow canvas just makes this offset negative (it overflows, centred).
-pub(crate) fn pill_left(canvas_left: f32, canvas_w: f32) -> f32 {
-    canvas_left + (canvas_w - width()) / 2.0
+pub(crate) fn pill_left(groups: &[Group], board: bool, canvas_left: f32, canvas_w: f32) -> f32 {
+    canvas_left + (canvas_w - width(groups, board)) / 2.0
 }
 
 /// Place the pill at its exact left edge instead of relying on flex `justify_center`: the flyout
 /// anchor and the pill then share [`pill_left`] by construction.
-fn placed(pill: Div, canvas_left: f32, canvas_w: f32) -> Div {
-    let left = pill_left(canvas_left, canvas_w);
+fn placed(pill: Div, groups: &[Group], board: bool, canvas_left: f32, canvas_w: f32) -> Div {
+    let left = pill_left(groups, board, canvas_left, canvas_w);
     div().absolute().left(px(left)).bottom(px(12.0)).child(pill)
 }
 
@@ -333,8 +452,8 @@ fn centred(pill: Div, canvas_left: f32, canvas_w: f32) -> Div {
 
 /// A one-line tooltip: the tool's name and its shortcut, on the menu's own card colours
 /// (`ui-egui` shows `"Rectangle  R"` under the pointer).
-struct Tip {
-    text: SharedString,
+pub(crate) struct Tip {
+    pub(crate) text: SharedString,
 }
 
 impl gpui::Render for Tip {
@@ -395,8 +514,8 @@ mod tests {
         let groups: f32 = 5.0 * (CELL + CARET_GAP + CARET_W) + CELL;
         let items = GROUPS.len() as f32 + 3.0;
         let expected = PAD * 2.0 + groups + CELL + 1.0 + 4.0 * CELL + GAP * (items - 1.0);
-        assert_eq!(width(), expected);
-        assert_eq!(width(), 518.0);
+        assert_eq!(width(GROUPS, false), expected);
+        assert_eq!(width(GROUPS, false), 518.0);
     }
 
     /// A group shows its own tool when the current tool is in it, else the remembered one, else its
@@ -405,7 +524,7 @@ mod tests {
     fn a_group_shows_the_current_then_the_remembered_tool() {
         let move_group = &GROUPS[0];
         assert_eq!(shown(move_group, ToolId::Hand, &[]).0, ToolId::Hand);
-        let last = [ToolId::Scale];
+        let last = [("move", ToolId::Scale)];
         assert_eq!(shown(move_group, ToolId::Rectangle, &last).0, ToolId::Scale, "remembered");
         assert_eq!(shown(move_group, ToolId::Rectangle, &[]).0, ToolId::Move, "first");
     }
@@ -413,12 +532,12 @@ mod tests {
     /// The flyout lists every tool of its group and checks the current one.
     #[test]
     fn flyout_checks_the_current_tool() {
-        let rows = flyout_items("shape", ToolId::Ellipse);
+        let rows = flyout_items(GROUPS, "shape", ToolId::Ellipse);
         assert_eq!(rows.len(), 6);
         assert_eq!(rows.iter().filter(|r| r.checked == Some(true)).count(), 1);
         assert_eq!(rows[3].id, "ellipse");
         assert!(rows.iter().all(|r| r.icon.is_some()));
-        assert!(flyout_items("nope", ToolId::Move).is_empty());
+        assert!(flyout_items(GROUPS, "nope", ToolId::Move).is_empty());
     }
 
     /// Every group's flyout ticks the tool its own cell shows — even the groups that do not hold
@@ -428,10 +547,10 @@ mod tests {
     fn every_groups_flyout_ticks_the_tool_its_cell_shows() {
         // Default toolbar: Move is current, and each group remembers its first tool.
         let current = ToolId::Move;
-        let last: Vec<ToolId> = GROUPS.iter().map(|g| g.tools[0].0).collect();
+        let last: Vec<(&'static str, ToolId)> = GROUPS.iter().map(|g| (g.key, g.tools[0].0)).collect();
         for g in GROUPS {
             let shown_tool = shown(g, current, &last).0;
-            let rows = flyout_items(g.key, shown_tool);
+            let rows = flyout_items(GROUPS, g.key, shown_tool);
             assert_eq!(
                 rows.iter().filter(|r| r.checked == Some(true)).count(),
                 1,
@@ -447,7 +566,7 @@ mod tests {
             // Sanity: the old behaviour (ticking the raw current tool) leaves other groups blank.
             if !g.tools.iter().any(|(t, _)| *t == current) {
                 assert!(
-                    flyout_items(g.key, current).iter().all(|r| r.checked != Some(true)),
+                    flyout_items(GROUPS, g.key, current).iter().all(|r| r.checked != Some(true)),
                     "precondition: group `{}` has no row matching the global current tool",
                     g.key
                 );
@@ -460,17 +579,46 @@ mod tests {
     #[test]
     fn the_flyout_hangs_off_the_caret() {
         // move is the first group: 8 pt of padding, then the 32 pt cell, then the 1 pt gap.
-        assert_eq!(caret_left("move"), Some(PAD + CELL + CARET_GAP));
-        assert_eq!(group_left("move"), Some(PAD));
+        assert_eq!(caret_left(GROUPS, "move"), Some(PAD + CELL + CARET_GAP));
+        assert_eq!(group_left(GROUPS, "move"), Some(PAD));
         // frame sits one group further right (its width, the gap, then its own cell).
-        assert_eq!(caret_left("frame"), Some(PAD + group_w(&GROUPS[0]) + GAP + CELL + CARET_GAP));
+        assert_eq!(caret_left(GROUPS, "frame"), Some(PAD + group_w(&GROUPS[0]) + GAP + CELL + CARET_GAP));
         // `comment` is a single-tool group: no caret, no flyout.
-        assert_eq!(caret_left("comment"), None);
-        assert_eq!(caret_left("nope"), None);
+        assert_eq!(caret_left(GROUPS, "comment"), None);
+        assert_eq!(caret_left(GROUPS, "nope"), None);
         // The cells are centred in the 48 pt pill, so 8 pt of it is above a button's top edge; the
         // card's bottom edge sits 4 pt above that.
         assert_eq!(CELL_TOP, 8.0);
         assert_eq!(FLYOUT_GAP, 4.0);
         assert_eq!(CELL_TOP - FLYOUT_GAP, 4.0);
+    }
+
+    /// A board document gets its own nine groups, in the original's order
+    /// (`ui-egui/src/toolbar.rs::BOARD_GROUPS`), and a different pill width than a design file.
+    #[test]
+    fn a_board_swaps_in_its_own_groups() {
+        // `GROUPS` / `BOARD_GROUPS` are `const`s, so each use is its own promoted slice: compare
+        // the contents, not the addresses.
+        let keys_of = |gs: &[Group]| gs.iter().map(|g| g.key).collect::<Vec<_>>();
+        assert_eq!(keys_of(groups(false)), keys_of(GROUPS));
+        assert_eq!(keys_of(groups(true)), keys_of(BOARD_GROUPS));
+        assert_eq!(BOARD_GROUPS.len(), 9);
+        let keys: Vec<&str> = BOARD_GROUPS.iter().map(|g| g.key).collect();
+        assert_eq!(keys, ["bmove", "ink", "sticky", "bshape", "connector", "text", "section", "stamp", "comment"]);
+        // A caret for the multi-tool groups (`bmove`, `ink`) and for the one-tool groups that offer
+        // choices instead (`sticky` → colours, `bshape` → shapes, `stamp` → stamps).
+        let carets: Vec<&str> = BOARD_GROUPS.iter().filter(|g| g.has_flyout()).map(|g| g.key).collect();
+        assert_eq!(carets, ["bmove", "ink", "sticky", "bshape", "stamp"]);
+        // The board pill is wider than the design pill (nine groups instead of six, even though
+        // its tail is two cells instead of four), so `width` must take the set.
+        assert_ne!(width(BOARD_GROUPS, true), width(GROUPS, false));
+        // Every board group's flyout (where it has one) ticks exactly one row.
+        let last: Vec<(&'static str, ToolId)> = BOARD_GROUPS.iter().map(|g| (g.key, g.tools[0].0)).collect();
+        for g in BOARD_GROUPS {
+            let shown_tool = shown(g, ToolId::Move, &last).0;
+            let rows = flyout_items(BOARD_GROUPS, g.key, shown_tool);
+            assert_eq!(rows.len(), g.tools.len(), "group `{}` rows", g.key);
+            assert_eq!(rows.iter().filter(|r| r.checked == Some(true)).count(), 1, "group `{}` tick", g.key);
+        }
     }
 }

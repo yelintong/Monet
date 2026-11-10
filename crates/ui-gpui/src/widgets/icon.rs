@@ -135,6 +135,24 @@ pub enum Icon {
     TextOnPath,
     /// A speech bubble (`ToolId::Comment`).
     Comment,
+    /// A board sticky note (`ToolId::Sticky`).
+    Board,
+    /// A marker (`ToolId::Marker`).
+    Marker,
+    /// A highlighter (`ToolId::Highlighter`).
+    Highlighter,
+    /// An eraser (`ToolId::Eraser`).
+    Eraser,
+    /// Shapes (`ToolId::BoardShape`).
+    Shapes,
+    /// A connector (`ToolId::Connector`).
+    Connector,
+    /// A stamp (`ToolId::Stamp`).
+    Stamp,
+    /// The board templates picker.
+    Templates,
+    /// A table.
+    Table,
     /// The Actions bolt.
     Actions,
     /// Three columns (the Design panel's button).
@@ -246,6 +264,15 @@ impl Icon {
         Icon::ShapeBuilder,
         Icon::TextOnPath,
         Icon::Comment,
+        Icon::Board,
+        Icon::Marker,
+        Icon::Highlighter,
+        Icon::Eraser,
+        Icon::Shapes,
+        Icon::Connector,
+        Icon::Stamp,
+        Icon::Templates,
+        Icon::Table,
         Icon::Actions,
         Icon::Panels,
         Icon::Eye,
@@ -330,6 +357,15 @@ impl Icon {
             Icon::ShapeBuilder => "shape-builder",
             Icon::TextOnPath => "text-on-path",
             Icon::Comment => "comment",
+            Icon::Board => "board",
+            Icon::Marker => "marker",
+            Icon::Highlighter => "highlighter",
+            Icon::Eraser => "eraser",
+            Icon::Shapes => "shapes",
+            Icon::Connector => "connector",
+            Icon::Stamp => "stamp",
+            Icon::Templates => "templates",
+            Icon::Table => "table",
             Icon::Actions => "actions",
             Icon::Panels => "panels",
             Icon::Eye => "eye",
@@ -764,6 +800,55 @@ fn svg_canvas(icon: Icon) -> SvgCanvas {
             ring(&mut p, ox, oy, s, 8.5, 7.5, 5.0, 1.5, 28);
             stroke_path(&mut p, ox, oy, s, &[(6.0, 12.2), (2.5, 13.5), (4.4, 10.6)], true, 1.2);
         }
+        Icon::Board => {
+            stroke_path(&mut p, ox, oy, s, &[(2.5, 2.5), (13.5, 2.5), (13.5, 9.5), (9.5, 13.5), (2.5, 13.5)], true, 1.5);
+            poly_fill(&mut p, ox, oy, s, &[(9.5, 13.5), (9.5, 9.5), (13.5, 9.5)]);
+            thick_line(&mut p, ox, oy, s, 5.0, 6.5, 11.0, 6.5, 1.5);
+            thick_line(&mut p, ox, oy, s, 5.0, 9.5, 8.0, 9.5, 1.5);
+        }
+        Icon::Marker => {
+            stroke_path(&mut p, ox, oy, s, &[(3.0, 13.0), (3.0, 10.5), (10.0, 3.5), (12.5, 6.0), (5.5, 13.0)], true, 1.5);
+            thick_line(&mut p, ox, oy, s, 8.5, 5.0, 11.0, 7.5, 1.5);
+            poly_fill(&mut p, ox, oy, s, &[(2.0, 14.0), (2.0, 11.5), (4.5, 14.0)]);
+        }
+        Icon::Highlighter => {
+            stroke_path(&mut p, ox, oy, s, &[(4.0, 10.0), (10.5, 3.5), (13.5, 6.5), (7.0, 13.0)], true, 1.5);
+            stroke_path(&mut p, ox, oy, s, &[(4.0, 10.0), (2.5, 12.5), (4.5, 12.5), (7.0, 13.0)], false, 1.5);
+            poly_fill(&mut p, ox, oy, s, &[(1.0, 14.0), (15.0, 14.0), (15.0, 15.5), (1.0, 15.5)]);
+        }
+        Icon::Eraser => {
+            stroke_path(&mut p, ox, oy, s, &[(2.5, 10.0), (9.5, 3.0), (13.5, 7.0), (7.0, 13.5), (6.0, 13.5)], true, 1.5);
+            thick_line(&mut p, ox, oy, s, 5.5, 7.0, 9.5, 11.0, 1.5);
+            thick_line(&mut p, ox, oy, s, 7.0, 13.5, 14.0, 13.5, 1.5);
+        }
+        Icon::Shapes => {
+            outline_rect(&mut p, ox, oy, s, 1.5, 5.5, 9.5, 13.5, 1.5);
+            ring(&mut p, ox, oy, s, 10.5, 5.5, 4.0, 1.5, 28);
+        }
+        Icon::Connector => {
+            outline_rect(&mut p, ox, oy, s, 1.5, 1.5, 6.5, 6.5, 1.5);
+            outline_rect(&mut p, ox, oy, s, 9.5, 9.5, 14.5, 14.5, 1.5);
+            stroke_path(&mut p, ox, oy, s, &[(6.5, 4.0), (12.0, 4.0), (12.0, 9.0)], false, 1.5);
+            poly_fill(&mut p, ox, oy, s, &[(12.0, 9.0), (10.8, 6.6), (13.2, 6.6)]);
+        }
+        Icon::Stamp => {
+            ring(&mut p, ox, oy, s, 8.0, 8.0, 6.0, 1.5, 28);
+            stroke_path(&mut p, ox, oy, s, &[(5.0, 8.3), (7.2, 10.5), (11.0, 6.0)], false, 1.5);
+        }
+        Icon::Templates => {
+            outline_rect(&mut p, ox, oy, s, 1.5, 2.5, 14.5, 13.5, 1.5);
+            poly_fill(&mut p, ox, oy, s, &[(3.5, 4.5), (7.5, 4.5), (7.5, 8.5), (3.5, 8.5)]);
+            thick_line(&mut p, ox, oy, s, 9.5, 5.5, 12.5, 5.5, 1.5);
+            thick_line(&mut p, ox, oy, s, 9.5, 7.5, 12.5, 7.5, 1.5);
+            thick_line(&mut p, ox, oy, s, 3.5, 11.0, 12.5, 11.0, 1.5);
+        }
+        Icon::Table => {
+            outline_rect(&mut p, ox, oy, s, 1.5, 2.5, 14.5, 13.5, 1.5);
+            thick_line(&mut p, ox, oy, s, 1.5, 6.5, 14.5, 6.5, 1.5);
+            thick_line(&mut p, ox, oy, s, 1.5, 10.0, 14.5, 10.0, 1.5);
+            thick_line(&mut p, ox, oy, s, 6.0, 2.5, 6.0, 13.5, 1.5);
+            thick_line(&mut p, ox, oy, s, 10.0, 2.5, 10.0, 13.5, 1.5);
+        }
         Icon::Actions => {
             poly_fill(&mut p, ox, oy, s, &[(9.0, 2.0), (3.5, 9.0), (7.5, 9.0), (6.5, 14.0), (12.5, 7.0), (8.5, 7.0)]);
         }
@@ -1021,7 +1106,7 @@ mod tests {
     fn every_icon_emits_a_well_formed_svg() {
         let t = table();
         assert_eq!(t.len(), Icon::ALL.len());
-        assert_eq!(t.len(), 79, "Icon 变体数变了：请同步 ALL / asset_name / 本断言");
+        assert_eq!(t.len(), 88, "Icon 变体数变了：请同步 ALL / asset_name / 本断言");
         let mut names = HashSet::new();
         for a in t {
             assert!(names.insert(a.name), "duplicate asset name {}", a.name);

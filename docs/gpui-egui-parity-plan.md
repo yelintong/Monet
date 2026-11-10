@@ -264,6 +264,7 @@ A6=done
 A7=done
 A18B4=partial
 A1=done
+A2B3A27=done
 -->
 
 **结论（19:1x 补全后）**：核查出的缺口已补 —— A6 预览、A7 三项、C1 全仓文案、A1 Home 全部落地；第 1 批 6 项现为 **5 项完成 + 1 项部分（B4 拖出成窗口）**。B4 是**有意不做**：引擎只有 `window.new` 请求，GPUI 侧缺 OS 多窗口的会话共享，按「不自己弄」的约束留待 A16。所有状态已回填 A/B/C/G 表，并由 J 节的契约测试自动守护。
@@ -377,3 +378,38 @@ EGUI 原文件再动手，禁止再出现简化替代**；完成后同步 `CONTR
 **结论**：第 1–2 批 11 项中 **8 项完整、3 项有诚实边界**（B4 拖出成窗口、A4 网络 Browse、A3 thread 弹层）；模块齐全、无自造命令、通用控件与引擎能力均按 EGUI 用法接入，没有另起炉灶。
 
 **本轮之后新增（第 3 批起步）**：画板工具条 `board_bar.rs`（颜色 / 形状网格 / 字号 / 连线，全部 `canvas()`+`paint_path` 自绘，命令 `board.setColor`/`board.setStyle`），尚未进入上面的第 1–2 批统计。
+
+---
+
+## M. 2026-11-10 22:3x 第 3 批 ②：画板工具栏工具组 + 模板选择器
+
+> 用户原话：「② 工具栏画板工具组 + 模板选择器」，并要求照 `ui-egui` 结构抄，不许自己发明简化件。
+
+### 落地内容
+
+| 文件 | 改了什么 | 对照的 EGUI 源 |
+|---|---|---|
+| `toolbar.rs` | `Group` 补齐 `name`（caret 的 tooltip / a11y 名）与 `options`（`Options::{None,Colors,Shapes,Stamps}`）；`has_flyout = tools.len()>1 \|\| options != None` | `ui-egui/src/toolbar.rs:37-59` |
+| `toolbar.rs` | `BOARD_GROUPS` 九组（bmove / ink / sticky / bshape / connector / text / section / stamp / comment），名字与 options 逐条照抄 | `ui-egui/src/toolbar.rs:98-113` |
+| `toolbar.rs` | `groups(board)` / `group(key)` / `width(groups, board)`；画板尾段换成 **模板选择器 + Design 面板按钮** 两格（设计文件仍是 4 格模式切换器） | `main_toolbar` 的 `if board` 分支 + `main_width` 的 `tail` |
+| `toolbar.rs` | `tool_last` 由「按下标」改为「按组 key」（`Vec<(&'static str, ToolId)>`），与 egui 的 `tb_last` 每 key 一条一致 —— 画板 9 组与设计 6 组不再互串记忆 | `ui-egui/src/toolbar.rs:117` `remembered()` |
+| `board_bar.rs` | 新增 `Choice` / `Mark` / `choices(options, board_tool)` / `color_label` / `choice_mark` / `outline_marks`（印章 SVG 路径 → GPUI `PathBuilder`） | `ui-egui/src/canvas/board_bar.rs:34-92`、`icons/draw.rs:1145` |
+| `board_picker.rs`（新文件） | 模板选择器：3 列卡片网格，每张卡渲染该模板的真实预览图（`board_templates::preview` + `render_area` + `screen_image`），末位是「表格」卡；`command_for(i)` → `board.template` / `board.table` | `ui-egui/src/widgets/board_picker.rs` |
+| `lib.rs` | `board_panel` 状态 + 画板右栏默认收起（`dock` / `show_right`）；`Intent::Templates` / `Intent::DesignPanel`；`Popup::Options` / `Popup::Templates` 两个弹层；`pick_board_option` / `pick_template` | `app/frame.rs:right_panel_shown`、`app/commands.rs:133` |
+
+### 与 EGUI 的**一处有意偏差**（已在代码注释里写明）
+
+`ui-egui` 的 `main_width` 画板尾段只算 `CELL`（Design 面板一格），因为它的 `board_picker::button` **写好了却从没被挂到工具栏上**（全仓 `grep board_picker::button` 只有定义、无调用；`board_picker_tests.rs` 仍按「模板按钮在 Design 面板左边」断言，该测试目标本身编译不过）。GPUI 侧按用户要求把选择器挂上了，所以尾段是 `2*CELL + GAP`。这是「把原本没接上的件接上」，不是改算术。
+
+### 验证
+
+- `cargo test -p figcraft-ui-gpui --lib --features test-support` = **217 通过 / 3 失败**（仍是基线三条：main_menu aim / extra Shift+D / panel_resize hit area），新增 `toolbar::tests::a_board_swaps_in_its_own_groups`、`board_picker::tests::*` 两条、`parity_contract::tests::every_board_toolbar_command_is_a_real_engine_command`。
+- 新增契约 **A2B3A27**（token：`BOARD_GROUPS` / `board_panel` / `board_templates` / `choices(` / `command_for` / `board.setColor` / `board.setStyle`），文档状态块 `A2B3A27=done` 与代码双向核对通过。退回「手写 pill / chips / 假选项」会直接失败。
+- 起 exe 实测（`file.newBoard` 后截图）：药丸自左至右 **Move▾ Marker▾ Sticky▾ Shape▾ Connector Text Section Stamp▾ Comment │ ⚡ ｜ 模板 面板**，共 9 组 + Actions + 两格尾段；画板右栏默认不显示。
+
+### 诚实边界（未做）
+
+1. 模板选择器的**卡片缩略图**只在第一次打开时同步渲染 5 份画板（与 EGUI 一样缓存，EGUI 存 `ctx.data`，这里存 `CanvasView::tpl_pics`），首开会有一次卡顿。
+2. 画板的 `Options` 弹出层目前**只有横向一排格子**（与 `options_flyout` 同构），没有 EGUI 的 `a11y::own_focus` 键盘循环。
+3. 帮助「?」按钮已在画布右下（既有实现），本轮未动。
+4. 画板下 Motion 时间轴仍可显示（EGUI 同样没有 board 守卫，属上游既有行为，非本次引入）。

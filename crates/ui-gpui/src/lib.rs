@@ -83,6 +83,8 @@ mod comments;
 
 mod board_bar;
 
+mod board_picker;
+
 /// A6: the Export dialog's bitmap preview, produced by the engine's renderer.
 mod export_preview;
 
@@ -428,6 +430,26 @@ enum Popup {
 
     Flyout { key: &'static str, items: Vec<menu_card::Item> },
 
+
+
+    /// 画板工具组的「选项」飞出菜单（便签颜色 / 形状 / 印章）：一排格子，不是工具行
+
+
+
+    /// （`ui-egui/src/toolbar.rs::options_flyout`）。
+
+
+
+    Options { key: &'static str },
+
+
+
+    /// 画板的模板选择器（`crate::board_picker`）。
+
+
+
+    Templates,
+
     /// Actions 面板：搜索框 + 命令列表，贴在指针上方。`at` 是打开时的指针（窗口坐标），
 
     /// render 时按当前画布宽度重算，窗口缩放时跟着动。
@@ -570,11 +592,33 @@ pub struct CanvasView {
 
     /// 工具栏里打开着的飞出菜单（组的 key）；`None` 表示没开。
 
+
+
     tool_flyout: Option<&'static str>,
+
+
+
+    /// 画板的 Design 面板是否展开（`ui-egui` 的 `app.ui.board_panel`）。画板没有原型、也没有
+
+
+
+    /// Dev Mode，右栏默认收起，工具栏最右的按钮 / `view.design` 是它的开关。
+
+
+
+    board_panel: bool,
+
+
+
+    /// 模板选择器画好的预览图，第一次打开时渲染一次就留着（5 个模板各渲一次很贵）。
+
+
+
+    tpl_pics: board_picker::Pictures,
 
     /// 每个工具组上一次选中的工具（egui 存在 `ui.data` 里的 `tb_last`）。
 
-    tool_last: [figcraft_engine::ToolId; toolbar::GROUPS.len()],
+    tool_last: Vec<(&'static str, figcraft_engine::ToolId)>,
 
     /// Motion 时间线是否展开（Animation 模式）。启动即展开，与原来常驻的动画栏一致。
 
@@ -812,15 +856,35 @@ impl CanvasView {
 
             tool_flyout: None,
 
+
+
+            board_panel: false,
+
+
+
+            tpl_pics: std::rc::Rc::new(std::cell::RefCell::new(std::collections::HashMap::new())),
+
             tool_last: {
 
                 // 每个组默认显示它的第一个工具（egui 的 `remembered(...).unwrap_or(first)`）。
 
-                let mut last = [figcraft_engine::ToolId::Move; toolbar::GROUPS.len()];
+                // Keyed by group key — egui stores one `tb_last` per key, so a board's nine groups
 
-                for (i, g) in toolbar::GROUPS.iter().enumerate() {
+                // and a design file's six groups each remember their own tool.
 
-                    last[i] = g.tools.first().map(|t| t.0).unwrap_or(figcraft_engine::ToolId::Move);
+                let mut last: Vec<(&'static str, figcraft_engine::ToolId)> = Vec::new();
+
+                for g in toolbar::GROUPS.iter().chain(toolbar::BOARD_GROUPS) {
+
+                    if last.iter().any(|(k, _)| *k == g.key) {
+
+                        continue;
+
+                    }
+
+                    let first = g.tools.first().map(|t| t.0).unwrap_or(figcraft_engine::ToolId::Move);
+
+                    last.push((g.key, first));
 
                 }
 
@@ -2389,7 +2453,15 @@ impl CanvasView {
 
         let no_selection = self.app.session.ds().map(|d| d.selection.is_empty()).unwrap_or(true);
 
-        let right = if hidden || (minimized && no_selection) { 0.0 } else { self.right_w };
+        // 画板的右栏默认收起（egui `right_panel_shown`：`!hidden && (!board || board_panel)`）。
+
+
+
+        let board_hidden = self.is_board_doc() && !self.board_panel;
+
+
+
+        let right = if hidden || board_hidden || (minimized && no_selection) { 0.0 } else { self.right_w };
 
         let bottom = if hidden { 0.0 } else { self.motion_bar_h() };
 
@@ -2707,6 +2779,76 @@ impl CanvasView {
 
     /// 以及把焦点交给 Actions 的搜索框。
 
+    /// 当前文档是不是画板（`figcraft_engine::board::is_board`）。工具栏按它换成
+
+    /// `toolbar::BOARD_GROUPS`（`ui-egui/src/toolbar.rs` 的同一套九组），画板选择条也按它决定
+
+    /// 显不显示。
+
+    fn is_board_doc(&self) -> bool {
+
+        self.app.session.doc().is_ok_and(figcraft_engine::board::is_board)
+
+    }
+
+
+
+    /// 画板工具组的一个选项被选中：`tool.{id}` 带上它的参数（颜色 / 形状 / 印章），
+
+
+
+    /// 然后关掉菜单（`ui-egui/src/toolbar.rs::options_flyout`）。
+
+
+
+    fn pick_board_option(&mut self, id: &str, params: serde_json::Value, cx: &mut Context<Self>) {
+
+
+
+        self.tool_flyout = None;
+
+
+
+        self.popup = None;
+
+
+
+        self.run_command(id, params, cx);
+
+
+
+    }
+
+
+
+    /// 模板选择器的一张卡被点了：`board.template` 或 `board.table`。
+
+
+
+    fn pick_template(&mut self, i: usize, cx: &mut Context<Self>) {
+
+
+
+        let (id, params) = crate::board_picker::command_for(i);
+
+
+
+        self.tool_flyout = None;
+
+
+
+        self.popup = None;
+
+
+
+        self.run_command(id, params, cx);
+
+
+
+    }
+
+
+
     fn on_intent(&mut self, intent: toolbar::Intent, window: &mut Window, cx: &mut Context<Self>) {
 
         use figcraft_engine::ToolId;
@@ -2744,6 +2886,50 @@ impl CanvasView {
                 cx.notify();
 
             }
+
+            toolbar::Intent::Templates => {
+
+
+
+                let open = self.tool_flyout != Some(crate::board_picker::KEY);
+
+
+
+                self.tool_flyout = open.then_some(crate::board_picker::KEY);
+
+
+
+                self.popup = open.then_some(Popup::Templates);
+
+
+
+                cx.notify();
+
+
+
+            }
+
+
+
+            toolbar::Intent::DesignPanel => {
+
+
+
+                // 画板上 `view.design` 是 Design 面板的开关（`ui-egui/src/app/commands.rs`）。
+
+
+
+                self.run_command("view.design", serde_json::json!({}), cx);
+
+
+
+                cx.notify();
+
+
+
+            }
+
+
 
             toolbar::Intent::Actions => {
 
@@ -2888,7 +3074,13 @@ impl CanvasView {
 
         let current = self.app.session.tool.tool;
 
-        let ticked = toolbar::GROUPS
+        // The set the pill actually drew: a board has its own nine groups, so a board flyout must
+
+        // look its group up there or it would come back empty.
+
+        let groups = toolbar::groups(self.is_board_doc());
+
+        let ticked = groups
 
             .iter()
 
@@ -2898,7 +3090,23 @@ impl CanvasView {
 
             .unwrap_or(current);
 
-        let items = toolbar::flyout_items(key, ticked);
+        // 便签颜色 / 形状 / 印章：只有一格的组，它的 caret 打开的是「选项」而不是工具行。
+
+
+
+        if toolbar::group(key).is_some_and(|g| g.options != toolbar::Options::None) {
+
+
+
+            return Some(Popup::Options { key });
+
+
+
+        }
+
+
+
+        let items = toolbar::flyout_items(groups, key, ticked);
 
         if items.is_empty() {
 
@@ -2990,11 +3198,19 @@ impl CanvasView {
 
         if let Some(tool) = figcraft_engine::ToolId::ALL.iter().copied().find(|t| t.id() == id)
 
-            && let Some(i) = toolbar::GROUPS.iter().position(|g| g.tools.iter().any(|(t, _)| *t == tool))
+            && let Some(g) = toolbar::groups(self.is_board_doc()).iter().find(|g| g.tools.iter().any(|(t, _)| *t == tool))
 
         {
 
-            self.tool_last[i] = tool;
+            // Remember it for its group (egui's `tb_last`, keyed by group key).
+
+            match self.tool_last.iter_mut().find(|(k, _)| *k == g.key) {
+
+                Some(slot) => slot.1 = tool,
+
+                None => self.tool_last.push((g.key, tool)),
+
+            }
 
         }
 
@@ -4379,7 +4595,25 @@ impl Render for CanvasView {
         // B9：两个标志只影响「画不画」与 Dock 宽度，不改控件本身，也不改记住的面板宽度。
         let (ui_hidden, ui_minimized) = self.ui_flags();
         let show_sidebars = !ui_hidden && !ui_minimized;
+
+
+
+        // 画板文档的工具栏换成一整套画板工具组，宽度和飞出菜单的锚点都跟着变；右栏也按
+
+
+
+        // `board_panel` 决定显不显示。`self.popup` 下面要被可变借用，所以提前取好。
+
+
+
+        let board = self.is_board_doc();
+
+
+
         let show_right = !ui_hidden
+
+            && (!board || self.board_panel)
+
             && (!ui_minimized || self.app.session.ds().map(|d| !d.selection.is_empty()).unwrap_or(false));
         let dock = self.dock();
         let canvas_x = dock.center_x();
@@ -5524,7 +5758,29 @@ impl Render for CanvasView {
 
                 if e.keystroke.key == "escape"
 
-                    && matches!(&this.popup, Some(Popup::Context { .. } | Popup::Flyout { .. } | Popup::Palette { .. } | Popup::Menu { .. } | Popup::Share { .. }))
+                    && matches!(
+
+                        &this.popup,
+
+                        Some(
+
+                            Popup::Context { .. }
+
+                                | Popup::Flyout { .. }
+
+                                | Popup::Options { .. }
+
+                                | Popup::Templates
+
+                                | Popup::Palette { .. }
+
+                                | Popup::Menu { .. }
+
+                                | Popup::Share { .. }
+
+                        )
+
+                    )
 
                 {
 
@@ -5882,6 +6138,10 @@ impl Render for CanvasView {
 
             on_intent,
 
+            board,
+
+            self.board_panel,
+
         );
 
         // Motion 打开时右栏换成 Motion inspector（宽 413）；否则仍是 Design 面板。
@@ -6069,6 +6329,12 @@ impl Render for CanvasView {
 
         let share_cmds = self.fields.queue();
 
+        // 画板工具组的选项菜单按这份快照画「当前选中的那一格」；模板预览图也从这里取。
+
+        let board_tool = self.app.session.tool.board.clone();
+
+        let tpl_pics = self.tpl_pics.clone();
+
         if let Some(p) = &mut self.popup {
 
             let me = cx.entity();
@@ -6151,7 +6417,7 @@ impl Render for CanvasView {
 
             let canvas_h = self.app.canvas.rect.height();
 
-            let bar_w = toolbar::width();
+            let bar_w = toolbar::width(toolbar::groups(board), board);
 
             // 画布原点 y = 标题栏高度；弹层挂在 root 上用窗口坐标，必须加回这个原点，
             // 否则 flyout / palette 整体上移 40pt。
@@ -6453,7 +6719,7 @@ impl Render for CanvasView {
 
                     let pill_left = canvas_left + (canvas_w - bar_w) / 2.0;
 
-                    let caret = toolbar::caret_left(*key).unwrap_or(0.0);
+                    let caret = toolbar::caret_left(toolbar::groups(board), *key).unwrap_or(0.0);
 
                     let left = pill_left + caret;
 
@@ -6482,6 +6748,300 @@ impl Render for CanvasView {
                     els.push(menu_card::card(x, y, menu_card::Width::Fit, toolbar::FLYOUT_ROW_H, items, None, pick, hover, std::rc::Rc::new(|_, _, _| {}), window, vh));
 
                 }
+
+                Popup::Options { key } => {
+
+
+
+                    // 一排格子贴在 caret 上方：便签颜色、形状或印章，当前那个有底色
+
+
+
+                    // （`ui-egui/src/toolbar.rs::options_flyout`）。
+
+
+
+                    if let Some(g) = toolbar::group(key) {
+
+
+
+                        let items = crate::board_bar::choices(g.options, &board_tool);
+
+
+
+                        let (cell, pad) = (32.0f32, 8.0f32);
+
+
+
+                        let w = items.len() as f32 * (cell + 4.0) - 4.0 + 2.0 * pad;
+
+
+
+                        let h = cell + 2.0 * pad;
+
+
+
+                        let pill_left = canvas_left + (canvas_w - bar_w) / 2.0;
+
+
+
+                        let caret = toolbar::caret_left(toolbar::groups(board), key).unwrap_or(0.0);
+
+
+
+                        let x = (pill_left + caret).max(m);
+
+
+
+                        let y = (pill_top + toolbar::CELL_TOP - toolbar::FLYOUT_GAP - h).max(m);
+
+
+
+                        let t = widgets::tokens();
+
+
+
+                        let cmd = format!("tool.{}", g.tools.first().map(|x| x.0.id()).unwrap_or("move"));
+
+
+
+                        let mut row = div().flex().flex_row().gap(px(4.0)).px(px(pad)).py(px(pad));
+
+
+
+                        for (i, c) in items.into_iter().enumerate() {
+
+
+
+                            let me = me.clone();
+
+
+
+                            let id = cmd.clone();
+
+
+
+                            let label: gpui::SharedString = tr(c.label).into();
+
+
+
+                            let on = c.on;
+
+
+
+                            row = row.child(
+
+
+
+                                div()
+
+
+
+                                    .id(("bb-opt", i))
+
+
+
+                                    .size(px(cell))
+
+
+
+                                    .flex()
+
+
+
+                                    .items_center()
+
+
+
+                                    .justify_center()
+
+
+
+                                    .rounded(px(5.0))
+
+
+
+                                    .cursor_pointer()
+
+
+
+                                    .when(on, |d| d.bg(widgets::rgba(t.menu_hover)))
+
+
+
+                                    .hover(|s| s.bg(widgets::rgba(t.menu_hover)))
+
+
+
+                                    .tooltip(move |_w, cx| cx.new(|_| toolbar::Tip { text: label.clone() }).into())
+
+
+
+                                    .child(crate::board_bar::choice_mark(c.mark, cell - 10.0, widgets::rgba(t.menu_text)))
+
+
+
+                                    .on_mouse_down(MouseButton::Left, move |_: &MouseDownEvent, _w, cx| {
+
+
+
+                                        let params = c.params.clone();
+
+
+
+                                        let id = id.clone();
+
+
+
+                                        me.update(cx, |cv, cx| cv.pick_board_option(&id, params, cx));
+
+
+
+                                    }),
+
+
+
+                            );
+
+
+
+                        }
+
+
+
+                        let card = div()
+
+
+
+                            .absolute()
+
+
+
+                            .left(px(x))
+
+
+
+                            .top(px(y))
+
+
+
+                            .w(px(w))
+
+
+
+                            .h(px(h))
+
+
+
+                            .rounded(px(13.0))
+
+
+
+                            .bg(widgets::rgba(t.menu))
+
+
+
+                            .border_1()
+
+
+
+                            .border_color(widgets::rgba(t.border_strong))
+
+
+
+                            .shadow(vec![gpui::BoxShadow {
+
+
+
+                                color: widgets::rgba(t.shadow).into(),
+
+
+
+                                offset: gpui::point(px(0.0), px(3.0)),
+
+
+
+                                blur_radius: px(14.0),
+
+
+
+                                spread_radius: px(0.0),
+
+
+
+                            }])
+
+
+
+                            .occlude()
+
+
+
+                            .child(row);
+
+
+
+                        els.push(card.into_any_element());
+
+
+
+                    }
+
+
+
+                }
+
+
+
+                Popup::Templates => {
+
+
+
+                    // 模板选择器：右端对齐工具栏右端，再夹进画布
+
+
+
+                    // （`ui-egui/src/widgets/board_picker.rs::picker`）。
+
+
+
+                    let (w, h) = crate::board_picker::size();
+
+
+
+                    let anchor = canvas_left + (canvas_w + bar_w) / 2.0;
+
+
+
+                    let x = (anchor - w).min(canvas_left + canvas_w - w - 8.0).max(canvas_left + 8.0).max(m);
+
+
+
+                    let y = (pill_top - 8.0 - h).max(m);
+
+
+
+                    let me = me.clone();
+
+
+
+                    let on_card: std::rc::Rc<dyn Fn(usize, &mut Window, &mut App)> = std::rc::Rc::new(move |i, _w, cx| {
+
+                        me.update(cx, |cv, cx| cv.pick_template(i, cx));
+
+                    });
+
+                    let card = crate::board_picker::picker(&tpl_pics, on_card);
+
+
+
+                    els.push(div().absolute().left(px(x)).top(px(y)).child(card).into_any_element());
+
+
+
+                }
+
+
 
                 Popup::Palette { at } => {
 
