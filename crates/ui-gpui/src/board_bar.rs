@@ -1,32 +1,55 @@
 //! The small bar floating over a board's selection: its colours first (`board.setColor`), then the
-//! shape / text-size / connector parts. Structure copied from `ui-egui/src/canvas/board_bar.rs`.
+//! text sizes (`board.setStyle {fontSize}`). Structure copied from `ui-egui/src/canvas/board_bar.rs`.
 //!
-//! This file starts with the container and the colour part; the shape grid, text sizes and
-//! connector routing/caps/style are the next parts to add here.
+//! The shape grid (outlines) and the connector routing / caps / line style are the remaining parts
+//! of the same file; they need shape-outline and line-sample drawing.
 
 use crate::panels::{Cmd, Cmds};
 use crate::widgets::{pt, rgba, tokens};
 use figcraft_doc::{BOARD_COLORS, BoardItem};
-use gpui::{AnyElement, IntoElement, div, prelude::*, px};
+use figcraft_engine::board::TEXT_SIZES;
+use gpui::{AnyElement, IntoElement, SharedString, div, prelude::*, px};
 use serde_json::json;
 
 const HEIGHT: f32 = 40.0;
+const CELL: f32 = 28.0;
 const SWATCH: f32 = 20.0;
 const GAP: f32 = 4.0;
+/// The room each part takes after its controls (the divider and the gap around it).
+const PART_END: f32 = 8.0;
 
 fn color_of(c: figcraft_color::Color) -> crate::canvas::geom::Color32 {
     let [r, g, b, a] = c.to_rgba8();
     crate::canvas::geom::Color32::from_rgba_unmultiplied(r, g, b, a)
 }
 
-/// Whether the selection has anything the bar's colour part changes.
-fn has_color(ds: &figcraft_engine::DocState) -> bool {
-    ds.selection.iter().filter_map(|id| ds.doc.node(*id)).any(|n| {
-        matches!(
-            n.board,
-            Some(BoardItem::Sticky { .. } | BoardItem::Ink | BoardItem::Shape { .. } | BoardItem::Connector(_))
-        )
-    })
+/// What the selected board objects take from the bar (egui `has`): colours for stickies / ink /
+/// shapes / connectors, text sizes for shapes and labels.
+struct Has {
+    color: bool,
+    text: bool,
+}
+
+fn has(ds: &figcraft_engine::DocState) -> Option<Has> {
+    let mut h = Has { color: false, text: false };
+    for n in ds.selection.iter().filter_map(|id| ds.doc.node(*id)) {
+        match &n.board {
+            Some(BoardItem::Sticky { .. } | BoardItem::Ink) => h.color = true,
+            Some(BoardItem::Shape { .. }) => {
+                h.color = true;
+                h.text = true;
+            }
+            Some(BoardItem::Connector(_)) => h.color = true,
+            Some(BoardItem::Label { .. }) => h.text = true,
+            _ => {}
+        }
+    }
+    (h.color || h.text).then_some(h)
+}
+
+/// A thin separator between two parts.
+fn divider(t: &crate::theme::Tokens) -> impl IntoElement {
+    div().flex_none().w(px(1.0)).h(px(20.0)).mx(px(2.0)).bg(rgba(t.border))
 }
 
 /// The bar above a board selection, while nothing is being dragged and the file can be edited.
@@ -38,32 +61,62 @@ pub(crate) fn bar(app: &crate::CanvasApp, cmds: Cmds) -> Option<AnyElement> {
         return None;
     }
     let ds = app.session.ds().ok()?;
-    if !has_color(&ds) {
-        return None;
-    }
+    let h = has(&ds)?;
     let b = ds.doc.bounds_of(&ds.selection)?;
     let tl = app.to_screen(b.x0, b.y0);
     let br = app.to_screen(b.x1, b.y1);
-    let w = 8.0 + BOARD_COLORS.len() as f32 * (SWATCH + GAP) + 8.0;
+    // The bar's width: the colours, a divider + the sizes, and the padding.
+    let mut w = 8.0;
+    if h.color {
+        w += BOARD_COLORS.len() as f32 * (SWATCH + GAP) + PART_END;
+    }
+    if h.text {
+        w += TEXT_SIZES.len() as f32 * (CELL + 2.0) + PART_END;
+    }
     let x = (tl.x + (br.x - tl.x) / 2.0 - w / 2.0).max(0.0);
     let y = (tl.y - 14.0 - HEIGHT).max(0.0);
     let t = tokens();
     let mut row = div().flex().flex_row().items_center().gap(px(GAP)).px(px(8.0));
-    for (i, (name, c)) in BOARD_COLORS.iter().enumerate() {
-        let name = name.to_string();
-        let cmds = cmds.clone();
-        row = row.child(
-            div()
-                .id(gpui::ElementId::from(gpui::SharedString::from(format!("bb-color-{i}"))))
-                .size(px(SWATCH))
-                .rounded(px(4.0))
-                .bg(rgba(color_of(*c)))
-                .border_1()
-                .border_color(rgba(t.border))
-                .cursor_pointer()
-                .hover(|s| s.border_2())
-                .on_click(move |_, _, _| cmds.push(Cmd { id: "board.setColor", params: Some(json!({ "color": name })) })),
-        );
+    if h.color {
+        for (i, (name, c)) in BOARD_COLORS.iter().enumerate() {
+            let name = name.to_string();
+            let cmds = cmds.clone();
+            row = row.child(
+                div()
+                    .id(gpui::ElementId::from(SharedString::from(format!("bb-color-{i}"))))
+                    .size(px(SWATCH))
+                    .rounded(px(4.0))
+                    .bg(rgba(color_of(*c)))
+                    .border_1()
+                    .border_color(rgba(t.border))
+                    .cursor_pointer()
+                    .on_click(move |_, _, _| cmds.push(Cmd { id: "board.setColor", params: Some(json!({ "color": name })) })),
+            );
+        }
+    }
+    if h.color && h.text {
+        row = row.child(divider(&t));
+    }
+    if h.text {
+        for (label, size) in TEXT_SIZES {
+            let cmds = cmds.clone();
+            row = row.child(
+                div()
+                    .id(gpui::ElementId::from(SharedString::from(format!("bb-size-{label}"))))
+                    .size(px(CELL))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded(px(5.0))
+                    .text_size(px(11.0))
+                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                    .text_color(rgba(t.text))
+                    .cursor_pointer()
+                    .hover(|s| s.bg(rgba(t.hover)))
+                    .child(SharedString::from(label))
+                    .on_click(move |_, _, _| cmds.push(Cmd { id: "board.setStyle", params: Some(json!({ "fontSize": size })) })),
+            );
+        }
     }
     Some(
         div()
