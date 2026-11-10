@@ -450,3 +450,39 @@ EGUI 原文件再动手，禁止再出现简化替代**；完成后同步 `CONTR
 3. 首页搜索框只在 **Enter** 提交（冻结的 `TextField` 只有 `set_on_commit`），不是边打边过滤。
 4. 「Join with a code」行未做（依赖 live join 组件）。
 5. 右栏 header 的 Frame 菜单里没有 egui 的 **frame 预设列表**（需要把选区 id 带进 `node.set`）。
+
+---
+
+## O. 2026-11-10 23:0x 本地化根因 + 左栏三段 + 首页模板/在线 + 文件导入
+
+### 本地化：三个真根因
+
+1. **系统语言从来没被读取过**。`CanvasView::new` 里 `figcraft_i18n::set(&prefs.language, None)` ——
+   第二个参数是「系统语言列表」，一直传 `None`，于是 `"system"` 永远回退英文。现在
+   `system_language()` 直接问系统：Windows 用 `GetUserPreferredUILanguages(MUI_LANGUAGE_NAME)`
+   （等价 `ui-egui` 经 `apps/figcraft` 走的 `GlobalizationPreferences::Languages()`），
+   macOS 读 `AppleLanguages`，其他 unix 读 `LANGUAGE` / `LC_ALL` / `LANG`，结果用 `OnceLock` 缓存。
+2. **主菜单完全没翻译**。`TOP_MENUS` 是 `const`（只能放 `tr_noop`），但**画的时候也没过 `tr`**；
+   命令行走的是 `m.label` 原文，子菜单走 `sub` 原文。现在分别改成 `tr(l)` /
+   `figcraft_i18n::menu_item(id, english)` / `tr(&sub)` —— 与 `ui-egui/src/menus.rs` 同一句。
+   右栏 Design/Prototype 标签和选区标题行的类型名同样补上了 `tr`。
+3. **目录本身缺键**。`zh-Hans.toml` 比 `en.toml` 少 **251** 个键；其他语种少 40–245 个。
+   已把 **全部 24 个语种**补齐（es-419 是 `es` 的 overlay，只列差异，无需补）。
+   校验：逐语种与 `en.toml` 求差集（0 缺失）、按节查重复键（0 重复）、
+   `cargo clean -p figcraft-i18n` 后重建（TOML 重新解析通过）。
+
+### 功能
+
+| 项 | 做了什么 |
+|---|---|
+| **边打边过滤** | 冻结件 `TextField` 新增 `set_on_change`（平台输入 / 输入法 / 退格 / 粘贴都会触发；`set_on_commit` 只在 Enter 与失焦）。首页搜索、资源搜索、快捷键搜索、Pages 搜索全部改用它 |
+| **左栏三段** | `layer_tree::render_left_panel` 按 `layers::left_panel` 补齐：64 pt 文件头（可改名 `file.rename` + `Drafts` + 收起按钮）、Pages 段（折叠 / 搜索 / 加页 / 页行 / 分隔页）、Layers 段。新增 `pages_open` / `page_search` / `page_filter` / `left_collapsed` 状态 |
+| **模板卡片网格** | 首页 Templates 段换成 248×234 卡片网格，缩略图用 `Template::build` + `render_area` + `screen_image` 真渲染（缓存在 `ExtraState::template_thumbs`），点击 `file.newFromTemplate` |
+| **在线段** | 列出 `prefs.online_files`（名称 + 服务器）与空态文案；引擎没有 `online.*` 命令，所以只做只读列表，不自造命令 |
+| **文件导入** | `run_command` 拦截 `file.open` / `file.import` / `file.placeImage`，用原生 `rfd` 选择器取路径再执行引擎命令（扩展名表照抄 `app/files.rs::import_dialog`） |
+
+### 诚实边界
+
+- Pages 段还没有**拖拽排序**、**就地改名**、**把图层拖到某页**（egui `pages()` 有，`list_drag` 通用件 GPUI 侧已有但未接）。
+- 在线段没有「刷新 / 打开 / 移除」动作（缺引擎命令）。
+- 模板卡片没有按类别（`Kind`）过滤的分段控件，也没有独立的模板搜索框（复用侧栏搜索）。
