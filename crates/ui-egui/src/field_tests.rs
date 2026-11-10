@@ -711,7 +711,8 @@ fn the_intensity_label_fits_whole_beside_its_value() {
         let mut english = 0.0;
         for lang in i18n::languages() {
             let label = lang.ui.iter().find(|(k, _)| *k == "Intensity").map_or("Intensity", |(_, t)| match t {
-                Text::Plain(s) | Text::Plural { other: s, .. } => s,
+                Text::Plain(s) => *s,
+                Text::Plural(f) => f.other,
             });
             // The test's context has only egui's own font: a label it can't draw (Vietnamese
             // diacritics, CJK) can't be measured here, and the app draws it with a system font.
