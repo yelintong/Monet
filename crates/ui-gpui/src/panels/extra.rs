@@ -242,7 +242,19 @@ pub(crate) fn render(kind: &ExtraKind, app: &CanvasApp, cmds: &Cmds, state: &Ext
         // 1:1 with `ui-egui/src/home.rs`: `CentralPanel` fills the window, with the sidebar on
         // the left and the scrolling content on the right — not a 760x520 centred popover.
         let close = close.clone();
-        return div().id("home-screen").absolute().top(px(0.0)).left(px(0.0)).size_full().bg(rgba(t.panel)).child(body).child(
+        // Start BELOW the title bar (TITLE_H): egui's Home is the `CentralPanel`, drawn under the
+        // tab bar. A `size_full()` from y=0 covered the window controls, so the title bar
+        // disappeared on the Home screen.
+        return div()
+            .id("home-screen")
+            .absolute()
+            .top(px(crate::title_bar::TITLE_H))
+            .left(px(0.0))
+            .right(px(0.0))
+            .bottom(px(0.0))
+            .bg(rgba(t.panel))
+            .child(body)
+            .child(
             div().absolute().top(pt(12.0)).right(pt(12.0)).child(IconButton::new(Icon::Close).size(24.0).on_click(move |_e, _w, _cx| close())),
         );
     }
