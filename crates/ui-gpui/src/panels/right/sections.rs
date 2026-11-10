@@ -320,12 +320,12 @@ pub(crate) fn dim_trail_menu(
         let limit_open = limit_open.clone();
         tf.set_on_trail(move |pos: Point<Pixels>, _w, cx: &mut App| {
             let Some(root) = root.clone() else { return };
-            let mut rows: Vec<MenuRow> = vec![MenuRow::new("Fixed"), MenuRow::new("Hug contents"), MenuRow::new("Fill container")];
+            let mut rows: Vec<MenuRow> = vec![MenuRow::new(tr("Fixed")), MenuRow::new(tr("Hug contents")), MenuRow::new(tr("Fill container"))];
             if !has_min {
-                rows.push(MenuRow::new("Add min"));
+                rows.push(MenuRow::new(tr("Add min")));
             }
             if !has_max {
-                rows.push(MenuRow::new("Add max"));
+                rows.push(MenuRow::new(tr("Add max")));
             }
             if has_min || has_max {
                 rows.push(MenuRow::new(if has_min && has_max {

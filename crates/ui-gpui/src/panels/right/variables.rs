@@ -10,6 +10,7 @@
 //! 这是**表格 / 弹窗**，不是右栏 `PanelSection` 行，所以不受「统一网格 / 禁止手算列宽」约束；
 //! 列宽来自 egui 的 `NAME_W = 240` / `ADD_W = 40`，mode 列等分剩余宽度。
 
+use figcraft_i18n::tr;
 use crate::canvas::geom::Color32;
 use crate::drag::{self, Config as DragCfg, Row as DragRow, Target as DragTarget};
 use crate::panels::{Cmd, Cmds};
@@ -1080,7 +1081,7 @@ impl VariablesEditor {
             .flex_row()
             .items_center()
             .gap(pt(8.0))
-            .child(div().text_size(pt(11.0)).text_color(rgba(t.text)).child("Variables"))
+            .child(div().text_size(pt(11.0)).text_color(rgba(t.text)).child(tr("Variables")))
             .child(
                 div()
                     .px(pt(5.0))
@@ -1132,7 +1133,7 @@ impl VariablesEditor {
                 .text_color(rgba(t.text_secondary))
                 .hover(move |s| s.bg(rgba(t.hover)))
                 .on_mouse_down(MouseButton::Left, move |_: &MouseDownEvent, _, _| Self::import_dialog(&import_cmds))
-                .child("Import…"),
+                .child(tr("Import…")),
         );
         h = h.child(
             div()
@@ -1160,7 +1161,7 @@ impl VariablesEditor {
                         });
                     }
                 })
-                .child("Export…"),
+                .child(tr("Export…")),
         );
 
         // 搜索框 174 + 过滤钮 25 拼成 egui 的 199 宽一体控件。
@@ -1310,7 +1311,7 @@ impl VariablesEditor {
             div()
                 .flex_none().w_full().h(pt(34.0)).flex().flex_row().items_center().pl(pt(16.0))
                 .text_size(pt(11.0)).text_color(rgba(t.text_secondary))
-                .child("Collections")
+                .child(tr("Collections"))
                 .child(div().flex_1().min_w(pt(0.0)))
                 .child(IconButton::new(Icon::Plus).id("vars-add-collection").size(24.0).on_click({
                     let cmds = self.cmds.clone();
@@ -1452,7 +1453,7 @@ impl VariablesEditor {
         // ④ Groups 标题。
         col = col.child(
             div().flex_none().w_full().h(pt(34.0)).flex().items_center().pl(pt(16.0))
-                .text_size(pt(11.0)).text_color(rgba(t.text_secondary)).child("Groups"),
+                .text_size(pt(11.0)).text_color(rgba(t.text_secondary)).child(tr("Groups")),
         );
         let coll_snap = match &library_sel {
             Some(l) => data.libraries.iter().find(|x| &x.id == l).and_then(|x| x.collections.get(cur)).cloned(),
@@ -1468,7 +1469,7 @@ impl VariablesEditor {
             let hover = t.hover;
             all_inner = all_inner.hover(move |s| s.bg(rgba(hover)));
         }
-        all_inner = all_inner.child(div().text_size(pt(11.0)).text_color(rgba(t.text_secondary)).child("All variables"));
+        all_inner = all_inner.child(div().text_size(pt(11.0)).text_color(rgba(t.text_secondary)).child(tr("All variables")));
         gl = gl.child(
             div()
                 .flex_none().w_full().h(pt(SIDE_ROW_H)).flex().items_center().px(pt(8.0))
@@ -1598,7 +1599,7 @@ impl VariablesEditor {
                 .flex_col()
                 .child(
                     div().flex_1().w_full().flex().flex_col().items_center().justify_center().gap(pt(12.0))
-                        .child(div().text_size(pt(11.0)).text_color(rgba(t.text_secondary)).child("Variables store reusable values with modes such as Light and Dark."))
+                        .child(div().text_size(pt(11.0)).text_color(rgba(t.text_secondary)).child(tr("Variables store reusable values with modes such as Light and Dark.")))
                         .child(IconButton::new(Icon::Plus).id("vars-add-collection-empty").size(24.0).on_click({
                             let cmds = self.cmds.clone();
                             move |_, _, _| cmds.push(Cmd { id: "variable.createCollection", params: Some(json!({ "name": "Collection 1", "modes": ["Mode 1"] })) })
@@ -1649,7 +1650,7 @@ impl VariablesEditor {
                 .pl(pt(16.0))
                 .text_size(pt(11.0))
                 .text_color(rgba(t.text_secondary))
-                .child("Name")
+                .child(tr("Name"))
                 .child(div().absolute().right_0().top_0().w(pt(1.0)).h_full().bg(rgba(t.border)))
                 // 右缘 6pt 拖动柄；双击自动适配。
                 .child(
@@ -1843,7 +1844,7 @@ impl VariablesEditor {
                         .cursor_pointer()
                         .flex()
                         .items_center()
-                        .child("Extend collection")
+                        .child(tr("Extend collection"))
                         .on_mouse_down(MouseButton::Left, move |_: &MouseDownEvent, _, _| {
                             cmds.push(Cmd { id: "library.extendCollection", params: Some(json!({ "library": lib, "collection": cid })) });
                         }),
@@ -1898,7 +1899,7 @@ impl VariablesEditor {
         if visible.is_empty() {
             col = col.child(
                 div().flex_none().w_full().h(pt(ROW_H)).flex().items_center().pl(pt(16.0))
-                    .text_size(pt(11.0)).text_color(rgba(t.text_secondary)).child("No matching variables"),
+                    .text_size(pt(11.0)).text_color(rgba(t.text_secondary)).child(tr("No matching variables")),
             );
         } else {
             // 每项尺寸：宽 = 表格可用宽度（行内 Name/add 固定、mode 区自己裁切）；
@@ -2504,7 +2505,7 @@ impl VariablesEditor {
                 .border_color(rgba(t.border))
                 .text_size(pt(10.0))
                 .text_color(rgba(t.text_secondary))
-                .child("Library collection (read-only)");
+                .child(tr("Library collection (read-only)"));
         }
         // "+ Create variable" 是**整块**可点的按钮（图标 + 文本一起响应），且用 `unique()` 命名，
         // 不会每次都建出同名 "Variable"。
@@ -2550,7 +2551,7 @@ impl VariablesEditor {
                         }
                     })
                     .child(paint_icon(Icon::Plus, rgba(t.text_secondary), 14.0))
-                    .child("Create variable"),
+                    .child(tr("Create variable")),
             )
     }
 
@@ -2875,7 +2876,7 @@ impl VariablesEditor {
                         .border_color(rgba(t.border_strong))
                         .bg(rgba(if hidden { t.accent } else { t.panel })),
                 )
-                .child(div().text_size(pt(11.0)).text_color(rgba(t.text)).child("Hide from publishing"))
+                .child(div().text_size(pt(11.0)).text_color(rgba(t.text)).child(tr("Hide from publishing")))
                 .on_mouse_down(MouseButton::Left, {
                     let cmds = self.cmds.clone();
                     let vid = row.id.clone();
@@ -2922,7 +2923,7 @@ impl VariablesEditor {
                         .border_color(rgba(t.border_strong))
                         .bg(rgba(if all_scopes { t.accent } else { t.panel })),
                 )
-                .child(div().text_size(pt(11.0)).text_color(rgba(t.text)).child("All supported properties"))
+                .child(div().text_size(pt(11.0)).text_color(rgba(t.text)).child(tr("All supported properties")))
                 .on_mouse_down(MouseButton::Left, {
                     let cmds = self.cmds.clone();
                     let vid = row.id.clone();

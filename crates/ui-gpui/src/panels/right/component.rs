@@ -7,6 +7,7 @@
 //!
 //! 全部走冻结通用控件与列表行编辑器池，没有新建控件。
 
+use figcraft_i18n::tr;
 use super::data::{ComponentData, PanelData};
 use super::sections::{icon_cmd, icon_row, pick_dropdown, slot};
 use crate::panels::{RightFields, RowEditCtx};
@@ -98,7 +99,7 @@ fn instance_section(f: &RightFields, c: &ComponentData, cx: &mut App, n: &mut us
 
     // ── 组件属性 ──
     if !c.props.is_empty() {
-        sec = sec.child(sublabel_row("Properties"));
+        sec = sec.child(sublabel_row(tr("Properties")));
     }
     for p in &c.props {
         let label = div()

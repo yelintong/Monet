@@ -10,6 +10,7 @@
 //! - egui 的分类色是 8 格**色板弹窗**，`MenuRow` 只画文字，子菜单又画不了色块 → 8 个 hex 下拉项。
 //! - 图标：measure 用 `Line`，ready 的「在专注视图打开」用 `Frame`，link 用 `LinkOn`。
 
+use figcraft_i18n::tr;
 use super::data::{AnnotationRow, DevResourceRow, InspectRow, MeasurementRow, PanelData, ReadyRow};
 use super::inspect::local_dropdown;
 use super::sections::{icon_cmd, icon_row, pick_dropdown, slot};
@@ -34,7 +35,7 @@ pub(crate) fn ready_list(f: &RightFields, d: &PanelData) -> PanelSection {
     // （与 `inspect.readyForDev {status}` 命令同源），这里只负责画。
     let filter = d.dev.ready_filter.min(3);
     let rows: Vec<&ReadyRow> = d.dev.ready.iter().collect();
-    let mut sec = PanelSection::new("Ready for dev")
+    let mut sec = PanelSection::new(tr("Ready for dev"))
         .variant(if rows.is_empty() { SectionHeaderVariant::Dim } else { SectionHeaderVariant::Normal });
     let picks: Vec<(String, usize)> = READY_FILTERS.iter().enumerate().map(|(i, l)| (l.to_string(), i)).collect();
     sec = sec.child(field_row_full(local_dropdown(f, READY_FILTERS[filter.min(3)].into(), 0.0, picks, f.dev_filter.clone())));
@@ -86,7 +87,7 @@ fn ready_line(f: &RightFields, r: &ReadyRow, i: usize) -> gpui::Stateful<Div> {
 /// 无选中：画布上显示哪些注解（过滤器）+ 文件里的分类（改名 / 换色 / 删除 / 新增）。
 pub(crate) fn categories(f: &RightFields, d: &PanelData, cx: &mut App, n: &mut usize) -> PanelSection {
     let t = tokens();
-    let mut sec = PanelSection::new("Annotations").header_trail(icon_row(vec![icon_cmd(
+    let mut sec = PanelSection::new(tr("Annotations")).header_trail(icon_row(vec![icon_cmd(
         Icon::Plus,
         "annotation.addCategory",
         json!({ "name": category_name(&d.dev.categories) }),
@@ -169,7 +170,7 @@ fn category_name(existing: &[super::data::CategoryRow]) -> String {
 pub(crate) fn annotations(f: &RightFields, d: &PanelData, cx: &mut App, n: &mut usize) -> Option<PanelSection> {
     let node = d.dev.node?;
     let empty = d.dev.annotations.is_empty();
-    let mut sec = PanelSection::new("Annotations")
+    let mut sec = PanelSection::new(tr("Annotations"))
         .variant(if empty { SectionHeaderVariant::Dim } else { SectionHeaderVariant::Normal });
     for a in &d.dev.annotations {
         sec = sec.child(field_row_full(annotation_head(f, a, node)));
@@ -301,7 +302,7 @@ pub(crate) fn dev_resources(f: &RightFields, d: &PanelData, cx: &mut App, n: &mu
             cmds.wake();
         })
     };
-    let mut sec = PanelSection::new("Dev resources")
+    let mut sec = PanelSection::new(tr("Dev resources"))
         .variant(if empty { SectionHeaderVariant::Dim } else { SectionHeaderVariant::Normal })
         .header_trail(icon_row(vec![plus]));
 
@@ -441,7 +442,7 @@ pub(crate) fn measurements(f: &RightFields, d: &PanelData) -> Option<PanelSectio
         return None;
     }
     let empty = dev.measurements.is_empty();
-    let mut sec = PanelSection::new("Measurements")
+    let mut sec = PanelSection::new(tr("Measurements"))
         .variant(if empty { SectionHeaderVariant::Dim } else { SectionHeaderVariant::Normal });
     for m in &dev.measurements {
         sec = sec.child(field_row_full(measure_line(f, m)));

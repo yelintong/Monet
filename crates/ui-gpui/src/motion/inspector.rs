@@ -10,6 +10,7 @@
 //! Transform, Layout, Appearance — every animatable value is a [`KeyframeField`] (one
 //! `Input` template whose trailing slot carries the add/remove-keyframe diamond).
 
+use figcraft_i18n::tr;
 use figcraft_doc::anim::motion::ClipKind;
 use figcraft_doc::anim::motion::PresetGroup;
 use figcraft_doc::{Document, NodeId};
@@ -64,7 +65,7 @@ pub fn panel(
 
     let Some(layer) = selected_layer(doc, ui, selection) else {
         body = body.child(
-            div().px(pt(16.0)).py(pt(12.0)).text_size(pt(11.0)).text_color(rgba(t.text_secondary)).child("Select a layer"),
+            div().px(pt(16.0)).py(pt(12.0)).text_size(pt(11.0)).text_color(rgba(t.text_secondary)).child(tr("Select a layer")),
         );
         return wrap(body);
     };
@@ -122,11 +123,11 @@ pub fn panel(
     // ── Transform ─────────────────────────────────────────────────────────────
     body = body.child(
         panel_section("Transform")
-            .child(sublabel_row("Position"))
+            .child(sublabel_row(tr("Position")))
             .child(field_row(vec![field(fields, 0).into_any_element(), field(fields, 1).into_any_element()], no_trailing()))
-            .child(sublabel_row("Scale"))
+            .child(sublabel_row(tr("Scale")))
             .child(field_row(vec![field(fields, 2).into_any_element(), field(fields, 3).into_any_element()], no_trailing()))
-            .child(sublabel_row("Rotation"))
+            .child(sublabel_row(tr("Rotation")))
             .child(field_row(vec![field(fields, 4).into_any_element()], no_trailing())),
     );
     body = body.child(separator());
@@ -191,7 +192,7 @@ fn clips_rows(doc: &Document, ui: &MotionUi, queue: &Queue, layer: NodeId) -> cr
     let clips: Vec<_> = doc.node(layer).map(|n| n.motion.clips.clone()).unwrap_or_default();
     let mut col = div().flex().flex_col().w_full();
     if clips.is_empty() {
-        col = col.child(div().py(pt(4.0)).pl(pt(16.0)).text_size(pt(9.0)).text_color(rgba(t.text_tertiary)).child("None"));
+        col = col.child(div().py(pt(4.0)).pl(pt(16.0)).text_size(pt(9.0)).text_color(rgba(t.text_tertiary)).child(tr("None")));
     }
     for c in clips {
         let selected = ui.selected_clip == Some((layer, c.id));

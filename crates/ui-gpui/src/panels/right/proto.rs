@@ -11,6 +11,7 @@
 //! 图标差异（冻结 `Icon` 集没有 egui 的 `Play` / `Preview`）：play 用 `ChevronRight`、
 //! preview 用 `Eye`、连接字形用 `LinkOn`，语义一一对应。
 
+use figcraft_i18n::tr;
 use super::data::{FlowRow, InteractionRow, PanelData, ProtoData, ScrollData};
 use super::sections::{icon_cmd, icon_row, pick_dropdown, slot};
 use crate::panels::{RightFields, RowEditCtx};
@@ -48,7 +49,7 @@ pub(crate) fn panel(f: &RightFields, d: &PanelData, cx: &mut App, n: &mut usize)
 fn flows_section(f: &RightFields, p: &ProtoData, cx: &mut App, n: &mut usize) -> PanelSection {
     let empty = p.flows.is_empty();
     let plus = icon_cmd(Icon::Plus, "proto.flow.add", json!({}), f, false);
-    let mut sec = PanelSection::new("Flow starting points")
+    let mut sec = PanelSection::new(tr("Flow starting points"))
         .variant(if empty { SectionHeaderVariant::Dim } else { SectionHeaderVariant::Normal })
         .header_trail(icon_row(vec![plus]));
     if empty {
@@ -98,10 +99,10 @@ fn desc_line(text: &str) -> Div {
 fn settings_section(f: &RightFields, p: &ProtoData, cx: &mut App, n: &mut usize) -> PanelSection {
     let s = &p.settings;
     let preview = icon_cmd(Icon::Eye, "proto.preview", json!({}), f, false);
-    let mut sec = PanelSection::new("Prototype settings").header_trail(icon_row(vec![preview]));
+    let mut sec = PanelSection::new(tr("Prototype settings")).header_trail(icon_row(vec![preview]));
 
     // ── Device + 旋转（只有会转的设备才给旋转按钮）──
-    sec = sec.child(sublabel_row("Device"));
+    sec = sec.child(sublabel_row(tr("Device")));
     let devices: Vec<(String, &'static str, Value)> =
         s.devices.iter().map(|d| (d.to_string(), "proto.settings", json!({ "device": d }))).collect();
     let device_dd = pick_dropdown(f, s.device.clone(), 0.0, devices);
@@ -114,7 +115,7 @@ fn settings_section(f: &RightFields, p: &ProtoData, cx: &mut App, n: &mut usize)
 
     // ── 机身色 ──
     if !s.colors.is_empty() {
-        sec = sec.child(sublabel_row("Color"));
+        sec = sec.child(sublabel_row(tr("Color")));
         let rows: Vec<(String, &'static str, Value)> =
             s.colors.iter().map(|(name, _)| (name.to_string(), "proto.settings", json!({ "color": name }))).collect();
         let rgb = s.colors.iter().find(|(name, _)| *name == s.color).map(|(_, c)| *c).unwrap_or([0, 0, 0]);
@@ -125,7 +126,7 @@ fn settings_section(f: &RightFields, p: &ProtoData, cx: &mut App, n: &mut usize)
 
     // ── 自定义尺寸（W/H + 交换）──
     if let Some((w, h)) = s.custom {
-        sec = sec.child(sublabel_row("Size"));
+        sec = sec.child(sublabel_row(tr("Size")));
         let wf = f.row_field(cx, slot(n), &num(w), RowEditCtx { cmd: "proto.settings", params: json!({}), key: "width", scale: 1.0, string_value: false, paint: None, nest: None, nest_key: None, paint_color: None });
         let hf = f.row_field(cx, slot(n), &num(h), RowEditCtx { cmd: "proto.settings", params: json!({}), key: "height", scale: 1.0, string_value: false, paint: None, nest: None, nest_key: None, paint_color: None });
         let swap = icon_cmd(Icon::Rotate, "proto.settings", json!({ "width": h, "height": w }), f, false);
@@ -137,7 +138,7 @@ fn settings_section(f: &RightFields, p: &ProtoData, cx: &mut App, n: &mut usize)
     sec = sec.child(field_row(vec![plain_label("Responsive")], vec![resp]));
 
     // ── Background（色块 + hex 输入）──
-    sec = sec.child(sublabel_row("Background"));
+    sec = sec.child(sublabel_row(tr("Background")));
     let bg = &s.background;
     let color = figcraft_color::Color::from_hex_or_name(bg).unwrap_or(figcraft_color::Color::from_rgb8_const(0x1E, 0x1E, 0x1E));
     let hex = f.row_field(
@@ -179,7 +180,7 @@ fn flow_point_section(f: &RightFields, mine: Option<&FlowRow>, cx: &mut App, n: 
         buttons.push(icon_cmd(Icon::Eye, "proto.preview", json!({}), f, false));
         buttons.push(icon_cmd(Icon::Plus, "proto.flow.add", json!({}), f, false));
     }
-    let mut sec = PanelSection::new("Flow starting point")
+    let mut sec = PanelSection::new(tr("Flow starting point"))
         .variant(if is_start { SectionHeaderVariant::Normal } else { SectionHeaderVariant::Dim })
         .header_trail(icon_row(buttons));
     if let Some(flow) = mine {
@@ -217,7 +218,7 @@ fn interactions_section(f: &RightFields, p: &ProtoData, cx: &mut App, n: &mut us
             { "command": "proto.interaction.add", "params": { "trigger": { "type": "onClick" }, "action": default_navigate(p) } },
         ]);
         let plus = icon_cmd(Icon::Plus, "command.batch", json!({ "label": "Replace interactions", "commands": replace }), f, false);
-        let mut sec = PanelSection::new("Interactions").header_trail(icon_row(vec![plus]));
+        let mut sec = PanelSection::new(tr("Interactions")).header_trail(icon_row(vec![plus]));
         sec = sec.child(field_row_full(note("Mixed interactions: click + to replace them")));
         let remove = icon_cmd(Icon::Minus, "proto.interaction.clear", json!({}), f, false);
         return sec.child(field_row(vec![plain_label("Remove all")], vec![remove]));
@@ -231,7 +232,7 @@ fn interactions_section(f: &RightFields, p: &ProtoData, cx: &mut App, n: &mut us
         f,
         false,
     );
-    let mut sec = PanelSection::new("Interactions")
+    let mut sec = PanelSection::new(tr("Interactions"))
         .variant(if empty { SectionHeaderVariant::Dim } else { SectionHeaderVariant::Normal })
         .header_trail(icon_row(vec![plus]));
     if empty {
@@ -254,7 +255,7 @@ fn interactions_section(f: &RightFields, p: &ProtoData, cx: &mut App, n: &mut us
 fn editor_rows(f: &RightFields, it: &InteractionRow, i: usize, cx: &mut App, n: &mut usize) -> Vec<crate::widgets::FieldRow> {
     let mut out = Vec::new();
     // ── Trigger ──
-    out.push(sublabel_row("Trigger"));
+    out.push(sublabel_row(tr("Trigger")));
     let triggers: Vec<(&'static str, &'static str, Value)> = vec![
         ("On click", "onClick", json!({ "type": "onClick" })),
         ("While hovering", "onHover", json!({ "type": "onHover" })),
@@ -291,7 +292,7 @@ fn editor_rows(f: &RightFields, it: &InteractionRow, i: usize, cx: &mut App, n: 
                 paint_color: None,
             },
         );
-        out.push(sublabel_row("Delay (ms)"));
+        out.push(sublabel_row(tr("Delay (ms)")));
         out.push(field_row_full(field));
     } else if gesture_delay {
         let field = f.row_field(
@@ -310,7 +311,7 @@ fn editor_rows(f: &RightFields, it: &InteractionRow, i: usize, cx: &mut App, n: 
                 paint_color: None,
             },
         );
-        out.push(sublabel_row("Delay (ms)"));
+        out.push(sublabel_row(tr("Delay (ms)")));
         out.push(field_row_full(field));
     }
 
@@ -339,7 +340,7 @@ fn editor_rows(f: &RightFields, it: &InteractionRow, i: usize, cx: &mut App, n: 
     out.push(field_row_full_trailing(plain_label("Add action"), vec![add]));
 
     // ── Transition / Easing / Duration ──
-    out.push(sublabel_row("Transition"));
+    out.push(sublabel_row(tr("Transition")));
     let transitions: [(&'static str, Value); 8] = [
         ("Instant", json!({ "type": "instant" })),
         ("Dissolve", json!({ "type": "dissolve" })),
@@ -354,7 +355,7 @@ fn editor_rows(f: &RightFields, it: &InteractionRow, i: usize, cx: &mut App, n: 
         transitions.iter().map(|(l, v)| (l.to_string(), "proto.interaction.set", json!({ "index": i, "transition": v }))).collect();
     out.push(field_row_full(pick_dropdown(f, it.transition.clone(), 0.0, trows)));
 
-    out.push(sublabel_row("Easing"));
+    out.push(sublabel_row(tr("Easing")));
     let easings = ["Linear", "Ease in", "Ease out", "Ease in and out", "Ease in back", "Ease out back", "Ease in and out back", "Gentle", "Quick", "Bouncy", "Slow"];
     let erows: Vec<(String, &'static str, Value)> = easings
         .iter()
@@ -375,7 +376,7 @@ fn editor_rows(f: &RightFields, it: &InteractionRow, i: usize, cx: &mut App, n: 
         .collect();
     out.push(field_row_full(pick_dropdown(f, it.easing.clone(), 0.0, erows)));
 
-    out.push(sublabel_row("Duration (ms)"));
+    out.push(sublabel_row(tr("Duration (ms)")));
     let dur = f.row_field(
         cx,
         slot(n),
@@ -448,7 +449,7 @@ fn default_navigate(p: &ProtoData) -> Value {
 // ───────────────────────────────────────────────────────────────────────────────────────────────
 
 fn scroll_section(f: &RightFields, s: &ScrollData) -> PanelSection {
-    let mut sec = PanelSection::new("Scroll behavior");
+    let mut sec = PanelSection::new(tr("Scroll behavior"));
     if s.in_frame {
         let rows: Vec<(String, &'static str, Value)> = [
             ("Scroll with parent", "scrolls"),

@@ -9,6 +9,7 @@
 //! 通用件的 `calibrate` 用它加固定行高重建整列，于是根层的全局 `on_mouse_move` 在指针移到
 //! 行间 / 列表外时也能继续解析落点（旧实现只在命中行里更新，指针一离开落点就冻住）。
 
+use figcraft_i18n::tr;
 use std::collections::BTreeSet;
 use std::time::Instant;
 
@@ -164,7 +165,7 @@ impl CanvasView {
             .bg(rgba(t.panel))
             .border_r_1()
             .border_color(rgba(if divider_hot { t.accent } else { t.border }))
-            .child(SectionHeader::new("Layers").variant(SectionHeaderVariant::Normal))
+            .child(SectionHeader::new(tr("Layers")).variant(SectionHeaderVariant::Normal))
             .child(self.render_layer_tree(cx))
     }
 

@@ -17,6 +17,7 @@
 //!
 //! 数据来自 [`super::data::LiveData`]（每帧从 `Session::live()` 现读），UI 不另存状态。
 
+use figcraft_i18n::tr;
 use super::data::{LiveData, PanelData};
 use crate::panels::{Cmd, RightFields};
 use crate::widgets::{Icon, IconButton, pt, rgba, tokens};
@@ -200,9 +201,9 @@ fn present(f: &RightFields) -> Div {
             // `widgets::menu` 对零尺寸锚点直接不画，所以给 1×0 的锚点（贴在指针下方 4 pt）。
         let anchor = Bounds { origin: p, size: gpui::size(px(1.0), px(0.0)) };
             let rows = vec![
-                crate::widgets::MenuRow::new("Present").trail(crate::main_menu::shortcut_text("proto.present").unwrap_or_default()),
-                crate::widgets::MenuRow::new("Preview"),
-                crate::widgets::MenuRow::new("Close preview"),
+                crate::widgets::MenuRow::new(tr("Present")).trail(crate::main_menu::shortcut_text("proto.present").unwrap_or_default()),
+                crate::widgets::MenuRow::new(tr("Preview")),
+                crate::widgets::MenuRow::new(tr("Close preview")),
             ];
             let cmds = menu_cmds.clone();
             let on_pick = Rc::new(move |label: &str, _w: &mut Window, _cx: &mut App| {
@@ -249,7 +250,7 @@ fn share_button(f: &RightFields, live: &LiveData, t: &crate::theme::Tokens) -> g
                 .text_size(pt(11.5))
                 .font_weight(gpui::FontWeight::SEMIBOLD)
                 .text_color(rgba(t.accent_on))
-                .child("Share"),
+                .child(tr("Share")),
         )
 }
 

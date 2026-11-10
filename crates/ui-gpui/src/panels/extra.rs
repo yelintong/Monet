@@ -22,6 +22,7 @@
 //!   样式 `style.apply` 到当前选区。
 //! - Shortcuts：分组下拉 + 搜索，键位全部来自引擎 `KEYS`/`GESTURES`，一个不手抄。
 
+use figcraft_i18n::tr;
 use crate::app::CanvasApp;
 use crate::panels::{Cmd, Cmds};
 use crate::widgets::{
@@ -358,7 +359,7 @@ fn shortcuts_body(state: &ExtraState, cmds: &Cmds, _cx: &mut App) -> Div {
             .child(div().text_size(pt(10.0)).text_color(rgba(t.text_secondary)).child(SharedString::from(format!("{} shortcuts", list.len())))),
     );
     if list.is_empty() {
-        return body.child(div().text_size(pt(11.0)).text_color(rgba(t.text_secondary)).child("No shortcuts match"));
+        return body.child(div().text_size(pt(11.0)).text_color(rgba(t.text_secondary)).child(tr("No shortcuts match")));
     }
     for r in list.iter().take(120) {
         let mut line = div().flex().flex_row().items_center().w_full().h(px(26.0)).gap(pt(6.0));
@@ -452,7 +453,7 @@ fn versions_body(app: &CanvasApp, cmds: &Cmds, state: &ExtraState, cx: &mut App)
         *f = if f.is_some() { None } else { Some(None) };
         vw.wake();
     });
-    let mut sec = PanelSection::new("Version history").header_trail(save_btn);
+    let mut sec = PanelSection::new(tr("Version history")).header_trail(save_btn);
 
     // 预览横幅：正在查看某版本时，给出「回到当前 / 恢复此版本」。
     if let Some(p) = &ds.preview {
@@ -760,7 +761,7 @@ fn compare_body(app: &CanvasApp, cmds: &Cmds, state: &ExtraState, id: Option<fig
             .items_center()
             .gap(pt(8.0))
             .w_full()
-            .child(div().text_size(pt(10.0)).text_color(rgba(t.text_secondary)).child("Compare with"))
+            .child(div().text_size(pt(10.0)).text_color(rgba(t.text_secondary)).child(tr("Compare with")))
             .child(version_dd)
             .child(mode_dd),
     );
@@ -909,7 +910,7 @@ fn compare_body(app: &CanvasApp, cmds: &Cmds, state: &ExtraState, id: Option<fig
             .items_center()
             .gap(pt(8.0))
             .child(resolve)
-            .child(div().text_size(pt(10.0)).text_color(rgba(t.text_secondary)).child("Mark changes as reviewed"))
+            .child(div().text_size(pt(10.0)).text_color(rgba(t.text_secondary)).child(tr("Mark changes as reviewed")))
             .child(close_btn),
     );
     body
@@ -1221,7 +1222,7 @@ fn home_body(app: &CanvasApp, cmds: &Cmds, state: &ExtraState) -> Div {
             .items_center()
             .gap(pt(10.0))
             .child(crate::widgets::icon::paint(Icon::Component, rgba(t.accent), 24.0))
-            .child(div().text_size(pt(16.0)).font_weight(gpui::FontWeight::SEMIBOLD).text_color(rgba(t.text)).child("FigCraft")),
+            .child(div().text_size(pt(16.0)).font_weight(gpui::FontWeight::SEMIBOLD).text_color(rgba(t.text)).child(tr("FigCraft"))),
     );
     side = side.child(state.home_search.clone());
     for (i, (icon, label)) in [(Icon::Page, "Recents"), (Icon::LinkOn, "Online"), (Icon::ViewGrid, "Templates")].into_iter().enumerate() {

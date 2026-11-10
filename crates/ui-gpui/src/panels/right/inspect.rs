@@ -6,6 +6,7 @@
 //! `IconButton` / `swatch`）。语言 / 颜色格式 / rem 是**纯 UI 状态**（egui 存在 `ui.data`），
 //! 走 `RightFields` 的 `RefCell` 并唤醒一帧，不推引擎命令。
 
+use figcraft_i18n::tr;
 use super::data::{AssetRow, InspectData, InspectSection, PanelData};
 use super::sections::{icon_row, slot};
 use crate::panels::RightFields;
@@ -27,7 +28,7 @@ pub(crate) fn panel(f: &RightFields, d: &PanelData, cx: &mut App, n: &mut usize)
     let mut body = div().flex().flex_col().w_full();
     let Some(data) = d.inspect.as_ref() else {
         // 无选中：两条提示 + 就绪列表 + 分类 + 测量（egui 同款顺序）。
-        let mut sec = PanelSection::new("Inspect").variant(SectionHeaderVariant::Dim);
+        let mut sec = PanelSection::new(tr("Inspect")).variant(SectionHeaderVariant::Dim);
         sec = sec.child(field_row_full(note("Select a layer to see its properties and code")));
         sec = sec.child(field_row_full(note("Hover other layers to measure the distance")));
         body = body.child(sec);
@@ -45,7 +46,7 @@ pub(crate) fn panel(f: &RightFields, d: &PanelData, cx: &mut App, n: &mut usize)
 
     // ── Dev Status（egui `dev_mode.rs::status`）：手递手状态 + Focus view / Compare changes ──
     if let Some(s) = d.section.as_ref() {
-        let mut sec = PanelSection::new("Status");
+        let mut sec = PanelSection::new(tr("Status"));
         // 状态走 `node.set {"props": {"devStatus": …}}`：用一个本地下拉选中后推命令。
         let statuses: Vec<(String, &'static str, serde_json::Value)> = [
             ("No status", "node.set", serde_json::json!({"props": {"devStatus": "none"}})),
@@ -80,7 +81,7 @@ pub(crate) fn panel(f: &RightFields, d: &PanelData, cx: &mut App, n: &mut usize)
     let fmt_rows: Vec<(String, usize)> =
         data.formats.iter().enumerate().map(|(i, (label, _))| (label.to_string(), i)).collect();
     body = body.child(
-        PanelSection::new("Color format")
+        PanelSection::new(tr("Color format"))
             .variant(SectionHeaderVariant::Dim)
             .child(field_row_full(local_dropdown(f, data.fmt_label.into(), 0.0, fmt_rows, fmt))),
     );
@@ -105,7 +106,7 @@ pub(crate) fn panel(f: &RightFields, d: &PanelData, cx: &mut App, n: &mut usize)
             });
         })
     };
-    let mut assets = PanelSection::new("Assets")
+    let mut assets = PanelSection::new(tr("Assets"))
         .variant(if data.assets.is_empty() { SectionHeaderVariant::Dim } else { SectionHeaderVariant::Normal });
     if !data.assets.is_empty() {
         assets = assets.header_trail(icon_row(vec![export_all]));
@@ -126,7 +127,7 @@ pub(crate) fn panel(f: &RightFields, d: &PanelData, cx: &mut App, n: &mut usize)
             cx.write_to_clipboard(gpui::ClipboardItem::new_string(code.clone()));
         })
     };
-    let mut code_sec = PanelSection::new("Code").header_trail(icon_row(vec![copy]));
+    let mut code_sec = PanelSection::new(tr("Code")).header_trail(icon_row(vec![copy]));
     let lang = f.inspect_lang.clone();
     let lang_rows: Vec<(String, usize)> = data.langs.iter().enumerate().map(|(i, (label, _))| (label.to_string(), i)).collect();
     let lang_dd = local_dropdown(f, data.lang_label.into(), 0.0, lang_rows, lang);
@@ -168,7 +169,7 @@ fn connect_section(f: &RightFields, data: &InspectData, cx: &mut App, n: &mut us
     let t = tokens();
     let owner = data.connect_owner?;
     let base = serde_json::json!({ "id": owner, "language": data.lang });
-    let mut sec = PanelSection::new("Connect to code")
+    let mut sec = PanelSection::new(tr("Connect to code"))
         .variant(if data.link.is_none() { SectionHeaderVariant::Dim } else { SectionHeaderVariant::Normal });
     let Some(link) = &data.link else {
         let btn = if data.connectable {

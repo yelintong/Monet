@@ -9,6 +9,7 @@
 //! 与 egui 的差异：没有独立 Present 窗口 / 设备外壳 / hotspot 高亮 / 缩放档位 / Inspect 侧栏；
 //! 这里是一个覆盖窗口的演示层，保留播放、导航、过渡、退出这几条主行为。
 
+use figcraft_i18n::tr;
 use crate::app::CanvasApp;
 use crate::canvas::render_worker::screen_image;
 use crate::widgets::{Icon, IconButton, pt, rgba, tokens};
@@ -145,7 +146,7 @@ pub fn render(app: &CanvasApp, state: &PresentState) -> Stateful<Div> {
         stage = stage.child(el);
     } else {
         stage = stage.child(
-            div().text_size(pt(13.0)).text_color(rgba(t.text_secondary)).child("This frame cannot be rendered"),
+            div().text_size(pt(13.0)).text_color(rgba(t.text_secondary)).child(tr("This frame cannot be rendered")),
         );
     }
     // 过渡：用引擎 `poses()` 的 alpha/offset 摆上一帧（SmartAnimate 的淡入 / 位移）。

@@ -5,6 +5,7 @@
 //! are introduced. The right panel restores the egui Design panel's section order; sections whose
 //! controls have not been ported yet are shown as greyed (`Dim`) headers with an empty body.
 
+use figcraft_i18n::tr;
 use crate::CanvasView;
 use crate::canvas::geom::Color32;
 use crate::widgets::menu::MenuRow;
@@ -1399,7 +1400,7 @@ pub(crate) fn blend_rows() -> Vec<MenuRow> {
 /// selection (`distribute.horizontal` / `distribute.vertical` / `arrange.tidy`), each with
 /// `{"ids": ids}`. Shown only when 3+ layers are selected, like the egui original.
 fn distribute_rows() -> Vec<MenuRow> {
-    vec![MenuRow::new("Distribute horizontal spacing"), MenuRow::new("Distribute vertical spacing"), MenuRow::new("Tidy up")]
+    vec![MenuRow::new(tr("Distribute horizontal spacing")), MenuRow::new(tr("Distribute vertical spacing")), MenuRow::new(tr("Tidy up"))]
 }
 
 /// Main-axis alignment options: `MainAlign` serde names → labels. egui's 3×3 picker sets
@@ -1503,7 +1504,7 @@ pub(crate) fn left_panel() -> Stateful<Div> {
         .flex_col()
         .overflow_y_scroll()
         .bg(rgba(t.panel))
-        .child(SectionHeader::new("Layers").variant(SectionHeaderVariant::Normal))
+        .child(SectionHeader::new(tr("Layers")).variant(SectionHeaderVariant::Normal))
 }
 
 /// The right design panel, mirroring the egui Design panel's section order.
@@ -1684,16 +1685,16 @@ pub(crate) fn right_panel(
                     rot_cmds.push(Cmd { id: C[i.min(2)], params: None });
                 })),
             );
-            let mut pos_sec = PanelSection::new("Position");
+            let mut pos_sec = PanelSection::new(tr("Position"));
             if let Some(b) = distribute_btn {
                 pos_sec = pos_sec.header_trail(b);
             }
             let pos_sec = pos_sec
-                .child(sublabel_row("Alignment"))
+                .child(sublabel_row(tr("Alignment")))
                 .child(field_row(vec![h.into_any_element(), v.into_any_element()], Vec::<IconButton>::new()))
-                .child(sublabel_row("Position"))
+                .child(sublabel_row(tr("Position")))
                 .child(field_row(vec![f.x.clone().into_any_element(), f.y.clone().into_any_element()], Vec::<IconButton>::new()))
-                .child(sublabel_row("Rotation"))
+                .child(sublabel_row(tr("Rotation")))
                 .child(field_row(vec![f.rotation.clone().into_any_element(), rotate.into_any_element()], Vec::<IconButton>::new()));
 
             // ── Constraints（egui `right.rs::position_fields`：仅 frame 子层、自身无自动布局或为
@@ -1732,7 +1733,7 @@ pub(crate) fn right_panel(
                     ("Scale".into(), "node.set", serde_json::json!({ "props": { "constraints": { "vertical": "scale" } } })),
                 ];
                 pos_sec
-                    .child(sublabel_row("Constraints"))
+                    .child(sublabel_row(tr("Constraints")))
                     .child(field_row(
                         vec![
                             right::sections::pick_dropdown(f, pretty_h(data.constraints_h), col, h_opts),
@@ -1794,7 +1795,7 @@ pub(crate) fn right_panel(
                         dir_cmds.push(Cmd { id: "node.set", params: Some(serde_json::json!({ "props": { "layout": m } })) });
                     })),
                 );
-                sec = sec.child(sublabel_row("Layout")).child(field_row_full(dir));
+                sec = sec.child(sublabel_row(tr("Layout"))).child(field_row_full(dir));
             }
 
             // ② Dimensions（egui `dimensions`：**无条件**显示）。
@@ -1807,7 +1808,7 @@ pub(crate) fn right_panel(
                 IconButton::new(if lock_on { Icon::LinkOn } else { Icon::LinkOff }).size(24.0).active(lock_on).on_click(move |_e, _w, _cx| {
                     lock_cmds.push(Cmd { id: "node.set", params: Some(serde_json::json!({ "props": { "constrainProportions": !lock_on } })) });
                 });
-            sec = sec.child(sublabel_row("Dimensions")).child(field_row(vec![f.w.clone(), f.h.clone()], vec![constrain]));
+            sec = sec.child(sublabel_row(tr("Dimensions"))).child(field_row(vec![f.w.clone(), f.h.clone()], vec![constrain]));
             // Min/Max：仅当该轴已设值、或刚从 sizing 菜单 Add 时才显示（egui `limit_row_v`）。
             let lo = *f.limit_open.borrow();
             let any_min = dims.min_w.is_some() || dims.min_h.is_some() || lo[0] || lo[2];
@@ -1896,7 +1897,7 @@ pub(crate) fn right_panel(
                     // 翻转后必须唤醒视图重绘，否则右栏读到的还是旧 `pad_individual`，四个内边距字段不展开。
                     toggle_cmds.wake();
                 });
-                sec = sec.child(sublabel_row("Padding"));
+                sec = sec.child(sublabel_row(tr("Padding")));
                 if individual {
                     sec = sec
                         .child(field_row(vec![f.pad_l.clone(), f.pad_t.clone()], Vec::<IconButton>::new()))
@@ -1987,7 +1988,7 @@ pub(crate) fn animation_bar() -> Div {
                 .flex_row()
                 .items_center()
                 .px(pt(16.0))
-                .child(div().text_size(pt(11.0)).text_color(rgba(t.text)).child("Animations")),
+                .child(div().text_size(pt(11.0)).text_color(rgba(t.text)).child(tr("Animations"))),
         )
         .child(div().flex_1().w_full())
 }

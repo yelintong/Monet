@@ -8,6 +8,7 @@
 //! `on_mouse_move` 只在悬停时触发，所以 move/up 由根视图的窗口级事件路由进来，
 //! 与 `timeline.rs` 的拖拽同一套做法。控件全部复用冻结的 `widgets/`。
 
+use figcraft_i18n::tr;
 use crate::canvas::geom::{Color32, CornerRadius, Pos2, Rect, Stroke, StrokeKind, pos2, vec2};
 use crate::canvas::painter::Painter;
 use crate::motion::{Act, EaseTarget, MotionUi, Queue};
@@ -247,7 +248,7 @@ pub fn editor(cx: &mut App, ease: Ease, target: EaseTarget, queue: &Queue, salt:
             if let Ok(v) = s.trim().parse::<f32>() { q_vals.push(Act::EaseSet(target, Ease::spring_with(v, algo, mass))); }
         }));
         grid = grid.child(field_row(vec![
-            div().text_size(pt(11.0)).text_color(rgba(t.text_secondary)).child("Elasticity").into_any_element(),
+            div().text_size(pt(11.0)).text_color(rgba(t.text_secondary)).child(tr("Elasticity")).into_any_element(),
             f.into_any_element(),
         ], Vec::<IconButton>::new()));
         let (z, w0) = (spring_damping_ratio(el), spring_angular_frequency(el, algo));
@@ -259,7 +260,7 @@ pub fn editor(cx: &mut App, ease: Ease, target: EaseTarget, queue: &Queue, salt:
         let q_env = queue.clone();
         let exact = algo == SpringAlgorithm::Tight;
         grid = grid.child(field_row(vec![
-            div().text_size(pt(11.0)).text_color(rgba(t.text_secondary)).child("Exact envelope").into_any_element(),
+            div().text_size(pt(11.0)).text_color(rgba(t.text_secondary)).child(tr("Exact envelope")).into_any_element(),
             IconButton::new(Icon::Check).active(exact).on_click(move |_, _, _| {
                 let next = if exact { SpringAlgorithm::Envelope } else { SpringAlgorithm::Tight };
                 q_env.push(Act::EaseSet(target, Ease::spring_with(el, next, mass)));
@@ -270,7 +271,7 @@ pub fn editor(cx: &mut App, ease: Ease, target: EaseTarget, queue: &Queue, salt:
             if let Ok(v) = s.trim().parse::<f32>() { q_mass.push(Act::EaseSet(target, Ease::spring_with(el, algo, v.clamp(0.01, 100.0)))); }
         }));
         grid = grid.child(field_row(vec![
-            div().text_size(pt(11.0)).text_color(rgba(t.text_secondary)).child("Mass").into_any_element(),
+            div().text_size(pt(11.0)).text_color(rgba(t.text_secondary)).child(tr("Mass")).into_any_element(),
             mf.into_any_element(),
         ], Vec::<IconButton>::new()));
     } else if let Some(c) = ease.control_points() {
@@ -309,7 +310,7 @@ pub fn editor(cx: &mut App, ease: Ease, target: EaseTarget, queue: &Queue, salt:
                 .h(pt(24.0)).w_full().flex().items_center().justify_center().rounded(pt(5.0))
                 .bg(rgba(t.field)).cursor_pointer()
                 .on_mouse_down(MouseButton::Left, move |_, _, _| q.push(Act::SetEasingTarget(false)))
-                .text_size(pt(11.0)).text_color(rgba(t.text)).child("Done"),
+                .text_size(pt(11.0)).text_color(rgba(t.text)).child(tr("Done")),
         ));
     }
     body = body.child(sec);
@@ -320,7 +321,7 @@ pub fn editor(cx: &mut App, ease: Ease, target: EaseTarget, queue: &Queue, salt:
 pub fn panel(cx: &mut App, doc: &Document, ui: &MotionUi, queue: &Queue, _window: &mut Window) -> Div {
     let t = tokens();
     let Some(k) = ui.selected else {
-        return div().w_full().p(pt(16.0)).text_size(pt(11.0)).text_color(rgba(t.text_secondary)).child("Select a segment");
+        return div().w_full().p(pt(16.0)).text_size(pt(11.0)).text_color(rgba(t.text_secondary)).child(tr("Select a segment"));
     };
     let current = doc.node(k.node)
         .and_then(|n| n.motion.track(k.property))
@@ -336,7 +337,7 @@ pub fn panel(cx: &mut App, doc: &Document, ui: &MotionUi, queue: &Queue, _window
     grid = grid.child(field_row(vec![
         back.into_any_element(),
         div().flex_1().text_size(pt(11.5)).font_weight(gpui::FontWeight::SEMIBOLD).text_color(rgba(t.text))
-            .child("Easing").into_any_element(),
+            .child(tr("Easing")).into_any_element(),
     ], Vec::<IconButton>::new()));
     grid = grid.child(sublabel_row2("Curve", current.name().to_string()));
     body = body.child(grid);

@@ -143,6 +143,7 @@ pub use preview::export_preview;
 
 
 
+use figcraft_i18n::tr;
 use std::cell::RefCell;
 
 use std::ops::Range;
@@ -6494,7 +6495,7 @@ impl Render for CanvasView {
 
                                 .text_color(widgets::rgba(t.menu_dim))
 
-                                .child("No actions match this search.")
+                                .child(tr("No actions match this search."))
 
                                 .into_any_element()]
 
