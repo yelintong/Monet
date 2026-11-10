@@ -8,6 +8,7 @@
 //! 所有写回都通过 `Cmd` 通道（`sync_panel` 统一 `execute`），与 egui 的 `app.run/set_props` 同构。
 //! 动态列表的输入框由父模块的**编辑器池**提供（retained tree 不能每帧新建 `Entity`）。
 
+use figcraft_i18n::tr;
 use super::data::{PaintRow, PanelData, ViewData};
 use crate::canvas::geom::Color32;
 use crate::motion::{Act, Queue};
@@ -837,7 +838,7 @@ pub(crate) fn effects(
     let Some(rows) = d.effects.clone().filter(|v| !v.is_empty()) else {
         return Section::empty("Effects", icon_row(icons));
     };
-    let mut sec = PanelSection::new("Effects").header_trail(icon_row(icons));
+    let mut sec = PanelSection::new(tr("Effects")).header_trail(icon_row(icons));
     // egui `effects.rs`：`style_picker::chip(StyleSlot::Effect)` 紧跟在 header 后面。
     if let Some(chip) = style_chip(f, d.style_chips[2].as_ref(), "effect") {
         sec = sec.child(chip);
@@ -900,7 +901,7 @@ pub(crate) fn selection_colors(
     if d.selection_colors.len() < 2 {
         return None;
     }
-    let mut sec = PanelSection::new("Selection colors");
+    let mut sec = PanelSection::new(tr("Selection colors"));
     for row in d.selection_colors.iter() {
         let targets = row.targets.clone();
         let hex_slot = slot(n);
@@ -986,7 +987,7 @@ pub(crate) fn grids(f: &RightFields, d: &PanelData, col: f32) -> Section {
     let Some(rows) = d.grids.clone().filter(|v| !v.is_empty()) else {
         return Section::empty("Layout grid", icon_row(icons));
     };
-    let mut sec = PanelSection::new("Layout grid").header_trail(icon_row(icons));
+    let mut sec = PanelSection::new(tr("Layout grid")).header_trail(icon_row(icons));
     // egui `effects.rs::grids`：`style_picker::chip(StyleSlot::Grid)` 紧跟 header。
     if let Some(chip) = style_chip(f, d.style_chips[3].as_ref(), "grid") {
         sec = sec.child(chip);
@@ -1036,7 +1037,7 @@ pub(crate) fn export(f: &RightFields, d: &PanelData, col: f32, n: &mut usize, cx
     let Some(rows) = d.exports.clone().filter(|v| !v.is_empty()) else {
         return Section::empty("Export", plus);
     };
-    let mut sec = PanelSection::new("Export").header_trail(plus);
+    let mut sec = PanelSection::new(tr("Export")).header_trail(plus);
     let tick = |label: &str, on: bool| format!("{label}{}", if on { " ✓" } else { "" });
     for row in rows.iter() {
         let index = row.index;
@@ -1182,7 +1183,7 @@ pub(crate) fn appearance(
         *blend_open_for_click.borrow_mut() = open;
         blend_cmds.wake();
     });
-    let mut sec = PanelSection::new("Appearance")
+    let mut sec = PanelSection::new(tr("Appearance"))
         .header_trail(icon_row(vec![eye, bind, blend]))
         .child(sublabel_row2("Opacity", "Corner radius"))
         .child(field_row(vec![opacity.clone(), corner.clone()], Vec::<IconButton>::new()));
@@ -1211,7 +1212,7 @@ pub(crate) fn typography(f: &RightFields, d: &PanelData) -> PanelSection {
         Icon::Variable,
         d.text_variables.iter().map(|v| (v.clone(), "variable.bind", json!({ "field": "characters", "variable": v }))).collect(),
     );
-    let mut sec = PanelSection::new("Typography").header_trail(icon_row(vec![var, style_menu(f, d, "text", None, Icon::Dot)]));
+    let mut sec = PanelSection::new(tr("Typography")).header_trail(icon_row(vec![var, style_menu(f, d, "text", None, Icon::Dot)]));
 
     // ── 字体族（整行）──
     let families: Vec<(String, &'static str, Value)> = figcraft_text::family_names()
@@ -1316,11 +1317,11 @@ pub(crate) fn typography(f: &RightFields, d: &PanelData) -> PanelSection {
 /// 只有一行提示（egui `widgets::note`）。写回全部走 `vector.edit.*`，引擎按当前点选区执行。
 pub(crate) fn vector_points(f: &RightFields, d: &PanelData, cx: &mut App, n: &mut usize) -> PanelSection {
     use figcraft_doc::{HandleMirroring, StrokeCap, StrokeJoin};
-    let Some(v) = d.vector.as_ref() else { return PanelSection::new("Points") };
+    let Some(v) = d.vector.as_ref() else { return PanelSection::new(tr("Points")) };
     // Variable width 工具：右栏只画 Width point 节（egui `points` 开头同款分支）。
     if let Some(w) = &v.width_point {
         let round = |x: f64| x;
-        let mut sec = PanelSection::new("Width point");
+        let mut sec = PanelSection::new(tr("Width point"));
         sec = sec.child(sublabel_row2("Position", "Width"));
         let tf = f.row_field(
             cx,
@@ -1399,15 +1400,15 @@ pub(crate) fn vector_points(f: &RightFields, d: &PanelData, cx: &mut App, n: &mu
         ));
     }
     sec = sec
-        .child(sublabel_row("Position"))
+        .child(sublabel_row(tr("Position")))
         .child(field_row(vec![f.vpt_x.clone(), f.vpt_y.clone()], Vec::<IconButton>::new()));
     if v.w.is_some() || v.h.is_some() {
         sec = sec
-            .child(sublabel_row("Dimensions"))
+            .child(sublabel_row(tr("Dimensions")))
             .child(field_row(vec![f.vpt_w.clone(), f.vpt_h.clone()], Vec::<IconButton>::new()));
     }
     sec = sec
-        .child(sublabel_row("Corner radius"))
+        .child(sublabel_row(tr("Corner radius")))
         .child(field_row(vec![f.vpt_radius.clone()], Vec::<IconButton>::new()));
 
     // Handle mirroring（egui `menu_popup` + `HandleMirroring::id`）。
@@ -1428,7 +1429,7 @@ pub(crate) fn vector_points(f: &RightFields, d: &PanelData, cx: &mut App, n: &mu
             (label.to_string(), "vector.edit.mirroring", json!({ "mode": m.id() }))
         })
         .collect();
-    sec = sec.child(sublabel_row("Mirroring")).child(field_row_full(pick_dropdown(f, mirror_label, 200.0, mirror_rows)));
+    sec = sec.child(sublabel_row(tr("Mirroring"))).child(field_row_full(pick_dropdown(f, mirror_label, 200.0, mirror_rows)));
 
     // 这些点上的端点 / 连接样式（`Some(None)` = 跟图层一致，`None` = Mixed）。
     let mut cap_rows: Vec<(String, &'static str, Value)> = vec![("Same as layer".into(), "vector.edit.strokeCap", json!({ "cap": Value::Null }))];
@@ -1470,7 +1471,7 @@ pub(crate) fn vector_points(f: &RightFields, d: &PanelData, cx: &mut App, n: &mu
 /// 缩放到新选区。展开状态存在 `RightFields`（egui 存在 `ui.data` 临时值里），默认只开 Phone。
 pub(crate) fn frame_presets(f: &RightFields, _d: &PanelData) -> PanelSection {
     use figcraft_engine::cmd::create::FRAME_PRESETS;
-    let mut sec = PanelSection::new("Frame");
+    let mut sec = PanelSection::new(tr("Frame"));
     let mut cats: Vec<&'static str> = Vec::new();
     for (c, ..) in FRAME_PRESETS {
         if !cats.contains(c) {
@@ -1541,7 +1542,7 @@ pub(crate) fn frame_presets(f: &RightFields, _d: &PanelData) -> PanelSection {
 /// W/H/倍数的字段是 `RightFields` 里的池化 `TextField`，提交时经 `transform.scale` 生效
 /// （描边、效果、圆角、文字都随图层一起缩放）；锚点点击推 `tool.scaleAnchor`。
 pub(crate) fn scale(f: &RightFields, d: &PanelData, cx: &mut App) -> PanelSection {
-    let mut sec = PanelSection::new("Scale");
+    let mut sec = PanelSection::new(tr("Scale"));
     let Some(s) = d.scale else { return sec };
     // 每帧把当前包围盒 / 支点写进提交上下文，供 W / H 字段的 `on_commit` 换算倍数。
     *f.scale_ctx.borrow_mut() = s;
@@ -1549,7 +1550,7 @@ pub(crate) fn scale(f: &RightFields, d: &PanelData, cx: &mut App) -> PanelSectio
     f.scale_w.update(cx, |tf, _| tf.set_value(format!("{}", r2(s.w))));
     f.scale_h.update(cx, |tf, _| tf.set_value(format!("{}", r2(s.h))));
     sec = sec
-        .child(sublabel_row("Dimensions"))
+        .child(sublabel_row(tr("Dimensions")))
         .child(field_row(vec![f.scale_w.clone(), f.scale_h.clone()], Vec::<IconButton>::new()))
         .child(sublabel_row2("Scale", "Anchor"))
         .child(field_row(
@@ -1660,7 +1661,7 @@ pub(crate) fn variable_modes(f: &RightFields, d: &PanelData, row_w: f32) -> Opti
         return None;
     }
     let t = tokens();
-    let mut sec = PanelSection::new("Variable modes");
+    let mut sec = PanelSection::new(tr("Variable modes"));
     for m in &d.variable_modes {
         // egui `paints.rs::variable_modes`: both the collection and the mode are sent as **ids**,
         // not their display names; `Auto` is `mode: null`.
@@ -1693,7 +1694,7 @@ pub(crate) fn variable_modes(f: &RightFields, d: &PanelData, row_w: f32) -> Opti
 
 pub(crate) fn section(f: &RightFields, d: &PanelData, row_w: f32) -> Option<PanelSection> {
     let s = d.section.as_ref()?;
-    let mut sec = PanelSection::new("Section");
+    let mut sec = PanelSection::new(tr("Section"));
     if s.is_section {
         // 8 个 Section color 色板（`section_panel.rs::SECTION_COLORS`）。
         let colors = [
@@ -1720,7 +1721,7 @@ pub(crate) fn section(f: &RightFields, d: &PanelData, row_w: f32) -> Option<Pane
                 ),
             );
         }
-        sec = sec.child(sublabel_row("Section color")).child(field_row_full(swatches));
+        sec = sec.child(sublabel_row(tr("Section color"))).child(field_row_full(swatches));
         sec = sec.child(field_row(
             vec![pick_dropdown(
                 f,
@@ -1734,7 +1735,7 @@ pub(crate) fn section(f: &RightFields, d: &PanelData, row_w: f32) -> Option<Pane
             Vec::<IconButton>::new(),
         ));
     }
-    sec = sec.child(sublabel_row("Status")).child(field_row(
+    sec = sec.child(sublabel_row(tr("Status"))).child(field_row(
         vec![pick_dropdown(
             f,
             s.status.clone(),
@@ -1790,7 +1791,7 @@ pub(crate) fn header(f: &RightFields, d: &PanelData, col: f32) -> Option<PanelSe
         false,
     );
     Some(
-        PanelSection::new("Layer")
+        PanelSection::new(tr("Layer"))
             .header_trail(icon_row(vec![component, mask, boolean]))
             .child(field_row(vec![SharedString::from(h.label.clone())], kind.into_iter().collect::<Vec<IconButton>>())),
     )
@@ -1843,12 +1844,12 @@ fn local_style_row(f: &RightFields, ty: &'static str, name: SharedString, rows: 
 /// 空选区时的右栏（egui `right.rs::page_section`）：**三个独立小节**，各自一个 40 pt 标题：
 /// ① Page（背景色 / Color profile）② Local variables ③ Local styles。
 ///
-/// 之前这三块被塞进同一个 `PanelSection::new("Page")` 里，「Local variables」和「Local styles」
+/// 之前这三块被塞进同一个 `PanelSection::new(tr("Page"))` 里，「Local variables」和「Local styles」
 /// 只是 `sublabel_row2` 的两个小字，样式列表更是压根没画——所以 Local styles 看着「没出现在
 /// 该出现的位置」。现在按 egui 拆成独立节，节与节之间由调用方补分隔线。
 pub(crate) fn page(f: &RightFields, d: &PanelData, row_w: f32, n: &mut usize, cx: &mut App) -> Vec<PanelSection> {
     let Some(p) = d.page.as_ref() else { return Vec::new() };
-    let mut sec = PanelSection::new("Page");
+    let mut sec = PanelSection::new(tr("Page"));
     let hex_slot = slot(n);
     let op_slot = slot(n);
     let hex_ed = f.row_field(
@@ -1889,7 +1890,7 @@ pub(crate) fn page(f: &RightFields, d: &PanelData, row_w: f32, n: &mut usize, cx
     let mut out = vec![sec];
 
     // ── ② Local variables（egui：独立标题 + 「Open variables (N)」下拉；空时标题置灰）──
-    let mut vars = PanelSection::new("Local variables")
+    let mut vars = PanelSection::new(tr("Local variables"))
         .variant(if p.local_variables == 0 { SectionHeaderVariant::Dim } else { SectionHeaderVariant::Normal });
     let table = d.variables.clone();
     let popups = f.popups();
@@ -1905,7 +1906,7 @@ pub(crate) fn page(f: &RightFields, d: &PanelData, row_w: f32, n: &mut usize, cx
 
     // ── ③ Local styles（egui `style_picker::local_styles`）：按 Text / Color / Effect / Grid
     //       分成四组，每组一个小标题 + 该类型的样式行。空文档只有置灰标题。──
-    let mut styles = PanelSection::new("Local styles")
+    let mut styles = PanelSection::new(tr("Local styles"))
         .variant(if p.local_styles == 0 { SectionHeaderVariant::Dim } else { SectionHeaderVariant::Normal });
     for (ty, caption) in [("text", "Text"), ("paint", "Color"), ("effect", "Effect"), ("grid", "Grid")] {
         let list: Vec<(String, String)> =

@@ -11,6 +11,7 @@ use crate::panels::{Cmd, RightFields};
 use crate::widgets::{Dropdown, MenuRow, rgba, tokens};
 use figcraft_doc::Document;
 use figcraft_engine::cmd::comment::{Filter, Query, Sort, frame_of, query};
+use figcraft_i18n::tr;
 use gpui::{App, Div, IntoElement, SharedString, Window, div, prelude::*, px};
 use serde_json::json;
 use std::cell::RefCell;
@@ -87,14 +88,14 @@ pub(crate) fn panel(f: &RightFields, rows: &[CommentRow], total: usize) -> Div {
             .items_center()
             .h(px(40.0))
             .px(px(16.0))
-            .child(div().flex_1().text_size(px(12.0)).font_weight(gpui::FontWeight::SEMIBOLD).text_color(rgba(t.text)).child("Comments"))
+            .child(div().flex_1().text_size(px(12.0)).font_weight(gpui::FontWeight::SEMIBOLD).text_color(rgba(t.text)).child(tr("Comments")))
             .child(filter_button(f, cu.filter, cu.sort)),
     );
     if rows.is_empty() {
         let (title, sub) = if total == 0 {
-            ("No comments yet", "Click anywhere on the canvas to leave one.")
+            (tr("No comments yet"), tr("Click anywhere on the canvas to leave one."))
         } else {
-            ("No matching comments", "Try another search or filter.")
+            (tr("No matching comments"), tr("Try another search or filter."))
         };
         return body.child(
             div()
@@ -186,12 +187,12 @@ fn avatar(name: &str) -> Div {
 /// (egui's `Adjust` icon + `menu_popup` with `Filter::ALL`, `Sort::ALL`, "Mark all as read").
 fn filter_button(f: &RightFields, filter: Filter, sort: Sort) -> Dropdown {
     let rows: Vec<MenuRow> = {
-        let mut v: Vec<MenuRow> = Filter::ALL.iter().map(|x| MenuRow::new(x.label()).checked(Some(*x == filter))).collect();
-        v.extend(Sort::ALL.iter().map(|x| MenuRow::new(x.label()).separator().checked(Some(*x == sort))));
-        v.push(MenuRow::new("Mark all as read"));
+        let mut v: Vec<MenuRow> = Filter::ALL.iter().map(|x| MenuRow::new(tr(x.label())).checked(Some(*x == filter))).collect();
+        v.extend(Sort::ALL.iter().map(|x| MenuRow::new(tr(x.label())).separator().checked(Some(*x == sort))));
+        v.push(MenuRow::new(tr("Mark all as read")));
         v
     };
-    let mut d = Dropdown::new(filter.label(), 0.0, None).fill();
+    let mut d = Dropdown::new(tr(filter.label()), 0.0, None).fill();
     if let Some(root) = f.root() {
         let ui = f.comment_ui();
         let cmds = f.queue();
@@ -200,11 +201,11 @@ fn filter_button(f: &RightFields, filter: Filter, sort: Sort) -> Dropdown {
             let cmds = cmds.clone();
             let menu = rows.clone();
             let on_pick = Rc::new(move |label: &str, _w: &mut Window, _cx: &mut App| {
-                if let Some(f) = Filter::ALL.iter().find(|x| x.label() == label) {
+                if let Some(f) = Filter::ALL.iter().find(|x| tr(x.label()) == label) {
                     ui.borrow_mut().filter = *f;
-                } else if let Some(s) = Sort::ALL.iter().find(|x| x.label() == label) {
+                } else if let Some(s) = Sort::ALL.iter().find(|x| tr(x.label()) == label) {
                     ui.borrow_mut().sort = *s;
-                } else if label == "Mark all as read" {
+                } else if label == tr("Mark all as read") {
                     cmds.push(Cmd { id: "comment.markRead", params: Some(json!({})) });
                 }
             });

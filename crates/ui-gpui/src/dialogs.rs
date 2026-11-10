@@ -22,6 +22,7 @@
 //! (`commands`) or contributes a value to the button's command params (`values`).
 
 use crate::CanvasView;
+use figcraft_i18n::tr;
 use crate::panels::{Cmd, Cmds};
 use crate::widgets::dropdown::dropdown;
 use crate::widgets::menu::popup_backdrop;
@@ -255,7 +256,7 @@ impl Spec {
     /// Every dialog has a way out, even one built by mistake.
     fn with_cancel(mut self) -> Self {
         if !self.buttons.iter().any(|b| b.action == Action::Close) {
-            self.buttons.push(Button::close("Cancel"));
+            self.buttons.push(Button::close(tr("Cancel")));
         }
         self
     }
@@ -325,11 +326,11 @@ pub(crate) fn spec(kind: Kind, data: &Value) -> Spec {
                 id: "file.export",
                 params: json!({"format": format, "scale": scale}),
             };
-            Spec::new("Export")
+            Spec::new(tr("Export"))
                 .width(320.0)
-                .field(Field::Section { title: "With the layers' export settings" })
-                .field(Field::Action { label: "Export layers", id: "file.exportLayers", params: json!({}) })
-                .field(Field::Section { title: "The selection as one file" })
+                .field(Field::Section { title: tr("With the layers' export settings") })
+                .field(Field::Action { label: tr("Export layers"), id: "file.exportLayers", params: json!({}) })
+                .field(Field::Section { title: tr("The selection as one file") })
                 .field(preset("PNG @1x", "png", 1.0))
                 .field(preset("PNG @2x", "png", 2.0))
                 .field(preset("PNG @3x", "png", 3.0))
@@ -338,11 +339,11 @@ pub(crate) fn spec(kind: Kind, data: &Value) -> Spec {
                 .field(preset("SVG", "svg", 1.0))
                 .field(preset("PDF", "pdf", 1.0))
                 .field(preset("Vector Drawable", "vectordrawable", 1.0))
-                .field(Field::Section { title: "PDF print options" })
-                .field(Field::Preview { label: "Nothing to preview: select a layer first." })
-                .field(Field::Section { title: "The whole file" })
-                .field(Field::Action { label: ".fig (experimental)", id: "file.export", params: json!({"format": "fig"}) })
-                .field(Field::Note { text: "Other apps may not open every .fig file exported here.".to_string() })
+                .field(Field::Section { title: tr("PDF print options") })
+                .field(Field::Preview { label: tr("Nothing to preview: select a layer first.") })
+                .field(Field::Section { title: tr("The whole file") })
+                .field(Field::Action { label: tr(".fig (experimental)"), id: "file.export", params: json!({"format": "fig"}) })
+                .field(Field::Note { text: tr("Other apps may not open every .fig file exported here.").to_string() })
                 .with_cancel()
         }
         Kind::Preferences => {
@@ -361,9 +362,9 @@ pub(crate) fn spec(kind: Kind, data: &Value) -> Spec {
             let lang = text("language");
             let lang_codes = ["system", "en", "zh-Hans", "ja", "de", "fr"];
             let lang_active = lang_codes.iter().position(|c| lang.eq_ignore_ascii_case(c)).unwrap_or(0);
-            Spec::new("Preferences")
+            Spec::new(tr("Preferences"))
                 .width(360.0)
-                .field(Field::Section { title: "General" })
+                .field(Field::Section { title: tr("General") })
                 .field(toggle("keepTool", "Keep tool selected after use", "pref.keepTool", on("keep_tool")))
                 .field(toggle("highlightHover", "Highlight layers on hover", "pref.highlightHover", on("highlight_on_hover")))
                 .field(toggle("renameDuplicates", "Rename duplicated layers", "pref.renameDuplicates", on("rename_duplicates")))
@@ -372,27 +373,27 @@ pub(crate) fn spec(kind: Kind, data: &Value) -> Spec {
                 .field(toggle("reduceMotion", "Reduce motion", "pref.reduceMotion", on("reduce_motion")))
                 .field(toggle("autoSave", "Save files automatically", "pref.autoSave", on("auto_save")))
                 .field(toggle("startOnHome", "Start on the Home screen", "pref.startOnHome", on("start_on_home")))
-                .field(Field::Section { title: "Sharing" })
-                .field(Field::Text { key: "name", label: "Your name in comments", value: text("user_name") })
-                .button(Button::submit_only("Set name", "pref.userName", json!({}), vec!["name"]))
-                .field(Field::Text { key: "url", label: "Server for online sharing", value: text("publish_server") })
-                .button(Button::submit_only("Set server", "pref.publishServer", json!({}), vec!["url"]))
-                .button(Button::run("Reset", "pref.publishServer"))
-                .field(Field::Section { title: "Interface" })
-                .field(Field::Number { key: "small", label: "Small nudge", value: p["nudge_small"].as_f64().unwrap_or(1.0) })
-                .field(Field::Number { key: "big", label: "Big nudge", value: p["nudge_big"].as_f64().unwrap_or(10.0) })
-                .button(Button::submit_only("Apply nudge", "pref.nudge", json!({}), vec!["small", "big"]))
+                .field(Field::Section { title: tr("Sharing") })
+                .field(Field::Text { key: "name", label: tr("Your name in comments"), value: text("user_name") })
+                .button(Button::submit_only(tr("Set name"), "pref.userName", json!({}), vec!["name"]))
+                .field(Field::Text { key: "url", label: tr("Server for online sharing"), value: text("publish_server") })
+                .button(Button::submit_only(tr("Set server"), "pref.publishServer", json!({}), vec!["url"]))
+                .button(Button::run(tr("Reset"), "pref.publishServer"))
+                .field(Field::Section { title: tr("Interface") })
+                .field(Field::Number { key: "small", label: tr("Small nudge"), value: p["nudge_small"].as_f64().unwrap_or(1.0) })
+                .field(Field::Number { key: "big", label: tr("Big nudge"), value: p["nudge_big"].as_f64().unwrap_or(10.0) })
+                .button(Button::submit_only(tr("Apply nudge"), "pref.nudge", json!({}), vec!["small", "big"]))
                 .field(
-                    Field::choice("uiScale", "Interface size", vec!["Default", "Larger", "Smaller"], 0)
+                    Field::choice("uiScale", tr("Interface size"), vec!["Default", "Larger", "Smaller"], 0)
                         .commands(vec!["pref.uiScaleReset", "pref.uiScaleUp", "pref.uiScaleDown"]),
                 )
-                .field(Field::Section { title: "Appearance" })
+                .field(Field::Section { title: tr("Appearance") })
                 .field(
-                    Field::choice("theme", "Theme", vec!["Light", "Dark", "System"], theme_active)
+                    Field::choice("theme", tr("Theme"), vec!["Light", "Dark", "System"], theme_active)
                         .commands(vec!["view.themeLight", "view.themeDark", "view.themeSystem"]),
                 )
                 .field(
-                    Field::choice("language", "Language", vec!["System", "English", "简体中文", "日本語", "Deutsch", "Français"], lang_active)
+                    Field::choice("language", tr("Language"), vec!["System", "English", "简体中文", "日本語", "Deutsch", "Français"], lang_active)
                         .commands(vec!["pref.language"; 6])
                         .with_params(vec![
                             json!({"language": "system"}),
@@ -405,71 +406,71 @@ pub(crate) fn spec(kind: Kind, data: &Value) -> Spec {
                 )
                 .with_cancel()
         }
-        Kind::About => Spec::new("About FigCraft")
+        Kind::About => Spec::new(tr("About FigCraft"))
             .width(420.0)
             .message(concat!(
                 "Interface design and prototyping. A free, open-source, clean-room design tool ",
                 "written from scratch in Rust, part of the ArtCraft Crafting Apps."
             ))
             .field(Field::Note { text: format!("Version {}", env!("CARGO_PKG_VERSION")) })
-            .field(Field::Note { text: "Dual-licensed MIT OR Apache-2.0.".to_string() })
-            .field(Field::Note { text: "About ▸ Contributors are compiled from contributors/contributors.json.".to_string() })
-            .button(Button::close("Close")),
-        Kind::Find => Spec::new("Find and replace")
+            .field(Field::Note { text: tr("Dual-licensed MIT OR Apache-2.0.").to_string() })
+            .field(Field::Note { text: tr("About ▸ Contributors are compiled from contributors/contributors.json.").to_string() })
+            .button(Button::close(tr("Close"))),
+        Kind::Find => Spec::new(tr("Find and replace"))
             .width(400.0)
-            .field(Field::Text { key: "find", label: "Find", value: String::new() })
-            .field(Field::Text { key: "replace", label: "Replace with", value: String::new() })
+            .field(Field::Text { key: "find", label: tr("Find"), value: String::new() })
+            .field(Field::Text { key: "replace", label: tr("Replace with"), value: String::new() })
             // egui: "Find" searches (no `replace`, so nothing is changed) including layer names;
             // "Replace all" replaces in text layers only.
-            .button(Button::submit_only("Find", "edit.findReplace", json!({ "layerNames": true }), vec!["find"]))
-            .button(Button::primary_only("Replace all", "edit.findReplace", json!({ "layerNames": false }), vec!["find", "replace"]))
+            .button(Button::submit_only(tr("Find"), "edit.findReplace", json!({ "layerNames": true }), vec!["find"]))
+            .button(Button::primary_only(tr("Replace all"), "edit.findReplace", json!({ "layerNames": false }), vec!["find", "replace"]))
             .with_cancel(),
         Kind::Unsaved => {
             let index = data.get("index").and_then(Value::as_u64).unwrap_or(0);
-            Spec::new("Unsaved changes")
+            Spec::new(tr("Unsaved changes"))
                 .width(380.0)
                 .message(format!("Document {index} has unsaved changes. Save before closing?"))
-                .button(Button::submit("Don't Save", "file.close", json!({ "index": index, "force": true })))
-                .button(Button::close("Cancel"))
+                .button(Button::submit(tr("Don't Save"), "file.close", json!({ "index": index, "force": true })))
+                .button(Button::close(tr("Cancel")))
                 // `file.save` 保存的是当前活动文档；sync_ui_requests 在弹出本对话框前
                 // 已经 `doc.switch` 到被关闭的标签，所以这里不需要（引擎也不接受）index。
-                .button(Button::primary("Save", "file.save", json!({})))
+                .button(Button::primary(tr("Save"), "file.save", json!({})))
         }
-        Kind::Rename => Spec::new("Rename")
+        Kind::Rename => Spec::new(tr("Rename"))
             .width(360.0)
-            .field(Field::Text { key: "name", label: "Name", value: str_field("name", data, "") })
-            .button(Button::primary("Rename", "object.rename", json!({})))
+            .field(Field::Text { key: "name", label: tr("Name"), value: str_field("name", data, "") })
+            .button(Button::primary(tr("Rename"), "object.rename", json!({})))
             .with_cancel(),
-        Kind::ColorProfile => Spec::new("Colour profile")
+        Kind::ColorProfile => Spec::new(tr("Colour profile"))
             .width(380.0)
-            .message("Choose the colour space used for display and export.")
+            .message(tr("Choose the colour space used for display and export."))
             .field(
-                Field::choice("profile", "Profile", vec!["sRGB", "Display P3"], 0)
+                Field::choice("profile", tr("Profile"), vec!["sRGB", "Display P3"], 0)
                     .values(vec![json!("srgb"), json!("displayP3")]),
             )
-            .button(Button::primary("Apply", "file.colorProfile", json!({})))
+            .button(Button::primary(tr("Apply"), "file.colorProfile", json!({})))
             .with_cancel(),
-        Kind::MissingFonts => Spec::new("Missing fonts")
+        Kind::MissingFonts => Spec::new(tr("Missing fonts"))
             .width(400.0)
-            .message("This file uses fonts that are not installed. Font substitution has no engine command yet, so this is a notice rather than a fake control.")
+            .message(tr("This file uses fonts that are not installed. Font substitution has no engine command yet, so this is a notice rather than a fake control."))
             .field(Field::Note { text: str_field("font", data, "Unknown font") })
-            .button(Button::close("Close")),
-        Kind::ImportReport => Spec::new("Import report")
+            .button(Button::close(tr("Close"))),
+        Kind::ImportReport => Spec::new(tr("Import report"))
             .width(440.0)
             .message(str_field("message", data, "The file was imported. Review the warnings below."))
             .field(Field::Note { text: str_field("warnings", data, "No warnings.") })
-            .button(Button::close("Close")),
-        Kind::SampledColor => Spec::new("Sampled colour")
+            .button(Button::close(tr("Close"))),
+        Kind::SampledColor => Spec::new(tr("Sampled colour"))
             .width(360.0)
-            .message("The eyedropper sampled this colour. Creating a style from it is not wired yet.")
+            .message(tr("The eyedropper sampled this colour. Creating a style from it is not wired yet."))
             .field(Field::Note { text: str_field("color", data, "#000000") })
-            .button(Button::close("Close")),
+            .button(Button::close(tr("Close"))),
         Kind::Plugins => {
             // 1:1 with `ui-egui/src/dialogs/plugins_ui.rs::installed_tab`: the installed plugins
             // (name + summary + Remove), then "Import plugin from manifest…". The Browse tab fetches
             // a plugin directory over the network (a background task), which is not wired here.
             let list = data["plugins"].as_array().cloned().unwrap_or_default();
-            let mut spec = Spec::new("Plugins").width(440.0).field(Field::Section { title: "Installed" });
+            let mut spec = Spec::new(tr("Plugins")).width(440.0).field(Field::Section { title: tr("Installed") });
             if list.is_empty() {
                 spec = spec.field(Field::Note {
                     text: "No plugins yet. Import a development plugin from its figcraft-plugin.json.".to_string(),
@@ -485,30 +486,30 @@ pub(crate) fn spec(kind: Kind, data: &Value) -> Spec {
                 if !desc.is_empty() {
                     spec = spec.field(Field::Note { text: desc });
                 }
-                spec = spec.field(Field::Action { label: "Remove", id: "plugin.remove", params: json!({ "id": id }) });
+                spec = spec.field(Field::Action { label: tr("Remove"), id: "plugin.remove", params: json!({ "id": id }) });
             }
-            spec.button(Button::run("Import plugin from manifest…", "plugin.import")).button(Button::close("Close"))
+            spec.button(Button::run(tr("Import plugin from manifest…"), "plugin.import")).button(Button::close(tr("Close")))
         }
-        Kind::SaveAs => Spec::new("Save as")
+        Kind::SaveAs => Spec::new(tr("Save as"))
             .width(400.0)
-            .field(Field::Text { key: "path", label: "File name", value: str_field("path", data, "") })
-            .button(Button::primary("Save", "file.saveAs", json!({})))
+            .field(Field::Text { key: "path", label: tr("File name"), value: str_field("path", data, "") })
+            .button(Button::primary(tr("Save"), "file.saveAs", json!({})))
             .with_cancel(),
-        Kind::Branch => Spec::new("Branch")
+        Kind::Branch => Spec::new(tr("Branch"))
             .width(400.0)
-            .message("Create a branch to work on changes separately from the main file.")
-            .field(Field::Text { key: "name", label: "Branch name", value: String::new() })
-            .button(Button::primary("Create", "branch.create", json!({})))
+            .message(tr("Create a branch to work on changes separately from the main file."))
+            .field(Field::Text { key: "name", label: tr("Branch name"), value: String::new() })
+            .button(Button::primary(tr("Create"), "branch.create", json!({})))
             .with_cancel(),
-        Kind::Updates => Spec::new("Updates")
+        Kind::Updates => Spec::new(tr("Updates"))
             .width(400.0)
-            .message("The updater needs the craft-update upgrade (C2) before it can check or install. This is a notice until then.")
-            .field(Field::Note { text: "No update command is registered by the engine yet.".to_string() })
-            .button(Button::close("Close")),
+            .message(tr("The updater needs the craft-update upgrade (C2) before it can check or install. This is a notice until then."))
+            .field(Field::Note { text: tr("No update command is registered by the engine yet.").to_string() })
+            .button(Button::close(tr("Close"))),
         Kind::Message => {
             let title = str_field("title", data, "FigCraft");
             let message = str_field("message", data, "The command asked the interface to show this message.");
-            Spec::new(title).width(360.0).message(message).button(Button::close("OK"))
+            Spec::new(title).width(360.0).message(message).button(Button::close(tr("OK")))
         }
     }
 }

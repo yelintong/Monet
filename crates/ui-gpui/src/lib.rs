@@ -6802,13 +6802,16 @@ impl Render for CanvasView {
 
             .children(variables_el)
 
-            .children(popup_el)
-
             .children(extra_el)
 
             .children(present_el)
 
             .children(dialog_el)
+
+            // Popups (dropdown menus, the main menu, the Actions palette) are drawn AFTER the
+            // dialog layer, so a dropdown inside a dialog is not covered by it. This is the one
+            // place the layer order lives, so every dropdown everywhere gets it.
+            .children(popup_el)
 
             // Motion 的 clip 设置浮窗：复用 `Popover` 窗口外壳，画在弹层之上。
 

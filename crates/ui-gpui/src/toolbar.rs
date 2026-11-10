@@ -19,6 +19,7 @@
 //! their swatch flyouts are not ported; the Inspect (Dev Mode) segment has no panel to switch to, so
 //! it is drawn greyed rather than pretending to work.
 
+use figcraft_i18n::tr;
 use crate::menu_card::Item;
 use crate::widgets::icon::{Icon, paint as paint_icon};
 use crate::widgets::{pt, rgba, tokens};
