@@ -26,7 +26,7 @@ use crate::panels::{Cmd, Cmds};
 use crate::widgets::dropdown::dropdown;
 use crate::widgets::menu::popup_backdrop;
 use crate::widgets::popover::{Open, clamp, popover_window, title_text};
-use crate::widgets::{MenuRow, Slot, TextField, field_row, field_row_full, number_field, pt, rgba, text_field, tokens};
+use crate::widgets::{Checkbox, MenuRow, Slot, TextField, field_row, field_row_full, number_field, pt, rgba, text_field, tokens};
 use gpui::{
     AnyElement, App, Bounds, Div, Entity, ImageSource, MouseButton, MouseDownEvent, MouseMoveEvent, Pixels, Point, RenderImage, SharedString, Size,
     Window, div, img, prelude::*, px, size,
@@ -180,6 +180,13 @@ pub(crate) enum Action {
         id: &'static str,
         base: Value,
     },
+    /// Like `Submit`, but merges only the named fields. A "Find" button sends `find` without the
+    /// empty `replace` — otherwise the engine would replace every match with nothing.
+    SubmitFields {
+        id: &'static str,
+        base: Value,
+        fields: Vec<&'static str>,
+    },
     /// Send this engine command with no parameters — field values are deliberately not merged.
     /// `view.panelWidths` with an empty object IS the engine's "reset to default" behaviour.
     Run {
@@ -203,6 +210,13 @@ impl Button {
     }
     fn submit(label: &'static str, id: &'static str, base: Value) -> Self {
         Self { label, primary: false, action: Action::Submit { id, base } }
+    }
+    /// A submit button that merges only `fields` (a Find button without a Replace field).
+    fn submit_only(label: &'static str, id: &'static str, base: Value, fields: Vec<&'static str>) -> Self {
+        Self { label, primary: false, action: Action::SubmitFields { id, base, fields } }
+    }
+    fn primary_only(label: &'static str, id: &'static str, base: Value, fields: Vec<&'static str>) -> Self {
+        Self { label, primary: true, action: Action::SubmitFields { id, base, fields } }
     }
     fn run(label: &'static str, id: &'static str) -> Self {
         Self { label, primary: false, action: Action::Run { id } }
@@ -314,7 +328,7 @@ pub(crate) fn spec(kind: Kind, data: &Value) -> Spec {
             Spec::new("Export")
                 .width(320.0)
                 .field(Field::Section { title: "With the layers' export settings" })
-                .field(Field::Action { label: "Export layers", id: "file.export", params: json!({"format": "png", "scale": 1.0}) })
+                .field(Field::Action { label: "Export layers", id: "file.exportLayers", params: json!({}) })
                 .field(Field::Section { title: "The selection as one file" })
                 .field(preset("PNG @1x", "png", 1.0))
                 .field(preset("PNG @2x", "png", 2.0))
@@ -328,42 +342,69 @@ pub(crate) fn spec(kind: Kind, data: &Value) -> Spec {
                 .field(Field::Preview { label: "Nothing to preview: select a layer first." })
                 .field(Field::Section { title: "The whole file" })
                 .field(Field::Action { label: ".fig (experimental)", id: "file.export", params: json!({"format": "fig"}) })
+                .field(Field::Note { text: "Other apps may not open every .fig file exported here.".to_string() })
                 .with_cancel()
         }
-        Kind::Preferences => Spec::new("Preferences")
-            .width(420.0)
-            .field(Field::Section { title: "General" })
-            .field(
-                Field::choice("theme", "Theme", vec!["Dark", "Light", "System"], 0)
-                    .commands(vec!["view.themeDark", "view.themeLight", "view.themeSystem"]),
-            )
-            .field(
-                Field::choice("language", "Language", vec!["System", "English", "简体中文", "日本語", "Deutsch", "Français"], 0)
-                    .commands(vec!["pref.language"; 6])
-                    .with_params(vec![
-                        json!({"language": "system"}),
-                        json!({"language": "en"}),
-                        json!({"language": "zh-Hans"}),
-                        json!({"language": "ja"}),
-                        json!({"language": "de"}),
-                        json!({"language": "fr"}),
-                    ]),
-            )
-            .field(
-                Field::choice("wheel", "Scroll wheel", vec!["Zoom", "Scroll"], 0)
-                    .commands(vec!["pref.scrollWheelZoom", "pref.scrollWheelZoom"])
-                    .with_params(vec![json!({"on": true}), json!({"on": false})]),
-            )
-            .field(Field::Section { title: "Interface" })
-            .field(
-                Field::choice("uiScale", "Interface size", vec!["Default", "Larger", "Smaller"], 0)
-                    .commands(vec!["pref.uiScaleReset", "pref.uiScaleUp", "pref.uiScaleDown"]),
-            )
-            .field(Field::Number { key: "left", label: "Left panel width", value: 280.0 })
-            .field(Field::Number { key: "right", label: "Right panel width", value: 280.0 })
-            .button(Button::primary("Apply", "view.panelWidths", json!({})))
-            .button(Button::run("Reset widths", "view.panelWidths"))
-            .with_cancel(),
+        Kind::Preferences => {
+            // 1:1 with `ui-egui/src/dialogs.rs::preferences`: the same checkbox list, name, server,
+            // nudge, interface size, theme and language. `data["prefs"]` carries the live values
+            // (injected by `open_dialog`). Accent and the graphics backend have no engine command,
+            // so they are not faked here.
+            let p = &data["prefs"];
+            let on = |k: &str| p[k].as_bool().unwrap_or(false);
+            let text = |k: &str| p[k].as_str().unwrap_or("").to_string();
+            let toggle = |key: &'static str, label: &'static str, cmd: &'static str, on: bool| {
+                Field::choice(key, label, vec!["On", "Off"], if on { 0 } else { 1 }).commands(vec![cmd, cmd])
+            };
+            let theme = text("theme");
+            let theme_active = ["light", "dark", "system"].iter().position(|t| theme.eq_ignore_ascii_case(t)).unwrap_or(2);
+            let lang = text("language");
+            let lang_codes = ["system", "en", "zh-Hans", "ja", "de", "fr"];
+            let lang_active = lang_codes.iter().position(|c| lang.eq_ignore_ascii_case(c)).unwrap_or(0);
+            Spec::new("Preferences")
+                .width(360.0)
+                .field(Field::Section { title: "General" })
+                .field(toggle("keepTool", "Keep tool selected after use", "pref.keepTool", on("keep_tool")))
+                .field(toggle("highlightHover", "Highlight layers on hover", "pref.highlightHover", on("highlight_on_hover")))
+                .field(toggle("renameDuplicates", "Rename duplicated layers", "pref.renameDuplicates", on("rename_duplicates")))
+                .field(toggle("showDimensions", "Show dimensions on objects", "pref.showDimensions", on("show_dimensions")))
+                .field(toggle("numberKeysOpacity", "Use number keys for opacity", "pref.numberKeysOpacity", on("number_keys_opacity")))
+                .field(toggle("reduceMotion", "Reduce motion", "pref.reduceMotion", on("reduce_motion")))
+                .field(toggle("autoSave", "Save files automatically", "pref.autoSave", on("auto_save")))
+                .field(toggle("startOnHome", "Start on the Home screen", "pref.startOnHome", on("start_on_home")))
+                .field(Field::Section { title: "Sharing" })
+                .field(Field::Text { key: "name", label: "Your name in comments", value: text("user_name") })
+                .button(Button::submit_only("Set name", "pref.userName", json!({}), vec!["name"]))
+                .field(Field::Text { key: "url", label: "Server for online sharing", value: text("publish_server") })
+                .button(Button::submit_only("Set server", "pref.publishServer", json!({}), vec!["url"]))
+                .button(Button::run("Reset", "pref.publishServer"))
+                .field(Field::Section { title: "Interface" })
+                .field(Field::Number { key: "small", label: "Small nudge", value: p["nudge_small"].as_f64().unwrap_or(1.0) })
+                .field(Field::Number { key: "big", label: "Big nudge", value: p["nudge_big"].as_f64().unwrap_or(10.0) })
+                .button(Button::submit_only("Apply nudge", "pref.nudge", json!({}), vec!["small", "big"]))
+                .field(
+                    Field::choice("uiScale", "Interface size", vec!["Default", "Larger", "Smaller"], 0)
+                        .commands(vec!["pref.uiScaleReset", "pref.uiScaleUp", "pref.uiScaleDown"]),
+                )
+                .field(Field::Section { title: "Appearance" })
+                .field(
+                    Field::choice("theme", "Theme", vec!["Light", "Dark", "System"], theme_active)
+                        .commands(vec!["view.themeLight", "view.themeDark", "view.themeSystem"]),
+                )
+                .field(
+                    Field::choice("language", "Language", vec!["System", "English", "简体中文", "日本語", "Deutsch", "Français"], lang_active)
+                        .commands(vec!["pref.language"; 6])
+                        .with_params(vec![
+                            json!({"language": "system"}),
+                            json!({"language": "en"}),
+                            json!({"language": "zh-Hans"}),
+                            json!({"language": "ja"}),
+                            json!({"language": "de"}),
+                            json!({"language": "fr"}),
+                        ]),
+                )
+                .with_cancel()
+        }
         Kind::About => Spec::new("About FigCraft")
             .width(420.0)
             .message(concat!(
@@ -378,8 +419,10 @@ pub(crate) fn spec(kind: Kind, data: &Value) -> Spec {
             .width(400.0)
             .field(Field::Text { key: "find", label: "Find", value: String::new() })
             .field(Field::Text { key: "replace", label: "Replace with", value: String::new() })
-            .button(Button::primary("Replace all", "edit.findReplace", json!({})))
-            .button(Button::submit("Find next", "edit.findReplace", json!({ "next": true })))
+            // egui: "Find" searches (no `replace`, so nothing is changed) including layer names;
+            // "Replace all" replaces in text layers only.
+            .button(Button::submit_only("Find", "edit.findReplace", json!({ "layerNames": true }), vec!["find"]))
+            .button(Button::primary_only("Replace all", "edit.findReplace", json!({ "layerNames": false }), vec!["find", "replace"]))
             .with_cancel(),
         Kind::Unsaved => {
             let index = data.get("index").and_then(Value::as_u64).unwrap_or(0);
@@ -662,6 +705,29 @@ impl DialogState {
                     let control = r.input.clone().map(|e| e.into_any_element()).unwrap_or_else(|| div().into_any_element());
                     field_row(vec![label(), control], Vec::<AnyElement>::new())
                 }
+                // A two-option choice is a binary choice: draw the kit Checkbox, not a dropdown
+                // (egui uses `widgets::checkbox` for on/off preferences).
+                Field::Choice { label, options, commands, command_params, .. } if options.len() == 2 => {
+                    let active = r.active.clone();
+                    let checked = *active.borrow() == 0;
+                    let cmds = self.cmds.clone();
+                    let cmd = commands.as_ref().and_then(|c| c.first()).copied();
+                    let params = command_params.clone();
+                    let cb = Checkbox::new(SharedString::from(format!("dialog-choice-{label}"))).label(*label).checked(checked).on_change(
+                        move |&next, _, _| {
+                            *active.borrow_mut() = if next { 0 } else { 1 };
+                            if let Some(cmd) = cmd {
+                                let p = params
+                                    .as_ref()
+                                    .and_then(|v| if next { v.first() } else { v.get(1) })
+                                    .cloned()
+                                    .unwrap_or_else(|| serde_json::json!({}));
+                                cmds.push(Cmd { id: cmd, params: Some(p) });
+                            }
+                        },
+                    );
+                    field_row_full(cb)
+                }
                 Field::Choice { options, commands, command_params, .. } => {
                     // 1:1 with ui-egui: a real dropdown, not a row of chips.
                     let control = dropdown_field(
@@ -743,6 +809,12 @@ impl DialogState {
                         match &action {
                             Action::Submit { id, base } => {
                                 let params = merge_params(base, &collect_sources(&sources_btn, cx));
+                                cmds_btn.push(Cmd { id, params: Some(params) });
+                            }
+                            Action::SubmitFields { id, base, fields } => {
+                                let all = collect_sources(&sources_btn, cx);
+                                let keep: Vec<(String, Value)> = all.into_iter().filter(|(k, _)| fields.contains(&k.as_str())).collect();
+                                let params = merge_params(base, &keep);
                                 cmds_btn.push(Cmd { id, params: Some(params) });
                             }
                             Action::Run { id } => cmds_btn.push(Cmd { id, params: None }),
@@ -930,10 +1002,14 @@ mod tests {
         assert!(presets.contains(&"PNG @2x") && presets.contains(&".fig (experimental)"), "{presets:?}");
         assert!(presets.len() >= 8, "all the original presets are listed");
         let prefs = spec(Kind::Preferences, &json!({}));
-        assert!(prefs.buttons.iter().any(|b| matches!(&b.action, Action::Submit { id: "view.panelWidths", .. })));
+        assert!(prefs.buttons.iter().any(|b| matches!(&b.action, Action::SubmitFields { id: "pref.nudge", .. })));
         assert!(prefs.fields.iter().any(|f| matches!(
             f,
-            Field::Choice { commands: Some(c), .. } if c.first() == Some(&"view.themeDark")
+            Field::Choice { commands: Some(c), .. } if c.contains(&"view.themeDark")
+        )));
+        assert!(prefs.fields.iter().any(|f| matches!(
+            f,
+            Field::Choice { commands: Some(c), .. } if c.first() == Some(&"pref.keepTool")
         )));
         let unsaved = spec(Kind::Unsaved, &json!({"index": 3}));
         assert_eq!(unsaved.buttons.len(), 3, "Don't Save / Cancel / Save");

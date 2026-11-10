@@ -601,6 +601,9 @@ pub struct CanvasView {
 
     palette_tab: palette::Tab,
 
+    /// The keyboard-highlighted row (palette Up/Down).
+    palette_sel: Option<usize>,
+
     palette_field: Entity<widgets::TextField>,
 
     /// 四块整面板的浮层（由引擎 `ui_requests` 打开）与其跨帧状态。
@@ -828,6 +831,8 @@ impl CanvasView {
 
             palette_tab: palette::Tab::All,
 
+            palette_sel: Some(0),
+
             palette_field,
 
             extra: None,
@@ -972,7 +977,20 @@ impl CanvasView {
 
                 me.update(cx, |v, cx| {
 
+                    // B2: Enter on an unchanged query runs the highlighted row (egui's palette
+                    // runs the selected item; a first Enter filters, a second runs it).
+                    if q == v.palette_query {
+                        let items = palette::items(&palette::sections(&v.palette_query, v.palette_tab, &v.app.session));
+                        if let Some(item) = v.palette_sel.and_then(|i| items.get(i)) {
+                            let key = item.key.to_string();
+                            v.pick_palette(&key, cx);
+                            return;
+                        }
+                    }
+
                     v.palette_query = q;
+
+                    v.palette_sel = Some(0);
 
                     cx.notify();
 
@@ -1576,9 +1594,26 @@ impl CanvasView {
 
         let preview = (kind == dialogs::Kind::Export).then(|| export_preview::make(&self.app.session)).flatten();
 
+        // A7: the Preferences form shows the live values; its request carries none, so snapshot
+        // the prefs into `data` (the spec is a pure function of it).
+        let data: std::borrow::Cow<'_, serde_json::Value> = if kind == dialogs::Kind::Preferences {
+            let p = &self.app.session.prefs;
+            std::borrow::Cow::Owned(serde_json::json!({ "prefs": {
+                "keep_tool": p.keep_tool, "highlight_on_hover": p.highlight_on_hover,
+                "rename_duplicates": p.rename_duplicates, "show_dimensions": p.show_dimensions,
+                "number_keys_opacity": p.number_keys_opacity, "reduce_motion": p.reduce_motion,
+                "auto_save": p.auto_save, "start_on_home": p.start_on_home,
+                "user_name": p.user_name, "publish_server": p.publish_server,
+                "nudge_small": p.nudge_small, "nudge_big": p.nudge_big,
+                "theme": p.theme, "language": p.language,
+            }}))
+        } else {
+            std::borrow::Cow::Borrowed(data)
+        };
+
         let root = cx.entity();
 
-        self.dialog = Some(dialogs::DialogState::new(kind, data, &cmds, cx, preview, root));
+        self.dialog = Some(dialogs::DialogState::new(kind, data.as_ref(), &cmds, cx, preview, root));
 
         // 从主菜单点开的对话框要把菜单本身收掉，否则菜单会盖在对话框上。
 
@@ -2795,6 +2830,8 @@ impl CanvasView {
         // stale text in the field.
 
         self.palette_tab = palette::Tab::All;
+
+        self.palette_sel = Some(0);
 
         Popup::Palette { at: mouse }
 
@@ -5285,6 +5322,21 @@ impl Render for CanvasView {
 
                 }
 
+                // B2: the Actions palette's Up/Down move the highlighted row; Enter (the search
+                // field's commit) runs it.
+                if matches!(&this.popup, Some(Popup::Palette { .. })) {
+                    let key = e.keystroke.key.as_str();
+                    if key == "up" || key == "down" {
+                        let count = palette::items(&palette::sections(&this.palette_query, this.palette_tab, &this.app.session)).len();
+                        if count > 0 {
+                            let cur = this.palette_sel.unwrap_or(0);
+                            this.palette_sel = Some(if key == "up" { cur.saturating_sub(1) } else { (cur + 1).min(count - 1) });
+                            cx.notify();
+                        }
+                        return;
+                    }
+                }
+
                 // 通用拖拽：Escape 取消（egui `ListDrag::with_order` 的语义），既不当成点击选中，
 
                 // 也不把这一次按键送给引擎。
@@ -5896,6 +5948,8 @@ impl Render for CanvasView {
 
         let palette_items = palette::items(&palette_sections);
 
+        let palette_sel = self.palette_sel;
+
         let palette_count = palette_sections.iter().map(|s| s.rows.len()).sum::<usize>();
 
         // Share 弹层同理：live 快照与命令队列也要在 `&mut self.popup` 之前取好。
@@ -6359,6 +6413,8 @@ impl Render for CanvasView {
                         false,
 
                         None,
+
+                        palette_sel,
 
                         x,
 

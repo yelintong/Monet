@@ -42,7 +42,10 @@ pub const CONTRACTS: &[Contract] = &[
         // The egui Export dialog is caption + preset rows, not an invented format/scale form.
         requires: &["file.export", "preview", "The selection as one file", "The whole file", "PNG @2x", ".fig (experimental)"],
     },
-    Contract { id: "A7", requires: &["view.themeDark", "pref.language", "pref.scrollWheelZoom", "view.panelWidths", "Reset widths"] },
+    Contract {
+        id: "A7",
+        requires: &["view.themeDark", "pref.language", "pref.keepTool", "pref.userName", "pref.publishServer", "pref.nudge", "pref.uiScaleReset"],
+    },
     Contract { id: "A18B4", requires: &["file.close", "file.save", "detach_window"] },
     Contract { id: "A1", requires: &["home", "action_card", "home_section", "home-screen"] },
 ];
@@ -62,7 +65,7 @@ fn dialog_commands() -> Vec<&'static str> {
         }
         for b in &spec.buttons {
             match &b.action {
-                dialogs::Action::Submit { id, .. } | dialogs::Action::Run { id } => out.push(*id),
+                dialogs::Action::Submit { id, .. } | dialogs::Action::Run { id } | dialogs::Action::SubmitFields { id, .. } => out.push(*id),
                 dialogs::Action::Close => {}
             }
         }
@@ -100,7 +103,7 @@ fn capabilities() -> BTreeSet<String> {
         for b in &spec.buttons {
             out.insert(b.label.to_string());
             match &b.action {
-                dialogs::Action::Submit { id, .. } | dialogs::Action::Run { id } => {
+                dialogs::Action::Submit { id, .. } | dialogs::Action::Run { id } | dialogs::Action::SubmitFields { id, .. } => {
                     out.insert((*id).to_string());
                 }
                 dialogs::Action::Close => {}

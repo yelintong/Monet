@@ -22,6 +22,7 @@ use crate::canvas::geom::Color32;
 use crate::theme::Tokens;
 use gpui::{Pixels, Rgba, px};
 
+pub mod checkbox;
 pub mod color_field;
 pub mod dropdown;
 pub mod icon;
@@ -30,14 +31,15 @@ pub mod input;
 pub mod menu;
 /// 通用菜单行为文件（安全三角 / 瞄准意图 / 悬停延迟）：主菜单、右键菜单共用同一份状态机。
 pub mod menu_aim;
+pub mod menu_popup;
 pub mod panel_section;
 /// 新增通用控件（2026-11-05）：颜色选择器等弹窗背后的通用窗口，标题为插槽。
 pub mod popover;
 pub mod section_header;
-pub mod menu_popup;
 pub mod swatch;
 pub mod variable;
 
+pub use checkbox::Checkbox;
 pub use color_field::{ColorField, ColorText, paint_label};
 pub use dropdown::{DropLead, Dropdown, MenuAnchor, dropdown, dropdown_lead, menu_anchor, set_active_menu};
 pub use menu::{MenuRow, color_picker, menu_popup, popup_backdrop};
@@ -54,8 +56,8 @@ pub use input::text_edit::NumberConfig;
 pub use input::{EditBuffer, EditOutcome, Slot, TextInput, char_to_utf16_str, utf16_to_char_str};
 pub use input::{TextEdit, TextField};
 pub use panel_section::{
-    FieldRow, PanelSection, field_row, field_row_full, field_row_full_trailing, field_row_h, panel_section, segmented, sublabel_row,
-    sublabel_row2, sublabels,
+    FieldRow, PanelSection, field_row, field_row_full, field_row_full_trailing, field_row_h, panel_section, segmented, sublabel_row, sublabel_row2,
+    sublabels,
 };
 // `HEADER_H` is already this module's 40 pt header constant; the popover shares that value.
 pub use popover::{

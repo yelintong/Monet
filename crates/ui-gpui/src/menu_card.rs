@@ -18,11 +18,11 @@
 //! shortcut flush right 8). A row may open a submenu; the open one is supplied by the caller (it
 //! is view state, so it survives the frame).
 
+pub(crate) use crate::widgets::Width;
 use crate::widgets::icon::{Icon, paint as paint_icon};
 use crate::widgets::{MENU_TRAIL_GAP, TEXT_PT, pt, rgba, tokens};
 use gpui::prelude::*;
 use gpui::{AnyElement, App, MouseButton, MouseDownEvent, SharedString, TextRun, Window, div};
-pub(crate) use crate::widgets::Width;
 use std::rc::Rc;
 
 /// The card's inset (egui `menu_frame`: `Margin::same(8)`). The fill, the 13 pt corners and the
@@ -161,6 +161,8 @@ pub(crate) fn rows(
     row_h: f32,
     has_check: bool,
     open_sub: Option<usize>,
+    // The keyboard-highlighted row (palette Up/Down); `None` for menus that have no keyboard.
+    selected: Option<usize>,
     left: f32,
     top: f32,
     width: f32,
@@ -213,6 +215,10 @@ pub(crate) fn rows(
                     pick(key.as_ref(), window, cx);
                 }
             });
+        }
+        // The keyboard-highlighted row (palette Up/Down) wears the hover fill.
+        if selected == Some(i) && !item.disabled {
+            row = row.bg(rgba(t.menu_hover));
         }
         // The check mark and the icon are absolutely placed so the label's own inset stays exact.
         if has_check {
@@ -293,7 +299,7 @@ pub(crate) fn card(
         Width::Min(f) => (content_w + 2.0 * PAD).max(f),
         Width::Anchor => (content_w + 2.0 * PAD).max(48.0),
     };
-    let (row_els, sub_els) = rows(items, row_h, has_check, open_sub, left, top, w, on_pick, on_sub, on_hover, window, vh);
+    let (row_els, sub_els) = rows(items, row_h, has_check, open_sub, None, left, top, w, on_pick, on_sub, on_hover, window, vh);
     // 唯一的浮层控件：宽度三档、锚点跟随、上下防溢出与滚动全在 `Menu::show` 里。
     crate::widgets::menu(crate::widgets::at_point(left, top))
         .gap(0.0)
@@ -330,5 +336,4 @@ mod tests {
         assert_eq!(label_x(&tool, true), ICON_LABEL_X);
         assert_eq!(ICON_X + ICON_SIZE, 40.0);
     }
-
 }
