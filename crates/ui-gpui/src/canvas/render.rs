@@ -103,32 +103,14 @@ fn bands_key(bands: &[figcraft_render::Band]) -> u64 {
     h.finish()
 }
 
-/// 这次渲染要不要顺手抓一张替身。
-///
-/// 只有**平移的第一步**要：那一张替身和同一次渲染的贴图是同一份文档，之后只按位移摆放，
-/// 所以替身和选框永远同一帧。拉伸/旋转由 `canvas::show` 当帧自己抓（图层像素每帧都在变），
-/// 这里再带一张只会在渲染回来时把新替身换成旧的——内容就又跟外框差半步了。
-fn wants_grab(redraw: bool, skipping: bool) -> bool {
-    !(redraw || skipping)
-}
-
 /// 拖动期间要不要**完全不渲**整页贴图。
 ///
-/// 拖动时被拖的图层（连同被拉伸重排的父级/兄弟）由画布当帧自己画（`Live`），底图保持
-/// 拖动前那一张、把它的旧位置用背景盖住即可。异步渲染永远比选框晚一到两帧，是
-/// 「内容/背景和框脱开」的来源；而每帧同步渲一张又会反复分配整页缓冲（内存）。
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Plan {
-    Hold,
-    Async,
-}
-
-fn drag_plan(skip: &[NodeId]) -> Plan {
-    if skip.is_empty() { Plan::Async } else { Plan::Hold }
-}
-
-fn drag_holds(skip: &[NodeId]) -> bool {
-    drag_plan(skip) == Plan::Hold
+/// 只要还有图层在动，底图就冻在拖动前那一张：画布每帧当帧同步渲染「旧位置 ∪ 新位置」的
+/// 不透明局部场景补丁（见 `canvas/mod.rs`），它既擦掉原地残影、也画出新位置，而且走的是
+/// 和静态画面完全相同的渲染管线。异步整页渲染永远比选框晚一两帧，是「内容 / 效果与框
+/// 脱开」的根源；每帧同步渲一整页又会反复分配整页缓冲（内存）。
+fn drag_holds(moving: &[NodeId]) -> bool {
+    !moving.is_empty()
 }
 
 pub(super) fn request_render(
@@ -137,10 +119,20 @@ pub(super) fn request_render(
     ppp: f32,
     max_texture_side: u32,
     moving: &[NodeId],
-    moving_bounds: Option<figcraft_geom::Rect>,
-    redraw: bool,
+    _moving_bounds: Option<figcraft_geom::Rect>,
+    _redraw: bool,
     bands: &[figcraft_render::Band],
 ) {
+    // 拖动期间底图**完全冻结**：一张整页渲染都不提交。
+    //
+    // 旧做法是提交一张「让开被拖图层」的整页图、再抓一张透明底的图层替身；两张位图都由
+    // 异步线程产出，必有一两帧不同步 —— 内置效果在原地留下残影，外置材质被替身盖掉，
+    // 容器子节点则被 `Options::skip` 连根挖空。现在画布每帧**当帧同步**渲染「旧位置 ∪
+    // 新位置」的局部完整场景补丁（见 `canvas/mod.rs`），底图从头到尾不动：没有异步往返，
+    // 就没有残影；效果走的是和静态画面完全相同的渲染管线，也就不会丢失。
+    if drag_holds(moving) {
+        return;
+    }
     let Ok(ds) = app.session.ds() else { return };
     let rect = app.canvas.rect;
     let (mut ox, mut oy) = ds.view.origin();
@@ -171,30 +163,12 @@ pub(super) fn request_render(
     let visible = (visible_w, visible_h);
     let requested = (ox - f64::from(margin) / scale, oy - f64::from(margin) / scale);
     let size = (visible_w.saturating_add(margin * 2).min(max_texture_side), visible_h.saturating_add(margin * 2).min(max_texture_side));
-    // 拖动中的图层：贴图里让开它们（画布自己画那一块），并且**这一次**渲染顺手把它单独渲染出来。
-    // 顺序不能反：先在不 skip 的这一张上拿到替身，下一张才把它去掉。
-    let skipping = app.canvas.live.is_some();
-    let skip: Vec<NodeId> = if skipping { moving.to_vec() } else { vec![] };
-    // 替身是一次单独渲染：多选也好，复制拖动也好，都抓同一张（`Options::only` 认一组）。
-    //
-    // **替身只能有一个写入方**。平移：这一次渲染顺手抓一张（`at` 与这张贴图同一份文档），
-    // 之后只按位移摆放——所以替身和选框永远同一帧，不会跑偏。
-    // 拉伸/旋转：替身由 `canvas::show` **当帧**自己抓（图层像素每帧都变，走渲染就得慢一帧）。
-    // 这里要是也带一张，渲染回来时 `done.grab` 会把当帧那张换成更旧的一张——内容就又跟外框
-    // 差半步了。所以 `redraw` 时不请求 grab。
-    let grab_ask = if wants_grab(redraw, skipping) {
-        moving_bounds.map(|b| {
-            // 阴影/描边会超出几何包围盒：按屏幕像素留一圈，免得拖动时被切掉。
-            let pad = 32.0 / ds.view.zoom.max(1e-6);
-            GrabAsk { page: [b.x0 - pad, b.y0 - pad, b.x1 + pad, b.y1 + pad], at: [b.x0, b.y0], ids: moving.to_vec() }
-        })
-    } else {
-        None
-    };
+    // 整页贴图永远是完整场景：拖动时叠在它上面的局部补丁自己会盖住旧位置，
+    // 所以这里不让开任何图层、也不再抓透明底替身。
+    let skip: Vec<NodeId> = Vec::new();
+    let grab_ask: Option<GrabAsk> = None;
     let key = JobKey {
-        // 拖拽期间被拖的图层让开了，它的几何再怎么变都不影响贴图：指纹固定，
-        // 免得每帧都白重渲一次（那样替身永远等不到一张干净的背景，拖动时就会拖影）。
-        doc: if skipping { 0 } else { Arc::as_ptr(&doc) as usize },
+        doc: Arc::as_ptr(&doc) as usize,
         page: ds.page,
         origin: ((requested.0 * 1000.0) as i64, (requested.1 * 1000.0) as i64),
         scale: (scale * 10000.0) as i64,
@@ -269,27 +243,6 @@ pub(super) fn request_render(
         at: std::time::Instant::now(),
     };
     app.canvas.want_view = Some(job.view.clone());
-    // 拖动中的图层（平移也好、拉伸/旋转也好）：整页贴图**让开**它们一次就够——被拖的那几层
-    // 由画布当帧自己画，其余内容在拖动过程中不变。所以这里同步渲一张（当帧就能上屏），
-    // 之后整个拖动过程一次都不再提交。
-    //
-    // 异步渲染永远比选框晚一到两帧，那就是「内容/背景和框脱开」的来源；同步这一张把它一次
-    // 抹掉：贴图、替身、选框来自同一份文档的同一帧。
-    // 拖动中：整页贴图只需要**让开**被拖的图层一次——之后底图冻住，被拖的那几层由替身
-    // 当帧画。所以拖动期间最多只提交**一次**渲染（`skip_pending` 到贴图到手为止）。
-    //
-    // 以前是每个指针事件提一张（padding 手柄更是连替身都没有），于是：底图永远比带子晚一到
-    // 两帧（果冻），而且一次拖动就是几十张整页缓冲（17.6MB/张）——反复拖就是把内存吃光。
-    if drag_holds(&job.skip) {
-        if app.canvas.tex_skip != job.skip && !app.canvas.skip_pending {
-            app.canvas.skip_pending = true;
-            app.canvas.want_view = Some(job.view.clone());
-            worker.submit(job);
-        }
-        app.canvas.submitted = Some(key);
-        return;
-    }
-    app.canvas.skip_pending = false;
     worker.submit(job);
     app.canvas.submitted = Some(key);
 }
@@ -317,13 +270,13 @@ mod tests {
     use super::{cached_render_covers, drag_holds, overscan_margin};
     use figcraft_doc::NodeId;
 
-    /// 拖动期间一次都不提交：底图只有一张，替身当帧画——否则异步渲染晚一两帧，
-    /// 每次拖动还要新分配一整页缓冲。
+    /// 拖动期间一次整页渲染都不提交：底图冻住，局部场景补丁当帧画。
+    /// 否则异步渲染晚一两帧，效果就会在原地留下残影。
     #[test]
     fn a_drag_never_submits_a_page_render() {
         let ids = vec![NodeId(2)];
-        assert!(drag_holds(&ids), "拖住一个图层：不渲染");
-        assert!(!drag_holds(&[]), "没有拖动：正常渲染");
+        assert!(drag_holds(&ids), "拖住一个图层：不提交整页渲染");
+        assert!(!drag_holds(&[]), "没有拖动：正常提交");
     }
 
     #[test]
@@ -353,16 +306,3 @@ mod tests {
     }
 }
 
-#[cfg(test)]
-mod grab_tests {
-    use super::*;
-
-    /// 替身只有一个写入方：平移的第一步要抓，其余情况一律不抓。
-    #[test]
-    fn only_the_first_translate_render_carries_a_stand_in() {
-        assert!(wants_grab(false, false), "平移的第一步：这一张贴图顺手抓替身");
-        assert!(!wants_grab(false, true), "已经在替身里了：贴图让开就够");
-        assert!(!wants_grab(true, false), "拉伸/旋转：替身由画布当帧自己抓");
-        assert!(!wants_grab(true, true), "拉伸/旋转：绝不能再让渲染覆盖当帧那张");
-    }
-}

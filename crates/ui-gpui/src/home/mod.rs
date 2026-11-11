@@ -41,8 +41,30 @@ pub(crate) fn body(app: &CanvasApp, cmds: &Cmds, state: &ExtraState) -> Div {
             .flex_row()
             .items_center()
             .gap(pt(10.0))
-            .child(crate::widgets::icon::paint(Icon::Logo, rgba(t.accent), 24.0))
-            .child(div().text_size(pt(16.0)).font_weight(gpui::FontWeight::SEMIBOLD).text_color(rgba(t.text)).child(tr("FigCraft"))),
+            // Brand mark: the three anchor dots in red over the blue path (the mono version is
+            // used by the rail / main menu). The renderer only keeps alpha, so each layer is
+            // tinted separately instead of relying on the SVG's own colours.
+            .child(
+                div()
+                    .relative()
+                    .w(px(24.0))
+                    .h(px(24.0))
+                    .child(
+                        gpui::svg()
+                            .path("brand/monet-dots.svg")
+                            .w(px(24.0))
+                            .h(px(24.0))
+                            .text_color(gpui::Hsla::from(gpui::rgb(0xFF0B0B))),
+                    )
+                    .child(div().absolute().top_0().left_0().size_full().child(
+                        gpui::svg()
+                            .path("brand/monet-path.svg")
+                            .w(px(24.0))
+                            .h(px(24.0))
+                            .text_color(gpui::Hsla::from(gpui::rgb(0x007BE5))),
+                    )),
+            )
+            .child(div().text_size(pt(16.0)).font_weight(gpui::FontWeight::SEMIBOLD).text_color(rgba(t.text)).child(tr("Monet"))),
     );
     side = side.child(state.home_search.clone());
     for (i, (icon, label)) in [(Icon::Page, tr("Recents")), (Icon::LinkOn, tr("Online")), (Icon::ViewGrid, tr("Templates"))].into_iter().enumerate() {

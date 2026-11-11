@@ -2081,6 +2081,28 @@ pub(crate) fn right_panel(
                     lock_cmds.push(Cmd { id: "node.set", params: Some(serde_json::json!({ "props": { "constrainProportions": !lock_on } })) });
                 });
             sec = sec.child(sublabel_row(tr("Dimensions"))).child(field_row(vec![f.w.clone(), f.h.clone()], vec![constrain]));
+            // 选中文字时的「调整大小」三格（用户 2026-11-11：从 Typography 段移到 Layout 段）。
+            // 值仍是 `textAutoResize`，与 Typography 之前那个下拉同一条命令。
+            if let Some(t) = data.text.as_ref() {
+                let active = match t.auto_resize {
+                    Some("widthAndHeight") => Some(0usize),
+                    Some("height") => Some(1),
+                    Some("none") => Some(2),
+                    _ => None,
+                };
+                let cmds = f.cmds.clone();
+                let seg = crate::widgets::segmented::Segmented::new(vec![
+                    crate::widgets::segmented::SegItem::text(tr("Auto width")),
+                    crate::widgets::segmented::SegItem::text(tr("Auto height")),
+                    crate::widgets::segmented::SegItem::text(tr("Fixed")),
+                ])
+                .active(active)
+                .on_pick(move |i: usize, _w: &mut Window, _cx: &mut App| {
+                    let v = match i { 0 => "widthAndHeight", 1 => "height", 2 => "none", _ => return };
+                    cmds.push(Cmd { id: "node.set", params: Some(serde_json::json!({ "props": { "textAutoResize": v } })) });
+                });
+                sec = sec.child(sublabel_row(tr("Resizing"))).child(field_row_full(seg));
+            }
             // Min/Max：仅当该轴已设值、或刚从 sizing 菜单 Add 时才显示（egui `limit_row_v`）。
             let lo = *f.limit_open.borrow();
             let any_min = dims.min_w.is_some() || dims.min_h.is_some() || lo[0] || lo[2];

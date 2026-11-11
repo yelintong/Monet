@@ -262,7 +262,7 @@ thread_local! {
 fn text(labels: &mut Vec<Label>, at: Pos2, align: Align2, s: impl Into<String>, font: FontId, color: Color32) {
     let s = s.into();
     let rect = align.anchor_size(at, text_size(&s, font));
-    labels.push(Label { rect, text: s, font, color, align });
+    labels.push(Label { rect, text: s, font, color, align, angle: None });
 }
 
 /// egui `widgets::elide` — cut a long name to a fixed number of glyphs.

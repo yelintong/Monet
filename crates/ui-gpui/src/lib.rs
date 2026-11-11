@@ -495,6 +495,60 @@ enum Popup {
 
 
 
+/// R4/R5: egui `UiState::rename_label` / `ui.rename` — a rename is a field drawn *on* the
+
+/// label or the layer row, never a centred dialog. Enter / losing focus commits `object.rename`,
+
+/// Escape cancels.
+
+#[derive(Clone)]
+
+struct InlineRename {
+
+    ids: Vec<figcraft_doc::NodeId>,
+
+    target: InlineRenameTarget,
+
+    /// Just opened: give the field the keyboard on the next frame (egui `Rename::start`).
+
+    start: bool,
+
+    /// Frames since opening: the focus request needs a few frames to land before we may
+
+    /// conclude the edit ended (egui keeps the field open only while it has focus).
+
+    frames: u8,
+
+    /// The field has had the keyboard at least once. Only then may losing focus end the rename;
+
+    /// otherwise a focus request that has not landed yet would immediately close the field.
+
+    was_active: bool,
+
+}
+
+
+
+#[derive(Clone, Copy, PartialEq)]
+
+enum InlineRenameTarget {
+
+    /// `canvas.renameLabel`: the top-level frame / section name on the canvas.
+
+    Label,
+
+    /// `layers.rename` with one id: the row inside the layers panel.
+
+    Layer,
+
+    /// A row of the Pages list (`page.rename`).
+
+    Page,
+
+}
+
+
+
 /// 画布视图：引擎会话 + 画布状态 + 交互状态。
 
 pub struct CanvasView {
@@ -748,6 +802,36 @@ pub struct CanvasView {
 
 
 
+    /// R4/R5: the inline rename being edited, if any.
+
+    inline_rename: Option<InlineRename>,
+
+
+
+    /// One bare `TextEdit` shared by the canvas label, the pages row and the layers row.
+
+    /// The primitive editor has no Input shell: the row itself is the chrome, as in lizard's
+
+    /// `text_field_inline`. Built once so the caret / focus state survives across frames.
+
+    inline_rename_field: Entity<widgets::TextEdit>,
+
+
+
+    /// Escape cancelled the inline rename: a late focus-out commit must not write the draft.
+
+    rename_cancel: bool,
+
+
+
+    /// `TextEdit::set_on_commit` must not borrow the view back (commit_edits already holds
+
+    /// `&mut CanvasView`). It only drops the result here; `render` drains it next frame.
+
+    inline_rename_pending: std::rc::Rc<std::cell::RefCell<Option<(InlineRenameTarget, Vec<figcraft_doc::NodeId>, String)>>>,
+
+
+
     /// 上一次同步给 `file_name_field` 的 `(uid, name)`：切标签时才回写，免得打字被打断。
 
     file_name_seen: Option<(u64, String)>,
@@ -878,6 +962,20 @@ impl CanvasView {
         // Actions 面板的搜索框：Enter 提交时把搜索词写进视图，列表按它过滤。
 
         let palette_field = widgets::search_field(cx, 288.0, "", "Search actions");
+
+
+
+        // R4/R5: the one inline rename editor — the primitive TextEdit, not the shelled
+
+        // TextField. Its size comes from the row / label that hosts it.
+
+        let inline_rename_field = widgets::TextEdit::build(cx, |te, _| {
+
+            te.set_inset_left(0.0);
+
+            te.set_right_pad(0.0);
+
+        });
 
         let extra_state = panels::extra::ExtraState::new(cx, &fields.queue());
 
@@ -1029,6 +1127,22 @@ impl CanvasView {
 
             palette_field,
 
+
+
+            inline_rename: None,
+
+
+
+            inline_rename_field,
+
+
+
+            rename_cancel: false,
+
+
+
+            inline_rename_pending: std::rc::Rc::new(std::cell::RefCell::new(None)),
+
             extra: None,
 
             extra_state,
@@ -1165,34 +1279,55 @@ impl CanvasView {
 
         }
 
-        // Actions 面板的搜索：Enter 提交一次，列表按它过滤（GPUI 的输入框只有 commit 回调）。
+        // Actions 面板：边打边过滤（egui palette 每敲一个字就重排），Enter 执行高亮行。
 
         let me = cx.entity();
 
+
+
         view.palette_field.update(cx, |tf, _| {
 
-            tf.set_on_commit(move |text, _w, cx| {
+            // 每改一个字符就重排，并把键盘高亮复位到第一行；与 commit 互不影响。
 
-                let q = text.trim().to_string();
+            tf.set_on_change({
+
+                let me = me.clone();
+
+                move |text, _w, cx| {
+
+                    let q = text.trim().to_string();
+
+                    me.update(cx, |v, cx| {
+
+                        v.palette_query = q;
+
+                        v.palette_sel = Some(0);
+
+                        cx.notify();
+
+                    });
+
+                }
+
+            });
+
+            // `palette_query` 已由 on_change 同步，所以 Enter 直接运行高亮行；
+
+            // 不再有「第一次 Enter 过滤、第二次 Enter 才执行」这种两段式行为。
+
+            tf.set_on_commit(move |_text, _w, cx| {
 
                 me.update(cx, |v, cx| {
 
-                    // B2: Enter on an unchanged query runs the highlighted row (egui's palette
-                    // runs the selected item; a first Enter filters, a second runs it).
-                    if q == v.palette_query {
-                        let items = palette::items(&palette::sections(&v.palette_query, v.palette_tab, &v.app.session));
-                        if let Some(item) = v.palette_sel.and_then(|i| items.get(i)) {
-                            let key = item.key.to_string();
-                            v.pick_palette(&key, cx);
-                            return;
-                        }
+                    let items = palette::items(&palette::sections(&v.palette_query, v.palette_tab, &v.app.session));
+
+                    if let Some(item) = v.palette_sel.and_then(|i| items.get(i)) {
+
+                        let key = item.key.to_string();
+
+                        v.pick_palette(&key, cx);
+
                     }
-
-                    v.palette_query = q;
-
-                    v.palette_sel = Some(0);
-
-                    cx.notify();
 
                 });
 
@@ -1590,6 +1725,24 @@ impl CanvasView {
 
         self.fields.commit_all(window, cx);
 
+        // Inline rename: clicking anywhere outside the bare editor commits it. The callback
+
+        // only fills the pending queue (it must not borrow the view back), so `render` executes
+
+        // the command on the next frame.
+
+        let editor = self.inline_rename_field.clone();
+
+        editor.update(cx, |te, cx| { te.finish_edit(window, cx); });
+
+        if self.inline_rename.is_some() && self.inline_rename_pending.borrow().is_none() {
+
+            // Unchanged text produces no commit, but the field still closes (egui's rule).
+
+            self.inline_rename = None;
+
+        }
+
         self.sync_panel(cx);
 
     }
@@ -1635,6 +1788,80 @@ impl CanvasView {
         }
 
         for r in reqs {
+
+            // R4/R5/R6 (egui `app/commands.rs:135,252,255`): these are inline edits or a direct
+
+            // engine call, never a centred dialog. Catch them **before** `dialogs::ui_action`.
+
+            match r.kind.as_str() {
+
+                "canvas.renameLabel" => {
+
+                    if let Some(id) = r.data.get("id").and_then(figcraft_engine::params::id_of) {
+
+                        self.begin_inline_rename(vec![id], InlineRenameTarget::Label, cx);
+
+                    }
+
+                    continue;
+
+                }
+
+                "layers.rename" => {
+
+                    let ids: Vec<figcraft_doc::NodeId> = r.data.get("ids")
+
+                        .and_then(serde_json::Value::as_array).into_iter().flatten()
+
+                        .filter_map(figcraft_engine::params::id_of).collect();
+
+                    if ids.len() > 1 {
+
+                        // egui `dialogs::open_batch_rename`: only a multi-selection is a dialog.
+
+                        self.open_dialog(dialogs::Kind::Rename, &r.data, cx);
+
+                    } else if let Some(&id) = ids.first() {
+
+                        // egui `layers::start_rename`: open the ancestors, select the layer,
+
+                        // then put the field in its row.
+
+                        let ancestors: Vec<_> = self.app.session.ds().ok()
+
+                            .map(|ds| ds.doc.ancestors(id)).unwrap_or_default();
+
+                        for a in ancestors { self.layer_tree.expanded.insert(a); }
+
+                        let _ = self.app.session.execute("select.set", &serde_json::json!({ "ids": [id] }));
+
+                        self.begin_inline_rename(vec![id], InlineRenameTarget::Layer, cx);
+
+                    }
+
+                    continue;
+
+                }
+
+                "board.editText" => {
+
+                    if let Some(id) = r.data.get("id").and_then(figcraft_engine::params::id_of)
+
+                        && let Err(e) = figcraft_engine::board::edit_text(&mut self.app.session, id)
+
+                    {
+
+                        self.toast(e.to_string(), cx);
+
+                    }
+
+                    continue;
+
+                }
+
+                _ => {}
+
+            }
 
             // A19：所有 `dialog.*` 请求（以及少数需要输入的命令）先走通用对话框框架。
             // 框架返回 None 的请求继续交给下面四块整面板的 `ui_action`，互不遮挡。
@@ -1701,11 +1928,9 @@ impl CanvasView {
 
                             self.left_tab = 0;
 
-                            if matches!(self.extra, Some(panels::extra::ExtraKind::Icons | panels::extra::ExtraKind::Assets)) {
+                            // R.4: Assets / Icons are left-panel tabs now, not `ExtraKind`
 
-                                self.extra = None;
-
-                            }
+                            // variants. `ui.set {leftTab}` is the only place that closes them.
 
                         }
 
@@ -3042,6 +3267,126 @@ impl CanvasView {
 
 
     /// 底部中间弹一条提示，4 秒后自己消失（egui `app.toast`）。
+
+    /// Open the inline rename field over a canvas label or a layers row.
+
+    /// egui `frame_labels::rename_field` / `layers::start_rename`.
+
+    fn begin_inline_rename(&mut self, ids: Vec<figcraft_doc::NodeId>, target: InlineRenameTarget, cx: &mut Context<Self>) {
+
+        let name = self.app.session.ds().ok()
+
+            .and_then(|ds| ids.first().and_then(|i| ds.doc.node(*i)).map(|n| n.name.clone()))
+
+            .unwrap_or_default();
+
+        // A NEW primitive editor for every rename. Reusing one TextEdit keeps the previous
+
+        // draft in its buffer (`set_value` does not touch the buffer while editing), which made
+
+        // every double click rename the row to the first row's name.
+
+        let pending = self.inline_rename_pending.clone();
+
+        let ids_for_cb = ids.clone();
+
+        let editor = widgets::TextEdit::build(cx, |te, _| {
+
+            te.set_inset_left(0.0);
+
+            te.set_right_pad(0.0);
+
+            te.set_value(name);
+
+            te.set_on_commit(move |text, _w, _cx| {
+
+                *pending.borrow_mut() = Some((target, ids_for_cb.clone(), text.trim().to_string()));
+
+            });
+
+        });
+
+        self.inline_rename_field = editor;
+
+        self.inline_rename = Some(InlineRename { ids, target, start: true, frames: 0, was_active: false });
+
+        self.rename_cancel = false;
+
+        cx.notify();
+
+    }
+
+
+
+    /// R4: where the field sits for a canvas label. `tool.labels` holds the label quads in *page*
+
+    /// coordinates; `to_screen` turns them into window coordinates for an absolutely positioned
+
+    /// element. Recomputed every frame so panning / zooming keeps the field on its label.
+
+    fn label_rename_rect(&self, id: Option<figcraft_doc::NodeId>) -> Option<(f32, f32, f32)> {
+
+        let id = id?;
+
+        let name = self.app.session.ds().ok()
+
+            .and_then(|ds| ds.doc.node(id).map(|n| n.name.clone())).unwrap_or_default();
+
+        let Some(quad) = self.app.session.tool.labels.iter()
+
+            .find(|(i, _)| *i == id).map(|(_, q)| *q)
+
+        else {
+
+            // `tool.labels` is only filled while the label is actually drawn (egui has the same
+
+            // dependency). If it is missing, fall back to the frame's own top-left corner so
+
+            // an inline rename is never an invisible field that has grabbed the keyboard.
+
+            let ds = self.app.session.ds().ok()?;
+
+            let n = ds.doc.node(id)?;
+
+            let w = ds.doc.world_transform(id);
+
+            let p = w * figcraft_geom::Point::new(0.0, 0.0);
+
+            let s = self.app.to_screen(p.x, p.y);
+
+            let w = (name.chars().count() as f32 * 6.5 + 24.0).clamp(80.0, 480.0);
+
+            return Some((s.x, s.y - 20.0, w));
+
+        };
+
+        let mut min_x = f32::MAX;
+
+        let mut max_x = f32::MIN;
+
+        let mut max_y = f32::MIN;
+
+        for p in quad {
+
+            let s = self.app.to_screen(p.x, p.y);
+
+            min_x = min_x.min(s.x);
+
+            max_x = max_x.max(s.x);
+
+            max_y = max_y.max(s.y);
+
+        }
+
+        if min_x == f32::MAX { return None; }
+
+        let w = (name.chars().count() as f32 * 6.5 + 24.0).max(max_x - min_x).clamp(80.0, 480.0);
+
+        Some((min_x, max_y - 16.0, w))
+
+    }
+
+
 
     pub(crate) fn toast(&mut self, text: impl Into<String>, cx: &mut Context<Self>) {
 
@@ -4871,6 +5216,36 @@ impl Render for CanvasView {
 
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
 
+        // Inline rename commits land here (see `inline_rename_pending`): Enter, focus-out or a
+
+        // click elsewhere all go through the same queue, and the editor is closed either way.
+
+        let committed = self.inline_rename_pending.borrow_mut().take();
+
+        if let Some((target, ids, name)) = committed {
+
+            if self.rename_cancel {
+
+                self.rename_cancel = false;
+
+            } else if !name.is_empty() && !ids.is_empty() {
+
+                if target == InlineRenameTarget::Page {
+
+                    self.run_command("page.rename", serde_json::json!({ "id": ids[0], "name": name }), cx);
+
+                } else {
+
+                    self.run_command("object.rename", serde_json::json!({ "ids": ids, "name": name }), cx);
+
+                }
+
+            }
+
+            self.inline_rename = None;
+
+        }
+
         // 帧统计：一帧画一次（原文 `FrameStats::record(ctx)` 同处）。
 
         self.app.stats.record();
@@ -6019,6 +6394,24 @@ impl Render for CanvasView {
             .on_key_down(cx.listener(|this: &mut CanvasView, e: &KeyDownEvent, _window, cx| {
 
                 this.mods = e.keystroke.modifiers;
+
+                // R4/R5: Escape cancels an inline rename (egui `Rename` keeps the old name);
+
+                // it must not reach the engine or leave a late focus-out commit behind.
+
+                if e.keystroke.key.as_str() == "escape" && this.inline_rename.is_some() {
+
+                    this.inline_rename = None;
+
+                    this.inline_rename_pending.borrow_mut().take();
+
+                    this.rename_cancel = true;
+
+                    cx.notify();
+
+                    return;
+
+                }
 
                 // ── Motion 时间轴快捷键（egui timeline.rs:1093-1158）──
 
@@ -8037,6 +8430,100 @@ impl Render for CanvasView {
 
 
 
+        // R4/R5: the inline rename field. A canvas label gets an absolutely positioned field
+
+        // over the label; a layers row renders this same field *inside the row* (see
+
+        // `layer_tree::render_layer_tree`), so there is no separate overlay for that case.
+
+        let mut rename_dead = false;
+
+        if let Some(r) = self.inline_rename.as_mut() {
+
+            let editor = self.inline_rename_field.clone();
+
+            // GPUI can only focus an element once it has been mounted. Keep asking for the
+
+            // first few frames instead of just the first one (egui `Rename::start`).
+
+            let active_before = editor.read(cx).is_active(window);
+
+            if r.start || !active_before {
+
+                r.start = false;
+
+                editor.update(cx, |te, _| te.focus_editor(window));
+
+            }
+
+            r.frames = r.frames.saturating_add(1);
+
+            let active = editor.read(cx).is_active(window);
+
+            if active {
+
+                r.was_active = true;
+
+            } else if r.was_active {
+
+                // egui keeps the field open only while it has focus.
+
+                rename_dead = true;
+
+            }
+
+        }
+
+        if rename_dead { self.inline_rename = None; }
+
+        let inline_el: Vec<AnyElement> = match &self.inline_rename {
+
+            Some(r) if r.target == InlineRenameTarget::Label => {
+
+                match self.label_rename_rect(r.ids.first().copied()) {
+
+                    Some((x, y, w)) => {
+
+                        let t = widgets::tokens();
+
+                        vec![div()
+
+                            .absolute()
+
+                            .left(px(x))
+
+                            .top(px(y))
+
+                            .w(px(w))
+
+                            .h(px(24.0))
+
+                            .on_mouse_down(MouseButton::Left, |_e, _w, cx| cx.stop_propagation())
+
+                            .bg(widgets::rgba(t.menu))
+
+                            .border_1()
+
+                            .border_color(widgets::rgba(t.accent))
+
+                            .child(self.inline_rename_field.clone())
+
+                            .into_any_element()]
+
+                    }
+
+                    None => Vec::new(),
+
+                }
+
+            }
+
+            _ => Vec::new(),
+
+        };
+
+
+
         // 整个窗口都是拖放目标：GPUI 把 OS 的文件拖入翻译成一次内部拖拽 + 抬起，
 
         // `on_drop::<ExternalPaths>` 就是落点。落点坐标用 `window.mouse_position()`（Submit 时
@@ -8132,6 +8619,10 @@ impl Render for CanvasView {
 
 
             .children(toast_el)
+
+
+
+            .children(inline_el)
 
             // Popups (dropdown menus, the main menu, the Actions palette) are drawn AFTER the
             // dialog layer, so a dropdown inside a dialog is not covered by it. This is the one

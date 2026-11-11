@@ -52,6 +52,9 @@ pub(crate) enum Kind {
     Unsaved,
     /// A8 + A17 — one text value, used by batch rename and menu-input commands.
     Rename,
+    /// A menu-input command: `text.link` needs the URL before it can run
+    /// (`lizard menus.rs::invoke` → `MenuInput::Link`).
+    Link,
     /// A10 — colour profile.
     ColorProfile,
     /// A13 — missing fonts.
@@ -75,13 +78,14 @@ pub(crate) enum Kind {
 impl Kind {
     /// The one list of dialogs. `parity_contract`'s capability audit and this module's own
     /// shape test both read it, so a new dialog cannot be added without being audited.
-    pub(crate) const ALL: [Kind; 15] = [
+    pub(crate) const ALL: [Kind; 16] = [
         Kind::Export,
         Kind::Preferences,
         Kind::About,
         Kind::Find,
         Kind::Unsaved,
         Kind::Rename,
+        Kind::Link,
         Kind::ColorProfile,
         Kind::MissingFonts,
         Kind::ImportReport,
@@ -292,10 +296,12 @@ pub(crate) fn ui_action(kind: &str, _data: &Value) -> Option<Kind> {
         "dialog.updates" => Kind::Updates,
         "dialog.export" => Kind::Export,
         "dialog.find" | "edit.findReplace" => Kind::Find,
+        // R4/R5/R6: these three are handled by `CanvasView::sync_ui_requests` as inline edits —
+        // egui never shows a centred dialog for them. Only a real batch rename is a dialog.
         "dialog.batchRename" => Kind::Rename,
         // The three "…" commands in the menu catalog need an input before they can run.
         "file.export" | "file.exportFramesPdf" | "file.exportSvg" => Kind::Export,
-        "layers.rename" | "canvas.renameLabel" | "board.editText" => Kind::Rename,
+        "dialog.textLink" | "text.link" => Kind::Link,
         "dialog.message" | "dialog.notice" => Kind::Message,
         // An unknown future `dialog.*` request is still shown as a notice rather than swallowed.
         _ if kind.starts_with("dialog.") => Kind::Message,
@@ -310,6 +316,8 @@ pub(crate) fn menu_action(cmd: &str) -> Option<Kind> {
         // `app.preferences` / `help.about` / `plugins.manage` raise a `dialog.*` request themselves.
         "edit.findReplace" => Some(Kind::Find),
         "file.export" | "file.exportFramesPdf" | "file.exportSvg" => Some(Kind::Export),
+        // `text.link` needs a URL; the Text header's Create link button opens the same dialog.
+        "text.link" => Some(Kind::Link),
         _ => None,
     }
 }
@@ -435,7 +443,16 @@ pub(crate) fn spec(kind: Kind, data: &Value) -> Spec {
         Kind::Rename => Spec::new(tr("Rename"))
             .width(360.0)
             .field(Field::Text { key: "name", label: tr("Name"), value: str_field("name", data, "") })
-            .button(Button::primary(tr("Rename"), "object.rename", json!({})))
+            // A batch rename carries the ids; `object.rename` needs them explicitly. A menu-driven
+            // batch rename has none and falls back to the selection (engine `req_targets`).
+            .button(Button::primary(tr("Rename"), "object.rename", json!({ "ids": data.get("ids").cloned().unwrap_or(json!([])) })))
+            .with_cancel(),
+        // `lizard dialogs.rs::MenuInput::Link`: 一个 URL 输入框，提交时由按钮把它作为
+        // `{"url": …}` 交给 `text.link`（引擎只认这个键）。
+        Kind::Link => Spec::new(tr("Create link"))
+            .width(360.0)
+            .field(Field::Text { key: "url", label: tr("URL"), value: str_field("url", data, "https://") })
+            .button(Button::primary(tr("Create link"), "text.link", json!({})))
             .with_cancel(),
         Kind::ColorProfile => Spec::new(tr("Color profile"))
             .width(380.0)
@@ -978,7 +995,13 @@ mod tests {
         assert_eq!(ui_action("dialog.unsaved", &json!({"index": 2})), Some(Kind::Unsaved));
         assert_eq!(ui_action("dialog.missingFonts", &empty), Some(Kind::MissingFonts));
         assert_eq!(ui_action("dialog.createFromColor", &json!({"color": "#ff0000"})), Some(Kind::SampledColor));
-        assert_eq!(ui_action("layers.rename", &empty), Some(Kind::Rename));
+        // R4/R5/R6: inline edits, not centred dialogs.
+        assert_eq!(ui_action("layers.rename", &empty), None);
+        assert_eq!(ui_action("canvas.renameLabel", &empty), None);
+        assert_eq!(ui_action("board.editText", &empty), None);
+        assert_eq!(ui_action("dialog.batchRename", &empty), Some(Kind::Rename));
+        assert_eq!(ui_action("dialog.textLink", &empty), Some(Kind::Link));
+        assert_eq!(ui_action("text.link", &empty), Some(Kind::Link));
         assert_eq!(ui_action("edit.findReplace", &empty), Some(Kind::Find));
         assert_eq!(ui_action("dialog.unknownFutureThing", &empty), Some(Kind::Message));
         assert_eq!(ui_action("shape.rectangle", &empty), None, "a normal command is not a dialog");
@@ -988,6 +1011,7 @@ mod tests {
     fn menu_commands_that_need_input_do_not_execute_directly() {
         assert_eq!(menu_action("file.export"), Some(Kind::Export));
         assert_eq!(menu_action("edit.findReplace"), Some(Kind::Find));
+        assert_eq!(menu_action("text.link"), Some(Kind::Link), "Create link needs a URL first");
         assert_eq!(menu_action("app.preferences"), None, "the engine raises the request itself");
         assert_eq!(menu_action("view.toggleUi"), None);
     }
@@ -1002,6 +1026,7 @@ mod tests {
             Kind::Find,
             Kind::Unsaved,
             Kind::Rename,
+            Kind::Link,
             Kind::ColorProfile,
             Kind::MissingFonts,
             Kind::ImportReport,

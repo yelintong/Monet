@@ -162,6 +162,10 @@ pub struct Tokens {
     pub component_row: Color32,
     /// 整块全是图标时的 band 色（egui `icon_layer_row`）。
     pub icon_layer_row: Color32,
+    /// 组件层前景紫色（egui `component`：row 的 icon 与 name 都画成它）。
+    pub component: Color32,
+    /// 图标层前景橙色（egui `icon_layer`：图标类 row 的 icon 与 name 画成它）。
+    pub icon_layer: Color32,
     pub guide: Color32,
     pub danger: Color32,
     pub success: Color32,
@@ -229,6 +233,9 @@ impl Tokens {
             selected_row_child: if dark { toward(color, Color32::BLACK, 0.90) } else { toward(color, Color32::WHITE, 0.93) },
             component_row: if dark { c(0x3E, 0x30, 0x52) } else { c(0xF1, 0xE9, 0xFF) },
             icon_layer_row: if dark { c(0x4A, 0x38, 0x1C) } else { c(0xFD, 0xF0, 0xDD) },
+            // 前景紫 / 橙：亮主题与 egui 的 `COMPONENT` / `ICON` 一致；暗主题取 egui 的减淡版。
+            component: if dark { c(0xD2, 0x7C, 0xFF) } else { c(0x97, 0x47, 0xFF) },
+            icon_layer: if dark { c(0xFF, 0xB3, 0x4D) } else { c(0xD9, 0x7A, 0x06) },
             guide: c(0xF2, 0x48, 0x22),
             danger: c(0xF2, 0x48, 0x22),
             success: DEV_READY,

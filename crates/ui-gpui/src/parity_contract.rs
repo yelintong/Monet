@@ -261,6 +261,6 @@ mod tests {
             assert!(ids.insert(c.id), "duplicate contract id {}", c.id);
             assert!(!c.requires.is_empty(), "{} declares no capabilities", c.id);
         }
-        assert_eq!(dialogs::Kind::ALL.len(), 15, "a new dialog needs an audited contract or spec");
+        assert_eq!(dialogs::Kind::ALL.len(), 16, "a new dialog needs an audited contract or spec");
     }
 }

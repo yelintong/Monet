@@ -1,4 +1,4 @@
-//! The UI language: lookups over the string catalogs in `crates/ui-egui/locales/` (one TOML file
+//! The UI language: lookups over the string catalogs in `crates/i18n/locales/` (one TOML file
 //! per language, baked in by build.rs; see docs/translating.md).
 //!
 //! Keys are the English text as written in the code: `tr("Fill")`,

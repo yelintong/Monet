@@ -21,6 +21,8 @@ pub mod render;
 pub mod render_worker;
 pub mod rulers;
 pub mod selection_spacing;
+/// 动态内联 SVG：GPUI 0.2.2 里唯一能旋转的文字（标尺左侧数字）。
+pub mod svg_text;
 
 pub use geom::*;
 pub use painter::Painter;
@@ -35,26 +37,24 @@ use gpui::RenderImage;
 use crate::app::CanvasApp;
 use crate::theme::{Tokens, doc_c32};
 use render::JobKey;
-use render_worker::Worker;
+use render_worker::{Renders, Worker};
 
-/// 拖动中的图层：从渲染里裁下来的那一块，画布自己画它。
+/// 拖动补丁：一张**当帧同步渲染的局部完整场景**，盖在冻结的整页贴图之上。
 ///
-/// 贴图那边用 `Options::skip` 把这几层去掉，这一块图就顶替它们——所以选框（叠加层现算）
-/// 和图层的像素是**同一帧**动，不再慢一个渲染往返。和 Figma 拖动时移动图层位图的道理一样。
+/// 它同时做两件事：用不透明的场景把底图里「被拖图层还停在旧位置」的那一份盖掉（不必再
+/// 异步挖空整页），并按当前文档把图层连同**所有效果**画在新位置。走的是和静态画面完全相同
+/// 的渲染管线，所以内置阴影/模糊、外置 WGSL 材质、容器的子节点与 frame 裁剪都在，不会丢、
+/// 也不会慢半帧。
 pub struct Live {
     pub image: Arc<RenderImage>,
-    /// 这块图覆盖的页面矩形（`x0 y0 x1 y1`，已裁到渲染范围之内）。
+    /// 这张补丁覆盖的页面矩形（`x0 y0 x1 y1`）。
     pub page: [f64; 4],
-    /// 抓取那一刻包围盒的左上角：画的时候按之后移动了多少偏移。
-    pub at: [f64; 2],
-    /// 抓的是这几层（拖拽中换了一组就作废重抓）。
+    /// 拖动开始时被拖图层的包围盒：每帧的补丁都要把它包进来，旧残影才擦得干净。
+    pub start: [f64; 4],
+    /// 这次拖动抓的是哪几层：中途换了选中就作废重来，别把两组图层的旧位置糊在一起。
     pub ids: Vec<NodeId>,
-    /// 这几层最后一次的包围盒（页面坐标）：松手后还要用它把替身画到原处，直到新贴图到位。
-    pub bounds: [f64; 4],
-    /// 替身是**每帧重抓**的（拉伸/旋转）：图层自己的像素在变，位图不能靠平移跟。
-    /// 这种替身按它抓下来的那一块就位，不做「当前包围盒 − 抓取包围盒」的平移——
-    /// 否则上一帧的旧图会被挪到这一帧的新位置上，看着就是跑偏。
-    pub reshape: bool,
+    /// 松手时提交的那张整页渲染序号：它上台之前补丁要一直留着，否则图层会闪没。
+    pub release_seq: Option<u64>,
 }
 
 /// 画布状态（对应原文的 `CanvasState`）。
@@ -69,16 +69,19 @@ pub struct CanvasState {
     pub tex_coarse: bool,
     /// 贴图回答的请求序号。
     pub tex_seq: u64,
-    /// 当前这张贴图**没有**画哪些图层。只有这张贴图确实让开了拖动中的图层，画布才画那一块：
-    /// 否则贴图里还留着它们在旧位置的一份，叠上去就是重影。
-    pub tex_skip: Vec<NodeId>,
-    /// 拖动中由画布自己画的图层（见 [`Live`]）。
+    /// 覆盖整页的低分辨率兜底图（见 [`render_worker::Overview`]），铺在清晰贴图**下面**。
+    /// 平移露出新区域时，清晰贴图还没到的那一条立刻有内容，看不见"正在加载"。
+    pub overview: Option<(Arc<RenderImage>, View)>,
+    /// 兜底图描述的是哪一版内容（`doc 指针 / 页面 / 字体代次`）。
+    pub overview_of: Option<(usize, NodeId, u64)>,
+    /// 拖动中盖在整页贴图之上的局部场景补丁（见 [`Live`]）。
     pub live: Option<Live>,
-    /// 最后一次单独重抓替身时请求的矩形（拉伸/旋转每帧一次）：同一个就不必再抓。
-    pub(crate) grabbed: Option<([i64; 6], Vec<i64>)>,
     pub(crate) submitted: Option<JobKey>,
-    /// 拖动开始时已经提交过一次「让开被拖图层」的整页渲染（拖动期间最多一次）。
-    pub(crate) skip_pending: bool,
+    /// 上一帧是否在拖动：松手那一帧用它强制提交一张含最终位置的整页图。
+    pub(crate) dragging: bool,
+    /// UI 线程自己的材质合成器（拖动补丁当帧同步渲染时用，不与渲染线程抢设备）。
+    /// 只有文档里真的绑了外置材质才会惰性创建 wgpu 设备。
+    pub patch_renders: Option<Renders>,
     /// 最后一次请求渲染的视图。
     pub(crate) want_view: Option<View>,
     /// 上一次画布渲染做了什么。
@@ -104,11 +107,12 @@ impl Default for CanvasState {
             tex_of: None,
             tex_coarse: false,
             tex_seq: 0,
-            tex_skip: Vec::new(),
+            overview: None,
+            overview_of: None,
             live: None,
-            grabbed: None,
             submitted: None,
-            skip_pending: false,
+            dragging: false,
+            patch_renders: None,
             want_view: None,
             render_work: None,
             preview_latency_ms: None,
@@ -122,9 +126,11 @@ impl Default for CanvasState {
 /// 一次画布渲染的产物：贴图（图像 + 屏幕矩形，画布局部坐标）+ 记录下来的绘制指令。
 pub struct CanvasOutput {
     pub image: Option<(Arc<RenderImage>, Rect)>,
-    /// 拖动中自己画的图层：贴在整页贴图**之上**、叠加层**之下**（和 Figma 的层次一样）。
-    /// 第三项是它被所在 frame 裁掉的那一块（屏幕矩形，画布局部坐标）：替身要贴着移动，
-    /// 而裁剪框本身不动，所以裁剪只能画的时候套上去，不能烘进图里。
+    /// 整页兜底图（低分辨率）：铺在 `image` **下面**，只在 `image` 没盖住的地方露出来。
+    pub overview: Option<(Arc<RenderImage>, Rect)>,
+    /// 拖动补丁（不透明的局部场景）：贴在整页贴图**之上**、叠加层**之下**。
+    /// 第三项保留给视图层的可选裁剪矩形；新方案里恒为 `None` —— frame 裁剪由渲染器在
+    /// 生成补丁时按当前文档现算，不需要画布再手工套一个不动的裁剪框。
     pub live: Option<(Arc<RenderImage>, Rect, Option<Rect>)>,
     pub painter: Painter,
     /// 页面底色。由视图层当作容器背景铺在**贴图下面**——不能进 `painter.ops`，
@@ -173,9 +179,8 @@ pub fn show(app: &mut CanvasApp, worker: &mut Worker, ppp: f32, t: &Tokens) -> C
         .unwrap_or(t.canvas);
     app.canvas.page = bg;
 
-    // 拖动中的图层（照搬 Figma 的办法：贴图让开它们，画布自己画这一块）。
-    // 平移：抓一次，之后只换位置（替身和选框天然同一帧）。
-    // 拉伸/旋转：图层自己的像素每帧都在变，替身**当帧重抓**（见下面 `redraw` 那一段）。
+    // 拖动中的图层：整页贴图冻住不动，画布当帧自己重绘那一小块完整场景（见 `patch_for`）。
+    // 平移、拉伸、旋转一律每帧重算 —— 图层像素本来就在变，位图平移那套会跟效果脱节。
     let (mut moving, mut redraw) =
         app.session.tool.live_layers().map(|(ids, draw)| (ids, draw == figcraft_engine::LiveDraw::Reshape)).unwrap_or_default();
     // 复用 resize 的 live-layer reshape 路径：拖间距/边距手柄时，把受影响的图层也并进 `moving`
@@ -200,9 +205,9 @@ pub fn show(app: &mut CanvasApp, worker: &mut Worker, ppp: f32, t: &Tokens) -> C
         redraw |= r;
     }
     // 拉伸会重排父级与兄弟：把被拉的那一层所在的、会随它变化的框（自动布局父级、跟随子级的组）
-    // 并进 `moving`。替身于是画整个受影响的框——`Options::only` 连同子层、`skip` 连同子层——
-    // 父级 hug、兄弟位移都与选框同一帧；否则只有被拉的那一层动，父级和内容要等一次异步渲染（果冻）。
-    // 旋转不重排（只改自己的几何），保持只画自己，免得把旋转后溢出框外的部分裁进框里。
+    // 并进 `moving`，补丁于是重绘整个受影响的框，父级 hug、兄弟位移都与选框同一帧。
+    // 旋转不重排（引擎 `live_reflows()` 只对 Resize 为真），`moving` 只含被转的几层；
+    // 每帧按当前变换重绘局部场景，不需要旧替身那套 reshape 标志与手工裁剪。
     if redraw
         && app.session.tool.live_reflows()
         && let Ok(ds) = app.session.ds()
@@ -217,13 +222,20 @@ pub fn show(app: &mut CanvasApp, worker: &mut Worker, ppp: f32, t: &Tokens) -> C
         moving = roots;
     }
     let moving_bounds = if moving.is_empty() { None } else { app.session.ds().ok().and_then(|ds| ds.doc.bounds_of(&moving)) };
-    // 只有「换了一组图层」才作废替身；松手后（`moving` 空）留着它，等一张含这些层的新贴图
-    // 到位再丢（见文件末尾）——否则图层会从画面上消失一下（闪）。
-    if let Some(live) = &app.canvas.live
-        && !moving.is_empty()
-        && live.ids != moving
-    {
-        app.canvas.live = None;
+    // 新一次拖动：旧补丁记的「起始位置」不属于这次操作，作废重来；同一次拖动的连续帧保留
+    // `start`，旧位置的残影才一直被盖住。松手后补丁留到新的整页贴图上台（见文件末尾）。
+    let was_dragging = app.canvas.dragging;
+    let released = was_dragging && moving.is_empty();
+    if !moving.is_empty() {
+        let changed = app.canvas.live.as_ref().is_some_and(|l| l.ids != moving);
+        if !was_dragging || changed {
+            app.canvas.live = None;
+        }
+        app.canvas.dragging = true;
+    } else if released {
+        app.canvas.dragging = false;
+        // 拖动期间 `request_render` 一次都没提交过；作废指纹，强制提交一张含最终位置的整页图。
+        app.canvas.submitted = None;
     }
 
     // 自动布局的 padding / spacing 提示带：交给渲染铺（在子层之前）。悬停到哪条就只给哪条。
@@ -231,35 +243,24 @@ pub fn show(app: &mut CanvasApp, worker: &mut Worker, ppp: f32, t: &Tokens) -> C
     handles::update_hover(app);
     let bands = handles::bands_for_render(app);
 
-    // 替身**当帧**抓：拉伸/旋转每帧重抓（几何在变），平移只在第一帧抓一次（之后按位移摆放）。
-    // 先抓再请求渲染：`request_render` 看到 `live` 已在，就让贴图跳过这些层——平移的第一步
-    // 也不会先出现「图层没动」的一两帧（果冻），替身与选框同一帧、同一份文档。
-    //
-    // 拉伸/旋转的替身每帧都在变——交给后台线程的话，画出来的永远是上一帧的几何，而选框是这一帧
-    // 的，两者差一点点，看起来就是内容贴着外框轻微跑偏（用户实测）。单块光栅只要 1–2ms，
-    // 直接在当帧抓。
-    if !moving.is_empty()
-        && (redraw || app.canvas.live.is_none())
-        && let Some(b) = moving_bounds
-    {
-        let grab = app.session.ds().ok().and_then(|ds| {
-            let zoom = ds.view.zoom.max(1e-6);
-            // 阴影/描边会超出几何包围盒：和渲染那边一样按屏幕像素留一圈。
-            let pad = 32.0 / zoom;
-            let ask = render_worker::GrabAsk { page: [b.x0 - pad, b.y0 - pad, b.x1 + pad, b.y1 + pad], at: [b.x0, b.y0], ids: moving.clone() };
-            let scale = zoom * f64::from(ppp);
-            render_worker::grab_layer(&ds.doc, ds.page, &ask, scale, &bands)
-        });
-        if let Some(g) = grab {
-            let at = g.at;
+    // 局部场景补丁：每帧**当帧同步**渲染「旧位置 ∪ 新位置 + 效果余量」那一块不透明的完整场景。
+    // 它和整页贴图走同一条渲染管线（内置效果、外置 WGSL 材质、容器裁剪与子节点都在），所以
+    // 效果与选框天然同一帧；底图里停在旧位置的那份被这块不透明场景直接盖掉，无需异步挖空。
+    if let Some(b) = moving_bounds {
+        let start = app.canvas.live.as_ref().map(|l| l.start).unwrap_or([b.x0, b.y0, b.x1, b.y1]);
+        if let Some((image, page)) = patch_for(app, ppp, &moving, start, b, &bands) {
             if let Some(old) = app.canvas.live.take() {
                 app.canvas.retired.push(old.image);
             }
-            app.canvas.live = Some(Live { image: g.image, page: g.page, at, ids: moving.clone(), bounds: [b.x0, b.y0, b.x1, b.y1], reshape: redraw });
+            app.canvas.live = Some(Live { image, page, start, ids: moving.clone(), release_seq: None });
         }
     }
 
     render::request_render(app, worker, ppp, MAX_TEXTURE_SIDE, &moving, moving_bounds, redraw, &bands);
+    // 松手这一帧刚提交的那张整页图：补丁一直留到它上台。
+    if released && let Some(l) = app.canvas.live.as_mut() {
+        l.release_seq = Some(worker.submitted());
+    }
 
     // 每张完成的图都上台（按顺序完成；拖拽时每帧都有编辑，否则永远看不到）。
     // 顺序要紧：**先**读完成计数、**再** poll。worker 先发结果再记账，所以计数相等时
@@ -296,22 +297,12 @@ pub fn show(app: &mut CanvasApp, worker: &mut Worker, ppp: f32, t: &Tokens) -> C
         app.canvas.tex_of = Some((done.uid, done.page));
         app.canvas.tex_coarse = done.coarse;
         app.canvas.tex_seq = done.seq;
-        app.canvas.tex_skip = done.skip.clone();
-        // 拖动图层的那一块（跟着这次渲染一起裁出来的）：下一帧起贴图里让开它们。
-        if let Some(grab) = done.grab {
-            let at = grab.at;
-            if let Some(old) = app.canvas.live.take() {
-                app.canvas.retired.push(old.image);
-            }
-            app.canvas.live = Some(Live {
-                image: grab.image,
-                page: grab.page,
-                at,
-                ids: moving.clone(),
-                bounds: moving_bounds.map_or([at[0], at[1], at[0], at[1]], |b| [b.x0, b.y0, b.x1, b.y1]),
-                reshape: redraw,
-            });
+    }
+    if let Some(o) = worker.poll_overview() {
+        if let Some(old) = app.canvas.overview.replace((o.image, o.view)) {
+            app.canvas.retired.push(old.0);
         }
+        app.canvas.overview_of = Some(o.key);
     }
     let in_flight = finished < worker.submitted();
 
@@ -328,83 +319,174 @@ pub fn show(app: &mut CanvasApp, worker: &mut Worker, ppp: f32, t: &Tokens) -> C
         image = Some((tex.clone(), r.translate(-rect.min.to_vec2())));
     }
 
+    // 整页兜底图：铺在清晰贴图**下面**（`image` 之后画，会盖住它没覆盖的部分）。
+    let overview = app.canvas.overview.as_ref().map(|(tex, v)| {
+        let tl = app.to_screen(v.origin.0, v.origin.1);
+        let zoom = app.session.ds().map(|d| d.view.zoom).unwrap_or(1.0);
+        let r = presented_image_rect(tl, v, zoom, ppp, false);
+        (tex.clone(), r.translate(-rect.min.to_vec2()))
+    });
+
     // 叠加层（标尺；后续的选中框/手柄/参考线/标签也在这一层）。
     draw_overlays(app, &mut painter, t);
 
-    // 拖动中的图层：那一块图按「当前包围盒 − 抓取时的包围盒」平移。
-    // 只有台上这张贴图确实让开了它，才画：贴图里还留着它在旧位置的一份时叠上去就是重影。
-    if let (Some(l), Some(b)) = (app.canvas.live.as_mut(), moving_bounds)
-        && !l.reshape
-    {
-        l.bounds = [b.x0, b.y0, b.x1, b.y1];
-    }
-    // 拖动中的图层按它所在的、裁切内容的 frame 实时裁切（拖出框外被切平；水平方向拖出
-    // 超过自身宽度一半则整体弹出，见 `live_clip`）。替身位图本身已是完整图层——`grab_layer`
-    // 抓取时临时关掉了祖先 frame 的 `clip`，所以初始帧不会带着 frame 提前裁出的残缺，裁切
-    // 一律按**实时位置**现算（移动后立刻跟手）。
-    let clip_doc = app.session.ds().ok().map(|ds| ds.doc.clone());
-    let live = app.canvas.live.as_ref().and_then(|l| {
-        if app.canvas.tex_skip != l.ids || l.ids.is_empty() {
-            return None;
-        }
-        // 平移：整张图按「现在在哪 − 抓的时候在哪」挪。拉伸/旋转：图是这一帧刚重抓的，
-        // 就按它自己那一块放（再叠加位移只会把旧几何挪到新位置，看着跑偏）。
-        let (dx, dy) = if l.reshape {
-            (0.0, 0.0)
-        } else {
-            let b = l.bounds;
-            (b[0] - l.at[0], b[1] - l.at[1])
-        };
-        let p0 = app.to_screen(l.page[0] + dx, l.page[1] + dy);
-        let p1 = app.to_screen(l.page[2] + dx, l.page[3] + dy);
+    // 拖动补丁按它这一帧覆盖的页面矩形摆放：不透明的完整场景同时擦掉旧位置、画出新位置。
+    // 裁剪不再手工套 —— 补丁本身就是渲染器按当前文档（含 frame clip）画出来的。
+    let live = app.canvas.live.as_ref().map(|l| {
+        let p0 = app.to_screen(l.page[0], l.page[1]);
+        let p1 = app.to_screen(l.page[2], l.page[3]);
         let r = Rect::from_min_max(p0, p1).translate(-rect.min.to_vec2());
-        let clip = clip_doc.as_ref().and_then(|doc| live_clip(doc, &l.ids, !l.reshape)).map(|c| {
-            let q0 = app.to_screen(c[0], c[1]);
-            let q1 = app.to_screen(c[2], c[3]);
-            Rect::from_min_max(q0, q1).translate(-rect.min.to_vec2())
-        });
-        Some((l.image.clone(), r, clip))
+        (l.image.clone(), r, None)
     });
 
-    if std::env::var_os("FIGCRAFT_LIVE_LOG").is_some() {
-        let (view, sel) = match app.session.ds() {
-            Ok(d) => {
-                let sel = d.selection.first().copied().and_then(|id| {
-                    let n = d.doc.node(id)?;
-                    let b = d.doc.world_bounds(id)?;
-                    let p0 = app.to_screen(b.x0, b.y0);
-                    let p1 = app.to_screen(b.x1, b.y1);
-                    Some((n.name.clone(), p0.x.round(), p0.y.round(), p1.x.round(), p1.y.round()))
-                });
-                (Some((d.view.zoom, d.view.cx, d.view.cy)), sel)
-            }
-            Err(_) => (None, None),
-        };
-        eprintln!(
-            "[live] view={view:?} rect={:?} redraw={redraw} moving={} bounds={:?} sel={sel:?} live={:?} tex_skip={} drawn={}",
-            (app.canvas.rect.min.x, app.canvas.rect.min.y),
-            moving.len(),
-            moving_bounds.map(|b| (b.x0.round(), b.y0.round(), b.x1.round(), b.y1.round())),
-            app.canvas.live.as_ref().map(|l| (l.page, l.at, l.reshape)),
-            app.canvas.tex_skip.len(),
-            live.is_some(),
-        );
-    }
-
-    // 松手后不立刻丢掉替身：等一张**含图层**的新贴图到位再丢，否则中间那十几毫秒
-    // 图层会从画面上消失一下。
-    if moving.is_empty() && app.canvas.tex_skip.is_empty() {
+    // 松手后不立刻丢掉补丁：等那张含最终位置的整页贴图真的上台再丢，否则图层会闪一下。
+    // `!in_flight()` 是兜底 —— 万一那张图被 `shows()` 拒掉，不能把补丁永远挂在画布上。
+    let release_seq = app.canvas.live.as_ref().and_then(|l| l.release_seq);
+    if let Some(seq) = release_seq
+        && (app.canvas.tex_seq >= seq || !worker.in_flight())
+    {
         app.canvas.live = None;
     }
 
     let retired = std::mem::take(&mut app.canvas.retired);
-    CanvasOutput { image, live, painter, bg, in_flight, retired }
+    CanvasOutput { image, overview, live, painter, bg, in_flight, retired }
+}
+
+/// 一张拖动补丁的像素上限（4MP ≈ 16MB）。补丁每帧重建，拖得很远时矩形会接近整页，
+/// 超过就降渲染分辨率：按页面矩形贴上去只是略糊，不会错位。
+const MAX_PATCH_PIXELS: f64 = 4_000_000.0;
+
+/// 补丁要覆盖的页面矩形：起始包围盒 ∪ 当前包围盒 + 效果余量，再裁到可见视口。
+/// 两块都包住是关键 —— 少包旧位置就留下原地残影，少包新位置就把效果切掉半个。
+fn patch_rect(start: [f64; 4], now: figcraft_geom::Rect, pad: f64, visible: [f64; 4]) -> Option<[f64; 4]> {
+    let r = [
+        (start[0].min(now.x0) - pad).max(visible[0]),
+        (start[1].min(now.y0) - pad).max(visible[1]),
+        (start[2].max(now.x1) + pad).min(visible[2]),
+        (start[3].max(now.y1) + pad).min(visible[3]),
+    ];
+    (r[2] - r[0] >= 0.5 && r[3] - r[1] >= 0.5).then_some(r)
+}
+
+#[cfg(test)]
+mod patch_tests {
+    use super::patch_rect;
+    use figcraft_geom::Rect;
+
+    /// 内置效果的残影就是「旧位置没被盖住」。补丁必须同时盖住拖动起点和当前位置。
+    #[test]
+    fn the_patch_covers_both_the_ghost_and_the_new_position() {
+        let start = [0.0, 0.0, 100.0, 100.0];
+        let now = Rect::new(300.0, 20.0, 400.0, 120.0);
+        let r = patch_rect(start, now, 16.0, [-1000.0, -1000.0, 2000.0, 2000.0]).expect("a patch");
+        assert!(r[0] <= start[0] && r[1] <= start[1] && r[2] >= start[2] && r[3] >= start[3], "旧位置要被盖住: {r:?}");
+        assert!(r[0] <= now.x0 && r[1] <= now.y0 && r[2] >= now.x1 && r[3] >= now.y1, "新位置要画得下: {r:?}");
+    }
+
+    #[test]
+    fn the_patch_stays_inside_the_visible_viewport() {
+        let r = patch_rect([0.0, 0.0, 100.0, 100.0], Rect::new(0.0, 0.0, 100.0, 100.0), 16.0, [20.0, 20.0, 80.0, 80.0]).expect("a patch");
+        assert_eq!(r, [20.0, 20.0, 80.0, 80.0]);
+    }
+
+    #[test]
+    fn a_layer_dragged_entirely_out_of_view_needs_no_patch() {
+        assert!(patch_rect([0.0, 0.0, 10.0, 10.0], Rect::new(0.0, 0.0, 10.0, 10.0), 4.0, [1000.0, 1000.0, 1100.0, 1100.0]).is_none());
+    }
+
+    /// 旋转（`Gesture::Rotate` → `LiveDraw::Reshape`）会把世界 AABB 撑大（45° 的正方形约 1.41 倍）。
+    /// 冻结底图里仍是原始角度那一份，补丁必须把「旧 AABB」与「转动后的大 AABB」一起包住；
+    /// 每帧只换一张补丁、不叠上一帧，所以中间角度不需要额外留范围。
+    #[test]
+    fn a_turn_that_grows_the_bounds_still_covers_the_original_ghost() {
+        let start = [0.0, 0.0, 100.0, 100.0];
+        let turned = Rect::new(-21.0, -21.0, 121.0, 121.0);
+        let r = patch_rect(start, turned, 8.0, [-1000.0, -1000.0, 2000.0, 2000.0]).expect("a patch");
+        assert!(r[0] <= start[0] && r[1] <= start[1] && r[2] >= start[2] && r[3] >= start[3], "旧角度要被盖住: {r:?}");
+        assert!(r[0] <= turned.x0 && r[1] <= turned.y0 && r[2] >= turned.x1 && r[3] >= turned.y1, "新角度要画得下: {r:?}");
+        assert!(r[2] - r[0] > 100.0, "转过之后补丁要跟着变大: {r:?}");
+    }
+}
+
+/// 当帧渲染拖动补丁：范围 = `start`（拖动开始时的包围盒）∪ `now`（这一帧的包围盒）+ 效果余量，
+/// 裁到可见视口后，走与整页贴图**完全相同**的 `run` + 材质合成。
+///
+/// 旧路径的「透明底替身」有两个先天缺陷：它绕开了 `Options::skip` 挖空整页时连根删掉的容器
+/// 子树，也拿不到外置材质所需的干净 backdrop。这里直接渲染一个不透明的局部场景，两个问题
+/// 一起消失，而且阴影 / 模糊 / 描边的外溢只受这里留的 `pad` 限制，不会被位图边界切断。
+fn patch_for(
+    app: &mut CanvasApp,
+    ppp: f32,
+    moving: &[NodeId],
+    start: [f64; 4],
+    now: figcraft_geom::Rect,
+    bands: &[figcraft_render::Band],
+) -> Option<(Arc<RenderImage>, [f64; 4])> {
+    let Ok(ds) = app.session.ds() else { return None };
+    let zoom = ds.view.zoom.max(1e-6);
+    // 阴影 / 模糊 / 材质折射会越过几何包围盒：按效果 reach 与屏幕像素留一圈。
+    let mut pad = 64.0 / zoom;
+    for id in moving {
+        if let Some(n) = ds.doc.node(*id) {
+            for e in &n.effects {
+                pad = pad.max(e.reach() * 1.5 + 24.0 / zoom);
+            }
+            // 外置 WGSL 材质的折射 / 霜化会越过几何边界，按屏幕像素再多留一圈。
+            if n.plugin_data.contains_key(crate::wgsl_material::BINDING_KEY) {
+                pad = pad.max(96.0 / zoom);
+            }
+        }
+    }
+    let (ox, oy) = ds.view.origin();
+    let visible = [
+        ox,
+        oy,
+        ox + f64::from(app.canvas.rect.width()) / zoom,
+        oy + f64::from(app.canvas.rect.height()) / zoom,
+    ];
+    let Some(rect) = patch_rect(start, now, pad, visible) else { return None };
+    let doc = ds.doc.clone();
+    let page = ds.page;
+    let uid = ds.uid;
+
+    let mut scale = zoom * f64::from(ppp);
+    // 单边不得超过纹理上限：先按边长收尺度，再按面积收，避免把补丁硬截断成缺一块。
+    let side = f64::from(MAX_TEXTURE_SIDE);
+    scale = scale.min(side / (rect[2] - rect[0])).min(side / (rect[3] - rect[1]));
+    let size = |k: f64| {
+        (
+            ((rect[2] - rect[0]) * k).ceil().max(1.0) as u32,
+            ((rect[3] - rect[1]) * k).ceil().max(1.0) as u32,
+        )
+    };
+    let (mut w, mut h) = size(scale);
+    let area = f64::from(w) * f64::from(h);
+    if area > MAX_PATCH_PIXELS {
+        scale *= (MAX_PATCH_PIXELS / area).sqrt();
+        (w, h) = size(scale);
+    }
+    let view = View { origin: (rect[0], rect[1]), scale, width: w, height: h };
+    let job = render_worker::patch_job(doc, page, view, bands, uid);
+    let renders = app.canvas.patch_renders.get_or_insert_with(Renders::default);
+    let done = renders.render_patch(&job)?;
+    // `Retained::render` 会把 view 吸附到整设备像素，图上台的位置要用它返回的 view 与真实图尺寸。
+    let v = &done.view;
+    let sz = done.image.size(0);
+    let (iw, ih) = (u32::from(sz.width), u32::from(sz.height));
+    let page_rect = [
+        v.origin.0,
+        v.origin.1,
+        v.origin.0 + f64::from(iw) / v.scale,
+        v.origin.1 + f64::from(ih) / v.scale,
+    ];
+    Some((done.image, page_rect))
 }
 
 /// 拉伸 `id` 时，它的父级与兄弟也会跟着变：返回**最小的那个把它们全包住**的图层——从 `id`
 /// 往上爬，只要父级是自动布局（会重排子层）或跟随子级定尺寸的组（`bounds_follow_children`）
-/// 就继续爬。替身按这个框抓（`only`/`skip` 都带上整棵子树），父级 hug 与兄弟位移就和选框
-/// 同一帧，不会慢一次渲染。旋转不走这里（它只改自己的几何，不该把框外的部分裁进来）。
+/// 就继续爬。补丁按这个框的包围盒重绘整块场景，父级 hug 与兄弟位移就和选框同一帧。
+/// 旋转不走这里（引擎 `live_reflows()` 只对 Resize 为真）：它只改自己的几何，
+/// `moving` 就只含这几层，补丁范围由 `start ∪ now` 决定，不必把框外内容无谓包进来。
 fn affected_root(doc: &Document, id: NodeId) -> NodeId {
     let mut root = id;
     let mut cur = doc.node(id).and_then(|n| n.parent);
@@ -432,6 +514,7 @@ fn affected_root(doc: &Document, id: NodeId) -> NodeId {
 ///
 /// 拉伸/旋转不做「弹出去」（`pop_out = false`）：那条规则是给**平移**用的判断，缩放时图层
 /// 自身的宽度就在变，拿它当分母会让一块正常缩小的图层突然整块不裁。
+#[allow(dead_code)] // 旧「位图替身」路径的裁剪规则；新补丁由渲染器自己裁，保留仅供回归测试对照。
 fn live_clip(doc: &Document, ids: &[NodeId], pop_out: bool) -> Option<[f64; 4]> {
     let mut out: Option<[f64; 4]> = None;
     for id in ids {

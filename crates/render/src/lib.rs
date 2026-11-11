@@ -22,6 +22,7 @@ pub mod paint;
 pub mod pattern;
 pub mod retained;
 pub mod shadow;
+pub mod wgsl_effect;
 
 pub use dots::Dots;
 pub use draw::{at_layer_depth, layer_depth, node_outline, paint_bounds, stroke_fill, subtree_outline, ts_path};
@@ -637,3 +638,9 @@ mod spread_tests;
 mod tests;
 #[cfg(test)]
 mod width_tests;
+// wgsl_effect_tests：本 worktree 的 render lib-test 在 HEAD 上已有 7 处编译错误
+// （retained_tests.rs 引用已不存在的 crate::Begun / draw::MAX_REACH；
+//  bounds_memo_tests.rs 调用旧签名 bounds_within/local_paint_bounds），
+// 与 WGSL 无关。待该 cut-back 重构收口后取消注释即可启用这 9 条测试。
+// #[cfg(test)]
+// mod wgsl_effect_tests;

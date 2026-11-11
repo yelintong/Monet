@@ -1,14 +1,16 @@
-//! 四块「整面板」（egui `shortcuts_panel.rs` / `versions.rs` / `dev_compare.rs` / `assets_panel.rs`）
-//! 的 GPUI 版，统一挂在一个居中浮层里，由引擎 `ui_requests` 打开。
+//! 整面板内容（egui `shortcuts_panel.rs` / `versions.rs` / `dev_compare.rs` / `assets_panel.rs`
+//! / `icons_panel.rs`）的 GPUI 版，由引擎 `ui_requests` 打开。
 //!
 //! 数据一律来自引擎：`figcraft_engine::keymap::{KEYS,GESTURES,Group,Platform,display}`、
 //! `DocState::versions`、`devcompare::compare`、`library::local_components`。
 //! 所有写操作都推引擎命令（`version.*` / `dev.*` / `instance.create` / `style.apply`），
 //! 面板本身不改文档。控件全部复用冻结的 `widgets/`。
 //!
-//! 与 egui 的差异：egui 把 Assets 放左栏 tab、Versions 放独立面板、Dev compare 做双图对比、
-//! Shortcuts 放窗口底部；GPUI 这里统一成一个可关闭的居中浮层（四块外框共用一套 chrome），
-//! 内容按各自引擎数据还原。
+//! ⚠️ TODO（规划错配，见 parity plan R.1 / R.7 / R.8 / R.9）：egui 把 Versions 放独立面板、
+//! Dev compare 做占满工作区的双图对比、Shortcuts 放窗口底部常驻条；GPUI 目前仍把它们塞进
+//! 同一个可关闭的居中浮层外壳，**这是已知偏差，不是既定设计**。
+//! ✅ Assets / Icons 已按 R.4 搬进左栏 `left_tab`（`layer_tree.rs` 直接调 `assets_body` /
+//! `icons_panel::body`），不再经过本文件的 `ExtraKind`；Home 走占满窗口的 `CentralPanel` 分支。
 //!
 //! 四块现已 1:1 还原：
 //! - Dev compare：并排双图 / 叠加分割滑块两种排布、版本下拉切换对比基准、改动层彩色边框
@@ -52,11 +54,8 @@ pub(crate) enum ExtraKind {
         id: Option<figcraft_doc::NodeId>,
         version: Option<String>,
     },
-    Assets,
     /// A1: `doc.home` 的首页（Recents / Templates / Getting started）。
     Home,
-    /// A5: 图标面板（egui `icons_panel.rs`，原本是左栏 `LeftTab::Icons`）。
-    Icons,
 }
 
 impl ExtraKind {
@@ -65,9 +64,7 @@ impl ExtraKind {
             Self::Shortcuts => tr("Keyboard shortcuts"),
             Self::Versions => tr("Version history"),
             Self::DevCompare { .. } => tr("Compare changes"),
-            Self::Assets => tr("Assets"),
             Self::Home => tr("Home"),
-            Self::Icons => tr("Icons"),
         }
     }
 }
@@ -89,6 +86,9 @@ pub(crate) enum UiAction {
     /// 原型演示 / 浮动预览（engine proto.present / proto.preview）。
     Present(Option<figcraft_doc::NodeId>, bool),
     PreviewClose,
+    /// 切到左面板的某个 tab：1 = Assets，2 = Icons（R1/R2）。不再弹居中浮层，
+    /// 左面板按 `left_tab` 渲染对应面板（与 egui `LeftTab` 一致）。
+    LeftTab(u8),
 }
 
 /// egui `handle_ui_requests` 里 GPUI 能落地的那部分（多窗口 / 评论 / 演示 / 对话框
@@ -102,7 +102,7 @@ pub(crate) fn ui_action(kind: &str, data: &Value, tab: u8) -> Option<UiAction> {
         "panel.devMode" => UiAction::Tab(if tab == 2 { 0 } else { 2 }),
         "panel.shortcuts" => UiAction::Toggle(ExtraKind::Shortcuts),
         "panel.versionHistory" => UiAction::Toggle(ExtraKind::Versions),
-        "panel.assets" | "panel.libraries" => UiAction::Toggle(ExtraKind::Assets),
+        "panel.assets" | "panel.libraries" => UiAction::LeftTab(1),
         "view.devCompare" => UiAction::Compare {
             id: data.get("id").and_then(figcraft_engine::params::id_of),
             version: data.get("version").and_then(Value::as_str).map(str::to_string),
@@ -260,8 +260,6 @@ pub(crate) fn render(kind: &ExtraKind, app: &CanvasApp, cmds: &Cmds, state: &Ext
         ExtraKind::Shortcuts => shortcuts_body(state, cmds, cx),
         ExtraKind::Versions => versions_body(app, cmds, state, cx),
         ExtraKind::DevCompare { id, version } => compare_body(app, cmds, state, *id, version.as_deref()),
-        ExtraKind::Assets => assets_body(app, cmds, state, cx),
-        ExtraKind::Icons => crate::icons_panel::body(app, cmds, state, cx),
         ExtraKind::Home => crate::home::body(app, cmds, state),
     };
     if matches!(kind, ExtraKind::Home) {
@@ -962,7 +960,7 @@ fn compare_body(app: &CanvasApp, cmds: &Cmds, state: &ExtraState, id: Option<fig
 // Assets（egui `assets_panel.rs`）
 // ───────────────────────────────────────────────────────────────────────────────────────────────
 
-fn assets_body(app: &CanvasApp, cmds: &Cmds, state: &ExtraState, _cx: &mut App) -> Div {
+pub(crate) fn assets_body(app: &CanvasApp, cmds: &Cmds, state: &ExtraState, _cx: &mut App) -> Div {
     let t = tokens();
     let Ok(ds) = app.session.ds() else { return note("No document open.") };
     let doc = &ds.doc;
@@ -1297,8 +1295,8 @@ mod tests {
         assert_eq!(ui_action("panel.shortcuts", &empty, 0), Some(UiAction::Toggle(ExtraKind::Shortcuts)));
         assert_eq!(ui_action("panel.versionHistory", &empty, 0), Some(UiAction::Toggle(ExtraKind::Versions)));
         assert_eq!(ui_action("view.assets", &empty, 0), None, "Assets 请求是 panel.assets，不是命令名");
-        assert_eq!(ui_action("panel.assets", &empty, 0), Some(UiAction::Toggle(ExtraKind::Assets)));
-        assert_eq!(ui_action("panel.libraries", &empty, 0), Some(UiAction::Toggle(ExtraKind::Assets)));
+        assert_eq!(ui_action("panel.assets", &empty, 0), Some(UiAction::LeftTab(1)), "Assets 切到左面板 tab，不弹浮层（R1）");
+        assert_eq!(ui_action("panel.libraries", &empty, 0), Some(UiAction::LeftTab(1)));
         assert_eq!(ui_action("view.devCompare", &json!({"version": "v1"}), 0), Some(UiAction::Compare { id: None, version: Some("v1".into()) }));
         assert_eq!(ui_action("panel.widths", &json!({"left": 320.0}), 0), Some(UiAction::Widths { left: Some(320.0), right: None }));
         assert_eq!(ui_action("palette.actions", &empty, 0), Some(UiAction::Palette));
@@ -1319,9 +1317,7 @@ mod tests {
             ExtraKind::Shortcuts,
             ExtraKind::Versions,
             ExtraKind::DevCompare { id: None, version: Some("v1".into()) },
-            ExtraKind::Assets,
             ExtraKind::Home,
-            ExtraKind::Icons,
         ] {
             assert!(!k.title().is_empty());
         }

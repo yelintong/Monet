@@ -72,6 +72,8 @@ pub struct TextField {
     trail: Slot,
     /// The trailing slot's click handler (opens a menu / popover at the click position).
     on_trail: Option<PopupHandler>,
+    /// 指针是否停在尾插槽里：文字槽（`Hug` / `Fill`）据此把文字换成下拉箭头。
+    trail_hover: bool,
     /// The leading slot's click handler (a colour dot opens the picker at the click position).
     on_lead: Option<PopupHandler>,
     /// Escape clears this field (and closes its popover).
@@ -90,6 +92,7 @@ impl TextField {
             lead: Slot::None,
             trail: Slot::None,
             on_trail: None,
+            trail_hover: false,
             on_lead: None,
             search_clear: false,
             edit: TextEdit::build(cx, |_, _| {}),
@@ -294,10 +297,26 @@ impl Render for TextField {
         let trail_el = if frame.trail.w > 0.0 && (self.on_trail.is_some() || clear) {
             let on_trail = self.on_trail.clone();
             let editor = self.edit.clone();
-            // 文字槽靠右排并留 8 pt（不顶边框）；图标槽居中。
+            // 悬停换标：文字槽（Hug / Fill）平时显示尺寸模式的文字，指针一进来就换成
+            // 那个 24 pt 槽里的下拉箭头 —— 与 Figma 的尺寸字段一致（用户 2026-11-11 指定）。
+            // 命中区是**整个 24 pt 槽**，所以点文字和点箭头是同一个按钮，都弹同一个菜单。
+            let show_chevron = is_text_trail && self.trail_hover;
+            let shown = if show_chevron { Slot::Icon(Icon::ChevronDown) } else { trail.clone() };
+            let text_now = matches!(&shown, Slot::Text(_));
+            // 文字槽靠右排并留 8 pt（不顶边框）；图标槽（含悬停后的箭头）居中。
             let mut cell = div().size_full().flex().items_center().cursor_pointer();
-            cell = if is_text_trail { cell.justify_end().pr(pt(8.0)) } else { cell.justify_center() };
-            let mut cell = cell.on_mouse_down(MouseButton::Left, move |e: &MouseDownEvent, window, cx| {
+            cell = if text_now { cell.justify_end().pr(pt(8.0)) } else { cell.justify_center() };
+            // 悬停态只驱动**这个字段自己**重绘：`trail_hover` 一变就 notify，不做全局状态。
+            // 元素 id 用编辑器实体自己的 id（每个字段一个），别用固定字符串：同一帧里几十个字段
+            // 的尾插槽都叫 "field-trail" 的话，hover 状态会在它们之间互相串。
+            let hover = cx.listener(|this: &mut Self, hovered: &bool, _window, cx: &mut Context<Self>| {
+                if this.trail_hover != *hovered {
+                    this.trail_hover = *hovered;
+                    cx.notify();
+                }
+            });
+            let cell_id = gpui::ElementId::View(editor.entity_id());
+            let mut cell = cell.id(cell_id).on_hover(hover).on_mouse_down(MouseButton::Left, move |e: &MouseDownEvent, window, cx| {
                 cx.stop_propagation();
                 if clear {
                     editor.update(cx, |te, cx| {
@@ -310,7 +329,7 @@ impl Render for TextField {
                 }
             });
             // 画出 trail 槽的内容（chevron / 图标 / 文字），否则槽是空的。
-            if let Some(content) = super::slot_child(&trail) {
+            if let Some(content) = super::slot_child(&shown) {
                 cell = cell.child(content);
             }
             Some(cell.into_any_element())

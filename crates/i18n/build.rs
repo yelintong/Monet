@@ -1,8 +1,8 @@
-//! Bake the UI string catalogs (`crates/ui-egui/locales/<code>.toml`, see docs/translating.md) into
+//! Bake the UI string catalogs (`crates/i18n/locales/<code>.toml`, see docs/translating.md) into
 //! sorted static tables for the `i18n` module.
 //!
 //! 原文这段在 `crates/ui-egui/build.rs` 里，和 contributor 信用表混在一起。把它挪出来，
-//! **数据仍然只有一份**（`crates/ui-egui/locales/`），两个 UI 后端共用同一张编译期表。
+//! There is one copy of the data (`crates/i18n/locales/`); every front-end shares this table.
 //! 这里只读 `locales/`，不再管 `contributors/`（那属于 ui-egui 自己的 About 窗口）。
 
 use std::fmt::Write as _;
@@ -16,8 +16,8 @@ fn main() {
 
 /// `pub static LANGS: &[Lang]`: every `locales/*.toml`, English first, each table sorted by key.
 fn locales() -> String {
-    // 目录跟着源码走：catalogs 仍在 `crates/ui-egui/locales/`，翻译流程与文档不变。
-    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../ui-egui/locales");
+    // The catalogs live beside this crate so no front-end owns them.
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("locales");
     println!("cargo::rerun-if-changed={}", dir.display());
     let mut files: Vec<_> =
         std::fs::read_dir(&dir).into_iter().flatten().flatten().map(|e| e.path()).filter(|p| p.extension().is_some_and(|x| x == "toml")).collect();

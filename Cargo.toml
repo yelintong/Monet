@@ -7,14 +7,14 @@ members = ["crates/*", "apps/*", "xtask"]
 # `crates/ui-gpui` is a DRAFT GPUI UI backend (see docs/migration-egui-to-gpui.md). It is excluded
 # from the default build so pulling in gpui's heavy dependency tree does not break the working
 # egui build or CI. Remove it from `exclude` once it compiles and is wired into the apps.
-exclude = ["plugins"]
+exclude = ["plugins", "crates/ui-egui", "apps/figcraft", "apps/figcraft-web"]
 
 [workspace.package]
 version = "0.15.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 rust-version = "1.95"
-repository = "https://github.com/storytold/figcraft"
+repository = "https://github.com/yelintong/Monet"
 
 [workspace.dependencies]
 # internal
@@ -32,7 +32,6 @@ figcraft-format = { path = "crates/format" }
 figcraft-tools = { path = "crates/tools" }
 figcraft-collab = { path = "crates/collab" }
 figcraft-engine = { path = "crates/engine" }
-figcraft-ui-egui = { path = "crates/ui-egui" }
 figcraft-mcp = { path = "crates/mcp" }
 figcraft-collab-net = { path = "crates/collab-net" }
 figcraft-plugin = { path = "crates/plugin" }

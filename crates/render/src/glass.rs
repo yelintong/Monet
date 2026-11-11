@@ -11,8 +11,9 @@
 //! smeared along the bend). The bevel catches the light as a thin line added to the backdrop
 //! ([`rim_light_at`]): fully where the edge faces `light_angle`, none below 0.35 of facing it, 0.6
 //! as much on the opposite side; and a faint gradient runs across the curve, 5% darker where it
-//! faces the light and lighter opposite. `frost` blurs the backdrop first. Distances to the outline come from an exact Euclidean
-//! distance transform of the shape's coverage.
+//! faces the light and lighter opposite. `frost` blurs the backdrop first, through the same
+//! downsample → upsample chain Figma runs, and then dithers it by 2/255. Distances to the outline
+//! come from an exact Euclidean distance transform of the shape's coverage.
 //!
 //! The shape's coverage, distances and normals depend only on the shape and the zoom. Once a
 //! later render asks for the same shape at the same zoom they are worked out for the whole shape,
@@ -32,7 +33,6 @@ use figcraft_geom::{Affine, Point};
 use tiny_skia::Pixmap;
 
 use crate::backdrop::EffectFrame;
-use crate::fx;
 use crate::shadow::{Outline, spread_alpha};
 
 /// Squared distance transform of one row or column (Felzenszwalb & Huttenlocher): `f` holds 0 at
@@ -379,6 +379,134 @@ pub(crate) fn bend_at(x: f32, depth: f32, bevel: f32, refraction: f32) -> f32 {
     let rim = refraction * RIM_BEND * most;
     let u = lin(-bevel - 1e-4, -0.3 * bevel, sd);
     core + (rim - core) * u
+}
+
+/// Figma's dither amplitude, `0.007843 = 2/255` — the `d` of `gen_backdrop_composite.wgsl`.
+const FROST_DITHER: f32 = 2.0 / 255.0;
+
+/// Reduce `src` by half on each side by averaging 2×2 blocks (odd sizes reuse their last row or
+/// column). This is the **downsample** step of Figma's frost chain.
+fn half(src: &Pixmap) -> Option<Pixmap> {
+    let (w, h) = (src.width(), src.height());
+    if w < 2 && h < 2 {
+        return None;
+    }
+    let (nw, nh) = ((w / 2).max(1), (h / 2).max(1));
+    let mut out = Pixmap::new(nw, nh)?;
+    let sd = src.data();
+    let od = out.data_mut();
+    let at = |x: u32, y: u32, c: u32| -> u32 {
+        u32::from(sd[((y.min(h - 1) * w + x.min(w - 1)) * 4 + c) as usize])
+    };
+    for y in 0..nh {
+        let (y0, y1) = ((y * 2).min(h - 1), (y * 2 + 1).min(h - 1));
+        for x in 0..nw {
+            let (x0, x1) = ((x * 2).min(w - 1), (x * 2 + 1).min(w - 1));
+            let i = ((y * nw + x) * 4) as usize;
+            for c in 0..4 {
+                let sum = at(x0, y0, c) + at(x1, y0, c) + at(x0, y1, c) + at(x1, y1, c);
+                od[i + c as usize] = ((sum + 2) / 4) as u8;
+            }
+        }
+    }
+    Some(out)
+}
+
+/// Stretch `src` back to `w` × `h` with bilinear filtering — the **upsample** step.
+fn upsample(src: &Pixmap, w: u32, h: u32) -> Option<Pixmap> {
+    let (sw, sh) = (src.width(), src.height());
+    if sw == 0 || sh == 0 || w == 0 || h == 0 {
+        return None;
+    }
+    let mut out = Pixmap::new(w, h)?;
+    let sd = src.data();
+    let od = out.data_mut();
+    let at = |x: u32, y: u32, c: u32| -> f32 {
+        f32::from(sd[((y.min(sh - 1) * sw + x.min(sw - 1)) * 4 + c) as usize])
+    };
+    let (kx, ky) = (sw as f32 / w as f32, sh as f32 / h as f32);
+    for y in 0..h {
+        let fy = (y as f32 + 0.5) * ky - 0.5;
+        let y0 = fy.floor();
+        let ty = (fy - y0).clamp(0.0, 1.0);
+        let y0i = y0.max(0.0) as u32;
+        let y1i = (y0i + 1).min(sh - 1);
+        for x in 0..w {
+            let fx = (x as f32 + 0.5) * kx - 0.5;
+            let x0 = fx.floor();
+            let tx = (fx - x0).clamp(0.0, 1.0);
+            let x0i = x0.max(0.0) as u32;
+            let x1i = (x0i + 1).min(sw - 1);
+            let i = ((y * w + x) * 4) as usize;
+            for c in 0..4 {
+                let top = at(x0i, y0i, c) * (1.0 - tx) + at(x1i, y0i, c) * tx;
+                let bot = at(x0i, y1i, c) * (1.0 - tx) + at(x1i, y1i, c) * tx;
+                od[i + c as usize] = (top * (1.0 - ty) + bot * ty).round().clamp(0.0, 255.0) as u8;
+            }
+        }
+    }
+    Some(out)
+}
+
+/// Frost, done the way Figma does it: a **downsample → upsample** chain over the backdrop, then the
+/// composite pass's `2/255` dither.
+///
+/// `radius` is a blur radius in pixels. Level `L` of the chain is the backdrop reduced by `2^L`, so
+/// a radius of `2^L` px is level `L`; a radius between two levels blends them, which is the same
+/// trilinear fetch the GPU side gets from sampling the backdrop's mip chain. This replaces the
+/// earlier separable Gaussian (`fx::blur`): the reference does not run a Gaussian anywhere, and its
+/// own material notes call the Gaussian an approximation of this chain, not the other way round.
+pub fn frosted_backdrop(back: &Pixmap, radius: f32) -> Pixmap {
+    let (w, h) = (back.width(), back.height());
+    if !(radius.is_finite() && radius > 1.0) || w < 2 || h < 2 {
+        return back.clone();
+    }
+    let level = radius.log2().max(0.0);
+    let l0 = level.floor();
+    let t = (level - l0).clamp(0.0, 1.0);
+    let top = (w.max(h) as f32).log2().floor().max(0.0);
+    let want = (l0 + 1.0).min(top);
+    let mut chain = vec![back.clone()];
+    while (chain.len() as f32 - 1.0) < want {
+        let Some(next) = half(chain.last().expect("chain starts with the backdrop")) else { break };
+        chain.push(next);
+    }
+    let i0 = (l0 as usize).min(chain.len() - 1);
+    let i1 = (i0 + 1).min(chain.len() - 1);
+    let Some(mut fine) = upsample(&chain[i0], w, h) else { return back.clone() };
+    if i1 != i0 {
+        if let Some(coarse) = upsample(&chain[i1], w, h) {
+            let cd = coarse.data();
+            let fd = fine.data_mut();
+            for y in 0..h {
+                for x in 0..w {
+                    let i = ((y * w + x) * 4) as usize;
+                    for c in 0..4 {
+                        let a = f32::from(fd[i + c]);
+                        let b = f32::from(cd[i + c]);
+                        fd[i + c] = (a * (1.0 - t) + b * t).round().clamp(0.0, 255.0) as u8;
+                    }
+                }
+            }
+        }
+    }
+    // Figma's dither, its own hash. It hides the bands a reduction leaves in flat backdrops.
+    let fd = fine.data_mut();
+    for y in 0..h {
+        for x in 0..w {
+            // `x - floor(x)`, not `fract()`: Rust's `fract` keeps the sign, so a negative sine would
+            // push the dither past its ±2/255 band. WGSL's `fract` is already `x - floor(x)`.
+            let raw = (x as f32 * 12.9898 + y as f32 * 78.233).sin() * 43758.547;
+            let hsh = raw - raw.floor();
+            let o = (hsh - 0.5) * FROST_DITHER;
+            let i = ((y * w + x) * 4) as usize;
+            for c in 0..3 {
+                let v = f32::from(fd[i + c]) / 255.0 + o;
+                fd[i + c] = (v.clamp(0.0, 1.0) * 255.0).round() as u8;
+            }
+        }
+    }
+    fine
 }
 
 /// Below this split (pixels: the move's length × `k`) the dispersion window takes one sample: its
@@ -906,10 +1034,34 @@ impl Geometry {
 /// `back`, its backdrop padded by `pad` pixels each way, at `scale` device pixels per unit. `rect`:
 /// the rounded rectangle the shape is, when it is one, so its fields are worked out in closed form.
 pub fn glass(g: &Glass, frame: EffectFrame<'_>, rect: Option<RoundedRect>) -> Option<Pixmap> {
+    glass_with_bevel(g, frame, rect, BEVEL)
+}
+
+/// The same render with the rim band's depth given explicitly, in document units.
+///
+/// [`glass`] uses the engine's own [`BEVEL`] (one unit). Depth is a length in document units and
+/// drives the *reach* only — the render wasm copies `bevelSize` into its uniform block at 179 write
+/// sites with zero `f32.mul`, so there is no Depth → band coefficient to reproduce. This stays for
+/// callers that want a wider or narrower band for their own reasons; nothing else differs.
+pub fn glass_with_bevel(
+    g: &Glass,
+    frame: EffectFrame<'_>,
+    rect: Option<RoundedRect>,
+    bevel_doc: f64,
+) -> Option<Pixmap> {
     let EffectFrame { shape, back, pad, size: (w, h), xf, scale } = frame;
     let g = g.sanitized();
-    let depth = (g.depth * scale).clamp(1.0, 1024.0);
-    let bevel = (BEVEL * scale).min(1024.0);
+    // The panel's Depth is a notch (1..100), not a pixel length. Convert it to the lens's actual
+    // node-space reach through the one shared mapping the external WGSL material also calls, so the
+    // two paths agree: a high notch on a small node can no longer reach past the node and fold the
+    // two opposite bend bands into each other. `w`/`h` are the layer's own device-pixel dimensions
+    // (the backdrop's pad is separate), so dividing by `scale` gives the node short side in document
+    // units — the domain `depth_reach_doc` works in. Low notches that already fit pass through
+    // unchanged; the shader keeps its `clamp(u.depth, 1, 100) * dpr` contract because the host packs
+    // `u.depth` with this same function before uploading.
+    let node_short_doc = (w.min(h) as f64) / scale.max(1e-4);
+    let depth = (Glass::depth_reach_doc(g.depth, node_short_doc) * scale).clamp(1.0, 1024.0);
+    let bevel = (bevel_doc * scale).min(1024.0);
     let r = (depth * 0.1).clamp(1.0, 8.0) as usize;
     // The core the backdrop bends towards lies `reach` in from the edge ([`bend_directions`]).
     let reach = (depth + bevel) as f32;
@@ -932,8 +1084,7 @@ pub fn glass(g: &Glass, frame: EffectFrame<'_>, rect: Option<RoundedRect>) -> Op
             Geometry::Fields(fields, shift)
         }
     };
-    let mut frosted = back.clone();
-    fx::blur(&mut frosted, g.frost / 2.0 * scale);
+    let frosted = frosted_backdrop(back, (g.frost * scale) as f32);
     let ang = g.light_angle.to_radians();
     let light = (ang.sin() as f32, -ang.cos() as f32);
     // The centre of the layer's bounds in its own frame (see `own_frame`), which `splay` bends away
@@ -988,6 +1139,87 @@ pub fn glass(g: &Glass, frame: EffectFrame<'_>, rect: Option<RoundedRect>) -> Op
         }
     }
     Some(out)
+}
+
+/// The shape field of **any** outline, packed into the universal runner's `fields` texture, so a
+/// shader that only reads `fields` works on text, vector paths, ellipses, polygons, booleans — not
+/// just rounded rectangles — with **no shader change**:
+///
+/// * `R` = **signed distance to the edge in device pixels**, negative inside (the same sign and
+///   unit the reference lens formula reads: `eh = 0` on the border, `eh = -depth` a depth in);
+/// * `GB` = inward unit normal, encoded `0.5 * (n + 1)`;
+/// * `A` = coverage (anti-aliased alpha).
+///
+/// The field is `RGBA16Float` (8 bytes a pixel). A float distance is what makes the bend sharp at
+/// any zoom: normalising it into 8 bits (`1 - d / reach`) quantises a 2000 px wide pane into steps
+/// of `min(w, h) / 2 / 255` ≈ 4 px, which eats a 5 px bevel entirely and turns the refraction band
+/// into a staircase.
+///
+/// `outline` is in local space and `xf` maps it into the `w` × `h` pixel window (the node's
+/// rectangle in device pixels, already offset by the window's origin when that is a sub-rectangle
+/// of the node). This is shape-agnostic: it reuses the very same coverage → exact Euclidean
+/// distance → smoothed normal pipeline the built-in CPU glass reads, so the GPU and CPU paths
+/// describe identical geometry. `smoothing` is the normal-smoothing radius in pixels.
+pub fn outline_fields_half(outline: &Outline, xf: Affine, w: u32, h: u32, smoothing: usize) -> Option<Vec<u8>> {
+    if w == 0 || h == 0 { return Some(Vec::new()); }
+    // Real coverage of the arbitrary shape (white, premultiplied → alpha channel is coverage).
+    let cov = spread_alpha(std::slice::from_ref(outline), 0.0, xf, w, h)?;
+    let (ww, hh) = (w as usize, h as usize);
+    let dist = inside_distance(&cov);
+    let normals = smooth_normals(&dist, ww, hh, smoothing.clamp(1, 8));
+    let mut out = vec![0u8; ww * hh * 8];
+    for i in 0..ww * hh {
+        // `inside_distance` measures inwards from the edge; the reference SDF is negative inside.
+        // A window cut out of a bigger shape has no outside pixel on its cut sides, so the exact
+        // distance there is enormous — clamped into the half range instead of overflowing to inf.
+        let sd = (-dist.get(i).copied().unwrap_or(0.0)).clamp(-65_000.0, 65_000.0);
+        let (nx, ny) = normals.get(i).copied().unwrap_or((0.0, 0.0));
+        let cov = f32::from(cov.data().get(i * 4 + 3).copied().unwrap_or(0)) / 255.0;
+        let o = i * 8;
+        half_at(&mut out[o..o + 2], sd);
+        half_at(&mut out[o + 2..o + 4], nx * 0.5 + 0.5);
+        half_at(&mut out[o + 4..o + 6], ny * 0.5 + 0.5);
+        half_at(&mut out[o + 6..o + 8], cov);
+    }
+    Some(out)
+}
+
+/// `v` as an IEEE half (little endian) written into `dst`, rounding to nearest even. Hand rolled so
+/// the render crate keeps its dependency list as it is.
+pub fn half_at(dst: &mut [u8], v: f32) {
+    let bits = v.to_bits();
+    let sign = ((bits >> 16) & 0x8000) as u16;
+    let exp = ((bits >> 23) & 0xff) as i32;
+    let man = bits & 0x7f_ffff;
+    let h = if exp == 0xff {
+        // Inf / NaN.
+        sign | 0x7c00 | u16::from(man != 0)
+    } else {
+        let e = exp - 127 + 15;
+        if e >= 0x1f {
+            sign | 0x7c00
+        } else if e <= 0 {
+            if e < -10 {
+                sign
+            } else {
+                let m = (man | 0x80_0000) >> (1 - e);
+                let keep = (m >> 13) as u16;
+                let rem = m & 0x1fff;
+                let up = rem > 0x1000 || (rem == 0x1000 && keep & 1 == 1);
+                sign | (keep + u16::from(up))
+            }
+        } else {
+            let keep = ((e as u32) << 10) | (man >> 13);
+            let rem = man & 0x1fff;
+            let up = rem > 0x1000 || (rem == 0x1000 && keep & 1 == 1);
+            let r = keep + u32::from(up);
+            sign | r as u16
+        }
+    };
+    let bytes = h.to_le_bytes();
+    if let Some(d) = dst.get_mut(..2) {
+        d.copy_from_slice(&bytes);
+    }
 }
 
 #[cfg(test)]

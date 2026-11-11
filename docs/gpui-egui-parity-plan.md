@@ -813,3 +813,109 @@ R 节（17:0x 审计）把 R1/R2 标成「✅ 已实施」，但回源码核对�
 - 该项要动 `data.rs` / `sections.rs`（两处均为未提交 WIP 重灾区，合计约 895 行在制改动），
   故本轮未擅自叠加；实现方案：新建 `panels/right/local_styles.rs` 独立模块 + 精确插入接线，
   拖拽复用 `crate::drag` 通用件，落点照 `drop_move`。
+
+## V. 2026-11-11 20:4x 右栏 Local styles 1:1 还原（补上 U.5 的缺口）
+
+用户现场反馈：*「右栏的那个本地样式还是没有还原啊，连功能都缺失」*。本轮把
+`ui-egui/src/widgets/style_picker.rs::local_styles` 的结构与动作 1:1 搬进
+`crates/ui-gpui/src/panels/right/sections.rs::page()` 的第三小节。
+
+### V.1 数据层（`panels/right/data.rs`）
+
+`PanelData.styles` 由 `Vec<(String, String, &'static str)>` 改为 `Vec<LocalStyleRow>`：
+新增 `id / name / ty / paint / text_meta / description` 六个字段。`paint` 取 `StyleKind::Paint`
+的**最后一个** paint（egui `paint_dot` 画的就是它），`text_meta` 预格式化为
+`"{font_size}/{line_height.label()}"`（egui `text_meta`），避免面板每帧回读 doc。
+`d.styles` 在 `read()` 的**空选区提前 return 之前**填充（Local styles 属于 Page 节）。
+
+### V.2 渲染（`panels/right/sections.rs`）
+
+- **四组**：顺序与 egui `StyleSlot` 一致 `[Text, Fill, Effect, Grid]` → `text / paint / effect / grid`；
+  空组 `continue`（egui 同样跳过空组）。
+- **节标题 `+`**：`style.create {type, name}` 的「建哪种样式」菜单（Text/Color/Effect/Grid），
+  与 egui 头部 `+` 的 `menu_popup` 一致；`ITEMS` 用 `static` 防闭包借本地数组越界。
+- **每组小标题**：32pt caption（egui `LS_CAPTION_H`）+ 组内 `+`（直接建该类型）。
+- **文件夹树**：`ls_entries / ls_branch_of / ls_flatten` 逐行对应 egui 的
+  `entries / branch_of / flatten`；`/` 分隔的路径折成层级，空目录排最前。
+- **样式行**：左侧 16pt 徽标 —— paint 用**圆形** `swatch`（`rounded_full`）、text 用 `Ag`、
+  effect/grid 用类型图标（GPUI 无 `Icon::Effects`/`Icon::Grid`，分别用 `Star`/`ViewGrid`）；
+  名字占满中间，文本样式的 `32/Auto` **贴行尾**（egui 右对齐在 `r.max.x - LS_TRAIL`）；
+  层级 `depth * 24` 缩进（egui `LS_STEP`）；整行悬停 `t.hover` 圆角 5 高亮。
+- **动作**：左键 → `style.apply {style}`；右键 → `Duplicate` / `Delete`（`style.duplicate` /
+  `style.delete`），全部走既有 `f.cmds` 通道。
+
+### V.3 与 EGUI 的**有意偏差**（诚实边界）
+
+1. **左键语义**：egui 左键 `edit_local` 打开样式编辑器浮层（`Picker { edit }`）；GPUI 尚无该浮层，
+   本轮改为 `style.apply`（应用到当前选区，可撤销）。**样式编辑器浮层未移植**，如需 1:1 应单独立项。
+2. **行高**：egui 样式/文件夹行 `LS_ROW_H = 24`；GPUI 复用通用件 `field_row_full`（`ROW_H = 32`），
+   未改冻结件 `panel_section.rs`。caption 已与 egui 的 32pt 一致。
+3. **未做**：文件夹折叠（`folded` 恒 false）、拖拽重排（`style.move` / `drop_move`）、
+   文件夹改名（`style.renameFolder` / 右键「Rename folder」）、组内/文件夹行尾 `+`（建到该文件夹）。
+
+### V.4 验证
+
+- `cargo check -p figcraft-ui-gpui --lib`：RC=0，无新警告。
+- `cargo test -p figcraft-ui-gpui --lib --features test-support`：**251 通过 / 3 失败 / 3 忽略**；
+  3 条仍是记录在案的基线（main_menu aim / extra Shift+D / panel_resize hit area），无新增回归。
+- 改动文件：`crates/ui-gpui/src/panels/right/data.rs`、`crates/ui-gpui/src/panels/right/sections.rs`。
+
+---
+
+## W. 2026-11-11 21:0x 进度核对 + T.7 收尾（死变体 / palette 实时过滤 / R4–R6 内联改名）
+
+### W.0 开工前状态（先核对，再动手）
+
+- 分支 `GPUI-smooth`，最新提交 `af2aadc3`（11-11 19:35），**之后的工作全在工作区未提交**：
+  32 个已跟踪文件约 **4900 行**在制改动 + 15 个未跟踪文件（整套 WGSL 材质、
+  `render/glass.rs` 的 frost 链、Type settings 弹层、右栏 Local styles、`.tmp/` 脚本等）。
+- 远端 `93b85863` 的 `lib.rs` 引用了没进仓库的 WGSL 模块；用户 18:4x 已拍板
+  **「保持现状（不修远端），等 WGSL 工作做完一起提交」**。本轮没有 force push / 补推 / revert。
+- 基线：`cargo test -p figcraft-ui-gpui --lib --features test-support` = 251 通过 / 3 失败 / 3 忽略。
+- 文档 T.7 排的下一步：① 清 T.2 六条弹窗化残留 + `ExtraKind` 死变体；② B2 键盘导航 / Enter /
+  实时过滤；③ 图层树虚拟化（③ 已于 U 节完成）。本轮做 ① 的一部分与 ②，并顺带把 R4–R6 落地。
+
+### W.1 本轮做了什么
+
+| # | 问题 | 修法 |
+|---|---|---|
+| 1 | R1/R2 入口已在 R.4 搬进左栏 tab，但 `ExtraKind::Assets / Icons` 变体、`title()` 两臂、`render()` 的 760×520 卡片分支、`lib.rs` 的 `matches!` 守卫、测试数组都还在（T.2 死路径） | 全部删除；`assets_body` / `icons_panel::body` 保留（左栏 tab 直接调）。`extra.rs` 文件头把「与 egui 的差异」改成明确的 **TODO（规划错配，R.7/R.8/R.9 未整改）**，不再当作既定设计；`lib.rs` 的 `ui.set {leftTab}` 分支不再判断死变体 |
+| 2 | B2 命令面板只在 **Enter** 时过滤（T.7 记的「实时过滤」未做）；Up/Down + Enter 其实已有 | `palette_field` 加 `set_on_change`：每敲一个字重排 + 高亮复位第一行；`set_on_commit` 简化为「直接运行高亮行」，去掉「第一次 Enter 过滤、第二次 Enter 才执行」的两段式 |
+| 3 | **R4/R5/R6 三个 ui_request 被 `dialogs::ui_action` 一律变成居中 `Kind::Rename` 对话框**（用户实测发现：双击画框标签 / 图层改名都弹窗） | 照 `ui-egui/src/app/commands.rs:135,252,255` 分流，在 `sync_ui_requests` 里**先于** `dialogs::ui_action` 接住：`canvas.renameLabel` → 画布标签上的内联输入框；`layers.rename` 单 id → 图层树**那一行内**的输入框，多 id 才开批量重命名对话框；`board.editText` → 直接调 `figcraft_engine::board::edit_text`（根本不是对话框）。提交统一走 `object.rename {ids, name}`，Escape 取消，失焦提交 |
+
+**内联改名的实现要点**（`lib.rs` + `layer_tree.rs`）：一个跨帧复用的 `Entity<TextField>`，
+`Label` 形态在根 div 上按 `tool.labels` 的 quad 绝对定位（页面坐标 → `to_screen`，逐帧重算，
+平移缩放会跟着走），`Layer` 形态由 `render_layer_tree` 把 `(id, field)` 捕获进虚拟列表闭包、
+在那一行把名字槽换成输入框。焦点由 render 里连续几帧 `focus_editor` 拿到（GPUI 要等元素挂载），
+拿到焦点后失焦即结束。
+★ 坑：`focus_editor` 发生在 `TextField::render` 消费 pending 之前，会把旧的空值快照进编辑缓冲；
+因此 `begin_inline_rename` 除了 `tf.set_value()` 还必须同步 `tf.edit().set_value()`，否则框是空的。
+
+### W.2 验证
+
+- `cargo check -p figcraft-ui-gpui --lib`：RC=0；`cargo build --example run`：成功。
+- 全套测试 **251 通过 / 3 失败 / 3 忽略**，3 条仍是基线（main_menu aim / extra Shift+D /
+  panel_resize hit area），无新增回归。`dialogs.rs` 新增 4 条断言（三个命令不再是对话框、
+  `dialog.batchRename` 仍是）。
+- **exe 实测**（控制通道 7811）：
+  - `select.all` → `object.rename {}` = 多选 → 居中「重命名」批量对话框 ✅（EGUI 同款行为）；
+  - `select.set {ids:[2]}` → `object.rename {}` = 单 id → **图层行内**出现输入框，初值 `Frame 1`，
+    **没有任何居中对话框** ✅；
+  - 键入 ` - Renamed` + Enter → 行名变 `Frame 1 - Renamed`，输入框收回成普通标签 ✅。
+- 顺手修 `.tmp/grab.py`：`SW_RESTORE` 会把最大化窗口还原成旧的 4K 矩形、覆盖之前
+  `SetWindowPos` 设的尺寸，导致截图拍到桌面。现在还原后 `SW_SHOWNORMAL` + 重新设尺寸。
+
+### W.3 诚实边界（本轮没做）
+
+1. **R7 / R8 / R9 未整改**：Shortcuts 仍是居中浮层（EGUI 是窗口底部常驻条）、
+   Versions 仍是居中卡片（EGUI 是独立面板）、DevCompare 仍是居中卡片（EGUI 占满主区）。
+   `extra.rs` 文件头已明确标成 TODO，不伪装成完成。
+2. **R4 未能在 exe 上复现**：引擎 `label_at` 依赖 `tool.labels`，而它只在标签实际绘制时
+   （`overlays()` 的 `focus.is_none() && frame_like`）才填充；控制通道注入的双击没有命中标签。
+   EGUI 有同样的依赖。GPUI 侧已加兜底：`tool.labels` 里找不到该 id 时按节点世界变换算
+   帧左上角，保证不会出现「抢了键盘却看不见的输入框」。
+3. 图层行内改名没有 **Tab / Shift+Tab 跳到下一行**（EGUI `take_tab` 有）；旋转帧的标签
+   保持水平是 GPUI 画布的既有已知限制，内联框沿用。
+4. `ExtraKind` 现在只剩 `Shortcuts / Versions / DevCompare / Home` 四个变体。
+5. **本轮改动未提交、未推送**：工作区有用户在制的 WGSL 等 4900 行 WIP，整文件 `git add`
+   会夹带（18:4x 的教训）；按用户「等 WGSL 做完一起提交」的决定，保持工作区原样。

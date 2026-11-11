@@ -210,6 +210,9 @@ pub enum Icon {
     WinRestore,
     /// A live session whose connection dropped.
     LiveDisconnected,
+    LayoutH,
+    LayoutV,
+    LayoutGrid,
 }
 
 impl Icon {
@@ -307,6 +310,9 @@ impl Icon {
         Icon::WinMaximize,
         Icon::WinRestore,
         Icon::LiveDisconnected,
+        Icon::LayoutH,
+        Icon::LayoutV,
+        Icon::LayoutGrid,
     ];
 
     /// 资源名（kebab-case，对应 `icons/<name>.svg`）。
@@ -403,6 +409,9 @@ impl Icon {
             Icon::WinMaximize => "win-maximize",
             Icon::WinRestore => "win-restore",
             Icon::LiveDisconnected => "live-disconnected",
+            Icon::LayoutH => "layout-h",
+            Icon::LayoutV => "layout-v",
+            Icon::LayoutGrid => "layout-grid",
         }
     }
 
@@ -430,6 +439,15 @@ fn table() -> &'static Vec<IconAsset> {
         Icon::ALL
             .iter()
             .map(|&icon| {
+                // The product mark lives under `brand/`, every other glyph under `icons/`.
+                if icon == Icon::Logo {
+                    return IconAsset {
+                        icon,
+                        name: "monet-mono",
+                        path: SharedString::from("brand/monet-mono.svg"),
+                        svg: include_bytes!("../../assets/brand/monet-mono.svg").to_vec(),
+                    };
+                }
                 let name = icon.asset_name();
                 let path = SharedString::from(format!("icons/{name}.svg"));
                 let svg = svg_canvas(icon).to_svg().into_bytes();
@@ -449,15 +467,14 @@ pub struct IconAssets;
 
 impl AssetSource for IconAssets {
     fn load(&self, path: &str) -> Result<Option<Cow<'static, [u8]>>> {
-        let Some(name) = path
-            .strip_prefix("icons/")
-            .and_then(|rest| rest.strip_suffix(".svg"))
-        else {
-            return Ok(None);
-        };
+        // lizard's layer-tree glyphs are the original 16x16 SVGs, served verbatim.
+        if let Some(bytes) = crate::widgets::layer_icons::load(path) {
+            return Ok(Some(Cow::Borrowed(bytes)));
+        }
+        // Resolve by full path so `icons/*.svg` and `brand/*.svg` share one table.
         Ok(table()
             .iter()
-            .find(|a| a.name == name)
+            .find(|a| a.path.as_ref() == path)
             .map(|a| Cow::Borrowed(a.svg.as_slice())))
     }
 
@@ -1060,6 +1077,23 @@ fn svg_canvas(icon: Icon) -> SvgCanvas {
             ring(&mut p, ox, oy, s, 8.0, 8.0, 5.0, 1.6, 22);
             thick_line(&mut p, ox, oy, s, 4.0, 12.0, 12.0, 4.0, 2.0);
         }
+        Icon::LayoutH => {
+            // egui `draw`: two filled columns with a 1 pt corner radius.
+            rect(&mut p, ox, oy, s, 2.0, 3.0, 7.0, 13.0);
+            rect(&mut p, ox, oy, s, 9.0, 3.0, 14.0, 13.0);
+        }
+        Icon::LayoutV => {
+            rect(&mut p, ox, oy, s, 3.0, 2.0, 13.0, 7.0);
+            rect(&mut p, ox, oy, s, 3.0, 9.0, 13.0, 14.0);
+        }
+        Icon::LayoutGrid => {
+            // egui `draw_grid_layoutgrid`: nine 3x3 cells on the 16-unit grid.
+            for a in [2.5, 6.5, 10.5] {
+                for b in [2.5, 6.5, 10.5] {
+                    outline_rect(&mut p, ox, oy, s, a, b, a + 3.0, b + 3.0, 1.0);
+                }
+            }
+        }
     }
     p
 }
@@ -1190,14 +1224,16 @@ mod tests {
     fn every_icon_emits_a_well_formed_svg() {
         let t = table();
         assert_eq!(t.len(), Icon::ALL.len());
-        assert_eq!(t.len(), 91, "Icon 变体数变了：请同步 ALL / asset_name / 本断言");
+        assert_eq!(t.len(), 94, "Icon 变体数变了：请同步 ALL / asset_name / 本断言");
         let mut names = HashSet::new();
         for a in t {
             assert!(names.insert(a.name), "duplicate asset name {}", a.name);
             let s = std::str::from_utf8(&a.svg).expect("svg is utf8");
             assert!(s.starts_with("<svg "), "{}: {}", a.name, s);
-            assert!(s.ends_with("</svg>"), "{}", a.name);
-            assert!(s.contains("viewBox=\"0 0 16 16\""), "{}", a.name);
+            assert!(s.trim_end().ends_with("</svg>"), "{}", a.name);
+            // The product mark is drawn on a 24-unit grid; every other glyph is 16.
+            let grid = if a.icon == Icon::Logo { "0 0 24 24" } else { "0 0 16 16" };
+            assert!(s.contains(&format!("viewBox=\"{grid}\"")), "{}", a.name);
             assert!(!s.contains("NaN") && !s.contains("inf"), "{}: {}", a.name, s);
             assert!(
                 s.contains("<path") || s.contains("<circle") || s.contains("<rect"),
@@ -1230,8 +1266,9 @@ mod tests {
             let parsed = usvg::Tree::from_data(&a.svg, &usvg::Options::default());
             assert!(parsed.is_ok(), "{}: {:?}", a.name, parsed.err());
             let tree = parsed.unwrap();
-            assert_eq!(tree.size().width(), 16.0, "{} viewBox width", a.name);
-            assert_eq!(tree.size().height(), 16.0, "{} viewBox height", a.name);
+            let side = if a.icon == Icon::Logo { 24.0 } else { 16.0 };
+            assert_eq!(tree.size().width(), side, "{} viewBox width", a.name);
+            assert_eq!(tree.size().height(), side, "{} viewBox height", a.name);
         }
     }
 

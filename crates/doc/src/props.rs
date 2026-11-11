@@ -690,8 +690,13 @@ fn wrap_degrees(deg: f64) -> f64 {
 }
 
 impl Glass {
-    /// The most frost a glass takes, as the reference tool's Frost field (0–100).
+    /// The most frost a glass takes, as Figma's Frost field (0–100): the API calls it `radius`,
+    /// a blur radius in document px, and its panel stops at 100.
     pub const MAX_FROST: f64 = 100.0;
+
+    /// The deepest a glass's lens goes, in document px. Figma's API says only "must be >= 1" and
+    /// its panel stops at 100 — so does this.
+    pub const MAX_DEPTH: f64 = 100.0;
 
     /// The fields a variable binds on a glass effect (`effects/<i>/<field>`), see [`Self::set_bound`].
     pub const BOUND_FIELDS: [&'static str; 7] = ["lightAngle", "lightIntensity", "refraction", "depth", "dispersion", "radius", "splay"];
@@ -710,7 +715,7 @@ impl Glass {
             "lightAngle" => self.light_angle = wrap_degrees(x),
             "lightIntensity" => self.light_intensity = pct,
             "refraction" => self.refraction = pct,
-            "depth" => self.depth = x.clamp(1.0, 1000.0),
+            "depth" => self.depth = x.clamp(1.0, Self::MAX_DEPTH),
             "dispersion" => self.dispersion = pct,
             "radius" => self.frost = x.clamp(0.0, Self::MAX_FROST),
             "splay" => self.splay = pct,
@@ -727,7 +732,7 @@ impl Glass {
             light_angle: ok(self.light_angle, d.light_angle, -3600.0, 3600.0),
             light_intensity: ok(self.light_intensity, d.light_intensity, 0.0, 1.0),
             refraction: ok(self.refraction, d.refraction, 0.0, 1.0),
-            depth: ok(self.depth, d.depth, 1.0, 1000.0),
+            depth: ok(self.depth, d.depth, 1.0, Self::MAX_DEPTH),
             dispersion: ok(self.dispersion, d.dispersion, 0.0, 1.0),
             frost: ok(self.frost, d.frost, 0.0, Self::MAX_FROST),
             splay: ok(self.splay, d.splay, 0.0, 1.0),
@@ -747,6 +752,53 @@ impl Glass {
         let g = self.sanitized();
         g.refraction * g.depth * (1.0 + Self::DISPERSION_SPREAD * g.dispersion)
     }
+
+    /// The panel's `Depth` notch (1..=100) → the lens's actual reach, in **document units**.
+    ///
+    /// This is the one conversion the two render paths (CPU [`figcraft_render::glass`] and the
+    /// external WGSL glass material) share, so the same document produces the same glass on either
+    /// path. Both call it with the node's short side in document units, then multiply the result by
+    /// their own device scale exactly once — that keeps the profile scale-invariant.
+    ///
+    /// # Why a conversion exists at all
+    ///
+    /// `Depth` is a **panel notch**, not a pixel distance. Figma's own fragment shader has no
+    /// `depth` uniform: its upstream Dart `GlassEffect` model turns the notch into two already-scaled
+    /// node-space lengths (`bevelSize`, `refractionDistance`) before packing. Byte-level evidence in
+    /// `figma_depth_coefficient.html` (179 `bevelSize` writes, zero `f32.mul`; the `UniformBlock` has
+    /// no `depth` field) and `figma_effects_solidified.html` §① pins that mapping in the model layer,
+    /// **not** the shader. The exact coefficient K is explicitly marked *inferred / not byte-verified*
+    /// in all three source materials (`figma_glass_material.html` §1, `figma_effects_solidified.html`
+    /// §①, `figma_depth_coefficient.html` §5–§6); it can only be obtained from Figma's Dart source or
+    /// a runtime field dump. We do not invent it.
+    ///
+    /// # What is sourced vs. inferred here
+    ///
+    /// Sourced (properties, not constants): the reach is a **node-space length** independent of
+    /// zoom; it is **monotonic** in `Depth`; and a lens cannot reach past the shape it is bending —
+    /// a band wider than the node folds the two opposite edges' bends into each other and samples
+    /// outside the node, which is exactly the "Depth = 100 looks broken" failure.
+    ///
+    /// Inferred (one knob, isolated here): [`Self::DEPTH_REACH_FRAC`] caps the reach at a fraction
+    /// of the node's short side. It is a conservative geometric bound, **not** Figma's K. Retune
+    /// this single constant (or replace the cap with the Dart mapping once its source is available)
+    /// without touching either render path. Notches small enough to fit are passed through
+    /// unchanged, so the default (20) and the low end of the panel keep their exact old look; only
+    /// the "small node + high notch" combination that cannot physically fit is clamped.
+    pub fn depth_reach_doc(notch: f64, node_short_doc: f64) -> f64 {
+        let notch = notch.clamp(1.0, Self::MAX_DEPTH);
+        // A floor of 1 document unit keeps the lens alive on any node with a positive short side.
+        // The cap is the node-space geometric bound; `max(1.0)` keeps even sub-pixel nodes finite.
+        let cap = (node_short_doc.max(0.0) * Self::DEPTH_REACH_FRAC).max(1.0);
+        notch.min(cap)
+    }
+
+    /// Largest share of a node's short side the glass lens may reach. **Inferred geometric bound**,
+    /// not Figma's byte-verified `Depth → refractionDistance` coefficient (which is not present in
+    /// the render wasm — see [`Self::depth_reach_doc`]). 0.25 keeps the two opposite bend bands from
+    /// overlapping across the node's middle and leaves room for the rounded-rect core. Isolated
+    /// here so it can be retuned or replaced from the authoritative Dart mapping in one place.
+    pub const DEPTH_REACH_FRAC: f64 = 0.25;
 }
 
 /// How a blur's radius varies across the layer.

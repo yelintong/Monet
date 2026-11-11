@@ -19,8 +19,8 @@ use figcraft_engine::booleans::distinct_op;
 use figcraft_engine::components::is_slot;
 use gpui::prelude::*;
 use gpui::{
-    AnyElement, App, Bounds, Context, Div, ElementId, Entity, MouseButton, MouseDownEvent, Pixels,
-    Point, Render, SharedString, Size, Stateful, StatefulInteractiveElement, Window, div, px,
+    AnyElement, App, Bounds, Context, Div, ElementId, Entity, Modifiers, MouseButton, MouseDownEvent,
+    Pixels, Point, Render, SharedString, Size, Stateful, StatefulInteractiveElement, Window, div, px,
 };
 use serde_json::json;
 
@@ -29,6 +29,12 @@ use crate::panels::right::virtual_list::{VirtualList, VirtualListScrollHandle, v
 use crate::widgets::icon::paint as paint_icon;
 use crate::widgets::{Icon, IconButton, SectionHeader, SectionHeaderVariant, pt, rgba, tokens};
 use crate::CanvasView;
+
+/// 普通态的墨色：引用主题变量（亮主题的 `icon` 就是 90% 黑），不是自造 rgba。
+/// 组件紫 / 图标橙 / 选中 / 隐藏灰这些特殊色仍按上游 `layer_icon_color` 保留。
+fn ink() -> gpui::Rgba {
+    rgba(tokens().icon)
+}
 
 /// 子集每一层往里缩进 24（用户 2026-11-11 口径；egui 是 16，此处按用户数值）。
 const LAYER_INDENT: f32 = 24.0;
@@ -63,6 +69,10 @@ pub struct LayerRow {
     pub depth: usize,
     pub name: String,
     pub icon: Icon,
+    /// lizard `layers()` 的 `layer_icon`：None 表示回退到 `icons::paint(icon)`。
+    pub glyph: Option<crate::widgets::layer_icons::LayerIcon>,
+    /// `child_layout.absolute` 且父容器是自动布局：额外叠一个 Absolute 字形。
+    pub absolute: bool,
     pub has_children: bool,
     pub can_into: bool,
     pub expanded: bool,
@@ -133,8 +143,11 @@ pub struct LayerTreeState {
     pub drag_rows: Vec<drag::Row>,
     /// 正在进行的拖拽（`on_drag` 起手时置位，松手 / Escape 清空）。
     pub drag: Option<drag::Drag>,
-    /// 按下但未越过阈值的候选（可能是点击选中，也可能起手拖拽）。
-    pub candidate: Option<(NodeId, Point<Pixels>)>,
+    /// 按下但未越过阈值的候选（可能是点击选中，也可能起手拖拽）；顺带记一下当时的修饰键，
+    /// 用于多选（egui `layers.rs::clicked` 的 `(id, modifiers)`）。
+    pub candidate: Option<(NodeId, Point<Pixels>, Modifiers)>,
+    /// shift 区间多选的起点（egui `app.ui.layer_anchor`）：最后一次「硬」选中（普通/切换）的行。
+    pub anchor: Option<NodeId>,
     /// 最近一次 `on_drag_move` 报告的（行索引, 真实窗口矩形），用于每帧重建整列几何。
     pub calibrated: Option<(usize, Bounds<Pixels>)>,
     /// 最后一次全局指针位置（窗口坐标）——画拖拽标签、解析落点都用它。
@@ -152,6 +165,7 @@ impl Default for LayerTreeState {
             drag_rows: Vec::new(),
             drag: None,
             candidate: None,
+            anchor: None,
             calibrated: None,
             pointer: Point::new(px(0.0), px(0.0)),
             scroll: VirtualListScrollHandle::new(),
@@ -224,6 +238,8 @@ impl CanvasView {
             .border_color(rgba(if divider_hot { t.accent } else { t.border }))
             .child(self.file_header(cx))
             .child(self.pages_section(cx))
+            // Pages 段与 Layers 段之间的分隔线（用户 2026-11-11）。
+            .child(div().flex_none().w_full().h(pt(1.0)).bg(rgba(t.border)))
             .child(SectionHeader::new(tr("Layers")).variant(SectionHeaderVariant::Normal))
             .child(self.render_layer_tree(cx))
     }
@@ -319,7 +335,7 @@ impl CanvasView {
                     me.update(cx, |_, cx| cx.notify());
                 }
             })
-            .child(div().flex_1().text_size(pt(11.0)).font_weight(gpui::FontWeight::SEMIBOLD).text_color(rgba(t.text)).child(tr("Pages")))
+            .child(div().flex_1().text_size(pt(11.0)).font_weight(gpui::FontWeight::SEMIBOLD).text_color(ink()).child(tr("Pages")))
             .child(IconButton::new(Icon::Search).size(24.0).active(searching).on_click({
                 let me = me.clone();
                 move |_e, _, cx| {
@@ -352,12 +368,44 @@ impl CanvasView {
             });
             sec = sec.child(div().px(pt(8.0)).pb(pt(4.0)).child(field));
         }
+        // lizard `pages()`: `resp.double_clicked()` starts an inline rename of that page row.
+        let renaming_page = self.inline_rename.as_ref()
+            .filter(|r| r.target == crate::InlineRenameTarget::Page)
+            .and_then(|r| r.ids.first().copied());
+        let rename_editor = self.inline_rename_field.clone();
         let mut list = div().id("pages-list").w_full().flex().flex_col().max_h(px(220.0)).overflow_y_scroll();
         for (id, name, divider) in pages {
             if !filter.is_empty() && (divider || !name.to_lowercase().contains(&filter)) {
                 continue;
             }
             let is_cur = id == cur;
+            let editing = renaming_page == Some(id) && !divider;
+            let name_cell = if editing {
+                div()
+                    .flex_1()
+                    .min_w(px(0.0))
+                    .h(pt(24.0))
+                    .px(pt(8.0))
+                    // 点输入框本身不能冒泡到根 div 的 commit_edits，否则一按下就被收掉。
+                    .on_mouse_down(MouseButton::Left, |_e, _w, cx| cx.stop_propagation())
+                    .child(rename_editor.clone())
+                    .into_any_element()
+            } else {
+                div()
+                    .flex_1()
+                    .min_w(px(0.0))
+                    .overflow_hidden()
+                    .whitespace_nowrap()
+                    .rounded(pt(5.0))
+                    .px(pt(8.0))
+                    .py(pt(4.0))
+                    .text_size(pt(11.0))
+                    .text_color(ink())
+                    .when(is_cur, |d| d.bg(rgba(t.selected_row)))
+                    .when(!is_cur, |d| d.hover(|s| s.bg(rgba(t.hover))))
+                    .child(if divider { SharedString::from("—") } else { SharedString::from(name) })
+                    .into_any_element()
+            };
             let me_row = me.clone();
             let row = div()
                 .id(ElementId::from(SharedString::from(format!("page-{}", id.0))))
@@ -368,24 +416,20 @@ impl CanvasView {
                 .flex()
                 .items_center()
                 .cursor_pointer()
-                .on_mouse_down(MouseButton::Left, move |_e, _, cx| {
-                    me_row.update(cx, |cv, cx| cv.run_command("page.select", serde_json::json!({ "id": id.0 }), cx));
+                .on_mouse_down(MouseButton::Left, move |e, _, cx| {
+                    if e.click_count >= 2 && !divider {
+                        me_row.update(cx, |cv, cx| {
+                            cv.begin_inline_rename(vec![id], crate::InlineRenameTarget::Page, cx);
+                        });
+                        // 第二次按下不能冒泡到根容器，否则 commit_edits 会把刚打开的编辑框收掉。
+                        cx.stop_propagation();
+                    } else {
+                        me_row.update(cx, |cv, cx| {
+                            cv.run_command("page.select", serde_json::json!({ "id": id.0 }), cx);
+                        });
+                    }
                 })
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w(px(0.0))
-                        .overflow_hidden()
-                        .whitespace_nowrap()
-                        .rounded(pt(5.0))
-                        .px(pt(8.0))
-                        .py(pt(4.0))
-                        .text_size(pt(11.0))
-                        .text_color(rgba(t.text))
-                        .when(is_cur, |d| d.bg(rgba(t.selected_row)))
-                        .when(!is_cur, |d| d.hover(|s| s.bg(rgba(t.hover))))
-                        .child(if divider { SharedString::from("—") } else { SharedString::from(name) }),
-                );
+                .child(name_cell);
             list = list.child(row);
         }
         sec.child(list)
@@ -424,14 +468,22 @@ impl CanvasView {
         let row_w = px(self.left_w + crate::panels::HANDLE_W);
         let item_sizes: Rc<Vec<Size<Pixels>>> =
             Rc::new((0..n).map(|_| Size::new(row_w, px(ROW_H))).collect());
+        // R5: the one row being renamed renders the shared inline field instead of its name.
+        // The virtual list's render closure only gets `&mut App`, so the (id, field) pair has
+        // to be captured here, alongside the `Entity<CanvasView>` the row callbacks use.
+        let rename: Option<(NodeId, Entity<crate::widgets::TextEdit>)> = self.inline_rename.as_ref()
+            .filter(|r| r.target == crate::InlineRenameTarget::Layer)
+            .and_then(|r| r.ids.first().copied())
+            .map(|id| (id, self.inline_rename_field.clone()));
         let entity = cx.entity();
         let scroll = self.layer_tree.scroll.clone();
         v_virtual_list("layer-scroll", &scroll, item_sizes, move |range, _window, _app| {
             let mut out: Vec<AnyElement> = Vec::with_capacity(range.end - range.start);
             for ix in range {
                 let Some((r, mark, band_color, run_top, run_bottom)) = view.get(ix) else { continue };
+                let field = rename.as_ref().and_then(|(id, f)| (*id == r.id).then(|| f.clone()));
                 out.push(
-                    Self::layer_row(&entity, ix, r, drag, *mark, band_color.clone(), *run_top, *run_bottom)
+                    Self::layer_row(&entity, ix, r, drag, *mark, band_color.clone(), *run_top, *run_bottom, field)
                         .into_any_element(),
                 );
             }
@@ -440,6 +492,27 @@ impl CanvasView {
         .flex_1()
         .min_h(px(0.0))
         .w_full()
+    }
+
+    /// One 16 pt glyph: lizard's original SVG when there is a LayerIcon, otherwise the
+    /// generic Icon painter. An absolutely-positioned child in an auto-layout parent gets
+    /// the Absolute glyph layered underneath, exactly as `layers()` does.
+    fn layer_glyph_element(r: &LayerRow) -> gpui::AnyElement {
+        use crate::widgets::layer_icons::{self, LayerIcon};
+        let main = match r.glyph {
+            Some(g) => layer_icons::paint(g, ink(), ICON_GLYPH).into_any_element(),
+            None => paint_icon(r.icon, ink(), ICON_GLYPH).into_any_element(),
+        };
+        if !r.absolute {
+            return main;
+        }
+        div()
+            .relative()
+            .w(px(ICON_GLYPH))
+            .h(px(ICON_GLYPH))
+            .child(div().absolute().top_0().left_0().size_full().child(layer_icons::paint(LayerIcon::Absolute, ink(), ICON_GLYPH)))
+            .child(div().absolute().top_0().left_0().size_full().child(main))
+            .into_any_element()
     }
 
     fn layer_row(
@@ -451,6 +524,7 @@ impl CanvasView {
         band_color: Option<gpui::Rgba>,
         run_top: bool,
         run_bottom: bool,
+        rename_field: Option<Entity<crate::widgets::TextEdit>>,
     ) -> Stateful<Div> {
         let t = tokens();
         let is_dragging = dragging == Some(r.id.0);
@@ -463,10 +537,28 @@ impl CanvasView {
         // hover 由整行 hitbox 决定（`resp.contains_pointer()`），所以挂在 group 上。
         let group: SharedString = format!("layer-row-{}", r.id.0).into();
 
-        let name_color = if r.visible { rgba(t.text) } else { rgba(t.text_tertiary) };
+        // 上游 lizard `layer_icon_color` / `layer_name_color`：
+        // component_member / slot 用组件色，选中用 text，普通态用 `layer_secondary`（= 主题的
+        // 90% 黑），隐藏态用 text_tertiary。
+        let component_member = r.mark_kind != 0;
+        let mark_col = if r.mark_kind == 2 { t.icon_layer } else { t.component };
+        let layer_secondary = ink();
+        let name_color = if component_member {
+            rgba(mark_col)
+        } else if r.visible {
+            rgba(t.text)
+        } else {
+            rgba(t.text_tertiary)
+        };
+        let icon_color = if component_member || r.icon == Icon::Slot {
+            rgba(mark_col)
+        } else if r.visible {
+            layer_secondary
+        } else {
+            rgba(t.text_tertiary)
+        };
         let id = r.id;
         let name = r.name.clone();
-        let icon = r.icon;
         let has_children = r.has_children;
         let expanded = r.expanded;
         let visible = r.visible;
@@ -494,7 +586,7 @@ impl CanvasView {
                         }
                     },
                 )
-                .child(paint_icon(if expanded { Icon::ChevronDown } else { Icon::ChevronRight }, rgba(t.text_secondary), ICON_GLYPH))
+                .child(paint_icon(if expanded { Icon::ChevronDown } else { Icon::ChevronRight }, ink(), ICON_GLYPH))
         } else {
             div().w(px(ICON_BOX))
         };
@@ -505,6 +597,8 @@ impl CanvasView {
             .flex()
             .items_center()
             .justify_center()
+            // lizard `show_eye = over || hidden`: a visible layer's eye appears on hover only.
+            .when(visible, |d| d.opacity(0.0).group_hover(group.clone(), |s| s.opacity(1.0)))
             .on_mouse_down(
                 MouseButton::Left,
                 {
@@ -516,7 +610,7 @@ impl CanvasView {
                     }
                 },
             )
-            .child(paint_icon(if visible { Icon::Eye } else { Icon::EyeOff }, rgba(if visible { t.text_secondary } else { t.text_tertiary }), ICON_GLYPH));
+            .child(paint_icon(if visible { Icon::Eye } else { Icon::EyeOff }, ink(), ICON_GLYPH));
 
         let lock = div()
             .w(px(ICON_BOX))
@@ -524,6 +618,8 @@ impl CanvasView {
             .flex()
             .items_center()
             .justify_center()
+            // lizard `show_lock = over || locked`: an unlocked layer's padlock appears on hover only.
+            .when(!locked, |d| d.opacity(0.0).group_hover(group.clone(), |s| s.opacity(1.0)))
             .on_mouse_down(
                 MouseButton::Left,
                 {
@@ -535,7 +631,7 @@ impl CanvasView {
                     }
                 },
             )
-            .child(paint_icon(if locked { Icon::Lock } else { Icon::Unlock }, rgba(if locked { t.accent } else { t.text_tertiary }), ICON_GLYPH));
+            .child(paint_icon(if locked { Icon::Lock } else { Icon::Unlock }, ink(), ICON_GLYPH));
 
         // 起手拖拽：立刻置位（egui `drag_started`），并记住整组被拖的行与跟随光标的标签。
         let me_start = me.clone();
@@ -545,15 +641,61 @@ impl CanvasView {
         // 一个 run 连成一整块：run 首/末行上下各缩 4（块高 24），run 内相邻行不缩，
         // 于是父展开出的子树是连续的一片浅底；**不同 run 之间**才留 4+4=8pt 间隙。
         // 父集（Selected）叠 band 实色（深），子集（Child）用同色系浅色，深浅差异不丢。
-        let pad_top = if run_top { BLOCK_PAD } else { 0.0 };
-        let pad_bottom = if run_bottom { BLOCK_PAD } else { 0.0 };
+        // 未选中行（悬停）也要上下各缩 4，否则 hover 块高 32、比选中块（24）大——用户 2026-11-11 指出。
+        let (inset_top, inset_bottom) = if mark == Mark::None {
+            (BLOCK_PAD, BLOCK_PAD)
+        } else {
+            (if run_top { BLOCK_PAD } else { 0.0 }, if run_bottom { BLOCK_PAD } else { 0.0 })
+        };
         let highlight = if mark == Mark::None {
-            div().size_full().rounded(pt(5.0)).group_hover(group.clone(), |s| s.bg(rgba(t.hover)))
+            // 悬停 = 主题色浅色（egui `selected_row_child` 同款强调浅底），不是中性灰。用户 2026-11-11 指出。
+            div().size_full().rounded(pt(5.0)).group_hover(group.clone(), |s| s.bg(rgba(t.selected_row_child)))
         } else {
             let mut h = div().size_full().bg(band_color.unwrap_or(rgba(t.selected_row_child)));
             if run_top { h = h.rounded_t(pt(5.0)); }
             if run_bottom { h = h.rounded_b(pt(5.0)); }
             h
+        };
+
+        // R5 (egui `layers.rs::rename_field`): the name slot of the row being renamed is the
+        // input field itself. No hit handler while editing, so clicking the field does not
+        // re-select the layer underneath it.
+        let name_cell = if let Some(field) = rename_field {
+            div()
+                .flex_1()
+                .min_w(px(0.0))
+                .h_full()
+                .flex()
+                .items_center()
+                .on_mouse_down(MouseButton::Left, |_e, _w, cx| cx.stop_propagation())
+                .child(field)
+        } else {
+            div()
+                .flex_1()
+                .min_w(px(0.0))
+                .h_full()
+                .flex()
+                .items_center()
+                .on_mouse_down(
+                    MouseButton::Left,
+                    {
+                        let me = me.clone();
+                        move |e: &MouseDownEvent, _w: &mut Window, app: &mut App| {
+                            me.update(app, |this: &mut CanvasView, cx: &mut Context<CanvasView>| {
+                                // lizard `layers.rs:1142`: a double click starts an inline rename
+                                // of this row; a single click still goes through the selection logic.
+                                if e.click_count >= 2 {
+                                    this.begin_inline_rename(vec![id], crate::InlineRenameTarget::Layer, cx);
+                                    // 同上：这次按下属于「打开改名」，不是「点别处」。
+                                    cx.stop_propagation();
+                                } else {
+                                    this.layer_on_row_mouse_down(id, e);
+                                }
+                            });
+                        }
+                    },
+                )
+                .child(div().child(name).text_size(px(11.0)).text_color(name_color).truncate())
         };
 
         div()
@@ -575,8 +717,8 @@ impl CanvasView {
                     .left_0()
                     .size_full()
                     .px(pt(ROW_INSET))
-                    .pt(pt(pad_top))
-                    .pb(pt(pad_bottom))
+                    .pt(pt(inset_top))
+                    .pb(pt(inset_bottom))
                     .child(highlight),
             )
             .when(is_dragging, |d| d.opacity(0.5))
@@ -596,27 +738,8 @@ impl CanvasView {
             })
             .child(div().w(px(indent)))
             .child(chevron)
-            .child(div().w(px(ICON_BOX)).h(px(ICON_BOX)).flex().items_center().justify_center().child(paint_icon(icon, rgba(t.text), ICON_GLYPH)))
-            .child(
-                div()
-                    .flex_1()
-                    .min_w(px(0.0))
-                    .h_full()
-                    .flex()
-                    .items_center()
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        {
-                            let me = me.clone();
-                            move |e: &MouseDownEvent, _w: &mut Window, app: &mut App| {
-                                me.update(app, |this: &mut CanvasView, _cx: &mut Context<CanvasView>| {
-                                    this.layer_on_row_mouse_down(id, e);
-                                });
-                            }
-                        },
-                    )
-                    .child(div().child(name).text_size(px(11.0)).text_color(name_color).truncate()),
-            )
+            .child(div().w(px(ICON_BOX)).h(px(ICON_BOX)).flex().items_center().justify_center().child(Self::layer_glyph_element(r)))
+            .child(name_cell)
             .child(eye)
             .child(lock)
     }
@@ -648,11 +771,14 @@ impl CanvasView {
             } else if matches!(n.kind, NodeKind::Component { .. } | NodeKind::ComponentSet { .. } | NodeKind::Instance { .. }) {
                 1
             } else { 0 };
+            let icon = Self::node_icon(doc, id);
             visual.push(LayerRow {
                 id,
                 depth,
                 name: n.name.clone(),
-                icon: Self::node_icon(doc, id),
+                icon,
+                glyph: Self::layer_glyph(doc, id, icon).0,
+                absolute: Self::layer_glyph(doc, id, icon).1,
                 has_children,
                 can_into,
                 expanded,
@@ -692,8 +818,52 @@ impl CanvasView {
     }
 
     /// 节点类型 → 图标（照搬 egui `node_icon` 的映射，用 gpui 现有图标凑齐）。
+    /// lizard `layers()` 里决定图层字形的**完整**内联逻辑（不是只有 node_icon）：
+    /// mask 组 / 椭圆蒙版 / 普通蒙版优先，然后才是 `Icon -> LayerIcon` 映射表；
+    /// 没进表的 Icon（布尔、Slot、ComponentSet、Page、Section、Slice…）回退 `icons::paint`。
+    /// 第二个返回值是绝对定位标记：它**额外**叠一个 Absolute 字形，不与主图标互斥。
+    fn layer_glyph(doc: &Document, id: NodeId, icon: Icon) -> (Option<crate::widgets::layer_icons::LayerIcon>, bool) {
+        use crate::widgets::layer_icons::LayerIcon as L;
+        let Some(n) = doc.node(id) else { return (None, false) };
+        let absolute = n.child_layout.absolute
+            && n.parent.and_then(|p| doc.node(p)).is_some_and(|p| p.layout.is_some());
+        let mask_group = matches!(n.kind, NodeKind::Group)
+            && n.children.iter().any(|c| doc.node(*c).is_some_and(|node| node.is_mask));
+        let glyph = if mask_group {
+            Some(L::Mask)
+        } else if n.is_mask && icon == Icon::Ellipse {
+            Some(L::EllipseMask)
+        } else if n.is_mask {
+            Some(L::Mask)
+        } else {
+            match icon {
+                Icon::Frame => Some(L::Frame),
+                Icon::LayoutH => Some(L::LayoutH),
+                Icon::LayoutV => Some(L::LayoutV),
+                Icon::LayoutGrid => Some(L::LayoutGrid),
+                Icon::Text => Some(L::Text),
+                Icon::Ellipse => Some(L::Ellipse),
+                Icon::Component => Some(L::Component),
+                Icon::Instance => Some(L::Instance),
+                Icon::Vector => Some(L::Vector),
+                Icon::Image => Some(L::Image),
+                Icon::Star => Some(L::Star),
+                Icon::Polygon => Some(L::Polygon),
+                Icon::Arrow => Some(L::Arrow),
+                Icon::Line => Some(L::Line),
+                Icon::Rectangle => Some(L::Rectangle),
+                Icon::Group => Some(L::Group),
+                _ => None,
+            }
+        };
+        (glyph, absolute)
+    }
+
+    /// 逐项照抄 lizard `crates/ui-egui/src/layers.rs::node_icon`（含 op_icon 前置判定）。
+    /// 之前漏了四类分配：自动布局 Frame、图片填充 Rectangle、箭头 Line、布尔运算。
     fn node_icon(doc: &Document, id: NodeId) -> Icon {
         let Some(n) = doc.node(id) else { return Icon::Rectangle };
+        // An operand combining by an operation other than its group's shows that operation.
         if let Some(op) = distinct_op(doc, id) {
             return match op {
                 BoolOp::Union => Icon::Union,
@@ -705,20 +875,44 @@ impl CanvasView {
         match &n.kind {
             NodeKind::Page { .. } => Icon::Page,
             NodeKind::Frame if is_slot(doc, id) => Icon::Slot,
-            NodeKind::Frame => Icon::Frame,
+            NodeKind::Frame => {
+                if let Some(l) = &n.layout {
+                    match l.mode {
+                        figcraft_doc::LayoutMode::Vertical => Icon::LayoutV,
+                        figcraft_doc::LayoutMode::Grid => Icon::LayoutGrid,
+                        _ => Icon::LayoutH,
+                    }
+                } else {
+                    Icon::Frame
+                }
+            }
             NodeKind::Group => Icon::Group,
             NodeKind::Section { .. } => Icon::Section,
-            NodeKind::Rectangle => Icon::Rectangle,
+            NodeKind::Rectangle => {
+                if n.fills.iter().any(|f| matches!(f.kind, figcraft_color::PaintKind::Image(_))) {
+                    Icon::Image
+                } else {
+                    Icon::Rectangle
+                }
+            }
             NodeKind::Ellipse { .. } => Icon::Ellipse,
             NodeKind::Polygon { .. } => Icon::Polygon,
             NodeKind::Star { .. } => Icon::Star,
-            NodeKind::Line => Icon::Line,
+            NodeKind::Line => {
+                if n.stroke.cap_end.is_arrow() { Icon::Arrow } else { Icon::Line }
+            }
             NodeKind::Vector { .. } => Icon::Vector,
             NodeKind::Text(_) => Icon::Text,
-            NodeKind::BooleanOp { .. } => Icon::Frame,
+            NodeKind::BooleanOp { op } => match op {
+                BoolOp::Union => Icon::Union,
+                BoolOp::Subtract => Icon::Subtract,
+                BoolOp::Intersect => Icon::Intersect,
+                BoolOp::Exclude => Icon::Exclude,
+            },
             NodeKind::Component { .. } => Icon::Component,
             NodeKind::ComponentSet { .. } => Icon::ComponentSet,
             NodeKind::Instance { .. } => Icon::Instance,
+            // lizard 没有 Icon 节点类型；本地 doc 模型有，仍用它的 glyph 图标。
             NodeKind::Icon { .. } => Icon::IconKind,
             NodeKind::Slice => Icon::Slice,
         }
@@ -816,7 +1010,8 @@ impl CanvasView {
     // ── 事件 ────────────────────────────────────────────────────────────────────
 
     fn layer_on_row_mouse_down(&mut self, id: NodeId, e: &MouseDownEvent) {
-        self.layer_tree.candidate = Some((id, e.position));
+        // 记上修饰键，松手时交给 `layer_click` 决定单选 / 切换 / 区间（egui `clicked` 的 `(id, modifiers)`）。
+        self.layer_tree.candidate = Some((id, e.position, e.modifiers));
     }
 
     fn layer_toggle_expand(&mut self, id: NodeId, cx: &mut Context<Self>) {
@@ -838,6 +1033,49 @@ impl CanvasView {
         cx.notify();
     }
 
+    /// 左栏行点击的选中（复刻 egui `layers.rs:1297-1335`）：
+    /// - 普通点击：替换成 `[id]`，并把 `id` 记为 shift 区间起点 `anchor`；
+    /// - cmd/ctrl：在现有选区里切换 `id` 的选中，并更新 `anchor`；
+    /// - shift：从 `anchor`（必须仍在选区里）到 `id` 的可见行区间，cmd 时并入现有选区、否则只取区间。
+    /// 之前只做了单点 `select.set`，所以多选被我改坏了；现在 modifiers 全程透传。
+    fn layer_click(&mut self, id: NodeId, m: Modifiers, cx: &mut Context<Self>) {
+        let Ok(ds) = self.app.session.ds() else { return };
+        let order: Vec<NodeId> = self.layer_tree.rows.iter().map(|r| r.id).collect();
+        let sel: Vec<NodeId> = ds.selection.iter().copied().collect();
+        let pos = |x: NodeId| order.iter().position(|o| *o == x);
+        let anchor = self.layer_tree.anchor.filter(|a| sel.contains(a)).and_then(|a| pos(a));
+        let (ai, bi) = (anchor, pos(id));
+        // shift 区间需要 anchor 与点击行都在可见顺序里；否则落到下面的切换分支。
+        let mut set_anchor = false;
+        let new_sel = if m.shift && ai.is_some() && bi.is_some() {
+            let (lo, hi) = (ai.unwrap().min(bi.unwrap()), ai.unwrap().max(bi.unwrap()));
+            let mut s: Vec<NodeId> = if m.platform || m.control { sel.clone() } else { Vec::new() };
+            for x in order.get(lo..=hi).unwrap_or_default() {
+                if !s.contains(x) {
+                    s.push(*x);
+                }
+            }
+            s
+        } else if m.shift || m.platform || m.control {
+            let mut s = sel.clone();
+            if let Some(p) = s.iter().position(|x| *x == id) {
+                s.remove(p);
+            } else {
+                s.push(id);
+            }
+            set_anchor = true;
+            s
+        } else {
+            set_anchor = true;
+            vec![id]
+        };
+        if set_anchor {
+            self.layer_tree.anchor = Some(id);
+        }
+        let _ = self.app.session.execute("select.set", &json!({ "ids": new_sel }));
+        cx.notify();
+    }
+
     fn layer_select(&mut self, id: NodeId, cx: &mut Context<Self>) {
         let _ = self.app.session.execute("select.set", &json!({ "ids": [id] }));
         cx.notify();
@@ -854,9 +1092,8 @@ impl CanvasView {
             }
             self.layer_tree.calibrated = None;
             cx.notify();
-        } else if let Some((cid, _)) = self.layer_tree.candidate.take() {
-            self.layer_select(cid, cx);
-            cx.notify();
+        } else if let Some((cid, _, m)) = self.layer_tree.candidate.take() {
+            self.layer_click(cid, m, cx);
         }
     }
 

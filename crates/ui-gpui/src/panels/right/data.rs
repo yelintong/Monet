@@ -7,9 +7,14 @@
 //! 由 `CanvasView::panel_data()` 每帧把这些列表读成快照传给 `right_panel`。所有字段都是已经
 //! 格式化好的 `String`（或 `Paint`），面板只负责用通用组件画出来 + 推命令，不再碰 doc。
 
-use figcraft_i18n::tr_noop;
+use figcraft_color::Paint;
+use figcraft_doc::{
+    styles::StyleKind,
+    text::trim_num,
+    Document, NodeId, NodeKind,
+};
 use figcraft_i18n::tr;
-use figcraft_doc::{Document, NodeId, NodeKind};
+use figcraft_i18n::tr_noop;
 use serde_json::Value;
 
 /// 面板里最多画多少条网格轨道（egui `layout_panel.rs::MAX_TRACK_ROWS` 同为 24）。
@@ -45,6 +50,17 @@ pub struct EffectRow {
     pub visible: bool,
     /// 该 effect 的原始 JSON（改数值字段时 clone 后改一个键，推 `effect.set`）。
     pub effect: serde_json::Value,
+}
+
+/// 选中节点的 WGSL 材质绑定快照（存在 `plugin_data` 的保留 key，非 `EffectKind`）。
+///
+/// `path` 为 `None` 表示该节点没有绑定材质；面板因此只在有绑定时才展开参数。
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct WgslPanelData {
+    /// 已绑定的材质文件路径（来自 plugin_data）。
+    pub path: Option<String>,
+    /// 用户当前的参数值（uniform 路径 → 0..100 刻度的值）。
+    pub params: std::collections::BTreeMap<String, f64>,
 }
 
 /// 一个 layout grid 行（egui `effects.rs::grids`）。
@@ -141,6 +157,51 @@ pub struct TextData {
     pub align_h: Option<&'static str>,
     /// 垂直对齐：`top` / `middle` / `bottom`；`None` = Mixed。
     pub align_v: Option<&'static str>,
+    // ── Type settings 弹层（egui `typography.rs::type_settings_basics` / `text_style_settings`）──
+    // 这些属性没有常驻行，只在「Type settings」窗口里出现，所以跟着快照一起读出来。
+    /// 装饰线：`none` / `underline` / `strikethrough`；`None` = Mixed。
+    pub decoration: Option<&'static str>,
+    /// 装饰线样式：`solid` / `dotted` / `wavy`；`None` = Mixed。
+    pub decoration_style: Option<&'static str>,
+    /// 装饰线粗细（px）；`None` = Auto（跟字号走）或 Mixed。
+    pub decoration_thickness: Option<f64>,
+    /// 下划线在字母下伸部处断开。
+    pub decoration_skip_ink: Option<bool>,
+    /// 大小写：`original` / `upper` / `lower` / `title` / `smallCaps`；`None` = Mixed。
+    pub case: Option<&'static str>,
+    /// 垂直裁切：`none` / `capHeight`；`None` = Mixed。
+    pub leading_trim: Option<&'static str>,
+    /// 列表：`none` / `bulleted` / `numbered`；`None` = Mixed。
+    pub list_style: Option<&'static str>,
+    /// 段落缩进（px）。
+    pub paragraph_indent: Option<f64>,
+    /// 标点悬挂（开/关）。
+    pub hanging_punctuation: Option<bool>,
+    /// 列表悬挂（开/关）。
+    pub hanging_list: Option<bool>,
+    /// 换行样式：`auto` / `balance` / `pretty`；`None` = Mixed。驱动 Basics 页 Wrap style 下拉。
+    pub wrap_style: Option<&'static str>,
+    /// 最大行数（0 = 不截断）。
+    pub max_lines: Option<u32>,
+    /// OpenType 特性覆盖（tag → 开/关）；没有覆盖的 tag 不在表里。驱动 Details 页各开关。
+    pub features: std::collections::BTreeMap<String, bool>,
+    /// 当前字体字面**真实提供**的 GSUB feature tags（egui `face.has_feature` / 引擎
+    /// `text.fonts {features:true}` 的同一份能力，走 `figcraft_text::find_face` 同步读取）。
+    /// Details 页据此决定每个 feature 开关是可用还是置灰；`kern`/`cpsp` 例外恒可用。
+    pub features_supported: std::collections::BTreeSet<String>,
+    /// 可变字体的轴（只有单一字体族的可变字面才有）：驱动 Type settings 的 Variable 页。
+    pub axes: Vec<AxisRow>,
+}
+
+/// 可变字体的一条轴（`figcraft_text::Axis` + 当前值），供 Type settings 的 Variable 页使用。
+#[derive(Clone, Debug, PartialEq)]
+pub struct AxisRow {
+    pub tag: String,
+    pub name: String,
+    pub min: f64,
+    pub max: f64,
+    pub default: f64,
+    pub value: f64,
 }
 
 /// 矢量编辑模式下选中点的快照（egui `vector_panel.rs::points`）。
@@ -1076,12 +1137,31 @@ pub struct PageData {
     pub local_styles: usize,
 }
 
-/// Selection header（egui `right.rs::header`）。
+/// Selection header（`lizard right.rs::header` 的全部判断输入）。
+///
+/// 这一行不是普通区块：选中 Frame / Group / Text / 形状 / 组件时，右侧那排快捷动作**整套
+/// 换掉**。所以把判断所需的原值都快照下来，交给 `panels::visibility::header_actions` 这个
+/// 纯函数决定显隐，面板自己不再散写条件。
 #[derive(Clone, Debug, PartialEq)]
 pub struct HeaderData {
     pub label: String,
+    /// 单选 Frame（lizard `is_frame`）。
     pub is_frame: bool,
+    /// 选区全是 Group（lizard `is_group`）。
     pub is_group: bool,
+    /// 选区全是 Text（lizard `is_text`）。
+    pub is_text: bool,
+    /// 单选 Component / ComponentSet（lizard `header` 开头的组件专属分支）。
+    pub is_component: bool,
+    /// 单选形状（lizard `edit_id` → `vector.edit.begin`）。
+    pub is_shape: bool,
+    /// 布尔组当前运算（lizard `booleans::shown_op`）：决定布尔按钮图标与菜单勾选项。
+    pub bool_op: Option<figcraft_doc::BoolOp>,
+    /// 选区数量（lizard：Union 按钮只有 `sel.len() >= 2` 才执行）。
+    pub count: usize,
+    /// 「More actions」菜单行：`(显示名, 命令 id, 上方要分隔线)`。
+    /// 取自画布右键菜单的顶层可运行命令（lizard `text.more` 打开的就是它）。
+    pub more_actions: Vec<(String, &'static str, bool)>,
 }
 
 /// 画布「显示 / 隐藏」开关的快照（egui `right.rs` 的 Zoom 菜单读 `app.session.ds().view`）。
@@ -1128,6 +1208,23 @@ impl ViewData {
     }
 }
 
+/// 一个本地样式（egui `style_picker::local_styles` 的逐条快照）。
+///
+/// 比旧的 `(id, name, ty)` 三元组多带了「画色板用的 paint」与「文本样式预览用的 meta」，
+/// 这样右栏 Local styles 节能 1:1 照搬 egui 的圆形色板 / "Ag" + "32/Auto" 预览，而不用回读 doc。
+#[derive(Clone, Debug, PartialEq)]
+pub struct LocalStyleRow {
+    pub id: String,
+    pub name: String,
+    /// `StyleKind::type_name()`：text / paint / effect / grid。
+    pub ty: &'static str,
+    /// Paint 样式：最后一个 paint（egui `paint_dot` 画的就是它），色板用。
+    pub paint: Option<Paint>,
+    /// 文本样式："32/Auto" 预览（egui 的 `text_meta`）；其余类型为 `None`。
+    pub text_meta: Option<String>,
+    pub description: String,
+}
+
 /// 右栏所有列表的一次快照。`None` 的 Vec 表示「多选且值不一致」（egui 显示 Mixed / 提示点 + 替换）。
 #[derive(Clone, Debug, PartialEq, Default)]
 pub struct PanelData {
@@ -1140,9 +1237,14 @@ pub struct PanelData {
     /// 「Individual strokes」菜单里每个边的权重必须用它，不能硬编码 1.0。
     pub stroke_weight: Option<f64>,
     pub effects: Option<Vec<EffectRow>>,
+    /// WGSL 材质绑定（单选时来自该节点的 plugin_data；多选不一致时按「无绑定」处理）。
+    pub wgsl: WgslPanelData,
     pub grids: Option<Vec<GridRow>>,
     pub exports: Option<Vec<ExportRow>>,
     pub selection_colors: Vec<SelectionColorRow>,
+    /// 当前文档快照的 uid（lizard `ds.uid`）：Selection colors 的展开态按文档分档存，
+    /// 切换文档时各自记住自己的开合状态，而不是共用一个全局布尔。
+    pub doc_uid: u64,
     pub variable_modes: Vec<ModeRow>,
     pub section: Option<SectionData>,
     pub page: Option<PageData>,
@@ -1173,8 +1275,9 @@ pub struct PanelData {
     pub number_variables: Vec<String>,
     pub bool_variables: Vec<String>,
     pub text_variables: Vec<String>,
-    /// 文档里的样式（`(id, name, type)`），供各节 header 的 Styles 菜单用。
-    pub styles: Vec<(String, String, &'static str)>,
+    /// 文档里的本地样式（egui `style_picker::local_styles` 的逐条快照），供右栏 Local styles 节
+    /// 与各处 Styles 菜单、颜色绑定菜单渲染 / 推命令用。
+    pub styles: Vec<LocalStyleRow>,
     /// 节点当前链接的共享样式**名字**，顺序固定 `[fill, stroke, effect, grid]`
     /// （egui `style_picker::chip` 的 `link_of`）。`None` = 该 slot 没有链接样式 → 不画 chip 行；
     /// 多选且链接不一致时也按「没链接」算（egui 的 `common` 语义）。
@@ -1208,6 +1311,63 @@ fn common<T: PartialEq + Clone>(doc: &Document, ids: &[NodeId], f: impl Fn(&figc
     let mut it = ids.iter().filter_map(|i| doc.node(*i));
     let first = f(it.next()?);
     if it.all(|n| f(n) == first) { Some(first) } else { None }
+}
+
+/// 文本节点的 `TextData`；非文本返回 `None`（Type settings 的若干属性都只对文本有意义）。
+fn text_data_of(n: &figcraft_doc::Node) -> Option<&figcraft_doc::TextData> {
+    match &n.kind {
+        NodeKind::Text(t) => Some(t),
+        _ => None,
+    }
+}
+
+/// 可变字体的轴（egui `typography.rs::variable_face`）：**单一**字体族 + 单一字面，且该字面确实是
+/// 可变字体时，才列出它的轴。值取第一个选中文本的 `axis_values`（已按 style 的 named instance /
+/// 自定义 variations 解析并夹紧），与 egui 的 `values.get(index).unwrap_or(axis.default)` 一致。
+/// 当前选中文本所用字面的 GSUB feature tags（egui `details_feature` 的 `face.has_feature`）。
+/// 与 `variable_axes` 同源：`find_face` 同步查字体库，单一字体族 + 单一字面才有意义。
+/// 找不到 face（如字体未安装 / 多选不同字体）时返回空集，UI 侧按「全部置灰」处理。
+fn face_feature_tags(doc: &Document, ids: &[NodeId]) -> std::collections::BTreeSet<String> {
+    let text_of = text_data_of;
+    let family = common(doc, ids, |n| text_of(n).map(|t| t.style.font_family.clone())).flatten();
+    let style_name = common(doc, ids, |n| text_of(n).map(|t| t.style.font_style.clone())).flatten();
+    let (Some(family), Some(style_name)) = (family, style_name) else {
+        return std::collections::BTreeSet::new();
+    };
+    let Some(face) = figcraft_text::find_face(&family, &style_name) else {
+        return std::collections::BTreeSet::new();
+    };
+    // 字体库找不到该族时会退回默认字面；那不是「这个字体的 features」
+    if !face.family.eq_ignore_ascii_case(&family) {
+        return std::collections::BTreeSet::new();
+    }
+    face.feature_tags().into_iter().collect()
+}
+
+fn variable_axes(doc: &Document, ids: &[NodeId]) -> Vec<AxisRow> {
+    let text_of = text_data_of;
+    let family = common(doc, ids, |n| text_of(n).map(|t| t.style.font_family.clone())).flatten();
+    let style_name = common(doc, ids, |n| text_of(n).map(|t| t.style.font_style.clone())).flatten();
+    let (Some(family), Some(style_name)) = (family, style_name) else { return Vec::new() };
+    let Some(face) = figcraft_text::find_face(&family, &style_name) else { return Vec::new() };
+    // 字体库找不到该族时会退回默认字面；那不是「这个字体的轴」。
+    if !face.is_variable() || !face.family.eq_ignore_ascii_case(&family) {
+        return Vec::new();
+    }
+    let values = ids.first().and_then(|i| doc.node(*i)).and_then(text_of).map(|t| face.axis_values(&t.style)).unwrap_or_default();
+    face.axes
+        .iter()
+        .enumerate()
+        .filter(|(_, a)| !a.hidden)
+        .map(|(index, a)| AxisRow {
+            tag: a.tag.clone(),
+            name: if a.name.trim().is_empty() { figcraft_text::axis_label(&a.tag).to_string() } else { a.name.clone() },
+            min: a.min,
+            max: a.max,
+            default: a.default,
+            value: values.get(index).copied().unwrap_or(a.default),
+        })
+        .collect()
 }
 
 /// paint 绑定 key（照抄 `engine::cmd::lists::paint_binding_key` 的语义）。
@@ -1271,7 +1431,27 @@ pub fn read(doc: &Document, ids: &[NodeId], page: Option<NodeId>, ready_filter: 
     d.dev = read_dev(doc, ids, page, ready_filter);
     // 本地样式清单同样与选区无关：空选区时 Page 节的「Local styles」要逐条列出来
     // （egui `page_section` → `style_picker::local_styles`），所以必须在提前 return 之前填。
-    d.styles = doc.styles.iter().map(|s| (s.id.to_string(), s.name.clone(), s.kind.type_name())).collect();
+    d.styles = doc
+        .styles
+        .iter()
+        .map(|s| {
+            // 色板 / 文本预览：本地样式节要 1:1 照搬 egui 的色板与 "Ag" + "32/Auto" 预览，
+            // 这里预存好，避免面板再回读 doc。逻辑与 egui `paint_dot` / `text_meta` 对齐。
+            let (paint, text_meta) = match &s.kind {
+                StyleKind::Paint { paints } => (paints.last().cloned(), None),
+                StyleKind::Text { style, .. } => (None, Some(format!("{}/{}", trim_num(style.font_size), style.line_height.label()))),
+                _ => (None, None),
+            };
+            LocalStyleRow {
+                id: s.id.to_string(),
+                name: s.name.clone(),
+                ty: s.kind.type_name(),
+                paint,
+                text_meta,
+                description: s.description.clone(),
+            }
+        })
+        .collect();
     if ids.is_empty() {
         // ── Page（`page_section`）：背景色 / 色彩配置 / 本地变量与样式数量 ──
         let bg = page
@@ -1293,6 +1473,23 @@ pub fn read(doc: &Document, ids: &[NodeId], page: Option<NodeId>, ready_filter: 
 
     let first = ids.first().and_then(|i| doc.node(*i));
     let kinds = common(doc, ids, |n| n.kind.label().to_string());
+    // lizard `right.rs::header` 的五个判断输入，全部只读当前文档 / 选区。
+    let is_text = ids.iter().all(|i| doc.node(*i).is_some_and(|n| matches!(n.kind, NodeKind::Text(_))));
+    let is_shape = ids.len() == 1 && first.is_some_and(|n| n.kind.is_shape());
+    let is_component =
+        ids.len() == 1 && first.is_some_and(|n| matches!(n.kind, NodeKind::Component { .. } | NodeKind::ComponentSet { .. }));
+    // More actions：右键菜单的顶层行（子菜单 / 不可运行的命令跳过，分隔线顺延到下一行）。
+    let mut more_actions: Vec<(String, &'static str, bool)> = Vec::new();
+    let mut carry_sep = false;
+    for it in crate::context_menu::items(Some(doc), ids) {
+        let sep = it.separator_before || carry_sep;
+        if it.sub.is_empty() && !it.disabled && !it.id.is_empty() {
+            more_actions.push((it.label.to_string(), it.id, sep));
+            carry_sep = false;
+        } else {
+            carry_sep |= sep;
+        }
+    }
     d.header = Some(HeaderData {
         label: match &kinds {
             Some(l) if ids.len() == 1 => l.clone(),
@@ -1301,6 +1498,12 @@ pub fn read(doc: &Document, ids: &[NodeId], page: Option<NodeId>, ready_filter: 
         },
         is_frame: ids.len() == 1 && first.is_some_and(|n| matches!(n.kind, figcraft_doc::NodeKind::Frame)),
         is_group: ids.iter().all(|i| doc.node(*i).is_some_and(|n| matches!(n.kind, figcraft_doc::NodeKind::Group))),
+        is_text,
+        is_component,
+        is_shape,
+        bool_op: figcraft_engine::booleans::shown_op(doc, ids),
+        count: ids.len(),
+        more_actions,
     });
 
     // ── 已链接的共享样式名（egui `style_picker::chip` → `link_of` → `n.styles.<slot>`）──
@@ -1349,6 +1552,12 @@ pub fn read(doc: &Document, ids: &[NodeId], page: Option<NodeId>, ready_filter: 
             })
             .collect()
     });
+
+    // ── WGSL 材质绑定（plugin_data 保留 key，非 EffectKind）──
+    // 单选时读该节点的绑定；多选时只有全部一致才显示，避免给多个节点误改同一个材质。
+    d.wgsl = crate::wgsl_material::read_binding_of(doc, ids)
+        .map(|b| WgslPanelData { path: Some(b.path), params: b.params })
+        .unwrap_or_default();
 
     // ── Layout grids（`effects.rs::grids`） ──
     d.grids = common(doc, ids, |n| n.grids.clone()).map(|list| {
@@ -1571,6 +1780,77 @@ pub fn read(doc: &Document, ids: &[NodeId], page: Option<NodeId>, ready_filter: 
                 })
             })
             .flatten(),
+            // ── Type settings 用的那一组（egui `type_settings_basics` / `text_style_settings`）──
+            decoration: common(doc, ids, |n| {
+                text_of(n).map(|t| match t.style.decoration {
+                    figcraft_doc::TextDecoration::None => "none",
+                    figcraft_doc::TextDecoration::Underline => "underline",
+                    figcraft_doc::TextDecoration::Strikethrough => "strikethrough",
+                })
+            })
+            .flatten(),
+            decoration_style: common(doc, ids, |n| {
+                text_of(n).map(|t| match t.style.decoration_look.as_ref().map(|l| l.style) {
+                    None | Some(figcraft_doc::DecorationStyle::Solid) => "solid",
+                    Some(figcraft_doc::DecorationStyle::Dotted) => "dotted",
+                    Some(figcraft_doc::DecorationStyle::Wavy) => "wavy",
+                })
+            })
+            .flatten(),
+            // 粗细 `Auto`（= 跟字号走）当空值处理，与 egui 的 `NumberField::empty(Auto)` 一致。
+            decoration_thickness: common(doc, ids, |n| {
+                text_of(n).and_then(|t| match t.style.decoration_look.as_ref().map(|l| l.thickness) {
+                    Some(figcraft_doc::LineHeight::Pixels(v)) => Some(r2(v)),
+                    _ => None,
+                })
+            })
+            .flatten(),
+            decoration_skip_ink: common(doc, ids, |n| text_of(n).map(|t| t.style.decoration_look.as_ref().is_some_and(|l| l.skip_ink))).flatten(),
+            case: common(doc, ids, |n| {
+                text_of(n).map(|t| match t.style.case {
+                    figcraft_doc::TextCase::Original => "original",
+                    figcraft_doc::TextCase::Upper => "upper",
+                    figcraft_doc::TextCase::Lower => "lower",
+                    figcraft_doc::TextCase::Title => "title",
+                    figcraft_doc::TextCase::SmallCaps => "smallCaps",
+                })
+            })
+            .flatten(),
+            leading_trim: common(doc, ids, |n| {
+                text_of(n).map(|t| match t.leading_trim {
+                    figcraft_doc::LeadingTrim::None => "none",
+                    figcraft_doc::LeadingTrim::CapHeight => "capHeight",
+                })
+            })
+            .flatten(),
+            list_style: common(doc, ids, |n| {
+                text_of(n).map(|t| match t.list {
+                    figcraft_doc::ListStyle::None => "none",
+                    figcraft_doc::ListStyle::Bulleted => "bulleted",
+                    figcraft_doc::ListStyle::Numbered => "numbered",
+                })
+            })
+            .flatten(),
+            // ── Details 页 / Wrap style 用的那一组 ──
+            paragraph_indent: common(doc, ids, |n| text_of(n).map(|t| r2(t.paragraph_indent))).flatten(),
+            hanging_punctuation: common(doc, ids, |n| text_of(n).map(|t| t.hanging_punctuation)).flatten(),
+            hanging_list: common(doc, ids, |n| text_of(n).map(|t| t.hanging_list)).flatten(),
+            wrap_style: common(doc, ids, |n| {
+                text_of(n).map(|t| match t.wrap_style {
+                    figcraft_doc::WrapStyle::Auto => "auto",
+                    figcraft_doc::WrapStyle::Balance => "balance",
+                    figcraft_doc::WrapStyle::Pretty => "pretty",
+                })
+            })
+            .flatten(),
+            max_lines: common(doc, ids, |n| text_of(n).map(|t| t.max_lines)).flatten(),
+            // 只有所有选中节点的特性覆盖完全一致才带出具体 tag，否则空表 = 「全默认 / Mixed」。
+            features: common(doc, ids, |n| text_of(n).map(|t| t.features.clone())).flatten().unwrap_or_default(),
+            // 当前字面真实提供的 OpenType features：Details 页按此置灰 / 补漏。
+            features_supported: face_feature_tags(doc, ids),
+            // 可变字体的轴：只有**单一**字体族 + 单一字面才谈得上「这个字体的轴」（egui
+            // `variable_face`）；值取该字面的 `axis_values`，缺省退回轴的默认值。
+            axes: variable_axes(doc, ids),
         })
     } else {
         None
@@ -1684,6 +1964,27 @@ mod tests {
         // 给它一个导出设置，才算是 Inspect 的 asset。
         s.execute("export.add", &json!({ "ids": [id] })).expect("export.add");
         (s, id)
+    }
+
+    /// 每一种 `Effect::TYPES` 加进去后都必须变成一行面板数据 —— 少一行，用户看到的就是
+    /// 「点了没反应」。这条覆盖菜单里的全部 7 种，不只是阴影。
+    #[test]
+    fn every_effect_type_becomes_a_panel_row() {
+        let mut s = Session::with_document(Document::new("fx-rows"));
+        let v = s.execute("shape.rectangle", &json!({ "x": 0.0, "y": 0.0, "width": 64.0, "height": 64.0 })).expect("rect");
+        let id: NodeId = serde_json::from_value(v["id"].clone()).expect("id");
+        for (_, ty) in figcraft_doc::Effect::TYPES {
+            s.execute("effect.add", &json!({ "ids": [id], "type": ty })).expect("effect.add");
+        }
+        let doc = s.doc().expect("doc");
+        let d = read(doc, &[id], None, 0);
+        let rows = d.effects.expect("rows for a single selection");
+        assert_eq!(rows.len(), figcraft_doc::Effect::TYPES.len(), "one row per type");
+        for (row, (label, ty)) in rows.iter().zip(figcraft_doc::Effect::TYPES) {
+            assert_eq!(row.label, label, "the row shows the type's label");
+            assert_eq!(row.ty, ty, "the row carries the type the menu adds");
+            assert_eq!(row.effect.get("type").and_then(|v| v.as_str()), Some(ty), "serialised effect keeps its type");
+        }
     }
 
     /// 导出是引擎级能力：只调 `file.export {ids, format, path}`，文件就该由引擎写到磁盘。

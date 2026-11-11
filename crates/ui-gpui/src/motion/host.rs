@@ -93,17 +93,10 @@ impl CanvasView {
                 .collect()
             })
             .unwrap_or_default();
-        let effects = layer
-            .map(|l| {
-                crate::panels::right::sections::effects(&self.fields, &data, 0.0, Some((l, keyed_effects.clone(), &self.motion_q)))
-                    .into_element()
-                    .into_any_element()
-            })
-            .unwrap_or_else(|| {
-                crate::panels::right::sections::effects(&self.fields, &data, 0.0, None)
-                    .into_element()
-                    .into_any_element()
-            });
+        let keyframe = layer.map(|l| (l, keyed_effects.clone(), &self.motion_q));
+        let effects = crate::panels::right::sections::effects(&self.fields, &data, 0.0, cx, keyframe)
+            .into_element()
+            .into_any_element();
         let design_sections = vec![fills, strokes, effects];
         let root = cx.entity();
 

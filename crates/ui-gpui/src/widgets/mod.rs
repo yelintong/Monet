@@ -27,6 +27,7 @@ pub mod color_field;
 pub mod dropdown;
 pub mod icon;
 pub mod icon_button;
+pub mod layer_icons;
 pub mod input;
 pub mod menu;
 /// 通用菜单行为文件（安全三角 / 瞄准意图 / 悬停延迟）：主菜单、右键菜单共用同一份状态机。
@@ -36,7 +37,13 @@ pub mod panel_section;
 /// 新增通用控件（2026-11-05）：颜色选择器等弹窗背后的通用窗口，标题为插槽。
 pub mod popover;
 pub mod section_header;
+/// 新增通用控件（2026-11-11）：多选器 `Segmented`，按设计文件里的 `Segmented` 组件集重做，
+/// 带「有选中 / 无选中」两种状态，图标格与文字格共用一套几何。
+pub mod segmented;
 pub mod swatch;
+/// 排版对话框字形（照 lizard `typ-*.svg` 1:1 移植）。独立的 `typ:` 资产前缀，
+/// 冻结的 `Icon` 枚举不动；与 `Segmented` 共用 `svg().path().text_color()` 管线。
+pub mod typ_icons;
 pub mod variable;
 
 pub use checkbox::Checkbox;
@@ -64,6 +71,7 @@ pub use popover::{
     CLOSE, CLOSE_RIGHT, Open as PopoverOpen, Popover, RADIUS as POPOVER_RADIUS, SLOT_PAD, Surface, WIDTH as POPOVER_WIDTH, popover_window, title_text,
 };
 pub use section_header::{SectionHeader, SectionHeaderVariant};
+pub use segmented::{SegItem, Segmented};
 
 /// The panel's left inset: 16 pt.
 pub const PAD: f32 = 16.0;

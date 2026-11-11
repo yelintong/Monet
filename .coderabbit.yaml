@@ -1,6 +1,26 @@
-# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+# AI review for pull requests. Install the CodeRabbit app on the repository to activate it.
+language: en
+early_access: false
 reviews:
+  profile: chill
+  request_changes_workflow: false
+  high_level_summary: true
+  poem: false
+  review_status: true
   auto_review:
-    # Dependabot bumps are checked by CI; skip CodeRabbit reviews on them.
-    ignore_usernames:
-      - "dependabot[bot]"
+    enabled: true
+    drafts: false
+  path_filters:
+    - "!**/target/**"
+    - "!**/*.svg"
+  path_instructions:
+    - path: "crates/ui-gpui/**"
+      instructions: >
+        This is a UI port. Every panel, popover, menu and list row must match the reference
+        implementation in crates/ui-egui one-to-one. Flag any simplified substitute (a row of
+        chips instead of a dropdown menu, a fixed popover instead of a draggable window, plain
+        notes instead of section headers), hard-coded option lists, and invented command names.
+    - path: "crates/engine/**"
+      instructions: >
+        Engine changes belong in the upstream project. Flag changes here unless they are
+        genuinely engine-level and coordinated with upstream.

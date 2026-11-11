@@ -15,7 +15,10 @@ use crate::panels::right::data::PanelData;
 use crate::panels::right::variables::{self, VariablesData, VariablesEditor};
 use crate::panels::{Cmd, Cmds};
 use crate::widgets::popover::{self, HEADER_H, Open, Surface, WIDTH, popover_window, title_text};
-use crate::widgets::{Icon, IconButton, Slot, TextField, number_field, pt, rgba, search_field, tokens};
+use crate::widgets::{MenuRow, dropdown};
+use crate::widgets::menu::menu_popup_in;
+use crate::widgets::{Icon, IconButton, SegItem, Segmented, Slot, TextField, number_field, pt, rgba, search_field, tokens};
+use crate::widgets::typ_icons::TypIcon;
 use gpui::{
     AnyElement, App, Bounds, Entity, IntoElement, MouseButton, MouseDownEvent, MouseMoveEvent, Pixels, Point, SharedString, Size, Window, div, point, prelude::*, px,
     size,
@@ -39,6 +42,9 @@ pub(crate) enum WindowKind {
     /// 变量编辑器的右侧列表（egui `dialogs/variables_panel.rs::table()`）。
     /// 与 `Variables`（变量**绑定选择器**弹窗）是两个不同的窗口。
     VariablesTable,
+    /// 详细排版设置（egui `typography.rs::type_settings_panel`）：Basics / Details /
+    /// Variable 三页签的浮层，正文全部用通用 `Setting` 行（chips + 数字框）搭出来。
+    TypeSettings,
 }
 
 /// One clickable row of a list window (a variable, a style, a create action).
@@ -71,11 +77,25 @@ pub(crate) struct Opt {
     pub label: SharedString,
     pub cmd: &'static str,
     pub params: Value,
+    /// 有值时用排版对话框字形（`typ-*.svg`）画格，label 退为 tooltip/无障碍文本。
+    /// Type settings  Basics 页的对齐 / 装饰线 / 大小写 / 列表 / 截断全是图标格。
+    pub glyph: Option<crate::widgets::typ_icons::TypIcon>,
 }
 
 impl Opt {
     pub fn new(label: impl Into<SharedString>, cmd: &'static str, params: Value) -> Self {
-        Self { label: label.into(), cmd, params }
+        Self { label: label.into(), cmd, params, glyph: None }
+    }
+    /// 把这一格改成 lizard 的排版字形（U̲ / AG / 项目符号…），label 仍保留作语义标注。
+    pub fn with_glyph(mut self, g: crate::widgets::typ_icons::TypIcon) -> Self {
+        self.glyph = Some(g);
+        self
+    }
+    fn item(&self) -> crate::widgets::SegItem {
+        match self.glyph {
+            Some(g) => crate::widgets::SegItem::Svg(g),
+            None => crate::widgets::SegItem::text(self.label.clone()),
+        }
     }
 }
 
@@ -86,18 +106,76 @@ pub(crate) enum Setting {
         tab: u8,
         text: SharedString,
     },
-    /// A labelled row of option chips; `active` is the highlighted one.
+    /// A labelled row of choices; `active` is the raised cell. `None` = nothing chosen
+    /// (a mixed selection, or a value this node does not have) — the design's `State=Rest`.
     Options {
         tab: u8,
         label: SharedString,
-        active: usize,
+        active: Option<usize>,
         options: Vec<Opt>,
+    },
+    /// 定宽的图标分段行（Type settings Basics 页）：左标签 + 右侧 SVG 字形条，整条 `bar_w` 宽、
+    /// 格子均分；`options` 带 `glyph` 时画 lizard 的 `typ-*.svg`。`drill_in` 是行尾的 `>` 按钮
+    /// （文本修饰用），点击把 `active tab` 切到目标页签。
+    IconOptions {
+        tab: u8,
+        label: SharedString,
+        active: Option<usize>,
+        bar_w: f32,
+        options: Vec<Opt>,
+        /// 行尾 `>` 按钮：与紧跟其后的 `ExpandedRows.flag` 共用同一份标志，点击翻转即展开/收起。
+        drill_in: Option<Rc<RefCell<bool>>>,
     },
     /// A labelled numeric field; its commit was wired to the command queue at construction.
     Number {
         tab: u8,
         label: SharedString,
         field: Entity<TextField>,
+    },
+    /// Type settings 顶部的「预览」大框（lizard `type_settings_basics` 的 `previewBox`）。
+    /// 所有页签共用、只画一次；内容是选中文本的字面，灰底、11 pt、次要色。
+    Preview {
+        text: SharedString,
+    },
+    /// Details 页的粗体分组标题（lizard `details_section`：10.5 pt semibold + 下方一条分隔线）。
+    GroupTitle {
+        tab: u8,
+        text: SharedString,
+    },
+    /// 一条 1 px 分隔线（Basics 页预览框 / 上下两组之间）。
+    Divider {
+        tab: u8,
+    },
+    /// 标签 + 当前值 + 通用下拉（Wrap style：自动 / 平衡 / 美观）。
+    /// 触发按钮用通用 `widgets::dropdown`（Input 模板同源），弹层用通用 `menu_popup_in`
+    /// （`Menu::show`：菜单表面 / hover / 防溢出 / 滚动）。浮层占着根视图唯一的 `popup` 槽，
+    /// 开不了第二个 `Popup::Menu`，所以菜单作为浮层 `render()` 多返回的一个**窗口级兄弟元素**
+    /// 挂在根视图的 `els` 上（与浮层卡片同级，因此用窗口坐标、不被滚动裁剪）。
+    Dropdown {
+        tab: u8,
+        label: SharedString,
+        /// 当前显示值，选中后就地更新。
+        current: Rc<RefCell<SharedString>>,
+        /// 触发按钮的窗口矩形（`Dropdown::on_click` 回填），作为通用菜单的锚点。
+        anchor: Rc<RefCell<Option<Bounds<Pixels>>>>,
+        options: Vec<Opt>,
+    },
+    /// Details 页 `details_toggle` 的 `— / ✓` 开关行（hanging / features）。
+    /// `on` 是当前值（retained，点一次翻转并发对应命令），`supported=false` 时画禁用态。
+    Toggle {
+        tab: u8,
+        label: SharedString,
+        on: Rc<RefCell<bool>>,
+        supported: bool,
+        on_cmd: Opt,
+        off_cmd: Opt,
+    },
+    /// 由行尾 `>` 展开的一组子行（`decoration_details`：样式 / 粗细 / 跳过下伸部）。
+    /// `flag` 与 `Setting::IconOptions.drill_in` 共用；false 时整组不渲染，点 `>` 翻转后显示。
+    ExpandedRows {
+        tab: u8,
+        flag: Rc<RefCell<bool>>,
+        rows: Vec<Setting>,
     },
 }
 
@@ -150,6 +228,10 @@ pub(crate) struct WindowState {
     editor_full: Option<bool>,
     var_on_full: Rc<dyn Fn(bool, &mut App)>,
     var_on_close: Rc<dyn Fn(&mut App)>,
+    /// 浮层内通用下拉的菜单卡片（窗口坐标，作为 `render()` 的兄弟元素返回）。每帧清空重建。
+    overlays: Rc<RefCell<Vec<AnyElement>>>,
+    /// 当前浮层的关闭回调（`render()` 每帧写入），供菜单 `dismiss` 之外复用。
+    dismiss: Rc<RefCell<Option<Rc<dyn Fn(&mut Window, &mut App)>>>>,
 }
 
 impl WindowState {
@@ -189,6 +271,8 @@ impl WindowState {
             editor_full: None,
             var_on_full: Rc::new(|_, _| {}),
             var_on_close: Rc::new(|_| {}),
+            overlays: Rc::new(RefCell::new(Vec::new())),
+            dismiss: Rc::new(RefCell::new(None)),
         }
     }
 
@@ -216,7 +300,7 @@ impl WindowState {
             Setting::Options {
                 tab: 0,
                 label: tr("Strokes").into(),
-                active: 0,
+                active: Some(0),
                 options: vec![
                     Opt::new(tr("Included"), "node.set", json!({ "props": { "strokesIncluded": true } })),
                     Opt::new(tr("Excluded"), "node.set", json!({ "props": { "strokesIncluded": false } })),
@@ -225,7 +309,7 @@ impl WindowState {
             Setting::Options {
                 tab: 0,
                 label: tr("Canvas stacking").into(),
-                active: 0,
+                active: Some(0),
                 options: vec![
                     Opt::new(tr("Last on top"), "node.set", json!({ "props": { "reverseZ": false } })),
                     Opt::new(tr("First on top"), "node.set", json!({ "props": { "reverseZ": true } })),
@@ -234,7 +318,7 @@ impl WindowState {
             Setting::Options {
                 tab: 0,
                 label: "Text baselines".into(),
-                active: usize::from(text_baseline),
+                active: Some(usize::from(text_baseline)),
                 options: vec![
                     Opt::new(tr("Off"), "node.set", json!({ "props": { "crossAlign": "min" } })),
                     Opt::new(tr("Align"), "node.set", json!({ "props": { "crossAlign": "baseline" } })),
@@ -243,7 +327,7 @@ impl WindowState {
             Setting::Options {
                 tab: 0,
                 label: "Gap mode".into(),
-                active: gap_active(main, wrap),
+                active: Some(gap_active(main, wrap)),
                 options: if wrap {
                     vec![
                         Opt::new(tr("Fixed"), "node.set", json!({ "props": { "contentAlign": "auto" } })),
@@ -320,7 +404,7 @@ impl WindowState {
             Setting::Options {
                 tab: 0,
                 label: tr("Pattern").into(),
-                active: 0,
+                active: Some(0),
                 options: vec![
                     Opt::new(tr("Solid"), "node.set", json!({ "props": { "dashes": [] } })),
                     Opt::new(tr("Dash"), "node.set", json!({ "props": { "dashes": [weight * 4.0, weight * 4.0] } })),
@@ -331,7 +415,7 @@ impl WindowState {
             Setting::Options {
                 tab: 0,
                 label: tr("Join").into(),
-                active: 0,
+                active: Some(0),
                 options: vec![
                     Opt::new(tr("Miter"), "node.set", json!({ "props": { "strokeJoin": "miter" } })),
                     Opt::new(tr("Bevel"), "node.set", json!({ "props": { "strokeJoin": "bevel" } })),
@@ -342,26 +426,26 @@ impl WindowState {
             Setting::Options {
                 tab: 0,
                 label: "End caps".into(),
-                active: 0,
+                active: Some(0),
                 options: vec![
                     Opt::new(tr("None"), "node.set", json!({ "props": { "strokeCap": "butt" } })),
                     Opt::new(tr("Round"), "node.set", json!({ "props": { "strokeCap": "round" } })),
                     Opt::new(tr("Square"), "node.set", json!({ "props": { "strokeCap": "square" } })),
                 ],
             },
-            Setting::Options { tab: 0, label: tr("Width profile").into(), active: 0, options: profiles.clone() },
+            Setting::Options { tab: 0, label: tr("Width profile").into(), active: Some(0), options: profiles.clone() },
             Setting::Caption { tab: 1, text: tr("Brush").into() },
             Setting::Options {
                 tab: 1,
                 label: tr("Brush").into(),
-                active: 0,
+                active: Some(0),
                 options: vec![
                     Opt::new(tr("None"), "stroke.brush", json!({ "preset": Value::Null })),
                     Opt::new(tr("Stretch"), "stroke.brush", json!({ "preset": "stretch" })),
                     Opt::new(tr("Scatter"), "stroke.brush", json!({ "preset": "scatter" })),
                 ],
             },
-            Setting::Options { tab: 1, label: tr("Width profile").into(), active: 0, options: profiles },
+            Setting::Options { tab: 1, label: tr("Width profile").into(), active: Some(0), options: profiles },
         ];
         w.settings = Rc::new(RefCell::new(settings));
         w
@@ -378,7 +462,363 @@ impl WindowState {
         w
     }
 
-    // ── ⑤ 变量编辑器右侧列表（egui `dialogs/variables_panel.rs::table()`）─────────────────
+    // ── ⑤ 详细排版设置（egui `typography.rs::type_settings_panel` + `type_settings_basics`）──
+    //
+    // egui 的这个浮层是「三页签 + 头部关闭按钮」的 Compact 面板：
+    // `Basics`（对齐 / 装饰线 / 大小写 / 垂直裁切 / 列表 / 段落间距）、
+    // `Details`（装饰线样式 / 粗细 / 跳过下伸部 / 大小写）、
+    // `Variable`（可变字体的轴）。
+    //
+    // 这里**不新建任何控件**：页签用通用「设置窗口」自带的那条页签，行用 `Setting::Options`
+    // （chips）与 `Setting::Number`（数字框）搭；正文与页签的排版完全交给 `settings_element`。
+    // 与 egui 的两处差异都来自控件库的现状，不是另起一套：
+    //   * egui 的装饰线 / 大小写 / 对齐是**图标**分段控件，通用 chips 只有文字（图标集里没有
+    //     `TypeDialog*` 这些字形），所以这里用文字 chips；
+    //   * `Variable` 页在 egui 里是滑杆；控件库没有滑杆，改用每条轴一个数字框（同样是通用控件）。
+    // 第三页只在字体**确实是可变字体**时出现 —— egui 是把它画成禁用页签，通用页签没有禁用态，
+    // 于是缺省就不出现，避免留一个点不动的死页签。
+    pub(crate) fn type_settings(cmds: Cmds, data: &PanelData, cx: &mut App, anchor: Point<Pixels>) -> Self {
+        let mut w = Self::base(WindowKind::TypeSettings, tr("Type settings"), cmds, Open::Anchor(anchor));
+        // 卡片 pad=8：标题行（页签）从 y=8 起，与右上角 X（top 8 / 24 高，中心 y=20）垂直居中对齐。
+        // 正文另在 settings_element 里补 px(4)，把左右视觉内边距补回 12（见那里的 kind 判断）。
+        w.pad = 8.0;
+        // Basics 短、Details 长：高度用于抬升/夹取，正文交给滚动容器按内容延展。
+        w.height = 520.0;
+        let t = data.text.clone().unwrap_or_default();
+        let has_variable = !t.axes.is_empty();
+        let mut tabs = vec![tr("Basics").into(), tr("Details").into()];
+        if has_variable {
+            tabs.push(tr("Variable").into());
+        }
+        w.tabs = Some((tabs, Rc::new(RefCell::new(0u8))));
+
+        // 「文本修饰」行尾 `>` 展开的装饰线明细，与该行的 drill_in 共用同一标志。
+        let deco_flag: Rc<RefCell<bool>> = Rc::new(RefCell::new(false));
+        let mut settings: Vec<Setting> = Vec::new();
+
+        // ── Basics：预览框（三页签共用，Variable 页不画）───────────────────────────────
+        settings.push(Setting::Preview { text: tr("Preview").into() });
+        settings.push(Setting::Divider { tab: 0 });
+        settings.push(Setting::IconOptions {
+            tab: 0,
+            label: tr("Alignment").into(),
+            active: match t.align_h {
+                Some("left") => Some(0),
+                Some("center") => Some(1),
+                Some("right") => Some(2),
+                Some("justified") => Some(3),
+                _ => None,
+            },
+            bar_w: 96.0,
+            drill_in: None,
+            options: vec![
+                Opt::new(tr("Align left"), "node.set", json!({ "props": { "textAlign": "left" } })).with_glyph(TypIcon::AlignLeft),
+                Opt::new(tr("Align center"), "node.set", json!({ "props": { "textAlign": "center" } })).with_glyph(TypIcon::AlignCenter),
+                Opt::new(tr("Align right"), "node.set", json!({ "props": { "textAlign": "right" } })).with_glyph(TypIcon::AlignRight),
+                Opt::new(tr("Justify"), "node.set", json!({ "props": { "textAlign": "justified" } })).with_glyph(TypIcon::Justify),
+            ],
+        });
+        settings.push(Setting::IconOptions {
+            tab: 0,
+            label: tr("Decoration").into(),
+            active: match t.decoration {
+                Some("none") => Some(0),
+                Some("underline") => Some(1),
+                Some("strikethrough") => Some(2),
+                _ => None,
+            },
+            bar_w: 72.0,
+            drill_in: Some(deco_flag.clone()),
+            options: vec![
+                Opt::new(tr("None"), "node.set", json!({ "props": { "textDecoration": "none" } })).with_glyph(TypIcon::None),
+                Opt::new(tr("Underline"), "node.set", json!({ "props": { "textDecoration": "underline" } })).with_glyph(TypIcon::Underline),
+                Opt::new(tr("Strikethrough"), "node.set", json!({ "props": { "textDecoration": "strikethrough" } })).with_glyph(TypIcon::Strike),
+            ],
+        });
+        settings.push(Setting::IconOptions {
+            tab: 0,
+            label: tr("Letter case").into(),
+            active: match t.case {
+                Some("original") => Some(0),
+                Some("upper") => Some(1),
+                Some("lower") => Some(2),
+                Some("title") => Some(3),
+                Some("smallCaps") => Some(4),
+                _ => None,
+            },
+            bar_w: 120.0,
+            drill_in: None,
+            options: vec![
+                Opt::new(tr("As typed"), "node.set", json!({ "props": { "textCase": "original" } })).with_glyph(TypIcon::None),
+                Opt::new(tr("Uppercase"), "node.set", json!({ "props": { "textCase": "upper" } })).with_glyph(TypIcon::Upper),
+                Opt::new(tr("Lowercase"), "node.set", json!({ "props": { "textCase": "lower" } })).with_glyph(TypIcon::Lower),
+                Opt::new(tr("Title case"), "node.set", json!({ "props": { "textCase": "title" } })).with_glyph(TypIcon::Title),
+                Opt::new(tr("Small caps"), "node.set", json!({ "props": { "textCase": "smallCaps" } })).with_glyph(TypIcon::SmallCaps),
+            ],
+        });
+        settings.push(Setting::Divider { tab: 0 });
+        settings.push(Setting::IconOptions {
+            tab: 0,
+            label: tr("Vertical trim").into(),
+            active: match t.leading_trim {
+                Some("capHeight") => Some(1),
+                Some("none") => Some(0),
+                _ => None,
+            },
+            bar_w: 48.0,
+            drill_in: None,
+            options: vec![
+                Opt::new(tr("Standard"), "node.set", json!({ "props": { "leadingTrim": "none" } })).with_glyph(TypIcon::TrimStandard),
+                Opt::new(tr("Cap height"), "node.set", json!({ "props": { "leadingTrim": "capHeight" } })).with_glyph(TypIcon::TrimCap),
+            ],
+        });
+        settings.push(Setting::IconOptions {
+            tab: 0,
+            label: tr("List style").into(),
+            active: match t.list_style {
+                Some("none") => Some(0),
+                Some("bulleted") => Some(1),
+                Some("numbered") => Some(2),
+                _ => None,
+            },
+            bar_w: 72.0,
+            drill_in: None,
+            options: vec![
+                Opt::new(tr("No list"), "node.set", json!({ "props": { "listStyle": "none" } })).with_glyph(TypIcon::None),
+                Opt::new(tr("Bulleted list"), "node.set", json!({ "props": { "listStyle": "bulleted" } })).with_glyph(TypIcon::ListBullets),
+                Opt::new(tr("Numbered list"), "node.set", json!({ "props": { "listStyle": "numbered" } })).with_glyph(TypIcon::ListNumbered),
+            ],
+        });
+        let spacing = number_field(cx, 72.0, t.paragraph_spacing, "", 1.0, Slot::None);
+        wire_set(&spacing, cx, &w.cmds, "paragraphSpacing", 0.0, 10_000.0);
+        settings.push(Setting::Number { tab: 0, label: tr("Paragraph spacing").into(), field: spacing });
+        settings.push(Setting::IconOptions {
+            tab: 0,
+            label: tr("Truncate text").into(),
+            active: match t.auto_resize {
+                Some("truncate") => Some(1),
+                _ => None,
+            },
+            bar_w: 48.0,
+            drill_in: None,
+            options: vec![
+                Opt::new(tr("Don't truncate"), "node.set", json!({ "props": { "textAutoResize": "none" } })).with_glyph(TypIcon::None),
+                Opt::new(tr("Truncate with an ellipsis"), "node.set", json!({ "props": { "textAutoResize": "truncate" } })).with_glyph(TypIcon::Truncate),
+            ],
+        });
+        settings.push(Setting::Dropdown {
+            tab: 0,
+            label: tr("Wrap style").into(),
+            current: Rc::new(RefCell::new(
+                match t.wrap_style {
+                    Some("balance") => tr("Balance"),
+                    Some("pretty") => tr("Pretty"),
+                    _ => tr("Automatic"),
+                }
+                .into(),
+            )),
+            anchor: Rc::new(RefCell::new(None)),
+            options: vec![
+                Opt::new(tr("Automatic"), "node.set", json!({ "props": { "wrapStyle": "auto" } })),
+                Opt::new(tr("Balance"), "node.set", json!({ "props": { "wrapStyle": "balance" } })),
+                Opt::new(tr("Pretty"), "node.set", json!({ "props": { "wrapStyle": "pretty" } })),
+            ],
+        });
+
+        // 「文本修饰 >」展开：装饰线样式 / 粗细 / 跳过下伸部（lizard `decoration_details`）。
+        let thickness = number_field(cx, 72.0, t.decoration_thickness, "", 0.5, Slot::None);
+        wire_set(&thickness, cx, &w.cmds, "textDecorationThickness", 0.0, 1_000.0);
+        settings.push(Setting::ExpandedRows {
+            tab: 0,
+            flag: deco_flag.clone(),
+            rows: vec![
+                Setting::Caption { tab: 0, text: tr("Decoration style").into() },
+                Setting::Options {
+                    tab: 0,
+                    label: SharedString::from(""),
+                    active: match t.decoration_style {
+                        Some("solid") => Some(0),
+                        Some("dotted") => Some(1),
+                        Some("wavy") => Some(2),
+                        _ => None,
+                    },
+                    options: vec![
+                        Opt::new(tr("Solid"), "node.set", json!({ "props": { "textDecorationStyle": "solid" } })),
+                        Opt::new(tr("Dotted"), "node.set", json!({ "props": { "textDecorationStyle": "dotted" } })),
+                        Opt::new(tr("Wavy"), "node.set", json!({ "props": { "textDecorationStyle": "wavy" } })),
+                    ],
+                },
+                Setting::Number { tab: 0, label: tr("Thickness").into(), field: thickness },
+                Setting::Toggle {
+                    tab: 0,
+                    label: tr("Skip ink").into(),
+                    on: Rc::new(RefCell::new(t.decoration_skip_ink.unwrap_or(true))),
+                    supported: true,
+                    on_cmd: Opt::new(tr("On"), "node.set", json!({ "props": { "textDecorationSkipInk": true } })),
+                    off_cmd: Opt::new(tr("Off"), "node.set", json!({ "props": { "textDecorationSkipInk": false } })),
+                },
+            ],
+        });
+
+        // ── Details：lizard `type_settings_details` 的六个分组 ────────────────────────
+        settings.push(Setting::GroupTitle { tab: 1, text: tr("Indentation").into() });
+        settings.push(Setting::Toggle {
+            tab: 1,
+            label: tr("Hanging punctuation").into(),
+            on: Rc::new(RefCell::new(t.hanging_punctuation.unwrap_or(false))),
+            supported: true,
+            on_cmd: Opt::new(tr("On"), "node.set", json!({ "props": { "hangingPunctuation": true } })),
+            off_cmd: Opt::new(tr("Off"), "node.set", json!({ "props": { "hangingPunctuation": false } })),
+        });
+        settings.push(Setting::Toggle {
+            tab: 1,
+            label: tr("Hanging list").into(),
+            on: Rc::new(RefCell::new(t.hanging_list.unwrap_or(false))),
+            supported: true,
+            on_cmd: Opt::new(tr("On"), "node.set", json!({ "props": { "hangingList": true } })),
+            off_cmd: Opt::new(tr("Off"), "node.set", json!({ "props": { "hangingList": false } })),
+        });
+        let indent = number_field(cx, 72.0, t.paragraph_indent, "", 1.0, Slot::None);
+        wire_set(&indent, cx, &w.cmds, "paragraphIndent", 0.0, 10_000.0);
+        settings.push(Setting::Number { tab: 1, label: tr("Paragraph indent").into(), field: indent });
+        settings.push(Setting::Divider { tab: 1 });
+
+        settings.push(Setting::GroupTitle { tab: 1, text: tr("Letter case").into() });
+        settings.push(Setting::IconOptions {
+            tab: 1,
+            label: tr("Letter case").into(),
+            active: match t.case {
+                Some("original") => Some(0),
+                Some("upper") => Some(1),
+                Some("lower") => Some(2),
+                Some("title") => Some(3),
+                Some("smallCaps") => Some(4),
+                _ => None,
+            },
+            bar_w: 120.0,
+            drill_in: None,
+            options: vec![
+                Opt::new(tr("As typed"), "node.set", json!({ "props": { "textCase": "original" } })).with_glyph(TypIcon::None),
+                Opt::new(tr("Uppercase"), "node.set", json!({ "props": { "textCase": "upper" } })).with_glyph(TypIcon::Upper),
+                Opt::new(tr("Lowercase"), "node.set", json!({ "props": { "textCase": "lower" } })).with_glyph(TypIcon::Lower),
+                Opt::new(tr("Title case"), "node.set", json!({ "props": { "textCase": "title" } })).with_glyph(TypIcon::Title),
+                Opt::new(tr("Small caps"), "node.set", json!({ "props": { "textCase": "smallCaps" } })).with_glyph(TypIcon::SmallCaps),
+            ],
+        });
+        // OpenType feature 分组完全由扫描结果 `features_supported` 驱动：字体没有的 feature
+        // 根本不生成行（不是置灰）。本地只持有一份「分组依据」表，回答「扫描到这个 tag 时
+        // 归到哪组 / 显示什么名字 / 默认开关」，不决定显示哪些。
+        settings.push(Setting::Divider { tab: 1 });
+        settings.extend(Self::type_feature_groups(1, &t.features, &t.features_supported));
+
+        // ── Variable（只有可变字体才有这一页）──────────────────────────────────────────
+        for axis in t.axes.iter() {
+            let field = number_field(cx, 72.0, Some(axis.value), "", 1.0, Slot::None);
+            let tag = axis.tag.clone();
+            let cmds = w.cmds.clone();
+            field.update(cx, move |tf, _| {
+                let tag = tag.clone();
+                tf.set_on_commit(move |text, _, _| {
+                    if let Ok(v) = text.trim().parse::<f64>() {
+                        cmds.push(Cmd { id: "node.set", params: Some(json!({ "props": { "variationSettings": { tag.clone(): v } } })) });
+                    }
+                });
+            });
+            settings.push(Setting::Number { tab: 2, label: axis.name.clone().into(), field });
+        }
+        if has_variable {
+            settings.push(Setting::Options {
+                tab: 2,
+                label: tr("Variations").into(),
+                active: Some(0),
+                options: vec![Opt::new(tr("Reset to style"), "node.set", json!({ "props": { "variationSettings": Value::Null } }))],
+            });
+        }
+        w.settings = Rc::new(RefCell::new(settings));
+        w
+    }
+
+    // OpenType feature 面板是**数据驱动**的：显示哪些行完全由字体的扫描结果
+    // `features_supported`（`face.feature_tags()`）决定，字体没有的 feature 根本不出现。
+    // 本地只持有一份「分组依据」表：把扫描到的 tag 归到 lizard 的分组、给显示名和默认开关。
+    // 这些 tag -> 组 / 显示名 / 默认值是**本地知识**（分组依据），不是显示清单。
+    //
+    // 命令增量写 `text.setFeatures {features:{tag:bool}}`，不会互相覆盖整张 features 表
+    // （与 node.set 的清空重建语义不同）。开关的 `on` 优先取文档显式覆盖，否则用默认值；
+    // 既然行是从扫描结果生成的，它就一定被字体支持，`supported` 恒真、永不变灰。
+    const FEATURE_CATALOG: &'static [(&'static str, &'static str, &'static str, bool)] = &[
+        //  tag     显示名                        归属分组 (tr key)      默认
+        ("case", "Case-sensitive forms", "Letter case|dialog", false),
+        ("cpsp", "Capital spacing", "Letter case|dialog", false),
+        ("tnum", "Tabular numbers", "Numbers", false),
+        ("frac", "Fractions", "Numbers", false),
+        ("zero", "Slashed zero", "Numbers", false),
+        ("liga", "Standard ligatures", "Letter forms", true),
+        ("dlig", "Discretionary ligatures", "Letter forms", false),
+        ("calt", "Contextual alternates", "Letter forms", true),
+        ("ordn", "Ordinals", "Letter forms", false),
+        ("smcp", "Small capitals", "Letter forms", false),
+        ("ss01", "Stylistic set 1", "Stylistic sets", false),
+        ("ss02", "Stylistic set 2", "Stylistic sets", false),
+        ("ss03", "Stylistic set 3", "Stylistic sets", false),
+        ("ss04", "Stylistic set 4", "Stylistic sets", false),
+        ("ss05", "Stylistic set 5", "Stylistic sets", false),
+        ("kern", "Kerning pairs", "Horizontal spacing", true),
+    ];
+    /// 分组的显示顺序（与 lizard `type_settings_details` 一致）；空组不显示。
+    const FEATURE_GROUP_ORDER: &'static [&'static str] =
+        &["Letter case|dialog", "Numbers", "Letter forms", "Stylistic sets", "Horizontal spacing", "Other features"];
+
+    fn type_feature_groups(
+        tab: u8,
+        features: &std::collections::BTreeMap<String, bool>,
+        features_supported: &std::collections::BTreeSet<String>,
+    ) -> Vec<Setting> {
+        use std::collections::BTreeMap;
+        // ① 把扫描到的每个 tag 归进组（本地表只提供归属 / 显示名 / 默认值）。
+        //    显示清单 = features_supported ∩ 表；表外但扫描到的 tag 归「Other features」。
+        let mut grouped: BTreeMap<&'static str, Vec<Setting>> = BTreeMap::new();
+        let mut others: Vec<Setting> = Vec::new();
+        for tag in features_supported.iter() {
+            let known = Self::FEATURE_CATALOG.iter().find(|(t, _, _, _)| *t == tag.as_str());
+            let (label, group, default_on): (SharedString, &'static str, bool) = match known {
+                Some((_, name, grp, def)) => (tr(*name).into(), *grp, *def),
+                // 字体有、但本地没有可信中文名的 feature：用 tag 本身，归「其它」。
+                None => (SharedString::from(tag.clone()), "Other features", false),
+            };
+            let on = features.get(tag).copied().unwrap_or(default_on);
+            let key = tag.clone();
+            let row = Setting::Toggle {
+                tab,
+                label,
+                on: Rc::new(RefCell::new(on)),
+                supported: true, // 来自扫描结果，必然支持
+                on_cmd: Opt::new(tr("On"), "text.setFeatures", json!({ "features": { (key.clone()): true } })),
+                off_cmd: Opt::new(tr("Off"), "text.setFeatures", json!({ "features": { (key): false } })),
+            };
+            if known.is_some() {
+                grouped.entry(group).or_default().push(row);
+            } else {
+                others.push(row);
+            }
+        }
+        if !others.is_empty() {
+            grouped.insert("Other features", others);
+        }
+        // ② 按固定组序输出；组里没有任何行（字体不支持该组所有 feature）就整组不出现。
+        let mut out = Vec::new();
+        for group in Self::FEATURE_GROUP_ORDER {
+            let Some(rows) = grouped.remove(group) else { continue };
+            if rows.is_empty() {
+                continue;
+            }
+            out.push(Setting::GroupTitle { tab, text: tr(*group).into() });
+            out.extend(rows);
+            out.push(Setting::Divider { tab });
+        }
+        out
+    }
+    // ── ⑥ 变量编辑器右侧列表（egui `dialogs/variables_panel.rs::table()`）─────────────────
     // 只搬右边的表格：左侧集合/分组 sidebar、顶部搜索、编辑与拖拽都还没做。
     // 标题用集合名（egui 的浮动面板标题），右侧放变量总数的计数 chip。
     pub(crate) fn variables_table(cmds: Cmds, anchor: Point<Pixels>, data: VariablesData) -> Self {
@@ -665,6 +1105,43 @@ impl WindowState {
             // 变量编辑器把「标题 + 计数」画进自己的工具条：整窗一个插槽，顶部只有一行。
             WindowKind::VariablesTable => div().into_any_element(),
             WindowKind::Layout | WindowKind::Stroke => title_text(self.title.clone()).into_any_element(),
+            // Type settings 的标题栏就是三页签（截图顶部没有单独的 "Type settings" 标题文字），
+            // 与 lizard `type_settings_panel` 把 Tabs 放进 header 一致。
+            WindowKind::TypeSettings => {
+                if let Some((names, active)) = &self.tabs {
+                    let tab = *active.borrow();
+                    // 页签胶囊：整体垂直居中、靠左排、块间 4；每块高 24、文字左右 8，
+                    // 只有选中块有底色（与参考截图一致：未选中的「基础/变量」是透明底）。
+                    let mut row = div().w_full().flex().flex_row().items_center().gap(pt(4.0));
+                    for (i, name) in names.iter().enumerate() {
+                        let a = active.clone();
+                        let wake = self.cmds.clone();
+                        let on = i as u8 == tab;
+                        let mut cell = div()
+                            .flex_none()
+                            .h(pt(24.0))
+                            .px(pt(8.0))
+                            .rounded(pt(4.0))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .text_size(pt(11.0))
+                            .text_color(rgba(if on { t.text } else { t.text_secondary }))
+                            .cursor_pointer()
+                            .on_mouse_down(MouseButton::Left, move |_, _, _| {
+                                *a.borrow_mut() = i as u8;
+                                wake.wake();
+                            });
+                        if on {
+                            cell = cell.bg(rgba(t.selected_row));
+                        }
+                        row = row.child(cell.child(name.clone()));
+                    }
+                    row.into_any_element()
+                } else {
+                    title_text(self.title.clone()).into_any_element()
+                }
+            }
         }
     }
 
@@ -673,7 +1150,7 @@ impl WindowState {
     fn body_element(&mut self, cx: &mut App, body_h: f32, card_w: f32, viewport: Size<Pixels>) -> AnyElement {
         match self.kind {
             WindowKind::Color => self.color_body(),
-            WindowKind::Layout | WindowKind::Stroke => self.settings_element(cx),
+            WindowKind::Layout | WindowKind::Stroke | WindowKind::TypeSettings => self.settings_element(cx),
             WindowKind::Variables | WindowKind::TextStyles => self.list_element(cx),
             WindowKind::VariablesTable => {
                 if self.editor.is_none() {
@@ -934,95 +1411,121 @@ impl WindowState {
 
     fn settings_element(&self, cx: &mut App) -> AnyElement {
         let t = tokens();
-        let mut col = div().w_full().flex().flex_col().gap(pt(4.0));
-        if let Some((names, active)) = &self.tabs {
-            let tab = *active.borrow();
-            let mut row = div().w_full().h(pt(24.0)).flex().flex_row().gap(pt(4.0));
-            for (i, name) in names.iter().enumerate() {
-                let a = active.clone();
-                let name = name.clone();
-                row = row.child(
-                    div()
-                        .flex_1()
-                        .h_full()
-                        .rounded(pt(4.0))
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .text_size(pt(11.0))
-                        .text_color(rgba(if i as u8 == tab { t.accent } else { t.text_secondary }))
-                        .bg(rgba(if i as u8 == tab { t.selected_row } else { t.field }))
-                        .cursor_pointer()
-                        .on_mouse_down(MouseButton::Left, move |_, _, _| *a.borrow_mut() = i as u8)
-                        .child(name),
-                );
+        // Type settings 卡片 pad 为了让标题栏与 X 垂直居中改成 8；正文这里补左右各 4，
+        // 把视觉内边距补回设计的 12（Layout / Stroke 仍是 pad 12，不加）。
+        let mut col = if self.kind == WindowKind::TypeSettings {
+            // 用户 2026-11-11：文字弹层里每一项（块）之间 8，不是 2。
+            div().w_full().flex().flex_col().gap(pt(8.0)).px(pt(4.0))
+        } else {
+            div().w_full().flex().flex_col().gap(pt(2.0))
+        };
+        // Type settings 的页签已画在标题栏插槽里；Layout / Stroke 仍沿用正文顶部的页签行。
+        if self.kind != WindowKind::TypeSettings {
+            if let Some((names, active)) = &self.tabs {
+                let tab = *active.borrow();
+                let mut row = div().w_full().h(pt(24.0)).flex().flex_row().gap(pt(4.0));
+                for (i, name) in names.iter().enumerate() {
+                    let a = active.clone();
+                    let name = name.clone();
+                    row = row.child(
+                        div()
+                            .flex_1()
+                            .h_full()
+                            .rounded(pt(4.0))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .text_size(pt(11.0))
+                            .text_color(rgba(if i as u8 == tab { t.accent } else { t.text_secondary }))
+                            .bg(rgba(if i as u8 == tab { t.selected_row } else { t.field }))
+                            .cursor_pointer()
+                            .on_mouse_down(MouseButton::Left, move |_, _, _| *a.borrow_mut() = i as u8)
+                            .child(name),
+                    );
+                }
+                col = col.child(row);
             }
-            col = col.child(row);
         }
         let tab = self.tabs.as_ref().map(|(_, a)| *a.borrow()).unwrap_or(0);
-        for setting in self.settings.borrow().iter() {
-            match setting {
-                Setting::Caption { tab: st, text } => {
-                    if *st != tab {
-                        continue;
-                    }
-                    col = col.child(div().mt(pt(4.0)).text_size(pt(9.0)).text_color(rgba(t.text_secondary)).child(text.clone()));
+        let list = self.settings.borrow();
+        for setting in list.iter() {
+            if let Some(el) = self.render_setting(setting, tab) {
+                col = col.child(el);
+            }
+        }
+        let _ = cx;
+        // Details 正文很长（六个分组 + 十几条开关），限高滚动；Basics 短，不触发滚动条。
+        // `overflow_y_scroll` 属于 `StatefulInteractiveElement`，需要一个元素 id，且调用后类型
+        // 变成 `Stateful<Div>`，不能再赋回 `Div` 的 `col`，故在这里单独收尾。
+        if self.kind == WindowKind::TypeSettings {
+            col.id("type-settings-scroll").max_h(pt(468.0)).overflow_y_scroll().into_any_element()
+        } else {
+            col.into_any_element()
+        }
+    }
+
+    /// 渲染设置窗口的一行；`ExpandedRows` 会递归调用它画被 `>` 展开的子行。
+    fn render_setting(&self, setting: &Setting, tab: u8) -> Option<AnyElement> {
+        let t = tokens();
+        let type_ui = self.kind == WindowKind::TypeSettings;
+        match setting {
+            Setting::Caption { tab: st, text } => {
+                if *st != tab {
+                    return None;
                 }
-                Setting::Options { tab: st, label, active, options } => {
-                    if *st != tab {
-                        continue;
-                    }
-                    let mut row = div()
+                Some(div().w_full().pt(pt(6.0)).pb(pt(2.0)).text_size(pt(10.0)).text_color(rgba(t.text)).child(text.clone()).into_any_element())
+            }
+            Setting::GroupTitle { tab: st, text } => {
+                if *st != tab {
+                    return None;
+                }
+                Some(
+                    div()
                         .w_full()
-                        .min_h(pt(24.0))
-                        .flex()
-                        .flex_row()
-                        .items_center()
-                        .gap(pt(6.0))
-                        .child(div().flex_none().w(pt(76.0)).text_size(pt(9.0)).text_color(rgba(t.text_secondary)).child(label.clone()));
-                    let mut chips = div().flex_1().flex().flex_row().flex_wrap().gap(pt(4.0));
-                    for (i, opt) in options.iter().enumerate() {
-                        let cmds = self.cmds.clone();
-                        let opt = opt.clone();
-                        let settings = self.settings.clone();
-                        let index = *active;
-                        let label = label.clone();
-                        chips = chips.child(
-                            div()
-                                .h(pt(20.0))
-                                .px(pt(5.0))
-                                .rounded(pt(4.0))
-                                .flex()
-                                .items_center()
-                                .cursor_pointer()
-                                .text_size(pt(9.0))
-                                .text_color(rgba(if i == index { t.accent } else { t.text }))
-                                .bg(rgba(if i == index { t.selected_row } else { t.field }))
-                                .hover(|s| s.bg(rgba(t.hover)))
-                                .on_mouse_down(MouseButton::Left, move |_, _, _| {
-                                    cmds.push(Cmd { id: opt.cmd, params: Some(opt.params.clone()) });
-                                    // Keep the highlighted chip in sync (the command's wake redraws us).
-                                    if let Ok(mut list) = settings.try_borrow_mut() {
-                                        for s in list.iter_mut() {
-                                            if let Setting::Options { label: l, active, .. } = s
-                                                && *l == label
-                                            {
-                                                *active = i;
-                                            }
-                                        }
-                                    }
-                                })
-                                .child(opt.label.clone()),
-                        );
-                    }
-                    row = row.child(chips);
-                    col = col.child(row);
+                        .pt(pt(8.0))
+                        .pb(pt(4.0))
+                        .text_size(pt(10.5))
+                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                        .text_color(rgba(t.text))
+                        .child(text.clone())
+                        .into_any_element(),
+                )
+            }
+            Setting::Divider { tab: st } => {
+                if *st != tab {
+                    return None;
                 }
-                Setting::Number { tab: st, label, field, .. } => {
-                    if *st != tab {
-                        continue;
-                    }
-                    col = col.child(
+                Some(div().w_full().h(px(1.0)).my(pt(4.0)).bg(rgba(t.border)).into_any_element())
+            }
+            Setting::Preview { text } => {
+                // 预览框为 Basics / Details 共用；Variable 页只画可变字体轴。
+                if tab == 2 {
+                    return None;
+                }
+                Some(
+                    div()
+                        .w_full()
+                        .h(pt(120.0))
+                        .rounded(pt(5.0))
+                        .bg(rgba(t.hover))
+                        .flex()
+                        .items_start()
+                        .p(pt(16.0))
+                        .text_size(pt(11.0))
+                        .text_color(rgba(t.text_secondary))
+                        .child(text.clone())
+                        .into_any_element(),
+                )
+            }
+            Setting::Number { tab: st, label, field } => {
+                if *st != tab {
+                    return None;
+                }
+                if type_ui {
+                    let control = div().w(pt(72.0)).h(pt(24.0)).flex().items_center().child(field.clone()).into_any_element();
+                    Some(type_row(label, &t, control))
+                } else {
+                    Some(
                         div()
                             .w_full()
                             .h(pt(28.0))
@@ -1031,15 +1534,195 @@ impl WindowState {
                             .items_center()
                             .gap(pt(6.0))
                             .child(div().flex_none().w(pt(76.0)).text_size(pt(9.0)).text_color(rgba(t.text_secondary)).child(label.clone()))
-                            .child(div().flex_1().child(field.clone())),
-                    );
+                            .child(div().flex_1().child(field.clone()))
+                            .into_any_element(),
+                    )
                 }
             }
+            Setting::Options { tab: st, label, active, options } => {
+                if *st != tab {
+                    return None;
+                }
+                let seg = self.options_segmented(options, *active, label);
+                if !type_ui {
+                    // Layout / Stroke：沿用原来的「放不下就标签上移」自适应行。
+                    let inline_w = 134.0_f32;
+                    let per_cell = inline_w / options.len().max(1) as f32;
+                    let stacked = options.iter().any(|o| est_text_w(&o.label) + 10.0 > per_cell);
+                    let cap = div().text_size(pt(9.0)).text_color(rgba(t.text_secondary)).child(label.clone());
+                    return Some(if stacked {
+                        div().w_full().flex().flex_col().gap(pt(4.0)).py(pt(2.0)).child(cap).child(seg).into_any_element()
+                    } else {
+                        div()
+                            .w_full()
+                            .min_h(pt(24.0))
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .gap(pt(6.0))
+                            .child(div().flex_none().w(pt(76.0)).text_size(pt(9.0)).text_color(rgba(t.text_secondary)).child(label.clone()))
+                            .child(div().flex_1().min_w(px(0.0)).child(seg))
+                            .into_any_element()
+                    });
+                }
+                let bar = options.iter().map(|o| est_text_w(&o.label) + 16.0).sum::<f32>().max(48.0);
+                let seg = seg.fixed_bar(bar);
+                if label.is_empty() {
+                    Some(seg.into_any_element())
+                } else {
+                    Some(type_row(label, &t, seg.into_any_element()))
+                }
+            }
+            Setting::IconOptions { tab: st, label, active, bar_w, options, drill_in } => {
+                if *st != tab {
+                    return None;
+                }
+                let mut seg = Segmented::new(options.iter().map(|o| o.item()).collect())
+                    .active(*active)
+                    .fixed_bar(*bar_w);
+                let cmds = self.cmds.clone();
+                let settings = self.settings.clone();
+                let opts = options.clone();
+                let key = label.clone();
+                seg = seg.on_pick(move |i, _, _| {
+                    let Some(opt) = opts.get(i) else { return };
+                    cmds.push(Cmd { id: opt.cmd, params: Some(opt.params.clone()) });
+                    // 抬起格同步（命令引发的重绘会读到新值）。
+                    if let Ok(mut list) = settings.try_borrow_mut() {
+                        for s in list.iter_mut() {
+                            if let Setting::IconOptions { label: l, active: a, .. } = s {
+                                if *l == key {
+                                    *a = Some(i);
+                                }
+                            }
+                        }
+                    }
+                });
+                let mut control: AnyElement = seg.into_any_element();
+                if let Some(flag) = drill_in {
+                    let f = flag.clone();
+                    let wake = self.cmds.clone();
+                    let chev = IconButton::new(Icon::ChevronRight)
+                        .size(16.0)
+                        .on_click(move |_, _, _| {
+                            let mut b = f.borrow_mut();
+                            *b = !*b;
+                            drop(b);
+                            wake.wake();
+                        });
+                    control = div().flex().flex_row().items_center().gap(pt(4.0)).child(control).child(chev).into_any_element();
+                }
+                Some(type_row(label, &t, control))
+            }
+            Setting::Dropdown { tab: st, label, current, anchor, options } => {
+                if *st != tab {
+                    return None;
+                }
+                let key = format!("type-settings-{}", label);
+                let cur = current.borrow().clone();
+                // 触发按钮：通用 `widgets::dropdown`（Input 模板同源 / bare 常态 / 发丝描边 / chevron），
+                // 不再自己拼 div。点击把按钮窗口矩形回填为菜单锚点。
+                let at = anchor.clone();
+                let wake = self.cmds.clone();
+                let trigger = dropdown(cur, 96.0, None)
+                    .menu(key)
+                    .on_click(move |rect, _window, _cx| {
+                        *at.borrow_mut() = Some(rect);
+                        wake.wake();
+                    });
+
+                // 菜单：通用 `menu_popup_in`（`Menu::show` 的菜单表面 / hover / 勾选列 / 防溢出）。
+                // 浮层占着根视图唯一的 popup 槽，故菜单由 `render()` 作为窗口级兄弟元素返回。
+                let shown = *anchor.borrow();
+                if let Some(rect) = shown {
+                    let rows: Vec<MenuRow> = options
+                        .iter()
+                        .map(|o| MenuRow::new(o.label.clone()).checked(Some(o.label == *current.borrow())))
+                        .collect();
+                    let opts = options.clone();
+                    let cmds = self.cmds.clone();
+                    let cur_state = current.clone();
+                    let at2 = anchor.clone();
+                    let wake2 = self.cmds.clone();
+                    let on_pick = Rc::new(move |picked: &str, _w: &mut Window, _cx: &mut App| {
+                        if let Some(o) = opts.iter().find(|o| o.label == picked) {
+                            *cur_state.borrow_mut() = o.label.clone();
+                            cmds.push(Cmd { id: o.cmd, params: Some(o.params.clone()) });
+                        }
+                        *at2.borrow_mut() = None;
+                        wake2.wake();
+                    });
+                    let at3 = anchor.clone();
+                    let wake3 = self.cmds.clone();
+                    let dismiss = Rc::new(move |_w: &mut Window, _cx: &mut App| {
+                        *at3.borrow_mut() = None;
+                        wake3.wake();
+                    });
+                    // 3 项的 Wrap style 不会溢出，vw/vh 传 0 关掉防溢出即可。
+                    let menu = menu_popup_in(rect, None, rows, on_pick, dismiss, 0.0, 0.0);
+                    self.overlays.borrow_mut().push(menu);
+                }
+                Some(type_row(label, &t, trigger.into_any_element()))
+            }
+            Setting::Toggle { tab: st, label, on, supported, on_cmd, off_cmd } => {
+                if *st != tab {
+                    return None;
+                }
+                let idx = if *on.borrow() { 1 } else { 0 };
+                let mut seg = Segmented::new(vec![SegItem::Svg(TypIcon::None), SegItem::Icon(Icon::Check)])
+                    .active(Some(idx))
+                    .fixed_bar(48.0);
+                if *supported {
+                    let cmds = self.cmds.clone();
+                    let state = on.clone();
+                    let oc = on_cmd.clone();
+                    let fc = off_cmd.clone();
+                    seg = seg.on_pick(move |i, _, _| {
+                        let val = i == 1;
+                        *state.borrow_mut() = val;
+                        let opt = if val { &oc } else { &fc };
+                        cmds.push(Cmd { id: opt.cmd, params: Some(opt.params.clone()) });
+                    });
+                }
+                let row = type_row(label, &t, seg.into_any_element());
+                Some(if *supported { row } else { div().w_full().opacity(0.45).child(row).into_any_element() })
+            }
+            Setting::ExpandedRows { tab: st, flag, rows } => {
+                if *st != tab || !*flag.borrow() {
+                    return None;
+                }
+                let mut body = div().w_full().flex().flex_col().gap(pt(2.0)).pl(pt(2.0));
+                for row in rows {
+                    if let Some(el) = self.render_setting(row, tab) {
+                        body = body.child(el);
+                    }
+                }
+                Some(body.into_any_element())
+            }
         }
-        let _ = cx;
-        col.into_any_element()
     }
 
+    /// 文字分段条：抬起格同步写回 retained `active`（命令引发的重绘会读到新值）。
+    fn options_segmented(&self, options: &[Opt], active: Option<usize>, key: &SharedString) -> Segmented {
+        let seg = Segmented::new(options.iter().map(|o| o.item()).collect()).active(active);
+        let cmds = self.cmds.clone();
+        let settings = self.settings.clone();
+        let opts = options.to_vec();
+        let key = key.clone();
+        seg.on_pick(move |i, _, _| {
+            let Some(opt) = opts.get(i) else { return };
+            cmds.push(Cmd { id: opt.cmd, params: Some(opt.params.clone()) });
+            if let Ok(mut list) = settings.try_borrow_mut() {
+                for s in list.iter_mut() {
+                    if let Setting::Options { label: l, active: a, .. } = s {
+                        if *l == key {
+                            *a = Some(i);
+                        }
+                    }
+                }
+            }
+        })
+    }
     /// Draws the shared window and (for the colour picker) the picker's body over its slot.
     /// Returns the elements in paint order; the root view puts them above its backdrop.
     pub(crate) fn render(
@@ -1081,6 +1764,9 @@ impl WindowState {
             probe = probe.at(p);
         }
         self.origin = probe.origin(viewport);
+        // 浮层内通用下拉的菜单每帧重建：先清空上一帧，body_element 里的 Dropdown 会重新登记。
+        self.overlays.borrow_mut().clear();
+        *self.dismiss.borrow_mut() = Some(dismiss.clone());
         let mut pop = popover_window(open)
             .width(width)
             .pad(pad)
@@ -1096,8 +1782,59 @@ impl WindowState {
         }
         let (origin, card) = pop.show(viewport, dismiss);
         self.origin = origin;
-        vec![card]
+        // 菜单卡片与浮层卡片同挂窗口根（els），所以菜单用窗口坐标，不被浮层的滚动裁剪。
+        let mut els = vec![card];
+        els.extend(self.overlays.borrow_mut().drain(..));
+        els
     }
+}
+
+/// 估算一段选项文字在 9.5 pt 下的宽度（CJK 一字约一个字号宽，拉丁约 0.55 字号）。
+///
+/// 只用于判断「这一行的多选器要不要改成上下堆叠」，所以宁可估宽一点：估算偏大只会多加一行，
+/// 估算偏小就会把字切掉。
+fn est_text_w(s: &str) -> f32 {
+    s.chars().map(|c| if c.is_ascii() { 5.5 } else { 10.0 }).sum()
+}
+
+/// Type settings 的一行：左标签 + 弹性留白 + 右控件（贴合参考截图的右对齐布局）。
+fn type_row(label: &SharedString, t: &crate::theme::Tokens, control: AnyElement) -> AnyElement {
+    div()
+        .w_full()
+        .min_h(pt(24.0))
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap(pt(6.0))
+        .child(
+            div()
+                .flex_none()
+                .min_w(px(0.0))
+                .text_size(pt(10.0))
+                .text_color(rgba(t.text))
+                .child(label.clone()),
+        )
+        .child(div().flex_1().min_w(px(0.0)))
+        .child(div().flex_none().child(control))
+        .into_any_element()
+}
+
+/// 把一个数字框的提交接到 `node.set { props: { key: value } }`（Type settings 的数值行共用）。
+///
+/// 提交值按 `[min, max]` 夹紧 —— egui 那边是 `value.clamp(...)`，越界的键入不该写进文档。
+/// 空文本视为「不动」：`Auto` 类的值（装饰线粗细）本来就允许留空。
+fn wire_set(field: &Entity<TextField>, cx: &mut App, cmds: &Cmds, key: &'static str, min: f64, max: f64) {
+    let queue = cmds.clone();
+    field.update(cx, move |tf, _| {
+        tf.set_on_commit(move |text, _, _| {
+            let Ok(v) = text.trim().parse::<f64>() else { return };
+            if !v.is_finite() {
+                return;
+            }
+            let v = v.clamp(min, max);
+            queue.push(Cmd { id: "node.set", params: Some(json!({ "props": { key: v } })) });
+        });
+    });
 }
 
 /// Placement rule from `ui-egui/src/popover.rs`: the card's right edge sits on the Design
@@ -1204,4 +1941,100 @@ mod tests {
         assert!(w.pending().is_none());
         assert!(!w.variables_active());
     }
+
+    // ── Type settings（Basics / Details 1:1 布局重写）─────────────────────────────
+
+    #[test]
+    fn opt_glyph_becomes_an_svg_cell_and_plain_label_stays_text() {
+        let g = Opt::new("Align left", "node.set", json!({})).with_glyph(crate::widgets::typ_icons::TypIcon::AlignLeft);
+        assert!(matches!(g.item(), SegItem::Svg(crate::widgets::typ_icons::TypIcon::AlignLeft)));
+        let plain = Opt::new("Auto", "node.set", json!({}));
+        assert!(matches!(plain.item(), SegItem::Text(ref t) if t == &SharedString::from("Auto")));
+    }
+
+    // 把 data-driven 的分组结果摊平成 (kind, tag-ish) 便于断言：只数 GroupTitle / Toggle / Divider。
+    fn group_summary(settings: &[Setting]) -> (Vec<String>, usize, usize) {
+        let mut titles = Vec::new();
+        let mut toggles = 0;
+        let mut dividers = 0;
+        for s in settings {
+            match s {
+                Setting::GroupTitle { text, .. } => titles.push(text.to_string()),
+                Setting::Toggle { .. } => toggles += 1,
+                Setting::Divider { .. } => dividers += 1,
+                _ => panic!("feature groups should only contain title/toggle/divider"),
+            }
+        }
+        (titles, toggles, dividers)
+    }
+
+    #[test]
+    fn feature_rows_are_driven_by_what_the_font_scan_returns() {
+        let features = std::collections::BTreeMap::new();
+        // 扫描只报 3 个 tag：liga(Letter forms) / tnum(Numbers) / ss03(Stylistic sets)。
+        let supported = ["liga", "tnum", "ss03"].iter().map(|s| s.to_string()).collect();
+        let rows = WindowState::type_feature_groups(1, &features, &supported);
+        let (titles, toggles, dividers) = group_summary(&rows);
+        assert_eq!(toggles, 3, "只有扫描到的 3 个 tag 生成开关，其余一律不出现");
+        assert_eq!(titles.len(), 3, "只显示有行的组");
+        assert_eq!(dividers, 3, "每组收尾一条分隔线");
+        // 组序与 lizard 一致：Letter case → Numbers → Letter forms → …；这里只出现
+        // Numbers / Letter forms / Stylistic sets 三组，跳过空组（Letter case / Horizontal / Other）。
+        assert!(titles.iter().any(|t| t.contains("Number") || t.contains("数字")), "missing Numbers: {:?}", titles);
+        assert!(titles.iter().any(|t| t.contains("Letter forms") || t.contains("字母形式")), "missing Letter forms: {:?}", titles);
+        assert!(titles.iter().any(|t| t.contains("Stylistic") || t.contains("样式集")), "missing Stylistic sets: {:?}", titles);
+    }
+
+    #[test]
+    fn a_tag_the_font_lacks_produces_no_row_at_all() {
+        let features = std::collections::BTreeMap::new();
+        let supported = ["tnum"].iter().map(|s| s.to_string()).collect(); // 只有 tnum
+        let rows = WindowState::type_feature_groups(1, &features, &supported);
+        let (_, toggles, _) = group_summary(&rows);
+        assert_eq!(toggles, 1, "liga/frac/kern 等字体没有的 feature 根本不生成行（不是置灰）");
+        // 每个生成出来的行都必须 supported=true（它来自扫描结果）。
+        for s in &rows {
+            if let Setting::Toggle { supported, .. } = s {
+                assert!(*supported, "数据驱动生成的行不可能 unsupported");
+            }
+        }
+    }
+
+    #[test]
+    fn scanned_tag_outside_the_catalog_is_grouped_as_other() {
+        let features = std::collections::BTreeMap::new();
+        let supported = ["aalt", "liga"].iter().map(|s| s.to_string()).collect(); // aalt 不在本地表
+        let rows = WindowState::type_feature_groups(1, &features, &supported);
+        let (titles, toggles, _) = group_summary(&rows);
+        assert_eq!(toggles, 2);
+        assert!(titles.iter().any(|t| t.contains("Other") || t.contains("其它") || t.contains("其他")), "表外 tag 归 Other features: {:?}", titles);
+    }
+
+    #[test]
+    fn set_features_writes_one_tag_incrementally() {
+        let features = std::collections::BTreeMap::new();
+        let supported = ["liga", "tnum"].iter().map(|s| s.to_string()).collect();
+        let rows = WindowState::type_feature_groups(1, &features, &supported);
+        // 按命令里的 tag 定位 liga（组序里 Numbers 在 Letter forms 前，不能用索引）。
+        let liga = rows.iter().find_map(|s| match s {
+            Setting::Toggle { on_cmd, .. } if on_cmd.params["features"].get("liga").is_some() => Some(s),
+            _ => None,
+        }).expect("liga toggle must exist (it was scanned)");
+        let Setting::Toggle { on, on_cmd, off_cmd, .. } = liga else { unreachable!() };
+        assert_eq!(on_cmd.cmd, "text.setFeatures");
+        assert_eq!(off_cmd.cmd, "text.setFeatures");
+        assert_eq!(on_cmd.params["features"].as_object().unwrap().len(), 1, "每次只增量写一个 tag");
+        assert!(*on.borrow(), "liga 默认开");
+    }
+
+    #[test]
+    fn document_override_wins_over_the_catalog_default() {
+        let mut features = std::collections::BTreeMap::new();
+        features.insert("liga".to_string(), false); // 文档显式关掉（表里 liga 默认开）
+        let supported = ["liga"].iter().map(|s| s.to_string()).collect();
+        let rows = WindowState::type_feature_groups(1, &features, &supported);
+        let Setting::Toggle { on, .. } = &rows[1] else { panic!("expected toggle after title") };
+        assert!(!*on.borrow(), "文档覆盖应盖过默认开");
+    }
+
 }

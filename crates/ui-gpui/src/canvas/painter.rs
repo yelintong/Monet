@@ -48,6 +48,9 @@ pub struct Label {
     pub font: FontId,
     pub color: Color32,
     pub align: Align2,
+    /// `None` = 普通水平文字；`Some(rad)` = 绕 `rect` 中心旋转（标尺左侧数字用 -π/2）。
+    /// GPUI 0.2.2 只有 SVG 绘制支持变换，见 `canvas::svg_text`。
+    pub angle: Option<f32>,
 }
 
 #[derive(Clone, Debug)]
@@ -169,13 +172,13 @@ impl Painter {
         }
         let size = text_size(&text, font);
         let rect = anchor.anchor_size(pos, size);
-        self.labels.push(Label { rect, text, font, color, align: anchor });
+        self.labels.push(Label { rect, text, font, color, align: anchor, angle: None });
     }
 
     /// 在 `pos`（左上角）贴一段已排好的文字。
     pub fn galley(&mut self, pos: Pos2, galley: Galley, fallback_color: Color32) {
         let color = if fallback_color.a() > 0 { fallback_color } else { galley.color };
-        self.labels.push(Label { rect: Rect::from_min_size(pos, galley.size), text: galley.text, font: galley.font, color, align: Align2::LEFT_TOP });
+        self.labels.push(Label { rect: Rect::from_min_size(pos, galley.size), text: galley.text, font: galley.font, color, align: Align2::LEFT_TOP, angle: None });
     }
 
     // ---------------------------------------------------------------- 输出

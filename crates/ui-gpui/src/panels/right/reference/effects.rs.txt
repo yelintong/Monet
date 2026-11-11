@@ -389,13 +389,13 @@ fn effect_settings(
                 let ed = widgets::number_field(ui, Id::unique(("fx_gr", i)), Lead::Text(tr("Refraction")), pct(g.refraction), "%", half, 1.0);
                 edit(app, ed, &|v| with(&|gl| gl.refraction = unit(v)));
                 let ed = widgets::number_field(ui, Id::unique(("fx_gd", i)), Lead::Text(tr("Depth")), Some(g.depth), "", half, 1.0);
-                edit(app, ed, &|v| with(&|gl| gl.depth = v.clamp(1.0, 1000.0)));
+                edit(app, ed, &|v| with(&|gl| gl.depth = v.clamp(1.0, Glass::MAX_DEPTH)));
             });
             row(ui, 32.0, |ui| {
                 let ed = widgets::number_field(ui, Id::unique(("fx_gs", i)), Lead::Text(tr("Dispersion")), pct(g.dispersion), "%", half, 1.0);
                 edit(app, ed, &|v| with(&|gl| gl.dispersion = unit(v)));
                 let ed = widgets::number_field(ui, Id::unique(("fx_gf", i)), Lead::Text(tr("Frost")), Some(g.frost), "", half, 1.0);
-                edit(app, ed, &|v| with(&|gl| gl.frost = v.clamp(0.0, 1000.0)));
+                edit(app, ed, &|v| with(&|gl| gl.frost = v.clamp(0.0, Glass::MAX_FROST)));
             });
             row(ui, 32.0, |ui| {
                 let ed = widgets::number_field(ui, Id::unique(("fx_gp", i)), Lead::Text(tr("Splay")), pct(g.splay), "%", half, 1.0);

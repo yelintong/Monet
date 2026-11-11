@@ -10,13 +10,14 @@
 
 use figcraft_i18n::tr_noop;
 use figcraft_i18n::tr;
-use super::data::{PaintRow, PanelData, ViewData};
+use super::data::{LocalStyleRow, PaintRow, PanelData, ViewData};
 use crate::canvas::geom::Color32;
 use crate::motion::{Act, Queue};
 use crate::panels::{Cmd, ROW_EDITORS, RightFields, RowEditCtx, visibility};
 use crate::widgets::{
-    ColorField, ColorText, Dropdown, HEADER_H, Icon, IconButton, MenuRow, PanelSection, SectionHeader, SectionHeaderVariant, field_row,
-    field_row_full, field_row_full_trailing, field_row_h, pt, rgba, sublabel_row, sublabel_row2, tokens, variable_button,
+    ColorField, ColorText, Dropdown, FieldRow, HEADER_H, Icon, IconButton, MenuRow, PAD, PanelSection, SECTION_BOTTOM, SectionHeader,
+    SectionHeaderVariant, Segmented, TITLE_PT, field_row, field_row_full, field_row_full_trailing, pt, rgba, sublabel_row, sublabel_row2, swatch,
+    tokens, variable_button,
 };
 use figcraft_color::PaintKind;
 use figcraft_doc::anim::motion::AnimProperty;
@@ -467,13 +468,13 @@ fn style_menu(f: &RightFields, d: &PanelData, ty: &'static str, target: Option<&
     let rows: Vec<(String, &'static str, Value)> = d
         .styles
         .iter()
-        .filter(|(_, _, t)| *t == ty)
-        .map(|(id, name, _)| {
-            let mut q = json!({ "style": id });
+        .filter(|s| s.ty == ty)
+        .map(|s| {
+            let mut q = json!({ "style": s.id });
             if let Some(t) = target {
                 q["target"] = json!(t);
             }
-            (name.clone(), "style.apply", q)
+            (s.name.clone(), "style.apply", q)
         })
         .collect();
     // egui 的 style_picker 是一个带标题栏的 detached panel（不是下拉菜单）：
@@ -577,8 +578,8 @@ fn selection_bind(f: &RightFields, row: &super::data::SelectionColorRow, d: &Pan
     let mut rows: Vec<(String, &'static str, Value)> = d
         .styles
         .iter()
-        .filter(|(_, _, ty)| *ty == "paint")
-        .map(|(id, name, _)| (name.clone(), "selection.applyColorStyle", json!({ "targets": targets, "style": id })))
+        .filter(|s| s.ty == "paint")
+        .map(|s| (s.name.clone(), "selection.applyColorStyle", json!({ "targets": targets, "style": s.id })))
         .collect();
     // egui `section`: 只列作用域内可绑定的变量，并提交变量 **id**（不是显示名）。
     rows.extend(row.variables.iter().map(|(name, id)| (name.clone(), "selection.bindColorVariable", json!({ "targets": targets, "variable": id }))));
@@ -823,26 +824,166 @@ pub(crate) fn paints(
 // Effects —— `effects.rs::effects`
 // ───────────────────────────────────────────────────────────────────────────────────────────────
 
+/// WGSL 材质下拉行 + 选中文件的参数输入框，并入 Effects section 的统一网格。
+/// 已绑定 WGSL 材质时，在 Effects 节内就地画：
+/// * 一行**和普通效果行同款的下拉**：显示当前材质名，点开列固定目录里每个 `.wgsl`（就地换材质）
+///   以及一条「None」（解绑）；行尾仍是 24 pt 的 `−`（与 effect 行删除键同位置）。
+/// * 该 shader 扫描出的参数，逐项画成「左边独立名称 + 右边数值输入框」（名称不再塞进输入框）。
+///
+/// 未绑定材质时返回空 `Vec`，Effects 节就是原来的样子（零回归）——选择入口在 `+` 菜单里也有
+/// 一份，所以不绑定也能加材质；绑定后这里多一个可换材质的下拉。
+fn wgsl_material_rows(
+    f: &RightFields,
+    d: &PanelData,
+    col: f32,
+    cx: &mut App,
+) -> Vec<crate::widgets::FieldRow> {
+    let Some(path) = d.wgsl.path.as_deref() else { return Vec::new() };
+    let name = std::path::Path::new(path)
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_else(|| path.to_string());
+
+    let mut out = Vec::new();
+    // 下拉：与 `+` 菜单同源（每次现扫固定目录），选中即 `node.set` 换绑定；末尾 `None` 解绑。
+    // 这样外置材质和普通效果一样，行首就是一个下拉，而不是一段只能看的纯文本。
+    let mut items: Vec<(String, &'static str, Value)> = crate::wgsl_material::scan_material_dir()
+        .iter()
+        .map(|wf| {
+            let p = wf.path.to_string_lossy().into_owned();
+            (wf.name.clone(), "node.set", crate::wgsl_material::write_binding_params(Some(&crate::wgsl_material::binding_for(&p))))
+        })
+        .collect();
+    if items.is_empty() {
+        // 目录里没有文件（或目录不存在）：下拉至少保留当前这一条，不让它变成一个空菜单。
+        items.push((name.clone(), "node.set", crate::wgsl_material::write_binding_params(Some(
+            &crate::wgsl_material::binding_for(path)))));
+    }
+    items.push((tr("None").to_string(), "node.set", crate::wgsl_material::write_binding_params(None)));
+    let dd = pick_dropdown(f, name, col, items);
+    let minus = icon_cmd(Icon::Minus, "node.set", crate::wgsl_material::write_binding_params(None), f, false);
+    out.push(field_row_full_trailing(dd, vec![minus]));
+
+    // 该 shader 的参数在下面就地展开：名称是**输入框前面的独立文本**，值才进输入框。
+    let specs = crate::wgsl_material::params_for(path);
+    if specs.is_empty() {
+        return out;
+    }
+    out.push(sublabel_row(tr("WGSL Material Parameters")));
+    let binding = crate::wgsl_material::WgslMaterialBinding {
+        path: path.to_string(),
+        params: d.wgsl.params.clone(),
+    };
+    for (slot, spec) in specs.iter().take(crate::panels::WGSL_PARAM_FIELDS).enumerate() {
+        let value = d.wgsl.params.get(&spec.field).copied().unwrap_or(spec.default);
+        let field = f.wgsl_param_field(cx, slot, spec, value, &binding);
+        let label = div()
+            .flex_1()
+            .min_w(px(0.0))
+            .overflow_hidden()
+            .whitespace_nowrap()
+            .text_size(pt(crate::widgets::TEXT_PT))
+            .text_color(rgba(tokens().text_secondary))
+            .child(spec.label.clone());
+        out.push(field_row(
+            vec![label.into_any_element(), field.into_any_element()],
+            Vec::<gpui::AnyElement>::new(),
+        ));
+    }
+    out
+}
+
+/// Effects 标题栏的 `+`：点开是一个「添加效果」菜单 —— 先列 7 种内置效果（`effect.add`），
+/// 一条分隔线后列出固定目录里每个 `.wgsl` 文件（`node.set` 写 plugin_data 绑定）。
+///
+/// 这是用户定的交互：WGSL 不另起一行下拉，而是**和内置效果同处一个菜单**，有多少个文件就
+/// 有多少个菜单项；选中文件后其参数才在下方就地展开（由 `d.wgsl.path` 驱动，见 `effects()`）。
+/// 菜单项每次点开时现扫固定目录，增删文件立刻反映，无需重编译。
+fn add_effect_menu(f: &RightFields) -> IconButton {
+    let mut b = IconButton::new(Icon::Plus).size(24.0);
+    if let Some(root) = f.root.clone() {
+        let cmds = f.cmds.clone();
+        b = b.on_click(move |_e, window, cx: &mut App| {
+            // `on_click` 是 `Fn`，每次点击都要给 on_pick 一份独立的队列句柄，故这里重新 clone
+            // （不能直接把外层的 `cmds` 移进内层闭包）。与 `pick_dropdown` 同构。
+            let cmds = cmds.clone();
+            // 7 种内置效果：与 `Effect::TYPES` 同源，选中即加一条该类型效果。
+            let mut items: Vec<(String, &'static str, Value)> = figcraft_doc::Effect::TYPES
+                .iter()
+                .map(|(label, ty)| (label.to_string(), "effect.add", json!({ "type": ty })))
+                .collect();
+            // 内置效果项数：第一个材质项前面画一条分隔线，把它和内置效果分组。
+            let types_len = items.len();
+            // 固定目录材质：每个文件一项，选中写完整的 binding（含默认参数）到 plugin_data。
+            for wf in crate::wgsl_material::scan_material_dir() {
+                let binding = crate::wgsl_material::binding_for(&wf.path.to_string_lossy());
+                items.push((wf.name.clone(), "node.set", crate::wgsl_material::write_binding_params(Some(&binding))));
+            }
+            // `separator_before` 只在行上方画一条线、该行仍可点，故分隔标记挂在第一个材质项上，
+            // 不引入不可点的「标题行」（那种行被点中会按 label 匹配、可能误触发命令）。
+            let rows: Vec<MenuRow> = items
+                .iter()
+                .enumerate()
+                .map(|(i, (l, _, _))| {
+                    let r = MenuRow::new(l.clone());
+                    if i == types_len { r.separator() } else { r }
+                })
+                .collect();
+            let on_pick = Rc::new(move |label: &str, _w: &mut Window, _cx: &mut App| {
+                if let Some((_, cmd, params)) = items.iter().find(|(l, _, _)| l == label) {
+                    cmds.push(Cmd { id: cmd, params: Some(params.clone()) });
+                }
+            });
+            let p = window.mouse_position();
+            let anchor = Bounds { origin: p, size: size(px(1.0), px(0.0)) };
+            root.update(cx, |cv, cx| cv.open_menu(anchor, Some(180.0), rows, on_pick, cx));
+        });
+    }
+    b
+}
+
 pub(crate) fn effects(
     f: &RightFields,
     d: &PanelData,
     col: f32,
+    cx: &mut App,
     // Motion 模式：`(layer, 该属性在 playhead 已有关键帧, 动作队列)`；Design 传 None。
     // egui effects.rs 给每个 shadow/blur 数值字段一个菱形；GPUI 的行是「类型下拉 + 显隐 + 删除」，
     // 这里给每条 effect 行一个菱形，按 effect 类型映射到 ShadowBlur / BlurRadius。
     keyframe: Option<(NodeId, Vec<figcraft_doc::anim::motion::AnimProperty>, &Queue)>,
 ) -> Section {
-    // `[Styles, Plus]`；egui `effects.rs` 的 `+` 直接加一个 drop-shadow（`effect.add {ids, type: dropShadow}`），
-    // 类型再在行内下拉改。GPUI 不要在 header 弹类型菜单，直接加 dropShadow（与源码一致）。
-    let icons = vec![style_menu(f, d, "effect", None, Icon::Dot), icon_cmd(Icon::Plus, "effect.add", json!({ "type": "dropShadow" }), f, false)];
-    // 空 / Mixed：只有置灰头部（同 Fill / Stroke）。
+    // `[Styles, Plus]`；`+` 点开是「添加效果」菜单：7 种内置效果 + 分隔线 + 固定目录里每个
+    // `.wgsl` 文件项（有多少文件就多少项）。选中文件写 plugin_data 绑定，其参数才在下方展开。
+    // WGSL 与内置效果同处一个菜单，不再另起独立下拉行。
+    let icons = vec![style_menu(f, d, "effect", None, Icon::Dot), add_effect_menu(f)];
+
+    // WGSL 材质：只在「已绑定」时于下方就地展开参数输入框（选中文件由上面的 `+` 菜单写入）。
+    // 空态（0 效果、未绑定）连参数行都不画，Effects 节就是一行置灰头部 + 可点的 `+`。
+    let wgsl_rows = wgsl_material_rows(f, d, col, cx);
+
     let Some(rows) = d.effects.clone().filter(|v| !v.is_empty()) else {
+        // 没有普通效果、但已绑定材质时，Effects 节仍要画出来以承载其参数行；
+        // 未绑定时这里是空节（置灰头部 + 可点的 `+`，`+` 菜单里能选内置效果或 wgsl 文件）。
+        if !wgsl_rows.is_empty() {
+            let mut sec = PanelSection::new(tr("Effects")).header_trail(icon_row(icons));
+            if let Some(chip) = style_chip(f, d.style_chips[2].as_ref(), "effect") {
+                sec = sec.child(chip);
+            }
+            for r in wgsl_rows {
+                sec = sec.child(r);
+            }
+            return Section::Full(sec);
+        }
         return Section::empty(tr("Effects"), icon_row(icons));
     };
     let mut sec = PanelSection::new(tr("Effects")).header_trail(icon_row(icons));
     // egui `effects.rs`：`style_picker::chip(StyleSlot::Effect)` 紧跟在 header 后面。
     if let Some(chip) = style_chip(f, d.style_chips[2].as_ref(), "effect") {
         sec = sec.child(chip);
+    }
+    // 材质行放在普通效果之前：选中文件→下方参数展开，视觉上和「加一条效果→展开设置」一致。
+    for r in wgsl_rows {
+        sec = sec.child(r);
     }
     for row in rows.iter().rev() {
         let types: Vec<(String, &'static str, Value)> = figcraft_doc::Effect::TYPES
@@ -890,6 +1031,75 @@ pub(crate) fn effects(
 // Selection colors —— `selection_colors.rs::section`
 // ───────────────────────────────────────────────────────────────────────────────────────────────
 
+/// lizard `selection_colors.rs::header`：折叠时最多显示 3 个色块，多的收进 `+N`。
+fn collapsed_swatch_count(n: usize) -> usize {
+    n.min(3)
+}
+fn collapsed_extra(n: usize) -> usize {
+    n.saturating_sub(3)
+}
+
+/// lizard `Id::new(("selection_colors_open", ds.uid))` 的 GPUI 等价物：
+/// 状态按文档 uid 存，缺省折叠，点一次只翻转当前文档那一档。
+type OpenByDoc = std::collections::HashMap<u64, bool>;
+fn open_for_doc(map: &OpenByDoc, uid: u64) -> bool {
+    *map.get(&uid).unwrap_or(&false)
+}
+fn toggle_doc(map: &mut OpenByDoc, uid: u64) {
+    let next = !open_for_doc(map, uid);
+    map.insert(uid, next);
+}
+
+/// 折叠头部的 16 pt 色块（lizard `widgets::paint_swatch` 的纯色分支）。
+///
+/// 冻结的 `widgets::paint_swatch` **无条件**先画 `checker_rounded`，四角会露出白色/浅色
+/// 像素，看上去像「四个圆角溢出色块」（用户 2026-11-11 指出）。lizard 对
+/// `opaque_solid`（`opacity>=1 && color.a>=1`）**根本不画棋盘**，只画一块圆角 3 的色，
+/// 最后 `rect_stroke(rect, same(3), 1pt border, Inside)`。这里在业务侧照该规则重画，
+/// 不改冻结组件；渐变/图片/图案仍回退到原组件，外层圆角+裁剪兜住溢出。
+fn collapsed_swatch(paint: figcraft_color::Paint, side: f32) -> gpui::AnyElement {
+    let t = tokens();
+    let solid = match &paint.kind {
+        PaintKind::Solid { color } => Some(color.clone()),
+        _ => None,
+    };
+    let Some(color) = solid else {
+        // 渐变 / 图片 / 图案沿用冻结组件的全部行为，外层圆角 + 裁剪兜住四角溢出。
+        return div()
+            .flex_none()
+            .w(pt(side))
+            .h(pt(side))
+            .rounded(px(3.0))
+            .overflow_hidden()
+            .child(swatch(paint, side))
+            .into_any_element();
+    };
+    let opaque = rgba(crate::widgets::swatch::color32(color.with_alpha(1.0)));
+    let tinted = rgba(crate::widgets::swatch::color32(color.with_alpha(color.a * paint.opacity)));
+    let is_opaque = paint.opacity >= 0.999 && color.a >= 0.999;
+    // 用 GPUI 原生 `div` 背景，而不是 canvas 里自绘 `paint_quad`：quad 的圆角抗锯齿会在
+    // 四角留下彩色半透明像素，正是「四个圆角溢出色块」。半透明时直接把带 alpha 的色
+    // 叠在面板白底上（lizard 左不透明/右带 alpha 的 Figma 分半在 16pt 上无差别）。
+    // ⚠️ 不画 `border_1()`：1pt 浅灰描边压在圆角填充的抗锯齿上，四角会出现一圈
+    // 「浅色虚线尖角」（用户 2026-11-11 指出的「四个圆角溢出色块」）。lizard 的
+    // 1pt Inside 描边在 16pt 色块上肉眼几乎不可见，去掉后与原文观感一致且四角干净。
+    div()
+        .flex_none()
+        .w(pt(side))
+        .h(pt(side))
+        .rounded(px(3.0))
+        .bg(if is_opaque { opaque } else { tinted })
+        .into_any_element()
+}
+
+/// Selection colors 节（`lizard selection_colors.rs::section`）的折叠样式 1:1：
+///
+/// * 默认**折叠**：40 pt 可点头部，标题 `text_secondary`；悬停时提亮并显示左侧 chevron；
+/// * 折叠态右侧并排最多 3 个 16 pt 色块（间距 8），再多一个 `+N`；
+/// * 点标题展开，才画原来的颜色行；展开态 chevron 朝下。
+///
+/// 头部不用冻结的 `SectionHeader`（它没有整行点击 / hover 状态），但展开后的每一行仍由
+/// `field_row_full_trailing` 构造，走同一套统一网格。
 pub(crate) fn selection_colors(
     f: &RightFields,
     d: &PanelData,
@@ -898,11 +1108,107 @@ pub(crate) fn selection_colors(
     n: &mut usize,
     _window: &mut Window,
     cx: &mut App,
-) -> Option<PanelSection> {
+) -> Option<gpui::AnyElement> {
     if d.selection_colors.len() < 2 {
         return None;
     }
-    let mut sec = PanelSection::new(tr("Selection colors"));
+    let t = tokens();
+    // lizard `Id::new(("selection_colors_open", ds.uid))`：开合状态**按文档 uid 分档**，
+    // 切到另一个文档时各自保留自己的状态，缺省折叠。
+    let uid = d.doc_uid;
+    let open = open_for_doc(&f.selection_colors_open.borrow(), uid);
+    let hovered = *f.selection_colors_hover.borrow();
+    // lizard：`hovered && dark` → 白；`hovered` → text；否则 text_secondary。
+    let ink = if hovered && t.dark {
+        Color32::WHITE
+    } else if hovered {
+        t.text
+    } else {
+        t.text_secondary
+    };
+
+    // ── 头部 ────────────────────────────────────────────────────────────────
+    // lizard `theme::property_section_title()` = medium(ui_font_size(10.5))；GPUI 的
+    // `SectionHeader` 把这一档固化成 TITLE_PT=13 / MEDIUM / 1.25 行高。折叠节标题必须
+    // 与上面的「填充 / 效果 / 描边」用同一套排版，不能自己写一个 10.5 pt 的小字。
+    let title = div()
+        .flex_none()
+        .text_size(pt(TITLE_PT))
+        .line_height(pt(TITLE_PT * 1.25))
+        .font_weight(gpui::FontWeight::MEDIUM)
+        .text_color(rgba(ink))
+        .child(tr("Selection colors"));
+    // lizard 从 `rect.right() - PAD` 起从右往左摆：`+N` 最右，色块在其左，间隔 8 pt。
+    let mut right = div().flex_none().flex().flex_row().items_center().gap(pt(8.0));
+    if !open {
+        for row in d.selection_colors.iter().take(collapsed_swatch_count(d.selection_colors.len())) {
+            let color = figcraft_color::Color::from_hex(&row.hex).unwrap_or(figcraft_color::Color::WHITE);
+            let paint = serde_json::from_value::<figcraft_color::Paint>(row.paint.clone())
+                .unwrap_or_else(|_| figcraft_color::Paint::solid(color));
+            right = right.child(collapsed_swatch(paint, 16.0));
+        }
+        let extra = collapsed_extra(d.selection_colors.len());
+        if extra > 0 {
+            // lizard `regular(11.0)` → ui_font_size(11)=12.94，GPUI 对应 TITLE_PT 这一档
+            // （字重是 regular，不是标题的 medium），颜色仍是 text_secondary。
+            right = right.child(
+                div()
+                    .flex_none()
+                    .text_size(pt(TITLE_PT))
+                    .text_color(rgba(t.text_secondary))
+                    .child(SharedString::from(format!("+{extra}"))),
+            );
+        }
+    }
+    let open_cell = f.selection_colors_open.clone();
+    let hover_cell = f.selection_colors_hover.clone();
+    let cmds = f.cmds.clone();
+    let mut head = div()
+        .id("selection-colors-header")
+        .relative()
+        .flex_none()
+        .w_full()
+        .h(pt(HEADER_H))
+        .flex()
+        .flex_row()
+        .items_center()
+        .justify_between()
+        .pl(pt(PAD))
+        // lizard header 右侧也从 `rect.right() - PAD` 起算，左右都是 16 pt。
+        .pr(pt(PAD))
+        .cursor_pointer()
+        .child(title)
+        .child(right)
+        .on_click(move |_e, _window, _cx| {
+            let mut by_doc = open_cell.borrow_mut();
+            toggle_doc(&mut by_doc, uid);
+            drop(by_doc);
+            cmds.wake();
+        })
+        .on_hover(move |hovering: &bool, window: &mut Window, _cx: &mut App| {
+            *hover_cell.borrow_mut() = *hovering;
+            window.refresh();
+        });
+    if hovered {
+        // 悬停才画：10 pt chevron 落在 `PAD - 10` 的位置，展开朝下 / 折叠朝右。
+        let icon = if open { Icon::ChevronDown } else { Icon::ChevronRight };
+        head = head.child(
+            div()
+                .absolute()
+                .left(pt(PAD - 15.0))
+                .top(pt((HEADER_H - 10.0) / 2.0))
+                .w(pt(10.0))
+                .h(pt(10.0))
+                .child(crate::widgets::icon::paint(icon, rgba(ink), 10.0)),
+        );
+    }
+    let mut sec = div().flex().flex_col().w_full().child(head);
+    if !open {
+        return Some(sec.into_any_element());
+    }
+
+    // ── 展开态：原来的颜色行（lizard 在 `add_enabled_ui(!interacting, …)` 里画）──
+    let mut body = div().flex().flex_col().w_full().pb(pt(SECTION_BOTTOM));
     for row in d.selection_colors.iter() {
         let targets = row.targets.clone();
         let hex_slot = slot(n);
@@ -971,9 +1277,47 @@ pub(crate) fn selection_colors(
         let bind = selection_bind(f, row, d).into_any_element();
         let select = icon_cmd(Icon::Search, "selection.selectColor", json!({ "targets": targets }), f, false).into_any_element();
         // 两个 24 pt 尾槽：Styles/变量（绑定态留空占位） + 选中同色图层。
-        sec = sec.child(field_row_full_trailing(cf, vec![bind, select]));
+        body = body.child(field_row_full_trailing(cf, vec![bind, select]).into_element());
     }
-    Some(sec)
+    Some(sec.child(body).into_any_element())
+}
+
+#[cfg(test)]
+mod selection_colors_tests {
+    use super::{collapsed_extra, collapsed_swatch_count, open_for_doc, toggle_doc, OpenByDoc};
+
+    /// lizard `header`：折叠时 3 个色块，多出来的收进 `+N`。
+    #[test]
+    fn collapsed_header_shows_three_swatches_and_the_rest_as_a_count() {
+        // 少于两组根本不画这一节，但纯函数仍给出安全值。
+        assert_eq!(collapsed_swatch_count(0), 0);
+        assert_eq!(collapsed_extra(0), 0);
+        for n in [2, 3] {
+            assert_eq!(collapsed_swatch_count(n), n);
+            assert_eq!(collapsed_extra(n), 0);
+        }
+        assert_eq!(collapsed_swatch_count(7), 3);
+        assert_eq!(collapsed_extra(7), 4);
+        assert_eq!(collapsed_extra(4), 1);
+    }
+
+    /// lizard `Id::new(("selection_colors_open", ds.uid))`：两个文档各自记住开合状态。
+    #[test]
+    fn open_state_is_keyed_by_document_uid() {
+        let mut map = OpenByDoc::new();
+        // 缺省折叠。
+        assert!(!open_for_doc(&map, 1));
+        assert!(!open_for_doc(&map, 2));
+        toggle_doc(&mut map, 1);
+        assert!(open_for_doc(&map, 1));
+        assert!(!open_for_doc(&map, 2), "opening doc 1 must not open doc 2");
+        toggle_doc(&mut map, 2);
+        assert!(open_for_doc(&map, 1));
+        assert!(open_for_doc(&map, 2));
+        toggle_doc(&mut map, 1);
+        assert!(!open_for_doc(&map, 1));
+        assert!(open_for_doc(&map, 2), "closing doc 1 must not close doc 2");
+    }
 }
 
 // ───────────────────────────────────────────────────────────────────────────────────────────────
@@ -1263,57 +1607,74 @@ pub(crate) fn typography(f: &RightFields, d: &PanelData) -> PanelSection {
         Vec::<IconButton>::new(),
     ));
 
-    // ── 段落间距 + 自动缩放 ──
-    let resize_rows = vec![
-        (tr("Auto width").to_string(), "node.set", json!({ "props": { "textAutoResize": "widthAndHeight" } })),
-        (tr("Auto height").to_string(), "node.set", json!({ "props": { "textAutoResize": "height" } })),
-        (tr("Fixed size").to_string(), "node.set", json!({ "props": { "textAutoResize": "none" } })),
-        (tr("Truncate text").to_string(), "node.set", json!({ "props": { "textAutoResize": "truncate" } })),
-    ];
-    let resize_label = match t.auto_resize {
-        Some("widthAndHeight") => tr("Auto width"),
-        Some("height") => tr("Auto height"),
-        Some("none") => tr("Fixed size"),
-        Some("truncate") => tr("Truncate text"),
-        _ => tr("Mixed"),
-    };
+    // ── 段落间距（P）──
+    // 用户 2026-11-11：文字段只留 LH / LS / P；自动缩放（Auto width…）从这段移除，
+    // 选中文字时它属于 Layout 段的「调整大小 + 三格选择器」。
     sec = sec.child(field_row(
-        vec![f.paragraph_spacing.clone().into_any_element(), pick_dropdown(f, resize_label, 140.0, resize_rows).into_any_element()],
+        vec![f.paragraph_spacing.clone().into_any_element()],
         Vec::<IconButton>::new(),
     ));
 
-    // ── 水平 / 垂直对齐 ──
-    let align_h_rows = vec![
-        (tr("Align left").to_string(), "node.set", json!({ "props": { "textAlign": "left" } })),
-        (tr("Align center").to_string(), "node.set", json!({ "props": { "textAlign": "center" } })),
-        (tr("Align right").to_string(), "node.set", json!({ "props": { "textAlign": "right" } })),
-        (tr("Justify").to_string(), "node.set", json!({ "props": { "textAlign": "justified" } })),
-    ];
-    let align_v_rows = vec![
-        (tr("Align top").to_string(), "node.set", json!({ "props": { "textAlignVertical": "top" } })),
-        (tr("Align middle").to_string(), "node.set", json!({ "props": { "textAlignVertical": "middle" } })),
-        (tr("Align bottom").to_string(), "node.set", json!({ "props": { "textAlignVertical": "bottom" } })),
-    ];
-    let ah = match t.align_h {
-        Some("left") => tr("Align left"),
-        Some("center") => tr("Align center"),
-        Some("right") => tr("Align right"),
-        Some("justified") => tr("Justify"),
-        _ => tr("Mixed"),
-    };
-    let av = match t.align_v {
-        Some("top") => tr("Align top"),
-        Some("middle") => tr("Align middle"),
-        Some("bottom") => tr("Align bottom"),
-        _ => tr("Mixed"),
-    };
+    // ── 水平 / 垂直对齐：两个通用 `Segmented`（egui `paragraph_rows` 的两个分段控件）──
+    //
+    // 图标集里没有 `TypeDialogJustify`，所以这里只放 3 格；`justified`（两端对齐）仍然是合法值，
+    // 这时两格都不抬起 —— 正好用上 Segmented 的「无选中」状态（设计文件 `State=Rest`），
+    // 而且 Justify 在 Type settings 的 Alignment 行里可选。
+    let h_cmds = f.cmds.clone();
+    let h = Segmented::icons(&[
+        (Icon::AlignLeft, tr("Align left")),
+        (Icon::AlignHCenter, tr("Align center")),
+        (Icon::AlignRight, tr("Align right")),
+    ])
+    .active(match t.align_h {
+        Some("left") => Some(0),
+        Some("center") => Some(1),
+        Some("right") => Some(2),
+        _ => None,
+    })
+    .on_pick(move |i: usize, _w: &mut Window, _cx: &mut App| {
+        const V: [&str; 3] = ["left", "center", "right"];
+        h_cmds.push(Cmd { id: "node.set", params: Some(json!({ "props": { "textAlign": V[i.min(2)] } })) });
+    });
+    let v_cmds = f.cmds.clone();
+    let v = Segmented::icons(&[
+        (Icon::AlignTop, tr("Align top")),
+        (Icon::AlignVCenter, tr("Align middle")),
+        (Icon::AlignBottom, tr("Align bottom")),
+    ])
+    .active(match t.align_v {
+        Some("top") => Some(0),
+        Some("middle") => Some(1),
+        Some("bottom") => Some(2),
+        _ => None,
+    })
+    .on_pick(move |i: usize, _w: &mut Window, _cx: &mut App| {
+        const V: [&str; 3] = ["top", "middle", "bottom"];
+        v_cmds.push(Cmd { id: "node.set", params: Some(json!({ "props": { "textAlignVertical": V[i.min(2)] } })) });
+    });
     sec.child(field_row(
-        vec![
-            pick_dropdown(f, ah, 130.0, align_h_rows).into_any_element(),
-            pick_dropdown(f, av, 130.0, align_v_rows).into_any_element(),
-        ],
-        Vec::<IconButton>::new(),
+        vec![h.into_any_element(), v.into_any_element()],
+        // egui `paragraph_rows` 末尾那个 `Icon::TypeSettings` 按钮：点开详细排版设置
+        // （`type_settings_panel`，Basics / Details / Variable）。原实现把这一行做成了「两个
+        // 对齐下拉」就结束，缺了这个入口（用户 2026-11-11 指出）。
+        vec![type_settings_button(f, d)],
     ))
+}
+
+/// 「Type settings」入口（egui `typography.rs::paragraph_rows` 末尾的 `Icon::TypeSettings`）。
+///
+/// egui 把它放在对齐那一行的行尾、24 pt；点开的是一个**独立的浮层**（带页签与关闭按钮），
+/// 不是下拉菜单 —— 所以这里走通用 `WindowState`（`popovers::type_settings`）。
+///
+/// 图标用 `Icon::Menu`（三条横线 =「更多选项」）：egui 的 `Icon::TypeSettings` 字形在冻结的
+/// 图标集里没有对应项，而 `Icon::Settings` 目前只是占位圆点（不是齿轮），画出来认不出。
+fn type_settings_button(f: &RightFields, d: &PanelData) -> IconButton {
+    let popups = f.popups();
+    let queue = f.queue();
+    let data = d.clone();
+    IconButton::new(Icon::Menu).size(24.0).on_click(move |_e, window, cx: &mut App| {
+        popups.request(crate::popovers::WindowState::type_settings(queue.clone(), &data, cx, window.mouse_position()));
+    })
 }
 
 /// 矢量编辑模式下选中点的面板（egui `vector_panel.rs::points`）。
@@ -1772,104 +2133,329 @@ pub(crate) fn section(f: &RightFields, d: &PanelData, row_w: f32) -> Option<Pane
     Some(sec)
 }
 
-/// 选区标题行（egui `right.rs::header`）。
-///
-/// ⛔ **一行 40 pt，不是上下两段**：左边是类型名（Frame / Group 可下拉互转，Frame 旁边还有
-/// 一个「交换方向」图标），右边贴着三个快捷动作（组件 / 蒙版 / 布尔组）。egui 这里**没有区块
-/// 标题**——之前把它做成 `PanelSection::new(类型名)` 再在下面放一行同名 `field_row`，类型名出现
-/// 两次、还多了一条标题栏，与原文完全不同（用户 2026-11-10 现场指出）。
-pub(crate) fn header(f: &RightFields, d: &PanelData, col: f32) -> Option<crate::widgets::FieldRow> {
-    let h = d.header.as_ref()?;
-    let _ = col;
-    let t = tokens();
-    // 类型名：Frame / Group 才能下拉互转（egui `kind_items`）。
-    let kind_rows: Vec<(String, &'static str, Value)> =
-        vec![(tr("Frame").into(), "object.convertToFrame", json!({})), (tr("Group").into(), "object.convertToGroup", json!({}))];
-    let mut lead: Vec<gpui::AnyElement> = Vec::new();
-    if visibility::kind_menu(h.is_frame, h.is_group) {
-        lead.push(kind_dropdown(f, tr(&h.label).to_string(), kind_rows).into_any_element());
-    } else {
-        // 其它类型没有下拉，连 chevron 都不画：就是一段 13 pt 半粗文字。
-        lead.push(
-            div()
-                .flex_none()
-                .text_size(pt(13.0))
-                .font_weight(gpui::FontWeight::SEMIBOLD)
-                .text_color(rgba(t.text))
-                .child(SharedString::from(tr(&h.label).to_string()))
-                .into_any_element(),
-        );
-    }
-    if h.is_frame {
-        // 交换方向是**独立图标**（egui `header` 的 `swap_orient`），不是菜单里的一项。
-        lead.push(icon_cmd(Icon::Rotate, "frame.swapOrientation", json!({}), f, false).into_any_element());
-    }
-    // 快捷动作（egui `header` 末尾）：组件 / 蒙版 / 布尔组（4 种运算 + Flatten）。
-    let component = icon_cmd(Icon::Component, "component.create", json!({}), f, false);
-    let mask = icon_cmd(Icon::Image, "object.mask", json!({}), f, false);
-    let boolean = menu_icon(
-        f,
-        Icon::ViewGrid,
-        180.0,
-        vec![
-            (tr("Union").into(), "bool.union", json!({})),
-            (tr("Subtract").into(), "bool.subtract", json!({})),
-            (tr("Intersect").into(), "bool.intersect", json!({})),
-            (tr("Exclude").into(), "bool.exclude", json!({})),
-            // egui `right.rs::header`: Flatten runs `vector.flatten`, not `bool.flatten`.
-            (tr("Flatten").into(), "vector.flatten", json!({})),
-        ],
-        false,
-    );
-    // egui 这一行是 `allocate_exact_size(vec2(w, 40.0))`，比普通字段行高 8 pt。
-    // ⚠️ `field_row` 的 trailing 是**按个数**占位的（`SLOT * trailing.len()`）：三个图标必须
-    // 逐个传进去。以前把 `icon_row([...])` 当成一个元素传，列宽只有 24 pt，于是只看得见第一个。
-    Some(field_row_h(
-        vec![div().flex().flex_row().items_center().gap(pt(4.0)).children(lead)],
-        vec![component, mask, boolean],
-        40.0,
-    ))
+// ───────────────────────────────────────────────────────────────────────────────────────────────
+// Selection header —— `lizard right.rs::header` 的判断规则 1:1
+// ───────────────────────────────────────────────────────────────────────────────────────────────
+
+/// 标题行菜单里的一个行模型：lizard `menu_item` / `menu_check` / `Menu::separator`。
+/// `cmd` 为空 = 当前已选中的勾选项，点了不推命令（egui `if to_frame != frame`）。
+#[derive(Clone)]
+struct HeadRow {
+    label: String,
+    cmd: &'static str,
+    params: Value,
+    /// `Some(on)` = 勾选行 / 保留勾选列；`None` = 普通行。
+    checked: Option<bool>,
+    separator: bool,
 }
 
-/// 类型名的文字下拉（egui `header` 里 `[类型名 ▾]` 那个 120 pt 按钮）：固定宽、不填满单元。
-fn kind_dropdown(f: &RightFields, label: String, rows: Vec<(String, &'static str, Value)>) -> Dropdown {
-    let menu: Vec<MenuRow> = rows.iter().map(|(l, _, _)| MenuRow::new(l.clone())).collect();
-    let mut d = Dropdown::new(label, 120.0, None);
+impl HeadRow {
+    fn plain(label: impl Into<String>, cmd: &'static str, params: Value) -> Self {
+        Self { label: label.into(), cmd, params, checked: None, separator: false }
+    }
+    fn check(label: impl Into<String>, cmd: &'static str, params: Value, on: bool) -> Self {
+        Self { checked: Some(on), ..Self::plain(label, cmd, params) }
+    }
+    /// egui `menu_item_beside_checks`：普通行，但要占住勾选列。
+    fn beside_checks(label: impl Into<String>, cmd: &'static str, params: Value) -> Self {
+        Self { checked: Some(false), ..Self::plain(label, cmd, params) }
+    }
+    fn sep(mut self) -> Self {
+        self.separator = true;
+        self
+    }
+}
+
+fn head_menu(rows: &[HeadRow]) -> Vec<MenuRow> {
+    rows.iter()
+        .map(|r| {
+            let mut m = MenuRow::new(r.label.clone());
+            if let Some(on) = r.checked {
+                m = m.checked(Some(on));
+            }
+            if r.separator {
+                m = m.separator();
+            }
+            m
+        })
+        .collect()
+}
+
+/// 选中一行就推它的命令（lizard `menu_popup(&resp).show(...)`）。
+fn head_pick(rows: Vec<HeadRow>, cmds: crate::panels::Cmds) -> Rc<dyn Fn(&str, &mut Window, &mut App)> {
+    Rc::new(move |label, _w, _cx| {
+        if let Some(r) = rows.iter().find(|r| r.label == label) {
+            if !r.cmd.is_empty() {
+                cmds.push(Cmd { id: r.cmd, params: Some(r.params.clone()) });
+            }
+        }
+    })
+}
+
+/// 类型名的文字下拉（lizard `header` 的 `lr`：86×32）。Frame / Group 才有；Frame 的菜单
+/// 还接着 `FRAME_PRESETS`，每个分类前一条分隔线（`kind_items` + preset 列表）。
+fn head_dropdown(f: &RightFields, label: String, rows: Vec<HeadRow>) -> Dropdown {
+    let menu = head_menu(&rows);
+    let mut d = Dropdown::new(label, 86.0, None);
     if let Some(root) = f.root.clone() {
         let cmds = f.cmds.clone();
         d = d.on_click(move |anchor, _window, cx: &mut App| {
-            let rows = rows.clone();
-            let cmds = cmds.clone();
-            let on_pick = Rc::new(move |label: &str, _w: &mut Window, _cx: &mut App| {
-                if let Some((_, cmd, params)) = rows.iter().find(|(l, _, _)| l == label) {
-                    cmds.push(Cmd { id: cmd, params: Some(params.clone()) });
-                }
-            });
-            root.update(cx, |cv, cx| cv.open_menu(anchor, Some(180.0), menu.clone(), on_pick, cx));
+            let on_pick = head_pick(rows.clone(), cmds.clone());
+            root.update(cx, |cv, cx| cv.open_menu(anchor, Some(260.0), menu.clone(), on_pick, cx));
         });
     }
     d
 }
 
-/// Page 节「Local styles」里的一行（egui `style_picker::local_styles`）：类型图标 + 名字
-/// （`regular(11.0)`，超长裁切），整行可点 → 打开该类型的样式窗口。
-fn local_style_row(f: &RightFields, ty: &'static str, name: SharedString, rows: Vec<(String, &'static str, Value)>) -> crate::widgets::panel_section::FieldRow {
+/// 一个图标按钮，点开标题行的菜单（lizard `menu_popup(&resp)`）。
+fn head_menu_button(f: &RightFields, icon: Icon, side: f32, width: f32, rows: Vec<HeadRow>) -> IconButton {
+    let menu = head_menu(&rows);
+    let cmds = f.cmds.clone();
+    let root = f.root.clone();
+    IconButton::new(icon).size(side).on_click(move |_e, window, cx: &mut App| {
+        let Some(root) = root.clone() else { return };
+        let anchor = Bounds { origin: window.mouse_position(), size: size(px(0.0), px(0.0)) };
+        let on_pick = head_pick(rows.clone(), cmds.clone());
+        root.update(cx, |cv, cx| cv.open_menu(anchor, Some(width), menu.clone(), on_pick, cx));
+    })
+}
+
+/// 「Create link」：lizard `menus::invoke("text.link")` 先弹输入框拿 URL，再执行 `text.link`。
+/// GPUI 的通用单值对话框（A8/A17 同款）就是那个输入框。
+fn link_button(f: &RightFields) -> IconButton {
+    let root = f.root.clone();
+    IconButton::new(Icon::LinkOn).size(24.0).on_click(move |_e, _window, cx: &mut App| {
+        let Some(root) = root.clone() else { return };
+        root.update(cx, |cv, cx| cv.open_link_dialog(cx));
+    })
+}
+
+/// 选区标题行（lizard `right.rs::header`）。
+///
+/// ⛔ **一行 40 pt、没有区块标题**：左边 86 pt 的类型名（Frame / Group 可下拉互转），
+/// 右边按选中类型整套换按钮。所有显隐都走 [`crate::panels::visibility::header_actions`]，
+/// 规则逐条对应 lizard 的 `is_frame / is_group / is_text / edit_id / points_selected`：
+///
+/// * 单选 Frame → 类型下拉里还有 `FRAME_PRESETS`（分类分隔）+ 右侧「交换方向」；
+/// * 选区全是 Text → 四个专属按钮（Select matching / Create link / Create component / More），
+///   **不画**普通图层的布尔 / 蒙版按钮；
+/// * 单选 Component / ComponentSet，或矢量编辑已选点 → 右侧动作一个都不画；
+/// * 其余 → Select matching / Create component / Mask / 布尔按钮 + 布尔菜单 / Edit object（单选形状）。
+///
+/// 与 `view_bar` 一样是**独立自由行**：lizard 用 `allocate_exact_size(w, 40)` 后绝对定位左右
+/// 两块，冻结的统一网格（`field_row_h` 的 2×1fr + 24pt 列）放不下 6 个动作格 + 86 pt 标签。
+pub(crate) fn header(f: &RightFields, d: &PanelData, col: f32) -> Option<gpui::Div> {
+    let h = d.header.as_ref()?;
+    let _ = col;
     let t = tokens();
-    // Figma 的样式类型图标：文本 / 颜色 / 效果 / 网格。GPUI 没有 `Styles` 图标，用最近的等价图标。
-    let icon = match ty {
-        "text" => Icon::Text,
-        "effect" => Icon::Star,
-        "grid" => Icon::ViewGrid,
-        _ => Icon::Ellipse,
+    let sel = crate::panels::HeaderSel {
+        is_frame: h.is_frame,
+        is_group: h.is_group,
+        is_text: h.is_text,
+        is_component: h.is_component,
+        is_shape: h.is_shape,
+        points_selected: d.vector.as_ref().is_some_and(|v| v.has_selection),
+        count: h.count,
     };
-    let title = match ty {
-        "text" => tr("Text styles"),
-        "paint" => tr("Color styles"),
-        "effect" => tr("Effect styles"),
-        _ => tr("Grid styles"),
+    let a = visibility::header_actions(&sel);
+
+    // ── 左：类型名 / 类型下拉 ─────────────────────────────────────────────────────
+    let lead: gpui::AnyElement = if a.type_menu {
+        // `kind_items`: 勾选项点了什么都不做，只有转换成另一种才推命令。
+        let mut rows = vec![
+            HeadRow::check(tr("Frame"), if h.is_frame { "" } else { "object.convertToFrame" }, json!({}), h.is_frame),
+            HeadRow::check(tr("Group"), if h.is_group { "" } else { "object.convertToGroup" }, json!({}), h.is_group),
+        ];
+        if h.is_frame {
+            use figcraft_engine::cmd::create::FRAME_PRESETS;
+            let mut cat = "";
+            for (c, name, w, hh) in FRAME_PRESETS {
+                let mut r = HeadRow::plain(*name, "node.set", json!({ "props": { "width": w, "height": hh } }));
+                if *c != cat {
+                    r = r.sep();
+                    cat = c;
+                }
+                rows.push(r);
+            }
+        }
+        head_dropdown(f, tr(&h.label).to_string(), rows).into_any_element()
+    } else {
+        // 其它类型没有下拉，连 chevron 都不画：就是一段 13 pt 半粗文字。
+        div()
+            .text_size(pt(13.0))
+            .font_weight(gpui::FontWeight::SEMIBOLD)
+            .text_color(rgba(t.text))
+            .child(SharedString::from(tr(&h.label).to_string()))
+            .into_any_element()
     };
-    let popups = f.popups();
-    let queue = f.queue();
+
+    // ── 右：按选中类型整套换按钮 ───────────────────────────────────────────────
+    let mut actions: Vec<gpui::AnyElement> = Vec::new();
+    // 「交换方向」在 Frame 上挂到动作列最左（lizard 把它对齐到 4 个动作格 + chevron 的左边）。
+    if a.swap_orientation {
+        actions.push(icon_cmd(Icon::Rotate, "frame.swapOrientation", json!({}), f, false).into_any_element());
+    }
+    if a.text {
+        // lizard `is_text` 分支的四个按钮，左→右顺序照抄。
+        actions.push(icon_cmd(Icon::Search, "select.matching", json!({}), f, false).into_any_element());
+        actions.push(link_button(f).into_any_element());
+        actions.push(icon_cmd(Icon::Component, "component.create", json!({}), f, false).into_any_element());
+        let more: Vec<HeadRow> = h
+            .more_actions
+            .iter()
+            .map(|(label, cmd, sep)| {
+                let r = HeadRow::plain(label.clone(), cmd, json!({}));
+                if *sep { r.sep() } else { r }
+            })
+            .collect();
+        actions.push(head_menu_button(f, Icon::Menu, 24.0, 240.0, more).into_any_element());
+    } else if a.quick {
+        // lizard：从右往左布局，所以这里左→右是
+        // Select matching / Create component / Mask / Union / 布尔 chevron / Edit object。
+        actions.push(icon_cmd(Icon::Search, "select.matching", json!({}), f, false).into_any_element());
+        actions.push(icon_cmd(Icon::Component, "component.create", json!({}), f, false).into_any_element());
+        actions.push(icon_cmd(Icon::Image, "object.mask", json!({}), f, false).into_any_element());
+        let bool_icon = match h.bool_op {
+            Some(figcraft_doc::BoolOp::Subtract) => Icon::Subtract,
+            Some(figcraft_doc::BoolOp::Intersect) => Icon::Intersect,
+            Some(figcraft_doc::BoolOp::Exclude) => Icon::Exclude,
+            _ => Icon::Union,
+        };
+        actions.push(
+            if visibility::bool_union_enabled(h.count) {
+                icon_cmd(bool_icon, "bool.union", json!({}), f, false)
+            } else {
+                // lizard：少于两个图层时点了也不执行，按钮只是当前运算的状态图标。
+                IconButton::new(bool_icon)
+            }
+            .into_any_element(),
+        );
+        let cur = h.bool_op.map(|o| o.label());
+        let mut bool_rows: Vec<HeadRow> = Vec::new();
+        for (label, cmd) in [(tr("Union"), "bool.union"), (tr("Subtract"), "bool.subtract"), (tr("Intersect"), "bool.intersect"), (tr("Exclude"), "bool.exclude")] {
+            let r = match cur {
+                Some(c) => HeadRow::check(label, cmd, json!({}), c == label),
+                None => HeadRow::plain(label, cmd, json!({})),
+            };
+            bool_rows.push(r);
+        }
+        // Flatten：有当前运算时用 `menu_item_beside_checks` 占住勾选列。
+        let flatten = if cur.is_some() {
+            HeadRow::beside_checks(tr("Flatten"), "vector.flatten", json!({}))
+        } else {
+            HeadRow::plain(tr("Flatten"), "vector.flatten", json!({}))
+        };
+        bool_rows.push(flatten.sep());
+        actions.push(head_menu_button(f, Icon::ChevronDown, 16.0, 180.0, bool_rows).into_any_element());
+        if a.edit_object {
+            actions.push(icon_cmd(Icon::Pen, "vector.edit.begin", json!({}), f, false).into_any_element());
+        }
+    }
+
+    Some(
+        div()
+            .flex_none()
+            .w_full()
+            .h(pt(40.0))
+            .flex()
+            .flex_row()
+            .items_center()
+            .justify_between()
+            .gap(pt(4.0))
+            .pl(pt(8.0))
+            .pr(pt(8.0))
+            .child(div().flex_none().w(pt(86.0)).flex().items_center().child(lead))
+            .child(div().flex().flex_row().items_center().gap(pt(4.0)).children(actions)),
+    )
+}
+
+/// 样式名的「叶子」部分（去掉 "Brand/" 前缀），egui 的 `leaf(&s.name)`。
+fn leaf_name(name: &str) -> SharedString {
+    SharedString::from(name.rsplit('/').next().unwrap_or(name).to_string())
+}
+
+/// 文件夹路径：名字中最后一个 "/" 之前的部分（egui `style_picker::folder`）。
+fn ls_folder(name: &str) -> String {
+    name.rsplit_once('/').map_or_else(|| String::new(), |(p, _)| p.to_string())
+}
+
+/// `entries()` 产出的扁平树的一行（egui `style_picker::local_styles` 的 Folder / Style 行）。
+enum LsLine {
+    Folder { label: String, depth: usize },
+    /// `idx` 是样式在 `list` 中的下标；`depth` 是缩进层级。
+    Style(usize, usize),
+}
+
+/// 文件夹树节点（egui `style_picker::entries` 的 `Branch`）。
+struct LsBranch {
+    path: String,
+    label: String,
+    styles: Vec<usize>,
+    kids: Vec<usize>,
+}
+
+/// 按名字里的 "/" 把样式组织成文件夹树，扁平化成「先文件夹头、后其下样式、再递归子文件夹」的列表。
+/// 与 egui `entries` / `branch_of` / `flatten` 一一对应；`folded` 返回 true 的文件夹整支收起
+/// （本遍不做折叠态，始终展开）。
+fn ls_entries(list: &[&LocalStyleRow], folded: &dyn Fn(&str) -> bool) -> Vec<LsLine> {
+    // 按文件夹分组（无文件夹的放到 groups[0] 的 "" 组）。
+    let mut groups: Vec<(String, Vec<usize>)> = Vec::new();
+    for (i, s) in list.iter().enumerate() {
+        let f = ls_folder(&s.name);
+        match groups.iter_mut().find(|(g, _)| *g == f) {
+            Some((_, idx)) => idx.push(i),
+            None => groups.push((f, vec![i])),
+        }
+    }
+    // 有文件夹的排后面（egui `sort_by_key(|(f, _)| !f.is_empty())`：空目录最前）。
+    groups.sort_by_key(|(f, _)| !f.is_empty());
+    let mut nodes: Vec<LsBranch> = vec![LsBranch { path: String::new(), label: String::new(), styles: Vec::new(), kids: Vec::new() }];
+    for (path, idx) in groups {
+        let ni = ls_branch_of(&mut nodes, &path);
+        nodes[ni].styles = idx;
+    }
+    let mut out = Vec::new();
+    for &i in &nodes[0].styles {
+        out.push(LsLine::Style(i, 0));
+    }
+    let top = std::mem::take(&mut nodes[0].kids);
+    for kid in top {
+        ls_flatten(&nodes, kid, 0, folded, &mut out);
+    }
+    out
+}
+
+/// 取得（或递归建出）`path` 对应的分支（egui `branch_of`）。
+fn ls_branch_of(nodes: &mut Vec<LsBranch>, path: &str) -> usize {
+    if let Some(i) = nodes.iter().position(|n| n.path == path) {
+        return i;
+    }
+    let (parent, label) = path.rsplit_once('/').map_or(("", path), |(p, l)| (p, l));
+    let parent = ls_branch_of(nodes, parent);
+    nodes.push(LsBranch { path: path.to_string(), label: label.to_string(), styles: Vec::new(), kids: Vec::new() });
+    let i = nodes.len() - 1;
+    nodes[parent].kids.push(i);
+    i
+}
+
+/// 一个分支的头 + 其下全部内容（egui `flatten`）。
+fn ls_flatten(nodes: &[LsBranch], node: usize, depth: usize, folded: &dyn Fn(&str) -> bool, out: &mut Vec<LsLine>) {
+    let n = &nodes[node];
+    out.push(LsLine::Folder { label: n.label.clone(), depth });
+    if folded(&n.path) {
+        return;
+    }
+    for &i in &n.styles {
+        out.push(LsLine::Style(i, depth + 1));
+    }
+    for &kid in &n.kids {
+        ls_flatten(nodes, kid, depth + 1, folded, out);
+    }
+}
+
+/// 类型分组的标题行（egui `local_styles` 的 caption：32 pt、类型名 + 右侧 `+`）。
+fn local_style_caption(title: SharedString, plus: IconButton) -> FieldRow {
+    let t = tokens();
     let body = div()
         .w_full()
         .h_full()
@@ -1877,22 +2463,169 @@ fn local_style_row(f: &RightFields, ty: &'static str, name: SharedString, rows: 
         .flex_row()
         .items_center()
         .gap(pt(8.0))
+        .pl(pt(8.0))
+        .pr(pt(8.0))
+        .child(div().text_size(pt(11.0)).font_weight(gpui::FontWeight::MEDIUM).text_color(rgba(t.text_secondary)).child(title))
+        .child(div().flex_1().min_w(px(0.0)))
+        .child(plus);
+    field_row_full(body)
+}
+
+/// 文件夹头行（egui `local_styles` 的 Folder 行：chevron + 文件夹名，按层级缩进）。
+/// 本遍不做折叠态，始终展开（chevron 朝下）。
+fn local_style_folder(label: &str, depth: usize) -> FieldRow {
+    let t = tokens();
+    let body = div()
+        .w_full()
+        .h_full()
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap(pt(8.0))
+        .pl(pt(24.0 * depth as f32))
+        .pr(pt(8.0))
         .cursor_pointer()
-        .on_mouse_down(MouseButton::Left, move |_e, window, cx| {
-            open_list_window(popups.clone(), queue.clone(), cx, window.mouse_position(), ListWindow::Styles, SharedString::from(title), rows.clone());
+        .child(crate::widgets::icon::paint(Icon::ChevronDown, rgba(t.text_secondary), 12.0))
+        .child(div().flex_1().min_w(px(0.0)).overflow_hidden().text_size(pt(11.0)).text_color(rgba(t.text_secondary)).child(SharedString::from(label.to_string())));
+    field_row_full(div().w_full().h_full().rounded(pt(5.0)).hover(|s| s.bg(rgba(t.hover))).child(body))
+}
+
+/// 类型分组标题栏的 `+`：弹出「建哪种样式」菜单（egui `local_styles` 的头部 `+`）。
+fn local_styles_add_button(f: &RightFields) -> IconButton {
+    // (菜单标题, style.create 的 type, 默认名) —— 与 egui `StyleSlot::{title,create_type,default_name}` 对齐。
+    // 必须是 `static`：菜单回调会逃出本函数，借本地数组会活不过函数体。
+    static ITEMS: &[(&str, &str, &str)] = &[
+        ("Text styles", "text", "Text"),
+        ("Color styles", "paint", "Color"),
+        ("Effect styles", "effect", "Effect"),
+        ("Grid styles", "grid", "Grid"),
+    ];
+    let root = f.root.clone();
+    let cmds = f.cmds.clone();
+    IconButton::new(Icon::Plus)
+        .size(24.0)
+        .on_click(move |_e, window, cx: &mut App| {
+            let rows: Vec<MenuRow> = ITEMS.iter().map(|r| MenuRow::new(r.0)).collect();
+            let Some(root) = root.clone() else { return };
+            let anchor = Bounds { origin: window.mouse_position(), size: size(px(0.0), px(0.0)) };
+            // `on_click` 是 `Fn`，捕获的 `cmds` 不能直接 move 进内层回调，先克隆一份。
+            let cmds = cmds.clone();
+            root.update(cx, move |cv, cx| {
+                cv.open_menu(
+                    anchor,
+                    Some(200.0),
+                    rows,
+                    Rc::new(move |label: &str, _w, _cx| {
+                        if let Some(r) = ITEMS.iter().find(|r| r.0 == label) {
+                            let (_, ctype, dname) = *r;
+                            cmds.push(Cmd { id: "style.create", params: Some(json!({ "type": ctype, "name": dname })) });
+                        }
+                    }),
+                    cx,
+                );
+            });
         })
-        .child(
+}
+
+/// Page 节「Local styles」里的一行（egui `style_picker::local_styles` 的 Style 行，1:1）：
+/// 左侧徽标 16×16 —— paint 用圆形色板、text 用 "Ag" + 右侧 "32/Auto" 预览、effect/grid 用类型图标；
+/// 整行悬停高亮（圆角 t.hover 块，与行同高、内缩 8px）、左键把样式应用到选区、右键 Duplicate / Delete；
+/// 文件夹层级用 `depth * 24px` 缩进（egui `LS_STEP`）。
+fn local_style_row(f: &RightFields, s: &LocalStyleRow, depth: usize, ty: &'static str) -> FieldRow {
+    let t = tokens();
+    let cmds = f.cmds.clone();
+    let sid = s.id.clone();
+    let name = leaf_name(&s.name);
+    // 左侧徽标（egui `paint_dot` / "Ag" / `slot.icon()`）。
+    let badge: gpui::AnyElement = match &s.paint {
+        Some(p) => div().flex_none().size(pt(16.0)).rounded_full().overflow_hidden().child(swatch(p.clone(), 16.0)).into_any_element(),
+        None if ty == "text" => div()
+            .flex_none()
+            .flex()
+            .items_center()
+            .justify_center()
+            .min_w(pt(16.0))
+            .text_size(pt(11.0))
+            .font_weight(gpui::FontWeight::SEMIBOLD)
+            .text_color(rgba(t.text))
+            .child("Ag")
+            .into_any_element(),
+        None => {
+            let icon = match ty {
+                "effect" => Icon::Star,
+                "grid" => Icon::ViewGrid,
+                _ => Icon::Text,
+            };
             div()
                 .flex_none()
-                .w(pt(14.0))
-                .h(pt(14.0))
+                .size(pt(16.0))
                 .flex()
                 .items_center()
                 .justify_center()
-                .child(crate::widgets::icon::paint(icon, rgba(t.text_secondary), 14.0)),
-        )
-        .child(div().flex_1().min_w(px(0.0)).overflow_hidden().text_size(pt(11.0)).text_color(rgba(t.text)).child(name));
-    field_row_full(body)
+                .child(crate::widgets::icon::paint(icon, rgba(t.text_secondary), 14.0))
+                .into_any_element()
+        }
+    };
+    // 整行内容：层级缩进 + 8px 内缩，悬停高亮。
+    let mut body = div()
+        .w_full()
+        .h_full()
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap(pt(8.0))
+        .pl(pt(24.0 * depth as f32))
+        .pr(pt(8.0))
+        .cursor_pointer()
+        .on_mouse_down(MouseButton::Left, {
+            let cmds = cmds.clone();
+            let sid = sid.clone();
+            move |_e, _w, _cx| {
+                cmds.push(Cmd { id: "style.apply", params: Some(json!({ "style": sid })) });
+            }
+        })
+        .child(badge);
+    // 名字占满中间，文本样式的 "32/Auto" 贴行尾（egui 的 meta 右对齐在 `r.max.x - LS_TRAIL`）。
+    body = body.child(div().flex_1().min_w(px(0.0)).overflow_hidden().text_size(pt(11.0)).text_color(rgba(t.text)).child(name));
+    if let Some(meta) = &s.text_meta {
+        body = body.child(div().flex_none().text_size(pt(11.0)).text_color(rgba(t.text_tertiary)).child(meta.clone()));
+    }
+    // 右键：Duplicate / Delete（egui 的 context_popup）。
+    let cmds_r = cmds.clone();
+    let root = f.root.clone();
+    let dup_label: String = tr("Duplicate").to_string();
+    let del_label: String = tr("Delete").to_string();
+    body = body.on_mouse_down(MouseButton::Right, move |e: &gpui::MouseDownEvent, _w, cx: &mut App| {
+        let cmds_r = cmds_r.clone();
+        let sid = sid.clone();
+        // `on_mouse_down` 的监听是 `Fn`（可多次触发），不能把捕获的 String 移出去，
+        // 每次调用先克隆成本地变量再 move 进菜单回调。
+        let dup = dup_label.clone();
+        let del = del_label.clone();
+        let rows = vec![MenuRow::new(dup.clone()).separator(), MenuRow::new(del.clone())];
+        let Some(root) = root.clone() else { return };
+        let anchor = gpui::Bounds::new(e.position, gpui::size(px(0.0), px(0.0)));
+        root.update(cx, move |cv, cx| {
+            cv.open_menu(
+                anchor,
+                Some(160.0),
+                rows,
+                Rc::new(move |label: &str, _w, _cx| {
+                    let id = if dup.as_str() == label {
+                        "style.duplicate"
+                    } else if del.as_str() == label {
+                        "style.delete"
+                    } else {
+                        return;
+                    };
+                    cmds_r.push(Cmd { id, params: Some(json!({ "style": sid })) });
+                }),
+                cx,
+            );
+        });
+    });
+    // 悬停高亮整行（egui `rect_filled(r, CornerRadius::same(5), t.hover)`）。
+    field_row_full(div().w_full().h_full().rounded(pt(5.0)).hover(|s| s.bg(rgba(t.hover))).child(body))
 }
 
 /// 空选区时的右栏（egui `right.rs::page_section`）：**三个独立小节**，各自一个 40 pt 标题：
@@ -1959,25 +2692,42 @@ pub(crate) fn page(f: &RightFields, d: &PanelData, row_w: f32, n: &mut usize, cx
     out.push(vars);
 
     // ── ③ Local styles（egui `style_picker::local_styles`）：按 Text / Color / Effect / Grid
-    //       分成四组，每组一个小标题 + 该类型的样式行。空文档只有置灰标题。──
-    let mut styles = PanelSection::new(tr("Local styles"))
-        .variant(if p.local_styles == 0 { SectionHeaderVariant::Dim } else { SectionHeaderVariant::Normal });
-    for (ty, caption) in [("text", tr("Text")), ("paint", tr("Color")), ("effect", "Effect"), ("grid", tr("Grid"))] {
-        let list: Vec<(String, String)> =
-            d.styles.iter().filter(|(_, _, t)| *t == ty).map(|(id, name, _)| (id.clone(), name.clone())).collect();
+    //       分成四组，每组一个小标题（带 `+`） + 该类型的样式行（含文件夹树）；空文档只有置灰标题。──
+    let mut styles_sec = PanelSection::new(tr("Local styles"))
+        .variant(if p.local_styles == 0 { SectionHeaderVariant::Dim } else { SectionHeaderVariant::Normal })
+        .header_trail(icon_row(vec![local_styles_add_button(f)]));
+    // 分组顺序与 egui `StyleSlot` 一致：Text / Fill(Color) / Effect / Grid。
+    let groups: &[(&str, &str, &str)] = &[
+        ("text", "Text styles", "Text"),
+        ("paint", "Color styles", "Color"),
+        ("effect", "Effect styles", "Effect"),
+        ("grid", "Grid styles", "Grid"),
+    ];
+    for (ty, cap_key, dname) in groups {
+        let list: Vec<&LocalStyleRow> = d.styles.iter().filter(|s| s.ty == *ty).collect();
         if list.is_empty() {
             continue;
         }
-        styles = styles.child(sublabel_row(caption));
-        // 该类型的全部样式：点任意一行都能打开这份清单（egui 是打开该样式的编辑器；
-        // GPUI 暂无样式编辑器，清单窗口是现有等价入口）。
-        let all: Vec<(String, &'static str, Value)> =
-            list.iter().map(|(id, name)| (name.clone(), "style.apply", json!({ "style": id }))).collect();
-        for (_, name) in list {
-            styles = styles.child(local_style_row(f, ty, SharedString::from(name), all.clone()));
+        // 每组的小标题 + 该组的 `+`（直接建这种类型的样式；egui 同位置的 `+` 也是这个行为）。
+        let cmds = f.cmds.clone();
+        let ctype = *ty;
+        let dname = *dname;
+        let plus = IconButton::new(Icon::Plus).size(16.0).on_click(move |_anchor, _w, _cx| {
+            cmds.push(Cmd { id: "style.create", params: Some(json!({ "type": ctype, "name": dname })) });
+        });
+        styles_sec = styles_sec.child(local_style_caption(SharedString::from(tr(cap_key)), plus));
+        // 文件夹树（本遍展开全部）：先文件夹头、后其下样式、再递归子文件夹。
+        for line in ls_entries(&list, &|_| false) {
+            match line {
+                LsLine::Folder { label, depth, .. } => styles_sec = styles_sec.child(local_style_folder(&label, depth)),
+                LsLine::Style(idx, depth) => {
+                    let s = &list[idx];
+                    styles_sec = styles_sec.child(local_style_row(f, s, depth, *ty));
+                }
+            }
         }
     }
-    out.push(styles);
+    out.push(styles_sec);
     out
 }
 

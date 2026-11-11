@@ -82,31 +82,13 @@ struct PaintState {
 /// The remaining question is where the baseline should go so the glyphs look centred. Rather than
 /// guessing a cap ratio, ask the font: `typographic_bounds` gives the real box of a digit relative
 /// to the baseline, so its centre can be put on the field's centre.
-pub fn centred_line_origin(bounds: Bounds<Pixels>, line: &ShapedLine, font_size: Pixels, window: &Window) -> (Point<Pixels>, Pixels) {
+pub fn centred_line_origin(bounds: Bounds<Pixels>, line: &ShapedLine, _font_size: Pixels, _window: &Window) -> (Point<Pixels>, Pixels) {
+    // Centre the line box (ascent + descent) in the field, exactly as a plain `text_size` label
+    // is centred. Aligning a digit's ink box instead makes the text jump a pixel or two when a
+    // label turns into an editor, which is what the inline rename was doing.
     let line_height = line.ascent + line.descent;
-    let glyph_center = line
-        .runs
-        .first()
-        .and_then(|run| window.text_system().typographic_bounds(run.font_id, font_size, '0').ok())
-        // `typographic_bounds` 的原点在基线上、y 向下为正，所以字形中心相对基线是**正**的
-        // 偏移；要对齐框中心，基线要在中心**下方**这么多。取反后 baseline = centre + |偏移|。
-        .map(|g| -(g.origin.y + g.size.height * 0.5))
-        // Fallback: a digit sits about 0.35 em above the baseline.
-        .unwrap_or(-(font_size * 0.35));
-    let baseline = bounds.origin.y + bounds.size.height * 0.5 - glyph_center;
-    if std::env::var_os("FC_DEBUG_TEXT").is_some() {
-        eprintln!(
-            "[text] bounds_y={} h={} ascent={} descent={} glyph_center={} baseline={} top={}",
-            bounds.origin.y,
-            bounds.size.height,
-            line.ascent,
-            line.descent,
-            glyph_center,
-            baseline,
-            baseline - line.ascent
-        );
-    }
-    (point(bounds.origin.x, baseline - line.ascent), line_height)
+    let top = bounds.origin.y + (bounds.size.height - line_height) * 0.5;
+    (point(bounds.origin.x, top), line_height)
 }
 
 /// A primitive single-line editor. Embed it in any view: hold a `TextInput`, render

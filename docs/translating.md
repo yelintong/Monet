@@ -1,7 +1,7 @@
 # Translating FigCraft
 
 FigCraft's interface strings live in one TOML catalog per language in
-[`crates/ui-egui/locales/`](../crates/ui-egui/locales). The build bakes every catalog into the
+[`crates/i18n/locales/`](../crates/i18n/locales). The build bakes every catalog into the
 binary (desktop and web); nothing is read at run time. Preferences ▸ Language picks the language
 and the interface switches at once. System takes the first of the OS's preferred languages that has
 a catalog (the browser's language on the web; on Windows only the first preferred language counts,
@@ -138,7 +138,7 @@ checks of long labels in the right panel.
 
 ## Adding a language
 
-1. Copy `crates/ui-egui/locales/es.toml` to `<code>.toml` (a BCP 47 code: `fr`, `pt-BR`, `ja`) and
+1. Copy `crates/i18n/locales/es.toml` to `<code>.toml` (a BCP 47 code: `fr`, `pt-BR`, `ja`) and
    set `[meta] name` and `status = "draft — needs native review"`.
 2. Translate every value; keep the keys. Keep `{placeholders}` exactly, "…" where English has it,
    brand names and keyboard glyphs. English labels of commands: `figcraft-cli commands`.
