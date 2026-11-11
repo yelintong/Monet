@@ -1104,6 +1104,16 @@ fn dispatch_down(
             } else {
                 q.push(Act::EnsureSelected(item));
             }
+            // The segment is also the clip's own span: pressing it opens that clip's settings in
+            // the same popover the clip's edges use, so the animation can be edited from the line
+            // between two keyframes instead of only from its handles.
+            if let Some(clip) = doc.node(n).and_then(|node| {
+                node.motion.clips.iter().find(|c| {
+                    c.kind.properties().contains(&p) && t >= c.delay_ms && t <= c.delay_ms + c.duration_ms
+                })
+            }) {
+                q.push(Act::OpenClipPopover(n, clip.id));
+            }
         }
         HitKind::ClipEdge(node, id, edge) => {
             q.push(Act::Click(SelItem::Clip(node, id), shift));
