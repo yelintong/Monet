@@ -1,0 +1,23 @@
+[package]
+name = "figcraft-i18n"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Monet UI language: string catalogs (locales/*.toml) and the CJK/Bengali/Thai script helpers both UI backends share"
+
+[lints]
+workspace = true
+
+[dependencies]
+# `cjk::faces` / `cjk::can_show` look installed fonts up by character.
+figcraft-text = { workspace = true }
+
+[build-dependencies]
+# 与 ui-egui 的 build-dependency 同一版本（root 没把它列进 workspace.dependencies）。
+toml = "1"
+
+[dev-dependencies]
+# 目录里有几条测试要拿引擎的命令表/工具名核对「每个键都有翻译」，以及用 `pref.language` 走一遍
+# 语言切换——它们在原文就在 i18n 的测试里，跟着目录一起搬过来，不删。
+figcraft-engine = { workspace = true }
+serde_json = { workspace = true }

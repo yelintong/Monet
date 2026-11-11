@@ -1,0 +1,18 @@
+[package]
+name = "figcraft-doc"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Monet document model: pages, the node tree, properties, components, styles, variables, prototype data"
+
+[lints]
+workspace = true
+
+[dependencies]
+figcraft-geom = { workspace = true }
+figcraft-color = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+imbl = { workspace = true }
+unicode-segmentation = { workspace = true }

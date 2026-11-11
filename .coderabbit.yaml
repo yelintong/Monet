@@ -1,0 +1,15 @@
+# AI review for pull requests. Install the CodeRabbit app on the repository to activate it.
+language: en
+early_access: false
+reviews:
+  profile: chill
+  request_changes_workflow: false
+  high_level_summary: true
+  poem: false
+  review_status: true
+  auto_review:
+    enabled: true
+    drafts: false
+  path_filters:
+    - "!**/target/**"
+    - "!**/*.svg"
