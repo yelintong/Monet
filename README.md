@@ -21,21 +21,28 @@
 
 ## What this is
 
-Monet is a desktop design tool built around a document engine that has no UI of its own: a scene
-graph, layout, vector networks, text, components, variables, prototypes and a renderer. The
-application layer on top of it is written with **GPUI**, the GPU-accelerated UI framework, instead
-of the immediate-mode toolkit the engine originally shipped with.
+Monet is a desktop design tool. The lower half is a document engine: a scene graph, layout, vector
+networks, text, components, variables, prototypes and a renderer. The upper half is a desktop
+front-end that draws and drives it.
 
-The engine is shared with the project Monet grew out of. Everything above the engine — window
-chrome, panels, canvas interaction, dialogs, the motion timeline, input handling and the theme — is
-new code written for this repository.
+The engine's original front-end was written with **egui**, the immediate-mode toolkit: every frame
+rebuilt the whole interface from scratch. This repository ports that front-end to **GPUI**, the
+retained-mode, GPU-composited framework that powers Zed — a declarative element tree with
+persistent state, taffy layout, and panels, popovers and the canvas composited as one scene on the
+GPU.
+
+The port is one for one. Every panel, dialog, popover, menu and keyboard path is rebuilt to match
+the egui front-end's layout, dimensions and behaviour, and
+[`docs/gpui-egui-parity-plan.md`](docs/gpui-egui-parity-plan.md) tracks what still differs. The
+egui front-end stays available locally as the reference the port is checked against.
 
 ```
 crates/
-  doc/  engine/  layout/  render/  format/  geom/  color/  text/  svg/  pathops/  …
-  ui-gpui/        the desktop UI
+  doc/ engine/ layout/ render/ format/ geom/ color/ text/ svg/ pathops/ …   the engine
+  ui-gpui/        the GPUI front-end this repository develops
 apps/
-  figcraft/       the desktop application
+  figcraft-cli/   command-line front-end
+  figcraft-server/
 ```
 
 ## Highlights
@@ -52,30 +59,9 @@ apps/
 - **Accessible by construction.** Focus order, keyboard navigation and screen-reader roles are part
   of the widget layer rather than an afterthought.
 
-## Relationship to the upstream project
-
-Monet exists because the engine deserves a UI that matches it. The engine, file format and command
-model come from the upstream project; the desktop UI is a ground-up rewrite of its immediate-mode
-interface in GPUI, and only the GPUI front-end ships in this repository.
-
-That split decides where a change belongs:
-
-| Change | Where it goes |
-| --- | --- |
-| Document model, layout, rendering, file format, engine commands | The **upstream** project |
-| Panels, canvas interaction, dialogs, input, theming, GPUI-specific behaviour | **This repository** |
-
-If you are unsure, open an issue here first and we will route it.
-
 ## Building
 
 Requires a recent stable Rust toolchain. On Windows the MSVC toolchain is expected.
-
-```sh
-cargo run -p figcraft --release
-```
-
-Development build of the GPUI front-end:
 
 ```sh
 cargo run -p figcraft-ui-gpui --example run
