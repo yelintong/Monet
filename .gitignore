@@ -1,43 +1,41 @@
-*~
-plan/
-plans/
+# ── Build output ──────────────────────────────────────────────────────────────
 /target/
 /target-*/
 /plugins/target/
 /dist/
 /corpus/
 /log/
-.DS_Store
+
+# ── Logs and profiles ────────────────────────────────────────────────────────
+*.log
 *.profraw
 
-# local build logs
-_build*.log
-.cache/
-.vscode/
-
-# IDE / agent-internal files (machine-specific, never commit)
+# ── Editors and OS ───────────────────────────────────────────────────────────
+.DS_Store
+*~
 .idea/
-.workbuddy/memory/
+.vscode/
+.cache/
 
-# The immediate-mode front-end is kept locally as a reference while the port is finished,
-# and is never committed.
+# ── Local reference copies, never committed ──────────────────────────────────
+# The immediate-mode front-end stays on disk as the reference the port is checked against,
+# and the two legacy app shells are not part of this repository.
 /crates/ui-egui/
 /apps/figcraft/
 /apps/figcraft-web/
 
-# Scratch files and local build logs
+# ── Scratch, plans and agent files ───────────────────────────────────────────
 /.tmp/
+plan/
+plans/
+.workbuddy-ai/
+.workbuddy/memory/
 /_base_lib.rs
 /_lib_render_cut_backup.rs
 /_render_base.rs
-*.log
 
-# WorkBuddy agent workspace (screenshots, memory, scratch)
-.workbuddy-ai/
-build*.log
-*.log
-
-# dev screenshots and egui source excerpts (never commit)
+# ── Development screenshots and source excerpts ──────────────────────────────
+# Regenerated on demand; the excerpts are read from crates/ui-egui.
 /crates/ui-gpui/*.png
 /shot_*.png
 /crop_*.png
