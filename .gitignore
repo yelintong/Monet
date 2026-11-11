@@ -36,3 +36,9 @@ _build*.log
 .workbuddy-ai/
 build*.log
 *.log
+
+# dev screenshots and egui source excerpts (never commit)
+/crates/ui-gpui/*.png
+/shot_*.png
+/crop_*.png
+/crates/ui-gpui/src/panels/right/reference/
