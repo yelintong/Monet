@@ -765,3 +765,51 @@ R 节（17:0x 审计）把 R1/R2 标成「✅ 已实施」，但回源码核对�
 
 **当前下一步**：优先级 ① 清理 T.2 的六条弹窗化残留（R4–R9）与 `ExtraKind` 死变体；
 ② B2 剩余的键盘导航 / Enter / 实时过滤；③ 图层树虚拟化。涉及 `widgets/**` 冻结件的改动必须先与用户确认。
+
+---
+
+## U. 2026-11-11 19:1x 图层树虚拟化 + 父子连块 / 图标规格回正
+
+### U.1 virtual_list 虚拟化（用户要求「现在接 virtual_list 虚拟化」）
+
+`render_layer_tree` 由「每帧渲染全部行」改为 `crate::panels::right::virtual_list::v_virtual_list`：
+- 全量 `rows` / `drag_rows` **仍保留**在 `LayerTreeState`，只把可见区间交给渲染闭包；
+- 行渲染快照 `Rc<Vec<(LayerRow, Mark, Option<Rgba>, bool, bool)>>` 供 `'static` 闭包使用；
+  闭包只拿到 `&mut App`，故 `layer_row` 改成关联函数，事件回调由捕获的 `Entity<CanvasView>`
+  走 `me.update(app, ...)`（原先的 `cx.listener` 依赖 `Context<Self>`，闭包里拿不到）；
+- `LayerTreeState` 新增 `scroll: VirtualListScrollHandle` 跨帧保留滚动位置；
+- **拖拽不受影响**：`drag::calibrate` 本就用「命中行真实矩形 + 固定 pitch」推算整列，
+  全局 `layer_on_global_move` 继续按全量 `drag_rows` 解析落点；`on_drag` / `on_drag_move`
+  仍挂在每行的 `Stateful<Div>` 上。虚拟列表按 `ix*ROW_H` 精确定位、无额外 gap。
+
+### U.2 用户现场纠正：两处回正
+
+| 现象 | 我的误判 | 正解 / 修法 |
+|---|---|---|
+| 展开父项后子项「不连续」、跟原样式违背 | T 节把「每一个单独颜色块之间的间距是 8」误读成「**每行都独立成块**」，删掉了 `selection_runs`，父子选中的整块被拆散 | 恢复 `selection_runs()`：一个连续 run 是**一片**浅底（父深子浅），只在 run 首/末行上下各缩 4pt 并加圆角，run 内相邻行不缩 → 连成一片；**不同 run 之间**才留 4+4=8pt。父集用 band 实色、子集用同色系浅色 |
+| 图标「快被干到 24 了，很怪」 | 把 `ICON_BOX=24` 同时用作**格子**和 `paint_icon` 的**字形**尺寸 | `ICON_BOX=24` 只做点击格子（24×24），新增 `ICON_GLYPH=16`：chevron / eye / lock / 节点类型图标的字形一律 16，节点图标额外居中 |
+
+### U.3 数值（保持 T 节口径不变）
+
+`ROW_H=32`（步进 = 色块 24 + 块间 8）、`BLOCK_PAD=4`、`ICON_BOX=24`、`ICON_GLYPH=16`、
+`LAYER_INDENT=24`、`ROW_INSET=8`；每行 `.flex_none()` 钉死高度防 flex 压缩。
+
+### U.4 验证
+
+- `cargo check -p figcraft-ui-gpui --lib`：RC=0。
+- `cargo test -p figcraft-ui-gpui --lib --features test-support`：**251 通过 / 3 失败 / 3 忽略**；
+  3 条仍是记录在案的基线（main_menu aim / extra Shift+D / panel_resize hit area），无新增回归。
+- `run.exe` 重编并重启窗口。改动文件仅 `crates/ui-gpui/src/layer_tree.rs`（未碰任何 WIP 文件）。
+
+### U.5 未完成（诚实边界）
+
+- **本地样式 1:1 还原（圆形色块版）尚未落地**。已定位权威参照为
+  `UI/local-styles-desigma-layout` 分支的 `ui-egui/src/style_picker.rs::local_styles`
+  （`paint_dot` 用 `circle_filled` 画圆、`LS_*` 全套布局常量、文件夹树 `entries`/`flatten`、
+  `drop_move` 落点 → `style.move`）。GPUI 侧对应位置是右栏 `sections.rs::page()` 的
+  「Local styles」节，目前仍是简化版（四组小标题 + 平铺行，方形/图标 badge）。
+- 全盘搜过所有分支 / worktree / stash / 历史，**没有 GPUI 现成的圆形色块版本地样式模块**；
+  用户所说「我之前写的最新版」如需另有出处，请指明路径，避免我自行重做一个简化件。
+- 该项要动 `data.rs` / `sections.rs`（两处均为未提交 WIP 重灾区，合计约 895 行在制改动），
+  故本轮未擅自叠加；实现方案：新建 `panels/right/local_styles.rs` 独立模块 + 精确插入接线，
+  拖拽复用 `crate::drag` 通用件，落点照 `drop_move`。

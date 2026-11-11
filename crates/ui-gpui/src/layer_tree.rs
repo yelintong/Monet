@@ -11,6 +11,7 @@
 
 use figcraft_i18n::tr;
 use std::collections::BTreeSet;
+use std::rc::Rc;
 use std::time::Instant;
 
 use figcraft_doc::{BoolOp, Document, NodeId, NodeKind};
@@ -18,12 +19,13 @@ use figcraft_engine::booleans::distinct_op;
 use figcraft_engine::components::is_slot;
 use gpui::prelude::*;
 use gpui::{
-    AnyElement, Bounds, Context, Div, ElementId, MouseButton, MouseDownEvent, Pixels, Point, Render,
-    SharedString, Size, Stateful, StatefulInteractiveElement, Window, div, px,
+    AnyElement, App, Bounds, Context, Div, ElementId, Entity, MouseButton, MouseDownEvent, Pixels,
+    Point, Render, SharedString, Size, Stateful, StatefulInteractiveElement, Window, div, px,
 };
 use serde_json::json;
 
 use crate::drag;
+use crate::panels::right::virtual_list::{VirtualList, VirtualListScrollHandle, v_virtual_list};
 use crate::widgets::icon::paint as paint_icon;
 use crate::widgets::{Icon, IconButton, SectionHeader, SectionHeaderVariant, pt, rgba, tokens};
 use crate::CanvasView;
@@ -35,8 +37,9 @@ const ROW_INSET: f32 = 8.0;
 /// 行步进 32 = 单个色块 24 + 块间间距 8。用户 2026-11-11：图标 / 色块高 24，
 /// 每一个单独颜色块之间的间距是 8，别把它们连成一整块。
 const ROW_H: f32 = 32.0;
-/// 图标格 24×24（用户 2026-11-11）。
+/// 图标**格子** 24×24（用户 2026-11-11）；里面画的字形仍是 16，不要把图标撑满格子。
 const ICON_BOX: f32 = 24.0;
+const ICON_GLYPH: f32 = 16.0;
 /// 色块上下各留 4 → 块高 ROW_H - 8 = 24，相邻两块的间距正好 8。
 const BLOCK_PAD: f32 = 4.0;
 
@@ -75,6 +78,8 @@ pub struct LayerRow {
 enum Mark { None, Child, Selected }
 
 /// 选中行 = Selected、其后代 = Child、其余 = None；据此给每行定深浅底色。
+/// 一个连续 run（`Mark != None`）是**一整块**：浅底连成一片，Selected 行叠深色，
+/// run 上下两端各缩 4pt → 不同 run 之间正好留 8pt（用户 2026-11-11 的「单独块间距 8」）。
 fn marks(rows: &[LayerRow]) -> Vec<Mark> {
     let mut open: Vec<usize> = Vec::new();
     let mut out = Vec::with_capacity(rows.len());
@@ -85,6 +90,25 @@ fn marks(rows: &[LayerRow]) -> Vec<Mark> {
         else { out.push(Mark::Child); }
     }
     out
+}
+
+/// 连续 run 的边界：first[i] / last[i] 是 i 所在 run 的首末行。
+/// 逐行画时用它决定「这一行的高亮块要不要在上/下端圆 + 内缩」，
+/// run 内部的行上下都不缩，于是整块连成一片。
+fn selection_runs(m: &[Mark]) -> (Vec<usize>, Vec<usize>) {
+    let n = m.len();
+    let mut first = vec![0usize; n];
+    let mut last = vec![0usize; n];
+    let mut i = 0;
+    while i < n {
+        if m[i] != Mark::None {
+            let start = i;
+            while i < n && m[i] != Mark::None { i += 1; }
+            let end = i - 1;
+            for j in start..=end { first[j] = start; last[j] = end; }
+        } else { i += 1; }
+    }
+    (first, last)
 }
 
 /// band 里全图标 → `icon_layer_row`，全组件 → `component_row`，否则 `selected_row`。
@@ -115,6 +139,8 @@ pub struct LayerTreeState {
     pub calibrated: Option<(usize, Bounds<Pixels>)>,
     /// 最后一次全局指针位置（窗口坐标）——画拖拽标签、解析落点都用它。
     pub pointer: Point<Pixels>,
+    /// 图层树虚拟列表的滚动句柄（跨帧保留滚动位置）。
+    pub scroll: VirtualListScrollHandle,
     clock: Instant,
 }
 
@@ -128,6 +154,7 @@ impl Default for LayerTreeState {
             candidate: None,
             calibrated: None,
             pointer: Point::new(px(0.0), px(0.0)),
+            scroll: VirtualListScrollHandle::new(),
             clock: Instant::now(),
         }
     }
@@ -364,18 +391,15 @@ impl CanvasView {
         sec.child(list)
     }
 
-    fn render_layer_tree(&mut self, cx: &mut Context<Self>) -> Stateful<Div> {
+    fn render_layer_tree(&mut self, cx: &mut Context<Self>) -> VirtualList {
         let (rows, drag_rows) = self.collect_layer_rows();
+        // 全量行保留给拖拽 / 命中测试；渲染只画视口内那几行（虚拟列表）。
+        // `drag::calibrate` 用「命中行真实矩形 + 固定 pitch」推算整列，故虚拟化不影响落点。
         self.layer_tree.rows = rows.clone();
         self.layer_tree.drag_rows = drag_rows;
         let drag = self.layer_tree.drag.as_ref().map(|d| d.from_id);
         let marked = marks(&rows);
-        // 选中高亮**逐行**画在行内：整棵树的行都在 `overflow_y_scroll` 里，早先把整块
-        // run / band 用「容器级 absolute + top(i*ROW_H)」盖在滚动容器上，节点一多需要滚动时
-        // 高亮块与行错位（用户 2026-11-11「项目一多这棵树就乱」）。行内 `relative()+absolute()`
-        // 跟着行走，滚动与行数都不影响。
-        // 用户 2026-11-11 规格：每个色块独立、高 24，上下各留 4（块间间距 8），
-        // 不再把连续选中拼成一整块；父集（Selected）用深实色、子集（Child）用同色系浅色。
+        let (first, last) = selection_runs(&marked);
         // 每行所属 band 的实色；None = Child / None 行，画浅色或只有 hover。
         let mut band: Vec<Option<gpui::Rgba>> = vec![None; rows.len()];
         let mut k = 0;
@@ -387,30 +411,46 @@ impl CanvasView {
             let color = run_color(&rows, start, end);
             for j in start..=end { band[j] = Some(color); }
         }
-        let mut divs: Vec<Stateful<Div>> = Vec::with_capacity(rows.len());
-        for (index, r) in rows.iter().enumerate() {
-            // 只下发该行 band 实色（Selected 才有）；每个色块都是独立的 24 高块。
-            divs.push(self.layer_row(index, r, drag, marked[index], band[index].clone(), cx));
-        }
-        div()
-            .id("layer-scroll")
-            .flex_1()
-            .min_h(px(0.0))
-            .w_full()
-            .overflow_y_scroll()
-            .flex()
-            .flex_col()
-            .children(divs)
+        // 行的渲染快照（`'static` 闭包只拿得到 `&mut App`，拿不到 `Context<CanvasView>`）。
+        let view: Rc<Vec<(LayerRow, Mark, Option<gpui::Rgba>, bool, bool)>> = Rc::new(
+            rows.into_iter().zip(marked).zip(band).enumerate()
+                .map(|(i, ((r, m), b))| {
+                    let in_run = m != Mark::None;
+                    (r, m, b, in_run && i == first[i], in_run && i == last[i])
+                })
+                .collect(),
+        );
+        let n = view.len();
+        let row_w = px(self.left_w + crate::panels::HANDLE_W);
+        let item_sizes: Rc<Vec<Size<Pixels>>> =
+            Rc::new((0..n).map(|_| Size::new(row_w, px(ROW_H))).collect());
+        let entity = cx.entity();
+        let scroll = self.layer_tree.scroll.clone();
+        v_virtual_list("layer-scroll", &scroll, item_sizes, move |range, _window, _app| {
+            let mut out: Vec<AnyElement> = Vec::with_capacity(range.end - range.start);
+            for ix in range {
+                let Some((r, mark, band_color, run_top, run_bottom)) = view.get(ix) else { continue };
+                out.push(
+                    Self::layer_row(&entity, ix, r, drag, *mark, band_color.clone(), *run_top, *run_bottom)
+                        .into_any_element(),
+                );
+            }
+            out
+        })
+        .flex_1()
+        .min_h(px(0.0))
+        .w_full()
     }
 
     fn layer_row(
-        &mut self,
+        entity: &Entity<CanvasView>,
         index: usize,
         r: &LayerRow,
         dragging: Option<u64>,
         mark: Mark,
         band_color: Option<gpui::Rgba>,
-        cx: &mut Context<Self>,
+        run_top: bool,
+        run_bottom: bool,
     ) -> Stateful<Div> {
         let t = tokens();
         let is_dragging = dragging == Some(r.id.0);
@@ -434,7 +474,7 @@ impl CanvasView {
 
         // 行实体的稳定 id：gpui 的内建拖拽（`on_drag` / `on_drag_move`）只能挂在 Stateful 上。
         let row_id = ElementId::from(SharedString::from(format!("layer-row-{}", id.0)));
-        let me = cx.entity();
+        let me = entity.clone();
 
         let chevron = if has_children {
             div()
@@ -445,11 +485,16 @@ impl CanvasView {
                 .justify_center()
                 .on_mouse_down(
                     MouseButton::Left,
-                    cx.listener(move |this: &mut CanvasView, _e: &MouseDownEvent, _w: &mut Window, cx: &mut Context<Self>| {
-                        this.layer_toggle_expand(id, cx);
-                    }),
+                    {
+                        let me = me.clone();
+                        move |_e: &MouseDownEvent, _w: &mut Window, app: &mut App| {
+                            me.update(app, |this: &mut CanvasView, cx: &mut Context<CanvasView>| {
+                                this.layer_toggle_expand(id, cx);
+                            });
+                        }
+                    },
                 )
-                .child(paint_icon(if expanded { Icon::ChevronDown } else { Icon::ChevronRight }, rgba(t.text_secondary), ICON_BOX))
+                .child(paint_icon(if expanded { Icon::ChevronDown } else { Icon::ChevronRight }, rgba(t.text_secondary), ICON_GLYPH))
         } else {
             div().w(px(ICON_BOX))
         };
@@ -462,11 +507,16 @@ impl CanvasView {
             .justify_center()
             .on_mouse_down(
                 MouseButton::Left,
-                cx.listener(move |this: &mut CanvasView, _e: &MouseDownEvent, _w: &mut Window, cx: &mut Context<Self>| {
-                    this.layer_toggle_visible(id, cx);
-                }),
+                {
+                    let me = me.clone();
+                    move |_e: &MouseDownEvent, _w: &mut Window, app: &mut App| {
+                        me.update(app, |this: &mut CanvasView, cx: &mut Context<CanvasView>| {
+                            this.layer_toggle_visible(id, cx);
+                        });
+                    }
+                },
             )
-            .child(paint_icon(if visible { Icon::Eye } else { Icon::EyeOff }, rgba(if visible { t.text_secondary } else { t.text_tertiary }), ICON_BOX));
+            .child(paint_icon(if visible { Icon::Eye } else { Icon::EyeOff }, rgba(if visible { t.text_secondary } else { t.text_tertiary }), ICON_GLYPH));
 
         let lock = div()
             .w(px(ICON_BOX))
@@ -476,24 +526,34 @@ impl CanvasView {
             .justify_center()
             .on_mouse_down(
                 MouseButton::Left,
-                cx.listener(move |this: &mut CanvasView, _e: &MouseDownEvent, _w: &mut Window, cx: &mut Context<Self>| {
-                    this.layer_toggle_lock(id, cx);
-                }),
+                {
+                    let me = me.clone();
+                    move |_e: &MouseDownEvent, _w: &mut Window, app: &mut App| {
+                        me.update(app, |this: &mut CanvasView, cx: &mut Context<CanvasView>| {
+                            this.layer_toggle_lock(id, cx);
+                        });
+                    }
+                },
             )
-            .child(paint_icon(if locked { Icon::Lock } else { Icon::Unlock }, rgba(if locked { t.accent } else { t.text_tertiary }), ICON_BOX));
+            .child(paint_icon(if locked { Icon::Lock } else { Icon::Unlock }, rgba(if locked { t.accent } else { t.text_tertiary }), ICON_GLYPH));
 
         // 起手拖拽：立刻置位（egui `drag_started`），并记住整组被拖的行与跟随光标的标签。
         let me_start = me.clone();
         // 移动：把命中行的真实窗口矩形交给通用件校准，再用全局指针重算落点。
         let me_move = me.clone();
 
-        // 每个色块都是**独立**一块：24 高（ROW_H 32 上下各留 4），相邻块间距 8。
-        // 用户 2026-11-11 明确「每一个单独的颜色块之间的间距是 8」，不再拼成连块。
-        // 父集（Selected）用 band 实色（深），子集（Child）用同色系浅色，深浅差异不丢。
+        // 一个 run 连成一整块：run 首/末行上下各缩 4（块高 24），run 内相邻行不缩，
+        // 于是父展开出的子树是连续的一片浅底；**不同 run 之间**才留 4+4=8pt 间隙。
+        // 父集（Selected）叠 band 实色（深），子集（Child）用同色系浅色，深浅差异不丢。
+        let pad_top = if run_top { BLOCK_PAD } else { 0.0 };
+        let pad_bottom = if run_bottom { BLOCK_PAD } else { 0.0 };
         let highlight = if mark == Mark::None {
             div().size_full().rounded(pt(5.0)).group_hover(group.clone(), |s| s.bg(rgba(t.hover)))
         } else {
-            div().size_full().rounded(pt(5.0)).bg(band_color.unwrap_or(rgba(t.selected_row_child)))
+            let mut h = div().size_full().bg(band_color.unwrap_or(rgba(t.selected_row_child)));
+            if run_top { h = h.rounded_t(pt(5.0)); }
+            if run_bottom { h = h.rounded_b(pt(5.0)); }
+            h
         };
 
         div()
@@ -515,8 +575,8 @@ impl CanvasView {
                     .left_0()
                     .size_full()
                     .px(pt(ROW_INSET))
-                    .pt(pt(BLOCK_PAD))
-                    .pb(pt(BLOCK_PAD))
+                    .pt(pt(pad_top))
+                    .pb(pt(pad_bottom))
                     .child(highlight),
             )
             .when(is_dragging, |d| d.opacity(0.5))
@@ -536,7 +596,7 @@ impl CanvasView {
             })
             .child(div().w(px(indent)))
             .child(chevron)
-            .child(div().w(px(ICON_BOX)).h(px(ICON_BOX)).child(paint_icon(icon, rgba(t.text), ICON_BOX)))
+            .child(div().w(px(ICON_BOX)).h(px(ICON_BOX)).flex().items_center().justify_center().child(paint_icon(icon, rgba(t.text), ICON_GLYPH)))
             .child(
                 div()
                     .flex_1()
@@ -546,9 +606,14 @@ impl CanvasView {
                     .items_center()
                     .on_mouse_down(
                         MouseButton::Left,
-                        cx.listener(move |this: &mut CanvasView, e: &MouseDownEvent, _w: &mut Window, _cx: &mut Context<Self>| {
-                            this.layer_on_row_mouse_down(id, e);
-                        }),
+                        {
+                            let me = me.clone();
+                            move |e: &MouseDownEvent, _w: &mut Window, app: &mut App| {
+                                me.update(app, |this: &mut CanvasView, _cx: &mut Context<CanvasView>| {
+                                    this.layer_on_row_mouse_down(id, e);
+                                });
+                            }
+                        },
                     )
                     .child(div().child(name).text_size(px(11.0)).text_color(name_color).truncate()),
             )
