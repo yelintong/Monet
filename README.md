@@ -5,7 +5,7 @@
 <h1 align="center">Monet</h1>
 
 <p align="center">
-  <b>A native interface-design editor: one Rust engine, a GPU-rendered desktop UI.</b><br>
+  <b>Designing a design tool is itself a design.</b><br>
   Frames, auto layout, components and variants, vector networks, styles, variables and prototypes,<br>
   in an application that opens instantly and works offline.
 </p>
