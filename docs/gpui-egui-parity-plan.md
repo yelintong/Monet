@@ -175,6 +175,8 @@
 | 16 | `crates/ui-gpui/src/panels.rs` | 右栏 48 pt 顶栏（头像 / Present / Share）恢复 | 既有 `right::topbar::top_bar` 通用顶栏，只补一行调用，与 Motion 分支同序 | ✅ |
 | 17 | `crates/ui-gpui/src/panels/right/sections.rs` | 右栏 tabs 去掉第三个「开发模式」按钮 | 既有 `tab(...)`，只减少一项数据；面板功能仍由底部工具栏 开发 / Shift+D 进入 | ✅ |
 | 18 | `crates/ui-gpui/src/icons_panel.rs`（新）+ `panels/extra.rs`（`ExtraKind::Icons`）+ `lib.rs`（`ui.set {leftTab}`） | A5 | `search_field` / `IconButton` / `CmdQueue` / `note` / `pill`；预览走 `figcraft_render::render_path` + `screen_buffer` 同路 | ✅ |
+| 19 | `crates/ui-gpui/src/panels.rs` + `lib.rs`（rail 调用点） | 左栏 rail 三项高亮互斥 | 抽纯函数 `rail_active(...)` + 4 条穷举回归测试；`left_rail` 签名收敛为 `(left_tab, variables_open, variables_full)`，未新增控件 | ✅（S 节） |
+| 20 | `crates/ui-gpui/src/layer_tree.rs` | 图层树节点多时选中高亮错位 | 容器级 `absolute` 浮层 → 逐行 `relative()+absolute()` 绘制；复用既有 `marks` / `selection_runs` / `run_color`，未新增控件 | ✅（S 节；虚拟化未做，见 S.5） |
 
 ---
 
@@ -541,3 +543,127 @@ EGUI 原文件再动手，禁止再出现简化替代**；完成后同步 `CONTR
 - 行内改名 / 改码位、拖拽排序：`text_field_inline` 在冻结件里，逐行内联编辑需要先确认能否复用。
 - 导出字体（`icon.exportFont` + 保存对话框）。
 - 字体折叠（egui 折叠状态里的 `collapsed` 集合）——本版所有字体默认展开。
+
+---
+
+## R. 2026-11-11 17:0x 规划错配审计：被误做成「弹窗/浮层」的内嵌交互（下次整改）
+
+> **问题来源**：用户实测发现，画布上双击画框顶部的名字本应**就地改名**，结果 GPUI 弹出了一个对话框；
+> 资源列表本应在**左栏**，结果 GPUI 也弹成了浮层。全盘核对 EGUI 原版后发现这不是个例——
+> 规划文件（及 `extra.rs` 的模块注释）把一批「画布内联编辑 / 左栏 tab / 占满窗口」的交互
+> 统一归成了「居中浮层 `ExtraKind`」或「对话框 `dialogs::Kind`」，与 EGUI 真实形态不符。
+>
+> **铁律回放**（项目记忆 `PARITY_CONTRACT` 第 6 条）：*不要把整屏页面塞进 760×520 居中弹层，
+> Home 应占满窗口：240pt 侧栏 + 主区*。这条同样约束 Assets / Icons / Shortcuts / Versions 这类
+> 本就属于常驻面板的交互。
+> **更正（2026-11-11 17:1x 读码确认）**：`Home` 已占满窗口（`extra.rs::render` 的 `absolute` 全屏分支），
+> R3 实为已修复项，不占用下次整改名额；真正未做的是 R1/R2/R4/R5/R6/R7/R8/R9。
+
+### R.0 根因
+
+- `crates/ui-gpui/src/panels/extra.rs` 第 9–11 行注释**明知** EGUI 把 Assets 放左栏 tab、Versions 放独立面板、
+  Shortcuts 放窗口底部，却仍「统一成一个可关闭的居中浮层」，并把它当作既定设计写进了规划（A1/A5、Q 节）。
+- `crates/ui-gpui/src/dialogs.rs:302` 把 `canvas.renameLabel`（画框标签改名）、`layers.rename`（图层面板改名）、
+  `board.editText` 全部路由到 `Kind::Rename`（居中对话框）。这些在 EGUI 里都是**贴着控件/画布的内联编辑框**，不是弹窗。
+- 左栏 rail 的 `rail-assets` 按钮（`panels.rs:1663`）`on_click` 为 `None`——点击无反应；Assets/Icons 只能靠
+  `ui.set {leftTab}` / `panel.assets` 打开，而打开的仍是 `ExtraKind` 浮层，不是左面板 tab。
+
+### R.1 错配清单（每条都是下次整改的硬要求）
+
+| # | 交互 | EGUI 原版形态（证据） | GPUI 现状（错误） | 整改要求 |
+|---|---|---|---|---|
+| R1 | **资源面板 Assets** | 左栏 tab：`LeftTab::Assets` → `assets_panel::show` 渲染进**左面板**（同 Pages/Layers 同一栏，面板宽） | `ExtraKind::Assets` 居中浮层（`extra.rs` + `ui.set{leftTab:"assets"}`） | ✅ **已实施（2026-11-11）**：见 R.4，Assets 进左栏 tab，不再弹浮层 |
+| R2 | **图标面板 Icons** | 左栏 tab：`LeftTab::Icons` → `icons_panel::show` 渲染进**左面板** | `ExtraKind::Icons` 居中浮层 | ✅ **已实施（2026-11-11）**：同 R1 机制，`ui.set{leftTab:"icons"}` 进左面板 tab 2 |
+| R3 | **首页 Home** | 替换**整个工作区**（占满窗口，240pt 侧栏 + 主区），不是居中小窗 | ~~`ExtraKind::Home` 居中浮层~~ **已修复**：`panels/extra.rs::render` 对 `Home` 走 `div().absolute().top(TITLE_H).left(0).right(0).bottom(0)` 占满窗口（注释明写「1:1 with egui `home.rs` CentralPanel，不是 760×520 居中卡片」） | ✅ 无需整改（视觉已占满窗口，与 EGUI 一致） |
+| R4 | **画框标签改名** `canvas.renameLabel` | `canvas/frame_labels.rs::rename_field`：**在画布标签的屏幕坐标上**盖一个内联编辑框，Enter/失焦改名、Esc 保留 | `dialogs.rs:302` → `Kind::Rename` 居中对话框 | 改回画布内联编辑：双击标签 → 在标签处画 `TextField`，走 `object.rename`；不要弹窗 |
+| R5 | **图层面板改名** `layers.rename` | 在 Layers 列表行内**就地**改（egui `layers_rename_tests.rs`） | `dialogs.rs:302` → `Kind::Rename` 居中对话框 | 改回列表行内联编辑（GPUI 左面板已用 `TextField` 做文件头改名，图层行同理） |
+| R6 | **看板文字编辑** `board.editText` | 贴着画布的内联文字编辑 | `dialogs.rs:302` → `Kind::Rename` 居中对话框 | 改回内联编辑（依赖 A2/A27 画板模式先落地） |
+| R7 | **快捷键面板 Shortcuts** | 窗口**底部**常驻条（`panels/layers.rs` 底部），非模态 | `ExtraKind::Shortcuts` 居中浮层（`extra.rs` 注释承认此差异） | 移到窗口底部 dock（或至少承认差异并登记为偏差，不要伪装成弹窗） |
+| R8 | **版本历史 Versions** | 独立**面板**（左面板宽，`versions::panel`），非居中卡片 | `ExtraKind::Versions` 居中浮层 | 改成独立面板（左栏宽或右侧抽屉），不要居中卡片 |
+| R9 | **Dev 对比 DevCompare** | 双图并排/叠加对比（占满工作区） | `ExtraKind::DevCompare` 居中浮层 | 占满主区做对比视图，不要居中卡片 |
+
+### R.2 连带的规划文件错误（需同步修订）
+
+- **A19 模块注释**（第 2 节 A 表 A19 行、以及 `dialogs.rs` 注释）把 `Shortcuts` 和 `Rename` 列为「通用对话框框架」的
+  renderer。按 R4/R5/R7，这二者本不是对话框——应从 A19 的对话框清单里**移除**，改为各自的内嵌形态。
+- **A1 / Q 节**把 `ExtraKind::{Home,Assets,Icons}` 当作「整面板浮层约定」正面记录。按 R1/R2/R3，这是错配，
+  下次整改应把 Assets/Icons 改为左面板 tab、Home 改为占满窗口，并把这条「约定」改为「临时过渡」。
+- `extra.rs` 第 9–11 行「与 egui 的差异」应改为明确标注 **TODO（错配，待 R1–R9 整改）**，不再当作既定设计。
+
+### R.3 整改验收（下次做时对照）
+
+1. 双击画布画框顶部标签 → 标签处出现内联输入框，回车改名、Esc 取消；**不**弹出任何窗口。
+2. 点击左栏 rail 的 Assets / Icons → 左面板内容切到对应面板（与 Pages/Layers 共用同一栏与宽度），而非浮层。
+3. 打开首页 → 占满窗口（含 240pt 侧栏 + 主区），非居中卡片。
+4. 图层面板里改名 → 行内编辑，非对话框。
+5. `dialogs.rs:302` 不再把 `canvas.renameLabel` / `layers.rename` / `board.editText` 路由到 `Kind::Rename`；
+   `Kind::Rename` 仅保留给真正的「批量重命名」等本就是对话框的入口。
+
+### R.4 2026-11-11 已实施：R1 / R2（Assets / Icons 进左栏 tab）
+
+把资源与图标从 `ExtraKind` 居中浮层改为左面板的常驻 tab，与 EGUI `LeftTab` 一致。改动全部复用
+冻结件与已有 `assets_body` / `icons_panel::body`，未触碰 `widgets/**` 通用件。
+
+| 文件 | 改动 |
+|---|---|
+| `lib.rs` | `CanvasView` 新增 `left_tab: u8`（0=File / 1=Assets / 2=Icons）；`ui.set {leftTab}` 改为设 `left_tab` 并清 `extra`；`UiAction::LeftTab` 分支设 `left_tab`；新增 `on_assets` 闭包（点 rail 的 Assets 在 tab 0/1 间切换并清浮层）；`on_file` 顺带把 `left_tab` 归 0 |
+| `panels/extra.rs` | `UiAction` 新增 `LeftTab(u8)`；`panel.assets` / `panel.libraries` 由 `Toggle(ExtraKind::Assets)` 改为 `LeftTab(1)`；`assets_body` 提为 `pub(crate)`；同步改了 `ui_request_dispatch_covers_every_panel` 的两条断言 |
+| `panels.rs` | `left_rail` 增加 `on_assets` / `assets_active` 参数；`rail-assets` 按钮接上点击与高亮（此前 `on_click` 为 `None`，点了没反应）。**2026-11-11 18:4x 追加**：三项高亮收敛到纯函数 `rail_active(left_tab, variables_open, variables_full)`，见 S 节 |
+| `layer_tree.rs` | `render_left_panel` 按 `left_tab` 分流：1 → `assets_body`、2 → `icons_panel::body`，标题用 `SectionHeader`（与 Files tab 同款） |
+
+**验证**：`cargo check -p figcraft-ui-gpui --lib` 与 `--example run --features gpu` 均通过；
+全套 `247 通过 / 3 失败`（3 条均为记录里的基线：main_menu aim / extra Shift+D / panel_resize hit area），
+无新增回归；`ui_request_dispatch_covers_every_panel` 中 `panel.assets → LeftTab(1)` 断言通过。
+
+**诚实边界（本轮没做）**：
+- 左栏 rail 仍只有 Assets 按钮（无独立 Icons 按钮）；Icons 经 `ui.set {leftTab:"icons"}` 进左面板 tab 2。
+  EGUI 的 rail 有 Icons 按钮——若要 1:1，需在 `left_rail` 再加一颗 `rail-icons` 按钮（R2 的余量）。
+- Assets/Icons tab 下没有 EGUI 那颗「收起面板」按钮（`file_header` 里的 Panels 图标），目前靠拖动手柄收起。
+- R4（画框标签内联改名）、R5（图层行内改名）、R6（看板文字）、R7（Shortcuts 窗口底部）、
+  R8（Versions 独立面板）、R9（DevCompare 占满主区）仍按原计划留待下次整改。
+
+---
+
+## S. 2026-11-11 18:4x 左栏现场反馈：rail 单选 + 图层树滚动错位
+
+用户现场反馈：① 修好左边文件栏；② 从文件栏切到组件库（Assets）时「单选状态切换不了，变成两个都选」，且**注意别跟变量冲突**；③ 「文件下面的那个**树**」= 左栏 Layers 图层树 / 组件树，「项目一多就乱」（用户明确纠正过不是 Pages 列表）。
+
+### S.1 遗漏检查（用户要求「检查是否有遗漏」）
+
+- 全仓 `overflow_y_scroll` 逐处对照：`home/mod.rs`、`layer_tree.rs::pages-list`、`lib.rs:7632`、`motion/inspector.rs`、`panels/extra.rs`（extra-body / compare-changes）、`panels/right/variables.rs`（var-collections / var-groups）、`panels.rs`（right-body）、`popovers.rs`、`widgets/menu_popup.rs`、`virtual_list.rs` —— 都是普通 flex 列表 + 滚动，**只有 `layer_tree.rs::render_layer_tree` 把选中高亮做成容器级 `absolute` 浮层**，是唯一的同类错位隐患。
+- `panels/extra.rs::pill` 是本地函数（第 459 行），Assets 的 Components / Styles 由同一个 `assets_tab: Rc<RefCell<bool>>` 互斥派生；`panels/right/variables.rs` 既不用 `pill` 也不引用 `assets_tab`。本轮改动没有碰这两处，**不会与变量面板冲突**。
+- R.4 表格中 `left_rail 增加 on_assets / assets_active 参数` 的描述随本轮签名收敛而过期，已就地补注。
+
+### S.2 ①② rail 三项高亮互斥（用户报的「两个都选」）
+
+| | 根因 | 修法 |
+|---|---|---|
+| 两个都选 | `left_rail` 里 File 高亮是 `!variables_tab`（只要不是变量全屏就亮），Assets 是 `left_tab==1`；点 Assets 后 `left_tab=1` 而 File 仍亮 → 两项同亮 | 新增纯函数 `panels::rail_active(left_tab, variables_open, variables_full) -> (file, assets, variables)`，三项**严格互斥**；`left_rail` 签名收敛为 `(left_tab, variables_open, variables_full)`，`lib.rs` 调用点不再各算一份 |
+| 别跟变量冲突 | `on_variables` 不重置 `left_tab`；变量全屏时若 `left_tab==1`，Assets 与 Variables 会同亮 | 变量全屏（`variables_open && variables_full`）优先级最高，此时 File / Assets 一律熄灭；浮动小窗（`variables_full=false`）仍高亮 File，符合 2026-11-08 既定规则；`variables_full` 作为会话记忆，关闭后不会泄漏高亮 |
+
+`panels.rs` 新增 `rail_active_tests` 4 条回归测试（穷举 `left_tab 0..=4 × open × full` 全部组合断言至多一个高亮、`切到 Assets 时 File 灭`、`浮动小窗仍高亮 File`、`全屏变量压过 left_tab 且关闭后不泄漏`），把规则锁死，防止再犯。
+
+### S.3 ③ 图层树节点多就乱
+
+| | 根因 | 修法 |
+|---|---|---|
+| 滚动后选中块与行错位 | `render_layer_tree` 把整个 run / band 用**容器级** `absolute().top(i*ROW_H)` 浮层盖在 `overflow_y_scroll` 容器上；行数少不滚时看不出，节点一多需要滚动，浮层与行位移不一致 → 视觉上「树乱了」 | 选中高亮改为**逐行**绘制：整树的 run 边界与 band 实色预算成 `(run 顶, run 底, band 色)` 下发给 `layer_row`，画在每行自己的 `relative()+absolute()` 高亮块里，跟着行一起滚动 |
+| 连续选中仍要读成一整块 | 逐行画若每行都内缩 4pt 会变成一堆断开的小圆角块 | `pad_top`/`pad_bottom` 只在 run 首/末行取 4pt、run 内相邻行取 0，配合只在 run 上下两端加圆角 —— 1:1 保留 EGUI `layers.rs` 的 run 浅底 + band 实色 + 接缝直角 + 两端圆角 |
+
+未新增任何控件 / 命令，改的都是行内 `relative()+absolute()` 这一既有通用行为；`AnyElement` 仍由 `layer_overlay` 使用，无遗留死代码。
+
+### S.4 验证
+
+- `cargo check -p figcraft-ui-gpui --lib`：RC=0。
+- `cargo test -p figcraft-ui-gpui --lib --features test-support`：**247 通过 / 3 失败 / 3 忽略**；3 条失败均为记录在案的基线（main_menu aim、extra Shift+D、panel_resize hit area），**无新增回归**。
+- 新增 `rail_active_tests` 4 条全绿。
+- 重编 `run.exe` 并用 explorer 托管启动新窗口供现场验证。
+
+### S.5 诚实边界（本轮没做）
+
+- **图层树仍是全量渲染，没有接入 `panels/right/virtual_list.rs` 虚拟化**。EGUI `layers.rs::layers` 用 `show_viewport` 只画视口内的行（第 919–956 行），本轮只修了「高亮错位」，没有做虚拟化；节点极多时的性能差距仍在。`collect_layer_rows` 也没有 EGUI 的 5000 行上限。
+- Pages 段仍缺拖拽排序、就地改名、图层拖到某页（O 节已记）。
+- 左栏 rail 仍无独立 Icons 按钮、Assets/Icons tab 下没有「收起面板」按钮（R.4 余量）。
+- R4–R9 仍按原计划留待下次整改。
+
+**当前下一步**：若要彻底对齐 EGUI 的「项目极多也不卡」，把 `render_layer_tree` 接到现成的 `v_virtual_list`（`drag::calibrate` 已按 pitch 推算整列，可复用）；随后继续 G 表第 7 行（Actions 调色板三 tab 键盘导航）。涉及 `widgets/**` 冻结件的改动（A24）必须先与用户确认。

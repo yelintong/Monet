@@ -162,6 +162,38 @@ impl CanvasView {
             self.run_command("file.rename", serde_json::json!({ "name": name }), cx);
         }
         self.sync_file_name(cx);
+        // 左面板 tab（egui `LeftTab`）：Assets / Icons 渲染进左面板本身（R1/R2），不再弹浮层。
+        match self.left_tab {
+            1 => {
+                let cmds = self.fields.queue();
+                return div()
+                    .id("left-panel")
+                    .flex_none()
+                    .h_full()
+                    .flex()
+                    .flex_col()
+                    .bg(rgba(t.panel))
+                    .border_r_1()
+                    .border_color(rgba(if divider_hot { t.accent } else { t.border }))
+                    .child(SectionHeader::new(tr("Assets")).variant(SectionHeaderVariant::Normal))
+                    .child(crate::panels::extra::assets_body(&self.app, &cmds, &self.extra_state, cx));
+            }
+            2 => {
+                let cmds = self.fields.queue();
+                return div()
+                    .id("left-panel")
+                    .flex_none()
+                    .h_full()
+                    .flex()
+                    .flex_col()
+                    .bg(rgba(t.panel))
+                    .border_r_1()
+                    .border_color(rgba(if divider_hot { t.accent } else { t.border }))
+                    .child(SectionHeader::new(tr("Icons")).variant(SectionHeaderVariant::Normal))
+                    .child(crate::icons_panel::body(&self.app, &cmds, &self.extra_state, cx));
+            }
+            _ => {}
+        }
         // egui `layers::left_panel`：**三段** —— 64 pt 文件头、Pages 段、Layers 段。
         // 以前只有「Layers 标题 + 树」，文件头和页面列表整个没有（用户 2026-11-10）。
         div()
@@ -349,47 +381,32 @@ impl CanvasView {
         let drag = self.layer_tree.drag.as_ref().map(|d| d.from_id);
         let marked = marks(&rows);
         let (first, last) = selection_runs(&marked);
-        let t = tokens();
-        let mut overlays: Vec<AnyElement> = Vec::new();
-        // ① 整个 run 一块 `selected_row_child`，四角圆 5，上下各缩 4。
-        for i in 0..rows.len() {
-            if marked[i] == Mark::None || i != first[i] { continue; }
-            let from = first[i]; let to = last[i];
-            let h = (to - from + 1) as f32 * ROW_H;
-            overlays.push(
-                div().absolute().left(pt(0.0)).top(pt(from as f32 * ROW_H))
-                    .w_full().h(pt(h))
-                    .px(pt(ROW_INSET)).pt(pt(4.0)).pb(pt(4.0))
-                    .child(div().size_full().rounded(pt(5.0)).bg(rgba(t.selected_row_child)))
-                    .into_any_element(),
-            );
-        }
-        // ② run 内连续的 Selected 行 = band。egui `layers.rs`：只有落在 run 上下两端时才有
-        //    对应两角的圆角（`CornerRadius { nw/ne: edge(start == from), sw/se: edge(end == to) }`），
-        //    band 之间的接缝保持直角，否则会变成一堆叠在一起的小圆角块。
+        // 选中高亮改为**逐行**画在行内：整棵树的行都在 `overflow_y_scroll` 里，早先把整块
+        // run / band 用「容器级 absolute + top(i*ROW_H)」盖在滚动容器上，节点一多需要滚动时
+        // 高亮块与行错位（用户 2026-11-11「项目一多这棵树就乱」）。行内 `relative()+absolute()`
+        // 跟着行走，滚动与行数都不影响。视觉仍 1:1 保留 egui 的 run 浅底 + band 实色 +
+        // 只在 run 上下两端的圆角与 4pt 内缩。
+        // 每行所属 band（连续 Selected 段）的实色；None = Child 行，只画 run 浅底。
+        let mut band: Vec<Option<gpui::Rgba>> = vec![None; rows.len()];
         let mut k = 0;
         while k < rows.len() {
             if marked[k] != Mark::Selected { k += 1; continue; }
             let start = k;
             while k < rows.len() && marked[k] == Mark::Selected { k += 1; }
             let end = k - 1;
-            let from = first[start]; let to = last[start];
-            let tp = if start == from { 4.0 } else { 0.0 };
-            let bp = if end == to { 4.0 } else { 0.0 };
-            let h = (end - start + 1) as f32 * ROW_H - tp - bp;
-            let mut band = div().size_full().bg(run_color(&rows, start, end));
-            if start == from { band = band.rounded_t(px(5.0)); }
-            if end == to { band = band.rounded_b(px(5.0)); }
-            overlays.push(
-                div().absolute().left(pt(0.0)).top(pt(start as f32 * ROW_H + tp))
-                    .w_full().h(pt(h)).px(pt(ROW_INSET))
-                    .child(band)
-                    .into_any_element(),
-            );
+            let color = run_color(&rows, start, end);
+            for j in start..=end { band[j] = Some(color); }
         }
         let mut divs: Vec<Stateful<Div>> = Vec::with_capacity(rows.len());
         for (index, r) in rows.iter().enumerate() {
-            divs.push(self.layer_row(index, r, drag, marked[index], cx));
+            let in_run = marked[index] != Mark::None;
+            // (run 顶, run 底, 该行 band 实色) —— 逐行下发给 `layer_row`。
+            let hl = (
+                in_run && index == first[index],
+                in_run && index == last[index],
+                band[index].clone(),
+            );
+            divs.push(self.layer_row(index, r, drag, marked[index], hl, cx));
         }
         div()
             .id("layer-scroll")
@@ -399,7 +416,6 @@ impl CanvasView {
             .overflow_y_scroll()
             .flex()
             .flex_col()
-            .children(overlays)
             .children(divs)
     }
 
@@ -409,8 +425,10 @@ impl CanvasView {
         r: &LayerRow,
         dragging: Option<u64>,
         mark: Mark,
+        hl: (bool, bool, Option<gpui::Rgba>),
         cx: &mut Context<Self>,
     ) -> Stateful<Div> {
+        let (run_top, run_bottom, band_color) = hl;
         let t = tokens();
         let is_dragging = dragging == Some(r.id.0);
         let row_h = pt(ROW_H);
@@ -486,12 +504,20 @@ impl CanvasView {
         // 移动：把命中行的真实窗口矩形交给通用件校准，再用全局指针重算落点。
         let me_move = me.clone();
 
-        // 选中/父子集整块由 overlay 统一画；只有未标记的行才有 hover 块（egui 同式）。
-        let highlight = div().size_full().rounded(pt(5.0));
-        let highlight = if mark == Mark::None {
-            highlight.group_hover(group.clone(), |s| s.bg(rgba(t.hover)))
+        // 选中/父子集整块改由**每行自己**画（行内 absolute，跟着行一起滚动）。
+        // Mark::None 只有 hover；Child 行画 run 浅底；Selected 行画所属 band 的实色。
+        // 圆角与 4pt 内缩只在 run 的上下两端，run 内相邻行接缝保持直角、不留缝，
+        // 这样连续选中仍读成一整块（egui `layers.rs` 同式）。
+        let in_run = mark != Mark::None;
+        let pad_top = if !in_run || run_top { 4.0 } else { 0.0 };
+        let pad_bottom = if !in_run || run_bottom { 4.0 } else { 0.0 };
+        let highlight = if !in_run {
+            div().size_full().rounded(pt(5.0)).group_hover(group.clone(), |s| s.bg(rgba(t.hover)))
         } else {
-            highlight
+            let mut h = div().size_full().bg(band_color.unwrap_or(rgba(t.selected_row_child)));
+            if run_top { h = h.rounded_t(pt(5.0)); }
+            if run_bottom { h = h.rounded_b(pt(5.0)); }
+            h
         };
 
         div()
@@ -512,8 +538,8 @@ impl CanvasView {
                     .left_0()
                     .size_full()
                     .px(pt(ROW_INSET))
-                    .pt(pt(4.0))
-                    .pb(pt(4.0))
+                    .pt(pt(pad_top))
+                    .pb(pt(pad_bottom))
                     .child(highlight),
             )
             .when(is_dragging, |d| d.opacity(0.5))

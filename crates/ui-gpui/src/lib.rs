@@ -60,11 +60,28 @@ pub mod control;
 
 pub mod control_server;
 
+/// Per-node WGSL 材质绑定：数据模型 / 固定目录扫描 / plugin_data 持久化（无 wgpu，恒编译）。
+
+mod wgsl_material;
+
 /// GPU 渲染后端（§18 第 1、2 步）：`--features gpu` 才编译，主路径仍是 CPU。
 
 #[cfg(feature = "gpu")]
 
 pub mod gpu;
+
+/// WGSL 材质离屏合成器（`--features gpu`）：把 CPU 画布当 sceneTex，逐绑定节点跑 WGSL 多 pass，
+/// readback 回 `Arc<RenderImage>` 显示路径。gpui 不暴露材质回调，这是唯一可行路线。
+#[cfg(feature = "gpu")]
+
+pub mod wgsl_composite;
+
+/// 通用 WGSL 材质 runner（`--features gpu`）：宿主↔shader 数据交换契约，按 binding 变量名注入
+/// 数据（任意 uniform / backdrop / fields / sampler），不认具体 shader、不写死 pass 链。新增任意
+/// 符合契约的 `.wgsl` 到固定目录即可用，零宿主改动。多 pass 老通道见 `wgsl_composite`。
+#[cfg(feature = "gpu")]
+
+pub mod wgsl_runner;
 
 mod main_menu;
 
@@ -226,6 +243,14 @@ const ZOOM_STEPS: &[f64] = &[0.02, 0.03, 0.06, 0.13, 0.25, 0.5, 1.0, 2.0, 4.0, 8
 
 /// `keymap::normalize` 只认 `ArrowLeft`/`Space`/`F1` 这一套，GPUI 给的是 `left`/`space`/`f1`。
 
+/// These are protocol strings, not UI copy: never pass them through `tr()`.
+
+/// The catalogs translate "Delete" / "Space" / "Home" / "End" in 23 of 25 languages,
+
+/// after which `keymap::normalize` no longer recognises the key and the whole shortcut
+
+/// silently stops firing (Delete, Home/End, Shift/Cmd+Delete, Space combos).
+
 fn canonical_key(key: &str) -> String {
 
     let named = match key {
@@ -238,25 +263,25 @@ fn canonical_key(key: &str) -> String {
 
         "down" => "ArrowDown",
 
-        "space" => tr("Space"),
+        "space" => "Space",
 
         "escape" => "Escape",
 
-        "enter" => tr("Enter"),
+        "enter" => "Enter",
 
         "tab" => "Tab",
 
         "backspace" => "Backspace",
 
-        "delete" => tr("Delete"),
+        "delete" => "Delete",
 
         "pageup" => "PageUp",
 
         "pagedown" => "PageDown",
 
-        "home" => tr("Home"),
+        "home" => "Home",
 
-        "end" => tr("End"),
+        "end" => "End",
 
         other => {
 
@@ -675,6 +700,12 @@ pub struct CanvasView {
 
     extra_state: panels::extra::ExtraState,
 
+    /// 左面板当前 tab：0 = File（Pages/Layers），1 = Assets，2 = Icons。
+    /// 对应 egui `panels/layers.rs` 的 `LeftTab`；点左栏 rail 或引擎 `panel.assets` /
+    /// `ui.set {leftTab}` 切换这里，左面板据此渲染对应面板（见 R 节 R1/R2）。
+
+    left_tab: u8,
+
     /// 左栏 Pages 段是否展开（egui `app.ui.pages_open`，默认展开）。
 
     pages_open: std::rc::Rc<std::cell::RefCell<bool>>,
@@ -1001,6 +1032,8 @@ impl CanvasView {
             extra: None,
 
             extra_state,
+
+            left_tab: 0,
 
             board_shape_open: std::rc::Rc::new(std::cell::RefCell::new(false)),
 
@@ -1367,6 +1400,9 @@ impl CanvasView {
 
         let mut d = panels::right::data::read(&ds.doc, &ds.selection, page, self.fields.dev_ready_filter());
 
+        // lizard `Id::new(("selection_colors_open", ds.uid))`：展开态按文档 uid 分档。
+        d.doc_uid = ds.uid;
+
         // A3: the Comments panel's list, from the panel's own filter/sort/search.
         let comment_me = figcraft_engine::cmd::comment::user_name(&self.app.session);
         {
@@ -1651,18 +1687,19 @@ impl CanvasView {
                 }
 
                 // `ui.set {leftTab}`：egui 用它切左栏的 File / Assets / Icons。GPUI 把这几块
-                // 「整面板」统一挂在可关闭浮层里（见 `panels/extra.rs` 的说明），所以这里
-                // 把 tab 名映射成对应浮层：`set` 语义是幂等的，不是 toggle。
+                // 收进左面板的 tab（见 R 节 R1/R2），不再弹浮层：`set` 语义是幂等的，不是 toggle。
                 if let Some(tab) = r.data.get("leftTab").and_then(serde_json::Value::as_str) {
 
                     match tab {
 
-                        "icons" => self.extra = Some(panels::extra::ExtraKind::Icons),
+                        "icons" => { self.left_tab = 2; self.extra = None; }
 
-                        "assets" => self.extra = Some(panels::extra::ExtraKind::Assets),
+                        "assets" => { self.left_tab = 1; self.extra = None; }
 
-                        // `file`（以及未知值）就是图层面板：收起这两块浮层。
+                        // `file`（以及未知值）就是图层面板：收起浮层并回到 tab 0。
                         _ => {
+
+                            self.left_tab = 0;
 
                             if matches!(self.extra, Some(panels::extra::ExtraKind::Icons | panels::extra::ExtraKind::Assets)) {
 
@@ -1728,6 +1765,9 @@ impl CanvasView {
 
                 panels::extra::UiAction::Toggle(kind) => self.toggle_extra(kind),
 
+                // `panel.assets` / `panel.libraries`：切到左面板的 Assets tab（R1），不弹浮层。
+                panels::extra::UiAction::LeftTab(tab) => { self.left_tab = tab; self.extra = None; },
+
                 panels::extra::UiAction::Compare { id, version } => {
 
                     self.extra = Some(panels::extra::ExtraKind::DevCompare { id, version: version.clone() });
@@ -1787,6 +1827,12 @@ impl CanvasView {
     }
 
 
+
+    /// Text 选区标题行的「Create link」：`lizard menus::invoke("text.link")` 先弹 URL 输入框，
+    /// 由对话框按钮把 `{"url": …}` 交给 `text.link`。右栏按钮直接调这个入口。
+    pub(crate) fn open_link_dialog(&mut self, cx: &mut Context<Self>) {
+        self.open_dialog(dialogs::Kind::Link, &serde_json::json!({}), cx);
+    }
 
     /// A19：打开一个通用对话框。菜单命令与引擎 `ui_requests` 都走这一个入口，
     /// 所有对话框共用 `DialogState` 的壳 / 网格 / 控件 / 命令队列 / 关闭行为。
@@ -2802,6 +2848,22 @@ impl CanvasView {
         cx: &mut Context<Self>,
 
     ) {
+
+        // ① 零尺寸锚点补成 1×0。`open_menu(pos, …)` 的调用点（W/H 字段尾插槽的 sizing 菜单、
+        //    图标按钮菜单、标题行的 More 菜单）给的是一个「点」，而通用 `Menu::show` 把
+        //    「宽高都为 0」当作没有锚点、直接返回 None —— 菜单于是**点了什么都不弹**
+        //    （用户 2026-11-11 指出「尺寸的下拉菜单点不开」）。补 1 pt 宽后落位规则不变：
+        //    仍然从点击点起、按「锚点底 + 4」向下展开，水平贴边由 `Menu` 自己夹紧。
+
+        let rect = if rect.size.width <= px(0.0) && rect.size.height <= px(0.0) {
+
+            Bounds { origin: rect.origin, size: size(px(1.0), px(0.0)) }
+
+        } else {
+
+            rect
+
+        };
 
         if let Some(a) = &anchor {
 
@@ -5101,7 +5163,7 @@ impl Render for CanvasView {
 
         });
 
-        let CanvasOutput { image, live, painter, bg, in_flight, retired } = canvas::show(&mut self.app, &mut self.worker, ppp, &t);
+        let CanvasOutput { image, overview, live, painter, bg, in_flight, retired } = canvas::show(&mut self.app, &mut self.worker, ppp, &t);
 
         if let Some(real) = saved_doc
 
@@ -5140,6 +5202,31 @@ impl Render for CanvasView {
         // 贴图：整页图像重投影到当前视图。
 
         let mut layers: Vec<gpui::AnyElement> = Vec::new();
+
+        // 整页兜底图垫在最下面：清晰贴图盖住的部分看不见它，没盖住的那条露出来的是它。
+        // 平移时于是没有一帧是空白 —— 新区域"一拖过去就已经在那儿"了。
+
+        if let Some((tex, r)) = overview {
+
+            layers.push(
+
+                img(ImageSource::Render(tex))
+
+                    .absolute()
+
+                    .left(px(r.min.x))
+
+                    .top(px(r.min.y))
+
+                    .w(px(r.width().max(1.0)))
+
+                    .h(px(r.height().max(1.0)))
+
+                    .into_any_element(),
+
+            );
+
+        }
 
         if let Some((tex, r)) = image {
 
@@ -5314,6 +5401,24 @@ impl Render for CanvasView {
         let mut texts: Vec<gpui::AnyElement> = Vec::new();
 
         for l in &painter.labels {
+
+            // 旋转标签（左标尺数字）：GPUI 的文字管线没有变换矩阵，只有 SVG 绘图有。
+            // 把整段文字做成内联 SVG 后绕自身中心转 -90°，等价于 egui 的
+            // `TextShape::with_angle_and_anchor(-π/2, CENTER_CENTER)`。
+            if let Some(angle) = l.angle {
+                let key = canvas::svg_text::text_key(&l.text, l.font.size, l.rect.width(), l.rect.height());
+                let rotated = gpui::svg()
+                    .absolute()
+                    .left(px(l.rect.min.x))
+                    .top(px(l.rect.min.y - widgets::TEXT_NUDGE))
+                    .w(px(l.rect.width().max(1.0)))
+                    .h(px(l.rect.height().max(1.0)))
+                    .text_color(canvas::painter::to_rgba(l.color))
+                    .path(key)
+                    .with_transformation(gpui::Transformation::rotate(gpui::radians(angle)));
+                texts.push(rotated.into_any_element());
+                continue;
+            }
 
             let mut el = div()
 
@@ -6158,33 +6263,49 @@ impl Render for CanvasView {
 
                     let m = e.keystroke.modifiers;
 
+                    // Text edit: Cmd/Ctrl+Z(-Shift) ends the edit, then undo/redo.
+
+                    if (m.platform || m.control) && e.keystroke.key.as_str() == "z" {
+
+                        let _ = figcraft_engine::textedit::end(&mut this.app.session);
+
+                        let id = if m.shift { "edit.redo" } else { "edit.undo" };
+
+                        let _ = this.app.session.execute(id, &serde_json::json!({}));
+
+                        cx.notify();
+
+                        return;
+
+                    }
+
                     let word = m.control || m.alt;
 
-                    let line = m.platform;
+                    let line = m.platform || m.control;
 
                     let named = match e.keystroke.key.as_str() {
 
                         "backspace" => Some("Backspace"),
 
-                        "delete" => Some(tr("Delete")),
+                        "delete" => Some("Delete"),
 
-                        "enter" => Some(tr("Enter")),
+                        "enter" => Some("Enter"),
 
                         "escape" => Some("Escape"),
 
                         "tab" => Some("Tab"),
 
-                        "left" => Some(tr("Left")),
+                        "left" => Some("Left"),
 
-                        "right" => Some(tr("Right")),
+                        "right" => Some("Right"),
 
-                        "up" => Some(tr("Up")),
+                        "up" => Some("Up"),
 
-                        "down" => Some(tr("Down")),
+                        "down" => Some("Down"),
 
-                        "home" => Some(tr("Home")),
+                        "home" => Some("Home"),
 
-                        "end" => Some(tr("End")),
+                        "end" => Some("End"),
 
                         _ => None,
 
@@ -6448,9 +6569,39 @@ impl Render for CanvasView {
 
                 }
 
+                // 点 File tab：回到图层视图（R1）。
+                cv.left_tab = 0;
+
             });
 
         };
+
+        // 左栏 rail 第 3 项 = Assets。egui `layers.rs` 的 `LeftTab::Assets` 分支：点它切到左面板
+        // 的 Assets tab（R1），不再弹居中浮层。
+        let me_assets = cx.entity();
+
+        let on_assets = move |_e: &gpui::ClickEvent, _w: &mut Window, cx: &mut App| {
+
+            me_assets.update(cx, |cv, cx| {
+
+                if cv.left_tab == 1 {
+
+                    cv.left_tab = 0; // 再次点击收起回图层
+
+                } else {
+
+                    cv.left_tab = 1;
+
+                }
+
+                cv.extra = None;
+
+                cx.notify();
+
+            });
+
+        };
+
 
 
 
@@ -6641,7 +6792,7 @@ impl Render for CanvasView {
             // B9：隐藏 UI 时左右侧栏、工具栏、分隔条命中区全部让位给画布；
             // 收起界面（minimize）时保留工具栏，右栏只在有选区时出现（egui `view.minimize` 语义）。
             .when(show_sidebars, |d| d
-                .child(dbg_tint(panels::left_rail(on_menu, on_variables, on_file, self.variables_full, self.variables_open), dbg, 0xE5484D))
+                .child(dbg_tint(panels::left_rail(on_menu, on_variables, on_file, on_assets, self.left_tab, self.variables_open, self.variables_full), dbg, 0xE5484D))
 
                 .when(!self.left_collapsed, |d| {
 
@@ -8673,7 +8824,8 @@ pub fn run() {
 
     // 这是 kit `Icon` 依赖的资源注册契约，本地实现、不引入 gpui-kit crate。
 
-    let app = Application::new().with_assets(crate::widgets::icon::IconAssets);
+    // `AppAssets` = 原有 IconAssets + 动态内联 SVG 文字（旋转标尺数字）。
+    let app = Application::new().with_assets(crate::canvas::svg_text::AppAssets);
 
     app.run(move |cx: &mut App| {
 
@@ -10265,3 +10417,65 @@ mod panel_resize_tests {
 
 }
 
+
+
+#[cfg(test)]
+mod keyboard_audit_tests {
+    use super::canonical_key;
+    use figcraft_engine::keymap::{self, Context, Platform};
+
+    /// Reverse a keymap canonical key into the name GPUI puts in `Keystroke::key`.
+    fn gpui_key(canonical: &str) -> String {
+        match canonical {
+            "Delete" => "delete",
+            "Backspace" => "backspace",
+            "Enter" => "enter",
+            "Escape" => "escape",
+            "Tab" => "tab",
+            "Space" => "space",
+            "Home" => "home",
+            "End" => "end",
+            "PageUp" => "pageup",
+            "PageDown" => "pagedown",
+            "ArrowLeft" => "left",
+            "ArrowRight" => "right",
+            "ArrowUp" => "up",
+            "ArrowDown" => "down",
+            other => return other.to_ascii_lowercase(),
+        }
+        .to_string()
+    }
+
+    /// Every canvas binding must survive `canonical_key` and still resolve to its own command.
+    #[test]
+    fn audit_every_canvas_binding() {
+        // Key names are protocol strings now: independent of the UI language. Never touch
+        // the global locale here, or tests running in parallel read translated labels.
+        for (gpu, want) in [("delete", "Delete"), ("space", "Space"), ("home", "Home"), ("end", "End"), ("enter", "Enter")] {
+            assert_eq!(canonical_key(gpu), want, "key names must not be localised");
+        }
+        let platform = Platform::current();
+        let mut ok = 0usize;
+        let mut broken: Vec<String> = Vec::new();
+        for b in keymap::KEYS {
+            if !matches!(b.context, Context::Canvas | Context::Both) {
+                continue;
+            }
+            for spec in b.keys(platform) {
+                let Some((mods, key)) = keymap::parse(spec) else { continue };
+                let canon = canonical_key(&gpui_key(key));
+                let hit = keymap::lookup(platform, Context::Canvas, &canon, mods).map(|f| f.id);
+                if hit == Some(b.id) {
+                    ok += 1;
+                } else {
+                    broken.push(format!("{}: {} -> {:?} -> {:?}", b.id, spec, canon, hit));
+                }
+            }
+        }
+        eprintln!("[audit] ok={ok} broken={}\n{}", broken.len(), broken.join("\n"));
+        assert!(broken.is_empty(), "{} bindings broken", broken.len());
+    }
+}
+
+#[cfg(test)]
+mod keyboard_e2e_tests;

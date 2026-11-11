@@ -11,7 +11,7 @@ use crate::CanvasView;
 use crate::canvas::geom::Color32;
 use crate::widgets::menu::MenuRow;
 use crate::widgets::{
-    Icon, IconButton, PanelSection, SectionHeader, SectionHeaderVariant, Slot, TextEdit, TextField, field_row, field_row_full, pt, rgba, segmented,
+    Icon, IconButton, PanelSection, SectionHeader, SectionHeaderVariant, Segmented, Slot, TextEdit, TextField, field_row, field_row_full, pt, rgba,
     sublabel_row, sublabel_row2, tokens,
 };
 use figcraft_color::BlendMode;
@@ -353,6 +353,21 @@ pub(crate) struct RowEditCtx {
     pub nest_key: Option<String>,
 }
 
+/// 一个 WGSL 参数输入框提交时所需的全部上下文。持有当前绑定快照，提交时只改这一个参数、
+/// 重新序列化整条 binding 并推 `node.set {props:{pluginData}}`——避免多参数并发编辑互相覆盖。
+#[derive(Clone, Debug)]
+pub(crate) struct WgslParamEdit {
+    pub binding: crate::wgsl_material::WgslMaterialBinding,
+    /// uniform 路径，如 `U.gain`。
+    pub field: String,
+    /// 控件值域上下界（`wgsl_effect::ParamSpec`），提交时 clamp。
+    pub min: f64,
+    pub max: f64,
+}
+
+/// WGSL 参数输入框池的大小（一个 shader 很少超过 12 个可调参数）。
+pub(crate) const WGSL_PARAM_FIELDS: usize = 12;
+
 /// 池里一个编辑器的数量上限（paint 两列 × 多行 + export + selection-colors，留足余量）。
 pub(crate) const ROW_EDITORS: usize = 48;
 
@@ -378,10 +393,64 @@ pub(crate) struct PanelSel {
     pub in_instance: bool,
 }
 
-/// 右栏按钮的**显隐条件**，逐条照 `ui-egui` 源码。集中成纯函数，避免条件散在各处，
+/// 选区标题行的判断输入（`lizard right.rs::header`）。全是纯值，方便单测锁住显隐规则。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct HeaderSel {
+    pub is_frame: bool,
+    pub is_group: bool,
+    pub is_text: bool,
+    pub is_component: bool,
+    pub is_shape: bool,
+    /// 矢量编辑已经选中了顶点 / 线段（lizard `points_selected`）。
+    pub points_selected: bool,
+    pub count: usize,
+}
+
+/// 标题行该画哪套东西（`lizard right.rs::header` 的分支结果）。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct HeaderActions {
+    /// 类型名带下拉（Frame / Group）。
+    pub type_menu: bool,
+    /// 单选 Frame 的「交换方向」按钮。
+    pub swap_orientation: bool,
+    /// Text 专属的四个按钮；与 `quick` 互斥。
+    pub text: bool,
+    /// 普通图层那套：Select matching / Component / Mask / Boolean / Edit object。
+    pub quick: bool,
+    /// 单选形状才有 Edit object（只在 `quick` 里）。
+    pub edit_object: bool,
+}
+
+/// 右栏按钮的**显隐条件**，逐条照 `ui-egui` / `lizard` 源码。集中成纯函数，避免条件散在各处，
 /// 也让「什么时候显示 / 什么时候隐藏」可以被单测锁住。
 pub(crate) mod visibility {
-    use super::PanelSel;
+    use super::{HeaderActions, HeaderSel, PanelSel};
+
+    /// `lizard right.rs::header`：
+    /// * Frame / Group → 类型名下拉；单选 Frame 另有「交换方向」。
+    /// * 已选矢量点 → 只留类型名那部分，右侧动作一个都不画（`return`）。
+    /// * Component / ComponentSet → 走组件专属分支，普通动作一个都不画。
+    /// * 全是 Text → 四个 Text 专属按钮，普通动作一个都不画（`return`）。
+    /// * 其余 → 普通图层动作；单选形状额外多一个 Edit object。
+    pub fn header_actions(s: &HeaderSel) -> HeaderActions {
+        let base = HeaderActions {
+            type_menu: kind_menu(s.is_frame, s.is_group),
+            swap_orientation: s.is_frame,
+            ..HeaderActions::default()
+        };
+        if s.points_selected || s.is_component {
+            return base;
+        }
+        if s.is_text {
+            return HeaderActions { text: true, ..base };
+        }
+        HeaderActions { quick: true, edit_object: s.is_shape, ..base }
+    }
+
+    /// `lizard right.rs::header`：`bool_button.clicked() && sel.len() >= 2` 才执行 `bool.union`。
+    pub fn bool_union_enabled(count: usize) -> bool {
+        count >= 2
+    }
 
     /// egui `layout_panel.rs::layout_section` 的 `btns`：
     /// `in_instance` → 空；`frames && !has_al` → `+`；`has_al` → `−`；其余 → 空。
@@ -452,6 +521,12 @@ pub(crate) struct RightFields {
     scale_ctx: std::rc::Rc<std::cell::RefCell<crate::panels::right::data::ScaleData>>,
     /// Frame 预设面板各分类的展开状态（egui 存在 `ui.data` 的临时值，默认只开 Phone）。
     preset_open: std::rc::Rc<std::cell::RefCell<Vec<(&'static str, bool)>>>,
+    /// Selection colors 节的展开态，键是 `ds.uid`（lizard
+    /// `Id::new(("selection_colors_open", ds.uid))`）：**每个文档各自记住**开合状态，
+    /// 缺省即折叠；折叠时头部右侧显示最多三个色块 + `+N`。
+    selection_colors_open: std::rc::Rc<std::cell::RefCell<std::collections::HashMap<u64, bool>>>,
+    /// 该节头部是否悬停（lizard 只在悬停时画 chevron、把标题提亮）。
+    selection_colors_hover: std::rc::Rc<std::cell::RefCell<bool>>,
     /// 右栏当前标签：0 = Design，1 = Prototype，2 = Inspect（egui `app.ui.right_tab`）。纯 UI 状态，不进文档。
     right_tab: std::rc::Rc<std::cell::RefCell<u8>>,
     /// A3: the Comments panel's local state (filter / sort / search / open thread).
@@ -462,6 +537,10 @@ pub(crate) struct RightFields {
     inspect_rem: std::rc::Rc<std::cell::RefCell<bool>>,
     /// Prototype 面板里展开编辑的那条交互（行下标）；`None` = 都没展开。
     proto_open: std::rc::Rc<std::cell::RefCell<Option<usize>>>,
+    /// WGSL 参数输入框池：retained tree 不能每帧新建，预建固定个数，按当前 shader 的参数数认领。
+    wgsl_param_fields: Vec<Entity<TextField>>,
+    /// 每个参数字段提交时的运行时上下文（当前绑定快照 + uniform 路径 + 控件范围）。
+    wgsl_param_ctx: std::rc::Rc<std::cell::RefCell<Vec<Option<WgslParamEdit>>>>,
     /// Inspect 标签的 Dev Mode 纯 UI 状态：Ready for dev 的过滤器下标、注释分类过滤器
     /// （0 = 全部 / 1 = 无分类 / 2+i = 第 i 个分类）、开发资源「正在添加」与「正在编辑第几条」。
     dev_filter: std::rc::Rc<std::cell::RefCell<usize>>,
@@ -797,6 +876,32 @@ impl RightFields {
                 });
             }));
         }
+        // WGSL 材质参数输入框池：retained tree 不能每帧新建 Entity。每帧由
+        // `sections::effects` 认领槽位（写入 `wgsl_param_ctx[slot]`），提交时只改一个参数、
+        // 重新序列化整条 binding 并推 `node.set`，避免多参数并发编辑互相覆盖。
+        let wgsl_param_ctx: std::rc::Rc<std::cell::RefCell<Vec<Option<WgslParamEdit>>>> =
+            std::rc::Rc::new(std::cell::RefCell::new((0..WGSL_PARAM_FIELDS).map(|_| None).collect()));
+        let mut wgsl_param_fields = Vec::with_capacity(WGSL_PARAM_FIELDS);
+        for slot in 0..WGSL_PARAM_FIELDS {
+            let ctx = wgsl_param_ctx.clone();
+            let cmds = cmds.clone();
+            wgsl_param_fields.push(TextField::build(cx, DEFAULT_COL, move |tf, _| {
+                tf.set_numeric("", 1.0);
+                let ctx = ctx.clone();
+                let cmds = cmds.clone();
+                tf.set_on_commit(move |text, _window, _cx| {
+                    // 未认领的槽位（shader 参数数 < 池大小）在切换绑定后不能沿用旧目标。
+                    let Some(Some(e)) = ctx.borrow().get(slot).cloned() else { return };
+                    let Ok(mut v) = text.trim().parse::<f64>() else { return };
+                    if e.min <= e.max {
+                        v = v.clamp(e.min, e.max);
+                    }
+                    let mut binding = e.binding;
+                    binding.params.insert(e.field, v);
+                    cmds.push(Cmd { id: "node.set", params: Some(crate::wgsl_material::write_binding_params(Some(&binding))) });
+                });
+            }));
+        }
         let scale_ctx = std::rc::Rc::new(std::cell::RefCell::new(crate::panels::right::data::ScaleData::default()));
         let mut fields = Self {
             x: n(cx, "X", 0.0, "", 1.0, Some(Prop::X)),
@@ -823,12 +928,18 @@ impl RightFields {
             scale_k: nf_scale(cx, "×", 0.1, &cmds, scale_ctx.clone(), 2),
             scale_ctx,
             preset_open: std::rc::Rc::new(std::cell::RefCell::new(Vec::new())),
+            selection_colors_open: std::rc::Rc::new(std::cell::RefCell::new(std::collections::HashMap::new())),
+            selection_colors_hover: std::rc::Rc::new(std::cell::RefCell::new(false)),
             right_tab: std::rc::Rc::new(std::cell::RefCell::new(0u8)),
             comment_ui: std::rc::Rc::new(std::cell::RefCell::new(crate::comments::CommentUi::default())),
             inspect_lang: std::rc::Rc::new(std::cell::RefCell::new(0usize)),
             inspect_fmt: std::rc::Rc::new(std::cell::RefCell::new(0usize)),
             inspect_rem: std::rc::Rc::new(std::cell::RefCell::new(false)),
             proto_open: std::rc::Rc::new(std::cell::RefCell::new(None)),
+            // WGSL 材质（另一条并行开发线新增的字段）：这里先给可编译的默认值，
+            // 参数输入框池由该功能自己按需预建。
+            wgsl_param_fields,
+            wgsl_param_ctx,
             dev_filter: std::rc::Rc::new(std::cell::RefCell::new(0usize)),
             dev_cat_filter: std::rc::Rc::new(std::cell::RefCell::new(0usize)),
             dev_res_add: std::rc::Rc::new(std::cell::RefCell::new(false)),
@@ -944,6 +1055,8 @@ impl RightFields {
         editors.push(fields.stroke_hex.clone());
         editors.push(fields.stroke_opacity.clone());
         editors.extend(fields.row_editors.iter().cloned());
+        // WGSL 参数输入框也要在失焦 / 点画布时统一提交草稿。
+        editors.extend(fields.wgsl_param_fields.iter().map(|tf| tf.read(cx).edit()));
         fields.editors = editors;
         fields
     }
@@ -1017,6 +1130,49 @@ impl RightFields {
         for c in self.row_ctx.borrow_mut().iter_mut() {
             *c = None;
         }
+        // WGSL 参数池同理：切换到参数更少的材质时，多余槽位不能沿用上一次的提交目标。
+        for c in self.wgsl_param_ctx.borrow_mut().iter_mut() {
+            *c = None;
+        }
+    }
+
+    /// 认领一个 WGSL 材质参数输入框：绑定本帧的提交目标（当前 binding 快照 + uniform 路径 +
+    /// 值域），并把该参数当前的显示值 / 标签 / 步长 / 范围推入池里的 `TextField`。
+    ///
+    /// 提交时只改这一个参数、把整条 binding 重新序列化推 `node.set`，所以另一个参数并发编辑
+    /// 时不会互相覆盖（彼此持有的是同一帧的完整快照，引擎按顺序 apply）。值每帧都推：
+    /// `TextEdit::set_value` 对相同值恒为 no-op，且用户正在输入的草稿不会被覆盖。
+    pub(crate) fn wgsl_param_field(
+        &self,
+        cx: &mut App,
+        slot: usize,
+        spec: &figcraft_render::wgsl_effect::ParamSpec,
+        value: f64,
+        binding: &crate::wgsl_material::WgslMaterialBinding,
+    ) -> Entity<TextField> {
+        let slot = slot.min(WGSL_PARAM_FIELDS - 1);
+        if let Some(c) = self.wgsl_param_ctx.borrow_mut().get_mut(slot) {
+            *c = Some(WgslParamEdit {
+                binding: binding.clone(),
+                field: spec.field.clone(),
+                min: spec.min,
+                max: spec.max,
+            });
+        }
+        if let Some(e) = self.wgsl_param_fields.get(slot) {
+            let shown = format!("{}", value);
+            let step = spec.step;
+            let (lo, hi) = (spec.min, spec.max);
+            e.update(cx, |tf, _| {
+                // 参数的名称画在输入框**前面**（`wgsl_material_rows` 的独立文本列），
+                // 不再塞进输入框的 lead 槽位 —— 塞进去时名字和数值挤在同一个框里。
+                tf.set_lead(Slot::None);
+                tf.set_value(shown);
+                tf.set_numeric("", step);
+                tf.set_range(Some(lo), Some(hi));
+            });
+        }
+        self.wgsl_param_fields[slot].clone()
     }
 
     /// 认领一个列表行编辑器：绑定本帧的提交目标，且只在显示值变化时写入。
@@ -1450,24 +1606,80 @@ fn section(title: &'static str, dim: bool, icons: &[Icon]) -> PanelSection {
     if icons.is_empty() { s } else { s.header_trail(trail(icons)) }
 }
 
+/// 左栏 rail 三项的高亮状态（File / Assets / Variables），**严格互斥**。
+/// 变量全屏时只高亮 Variables；否则按 `left_tab`：0=File、1=Assets、2=File（Icons 归文件视图，
+/// rail 暂无独立 Icons 按钮）。抽成纯函数是为了穷举所有组合做回归测试。
+pub(crate) fn rail_active(left_tab: u8, variables_open: bool, variables_full: bool) -> (bool, bool, bool) {
+    let variables = variables_open && variables_full;
+    let file = !variables && (left_tab == 0 || left_tab == 2);
+    let assets = !variables && left_tab == 1;
+    (file, assets, variables)
+}
+
+#[cfg(test)]
+mod rail_active_tests {
+    use super::rail_active;
+
+    #[test]
+    fn the_three_tabs_are_never_both_active() {
+        for lt in 0..=4u8 {
+            for vo in [false, true] {
+                for vf in [false, true] {
+                    let (f, a, v) = rail_active(lt, vo, vf);
+                    assert!(
+                        (f as u8) + (a as u8) + (v as u8) <= 1,
+                        "left_tab={lt} open={vo} full={vf} -> file={f} assets={a} vars={v}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// 用户 2026-11-11 报的 bug：切到组件库后 File 必须灭，不能两个都选。
+    #[test]
+    fn switching_to_assets_turns_file_off() {
+        assert_eq!(rail_active(0, false, false), (true, false, false));
+        assert_eq!(rail_active(1, false, false), (false, true, false));
+        assert_eq!(rail_active(2, false, false), (true, false, false));
+    }
+
+    /// 用户 2026-11-08 要求：浮动小窗不算选中，左栏仍高亮 File。
+    #[test]
+    fn floating_variables_keeps_the_file_tab_active() {
+        assert_eq!(rail_active(0, true, false), (true, false, false));
+        assert_eq!(rail_active(1, true, false), (false, true, false));
+    }
+
+    /// `variables_full` 是会话记忆，关掉后高亮必须回到 File/Assets，且全屏时压过 left_tab。
+    #[test]
+    fn full_variables_wins_and_session_memory_does_not_leak() {
+        assert_eq!(rail_active(0, true, true), (false, false, true));
+        assert_eq!(rail_active(1, true, true), (false, false, true));
+        assert_eq!(rail_active(0, false, true), (true, false, false));
+        assert_eq!(rail_active(1, false, true), (false, true, false));
+    }
+}
+
 /// The fixed 56 pt left icon rail (skeleton — placeholder glyphs only).
 pub(crate) fn left_rail(
     on_menu: impl Fn(&gpui::ClickEvent, &mut gpui::Window, &mut gpui::App) + 'static,
     on_variables: impl Fn(&gpui::ClickEvent, &mut gpui::Window, &mut gpui::App) + 'static,
     // 点 File：egui `layers.rs` 里 tab 点击会 `app.ui.variables = None`，Full 时据此切回普通视图。
     on_file: impl Fn(&gpui::ClickEvent, &mut gpui::Window, &mut gpui::App) + 'static,
-    // `variables_active` = 编辑器是否打开（egui 的 `app.ui.variables.is_some()`）。
-    // `variables_full` = 是否是**全屏**变量面板。
-    // ⛔ 高亮规则（用户 2026-11-08 明确要求）：
-    //   * **浮动小窗不算选中**——小窗开着时左栏仍然高亮 File（Layers 还在左边）；
+    // 点 Assets：切到左面板的 Assets tab（R1），不再弹浮层。
+    on_assets: impl Fn(&gpui::ClickEvent, &mut gpui::Window, &mut gpui::App) + 'static,
+    // 左栏当前 tab（0=File / 1=Assets / 2=Icons）与变量编辑器的开 / 全屏状态。
+    // 三项高亮统一由 `rail_active` 派生（含穷举回归测试），调用点不再各算一份：
+    //   * **浮动小窗不算选中**——小窗开着时左栏仍高亮 File（用户 2026-11-08）；
     //   * 只有全屏变量面板才高亮 Variables；
-    //   * 关闭后 `variables_full` 作为会话记忆保留，所以这里必须与 `variables_active` 取与，
-    //     否则关掉全屏后高亮回不去。
+    //   * 关闭后 `variables_full` 作为会话记忆保留，须与 `variables_open` 取与；
+    //   * 点 Assets 后 File 必须灭（用户 2026-11-11「切到组件库两个都选」）。
+    left_tab: u8,
+    variables_open: bool,
     variables_full: bool,
-    variables_active: bool,
 ) -> Div {
     let t = tokens();
-    let variables_tab = variables_active && variables_full;
+    let (file_active, assets_active, variables_tab) = rail_active(left_tab, variables_open, variables_full);
     div()
         .flex_none()
         .w(pt(RAIL_W))
@@ -1501,10 +1713,10 @@ pub(crate) fn left_rail(
             "rail-file",
             Icon::Page,
             tr("File"),
-            !variables_tab,
+            file_active,
             Some(Box::new(on_file)),
         ))
-        .child(rail_item("rail-assets", Icon::Assets, tr("Assets"), false, None))
+        .child(rail_item("rail-assets", Icon::Assets, tr("Assets"), assets_active, Some(Box::new(on_assets))))
         .child(rail_item(
             "rail-variables",
             Icon::Variables,
@@ -1668,7 +1880,7 @@ pub(crate) fn right_panel(
     let motion_q = crate::motion::Queue::new(std::rc::Rc::new(|| {}));
     let fills_sec = right::sections::paints(f, data, true, sel.has_vector, row_w, col, &mut n, window, cx, None, false, &motion_q);
     let strokes_sec = right::sections::paints(f, data, false, sel.has_vector, row_w, col, &mut n, window, cx, None, false, &motion_q);
-    let effects_sec = right::sections::effects(f, data, col, None);
+    let effects_sec = right::sections::effects(f, data, col, cx, None);
     let sel_colors_sec = right::sections::selection_colors(f, data, row_w, col, &mut n, window, cx);
     let grids_sec = right::sections::grids(f, data, col);
     let export_sec = right::sections::export(f, data, col, &mut n, cx);
@@ -1701,14 +1913,10 @@ pub(crate) fn right_panel(
             // width — they flow with the columns, so they stay aligned with the X/Y rows below).
             let bar = |items: &[(Icon, &'static str)], base: usize| {
                 let cmds = f.cmds.clone();
-                segmented(
-                    items,
-                    None,
-                    Some(Rc::new(move |i: usize, _w: &mut Window, _cx: &mut App| {
-                        const NAMES: [&str; 6] = ["align.left", "align.hcenter", "align.right", "align.top", "align.vcenter", "align.bottom"];
-                        cmds.push(Cmd { id: NAMES[(base + i).min(5)], params: None });
-                    })),
-                )
+                Segmented::icons(items).on_pick(move |i: usize, _w: &mut Window, _cx: &mut App| {
+                    const NAMES: [&str; 6] = ["align.left", "align.hcenter", "align.right", "align.top", "align.vcenter", "align.bottom"];
+                    cmds.push(Cmd { id: NAMES[(base + i).min(5)], params: None });
+                })
             };
             let h = bar(&[(Icon::AlignLeft, tr("Align left")), (Icon::AlignHCenter, tr("Align horizontal centers")), (Icon::AlignRight, tr("Align right"))], 0);
             let v = bar(&[(Icon::AlignTop, tr("Align top")), (Icon::AlignVCenter, tr("Align vertical centers")), (Icon::AlignBottom, tr("Align bottom"))], 3);
@@ -1738,14 +1946,15 @@ pub(crate) fn right_panel(
             // `rotate_row`: the three 24 pt cells under "Rotation" (`position_fields`'s
             // `widgets::segmented`): Rotate 90° / Flip H / Flip V — each a `object.*` command.
             let rot_cmds = f.cmds.clone();
-            let rotate = segmented(
-                &[(Icon::Rotate, tr("Rotate 90° right")), (Icon::FlipH, tr("Flip horizontal")), (Icon::FlipV, tr("Flip vertical"))],
-                None,
-                Some(Rc::new(move |i: usize, _w: &mut Window, _cx: &mut App| {
-                    const C: [&str; 3] = ["object.rotateRight", "object.flipH", "object.flipV"];
-                    rot_cmds.push(Cmd { id: C[i.min(2)], params: None });
-                })),
-            );
+            let rotate = Segmented::icons(&[
+                (Icon::Rotate, tr("Rotate 90° right")),
+                (Icon::FlipH, tr("Flip horizontal")),
+                (Icon::FlipV, tr("Flip vertical")),
+            ])
+            .on_pick(move |i: usize, _w: &mut Window, _cx: &mut App| {
+                const C: [&str; 3] = ["object.rotateRight", "object.flipH", "object.flipV"];
+                rot_cmds.push(Cmd { id: C[i.min(2)], params: None });
+            });
             let mut pos_sec = PanelSection::new(tr("Position"));
             if let Some(b) = distribute_btn {
                 pos_sec = pos_sec.header_trail(b);
@@ -1843,19 +2052,21 @@ pub(crate) fn right_panel(
                     LayoutDir::None => None,
                 };
                 let dir_cmds = f.cmds.clone();
-                let dir = segmented(
-                    &[(Icon::AlignVCenter, tr("Vertical")), (Icon::AlignHCenter, tr("Horizontal")), (Icon::ViewGrid, tr("Grid"))],
-                    active,
-                    Some(Rc::new(move |i: usize, _w: &mut Window, _cx: &mut App| {
-                        let m = match i {
-                            0 => "vertical",
-                            1 => "horizontal",
-                            2 => "grid",
-                            _ => return,
-                        };
-                        dir_cmds.push(Cmd { id: "node.set", params: Some(serde_json::json!({ "props": { "layout": m } })) });
-                    })),
-                );
+                let dir = Segmented::icons(&[
+                    (Icon::AlignVCenter, tr("Vertical")),
+                    (Icon::AlignHCenter, tr("Horizontal")),
+                    (Icon::ViewGrid, tr("Grid")),
+                ])
+                .active(active)
+                .on_pick(move |i: usize, _w: &mut Window, _cx: &mut App| {
+                    let m = match i {
+                        0 => "vertical",
+                        1 => "horizontal",
+                        2 => "grid",
+                        _ => return,
+                    };
+                    dir_cmds.push(Cmd { id: "node.set", params: Some(serde_json::json!({ "props": { "layout": m } })) });
+                });
                 sec = sec.child(sublabel_row(tr("Layout"))).child(field_row_full(dir));
             }
 
@@ -2249,7 +2460,45 @@ mod cmd_queue_tests {
 /// `if`（或 `section_header(..., empty)`），防止装配层再次退化成「无条件全画」。
 #[cfg(test)]
 mod visibility_tests {
-    use super::{PanelSel, visibility};
+    use super::{HeaderSel, PanelSel, visibility};
+
+    /// `lizard right.rs::header` 的分支：Frame / Group / Text / 形状 / 组件 / 已选矢量点。
+    #[test]
+    fn header_actions_follow_lizard_visibility_rules() {
+        let a = |s: HeaderSel| visibility::header_actions(&s);
+        // 普通矩形：类型名没有下拉，普通动作齐；单选形状多一个 Edit object。
+        let plain = a(HeaderSel::default());
+        assert!(!plain.type_menu && !plain.swap_orientation && !plain.text);
+        assert!(plain.quick && !plain.edit_object);
+        let shape = a(HeaderSel { is_shape: true, count: 1, ..HeaderSel::default() });
+        assert!(shape.quick && shape.edit_object, "a single shape shows Edit object");
+        // Frame：类型下拉 + 交换方向 + 普通动作。
+        let frame = a(HeaderSel { is_frame: true, count: 1, ..HeaderSel::default() });
+        assert!(frame.type_menu && frame.swap_orientation && frame.quick && !frame.text);
+        // Group：类型下拉，没有交换方向。
+        let group = a(HeaderSel { is_group: true, count: 1, ..HeaderSel::default() });
+        assert!(group.type_menu && !group.swap_orientation && group.quick);
+        // Text：四个专属按钮，普通动作一个都不画（与 quick 互斥）。
+        let text = a(HeaderSel { is_text: true, count: 1, ..HeaderSel::default() });
+        assert!(text.text && !text.quick && !text.edit_object && !text.type_menu);
+        // 多选文本同样走 Text 分支。
+        assert!(a(HeaderSel { is_text: true, count: 3, ..HeaderSel::default() }).text);
+        // 组件 / 已选矢量点：右侧动作全隐藏，但 Frame 的交换方向仍在（lizard 在 return 之前画）。
+        let component = a(HeaderSel { is_component: true, count: 1, ..HeaderSel::default() });
+        assert!(!component.quick && !component.text);
+        let points = a(HeaderSel { points_selected: true, is_frame: true, count: 1, ..HeaderSel::default() });
+        assert!(!points.quick && !points.text && points.type_menu && points.swap_orientation);
+        // 顺序：矢量点 / 组件优先于 Text；Text 优先于普通动作。
+        let mixed = a(HeaderSel { points_selected: true, is_text: true, count: 1, ..HeaderSel::default() });
+        assert!(!mixed.quick && !mixed.text);
+    }
+
+    #[test]
+    fn bool_union_needs_at_least_two_layers() {
+        assert!(!visibility::bool_union_enabled(0));
+        assert!(!visibility::bool_union_enabled(1));
+        assert!(visibility::bool_union_enabled(2));
+    }
 
     #[test]
     fn distribute_only_for_three_or_more_layers() {
