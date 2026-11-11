@@ -33,8 +33,7 @@ new code written for this repository.
 ```
 crates/
   doc/  engine/  layout/  render/  format/  geom/  color/  text/  svg/  pathops/  …
-  ui-gpui/        the desktop UI (this project)
-  ui-egui/        the original UI, kept as a reference while the port is completed
+  ui-gpui/        the desktop UI
 apps/
   figcraft/       the desktop application
 ```
@@ -56,9 +55,8 @@ apps/
 ## Relationship to the upstream project
 
 Monet exists because the engine deserves a UI that matches it. The engine, file format and command
-model come from the upstream project; the desktop UI is a ground-up port from its immediate-mode
-toolkit to GPUI, and the two UIs live side by side in this repository while the port is finished
-(`crates/ui-egui` is the reference, `crates/ui-gpui` is the target).
+model come from the upstream project; the desktop UI is a ground-up rewrite of its immediate-mode
+interface in GPUI, and only the GPUI front-end ships in this repository.
 
 That split decides where a change belongs:
 

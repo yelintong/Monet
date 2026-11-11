@@ -1598,6 +1598,99 @@ mod tests {
             "at 1x, Depth 20 -> a 20 px reach and a 1 px band, with no fudge factor: {rd1}, {bev1}");
     }
 
+    /// The bug this fixes: the panel lets Depth go to 100, but a 100-document-unit reach on a small
+    /// node folds the two opposite bend bands into each other and samples past the node — the
+    /// "Depth = 100 looks broken" failure. `passes_for` must clamp the packed `u.depth` to a share of
+    /// the node short side through the same `Glass::depth_reach_doc` the CPU path uses, while
+    /// keeping the value in **document units** (so it stays zoom-invariant) and low notches that
+    /// already fit byte-identical.
+    #[test]
+    fn high_depth_on_small_node_is_clamped_in_the_packed_uniform() {
+        let f32at = |b: &[u8], off: usize| f32::from_le_bytes(b[off..off + 4].try_into().unwrap());
+        let probe = |node_w: f64, node_h: f64, notch: f64, zoom: f64| -> (f32, f32) {
+            let mut doc = figcraft_doc::Document::default();
+            let page = doc.pages[0];
+            let f = doc
+                .create(page, figcraft_doc::NodeKind::Frame, "F", 0.0, 0.0, node_w, node_h)
+                .expect("a frame");
+            let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets/wgsl/glass.wgsl");
+            let params = [("u.depth".to_string(), notch)].into_iter().collect();
+            let binding = crate::wgsl_material::WgslMaterialBinding::new(path.to_string_lossy())
+                .with_params(params);
+            doc.get_mut(f).expect("the frame").plugin_data.insert(crate::wgsl_material::BINDING_KEY.into(), binding.to_json());
+            let view = figcraft_render::View { origin: (0.0, 0.0), scale: zoom, width: 2000, height: 1600 };
+            let passes = passes_for(&doc, page, &view, 0.0);
+            let p = passes.into_iter().next().expect("one bound frame yields one pass");
+            let (_, u) = p.uniforms.into_iter().find(|(n, _)| n == "u").expect("the u uniform");
+            // uniform layout: depth@20, dpr@36 (see `glass_depth_is_scale_invariant`).
+            (f32at(&u, 20), f32at(&u, 36))
+        };
+
+        // Small node, Depth 100: packed depth must be the node-short-side cap, not 100.
+        let (depth, _) = probe(80.0, 60.0, 100.0, 1.0);
+        let cap = 60.0_f64 * figcraft_doc::Glass::DEPTH_REACH_FRAC;
+        assert!((f64::from(depth) - cap).abs() < 1e-3,
+            "Depth 100 on a 60px-short node -> packed u.depth {cap}, got {depth}");
+        assert!(depth < 100.0, "a 60px node must never pack a 100px reach");
+
+        // And it stays in document units: same node at 2x packs the same u.depth (dpr carries zoom).
+        let (d1, _) = probe(80.0, 60.0, 100.0, 1.0);
+        let (d2, _) = probe(80.0, 60.0, 100.0, 2.0);
+        assert_eq!(d1, d2, "clamped u.depth must be zoom-invariant (document units)");
+
+        // A big node still fits the whole notch: high Depth is untouched there.
+        let (depth_big, _) = probe(600.0, 500.0, 100.0, 1.0);
+        assert_eq!(depth_big, 100.0, "on a big node Depth 100 reaches 100 document units unchanged");
+    }
+
+    /// The shared conversion `Glass::depth_reach_doc` is the single numeric contract between the CPU
+    /// glass and the external WGSL material. These are the properties the source materials actually
+    /// establish (monotonic in Depth; a lens cannot outgrow its node; zoom-independent because it
+    /// works purely in document units), plus the "low notches untouched" guarantee that keeps the
+    /// fix from changing tuned looks. `figcraft-doc`'s own lib-test target is broken at HEAD, so these
+    /// live here where both render paths' other tests also run.
+    #[test]
+    fn depth_reach_is_monotonic_capped_and_leaves_low_notches_untouched() {
+        use figcraft_doc::Glass;
+
+        // Every notch that physically fits passes through byte-identically.
+        for notch in [1.0, 4.0, 20.0, 40.0] {
+            assert_eq!(Glass::depth_reach_doc(notch, 400.0), notch, "notch {notch} must be untouched when it fits");
+        }
+        assert_eq!(Glass::depth_reach_doc(Glass::default().depth, 400.0), 20.0);
+
+        // The bug case: a high notch on a small node is capped to a share of the node, never 100 px.
+        let node = 100.0_f64;
+        let cap = node * Glass::DEPTH_REACH_FRAC;
+        assert!((Glass::depth_reach_doc(100.0, node) - cap).abs() < 1e-9);
+        assert!(Glass::depth_reach_doc(100.0, node) < 100.0);
+        assert_eq!(Glass::depth_reach_doc(100.0, 0.0), 1.0, "a degenerate node still keeps a 1-unit reach");
+
+        // Monotonic in the notch, clamped to [1,100], monotonic in node size.
+        let mut prev = 0.0;
+        for notch in 1..=100 {
+            let r = Glass::depth_reach_doc(f64::from(notch), 120.0);
+            assert!(r >= prev, "reach must not fall as Depth grows at notch {notch}");
+            assert!((1.0..=100.0).contains(&r));
+            prev = r;
+        }
+        let mut prev = 0.0;
+        for nd in [20.0, 40.0, 80.0, 160.0, 320.0] {
+            let r = Glass::depth_reach_doc(100.0, nd);
+            assert!(r >= prev, "bigger nodes allow at least as much reach");
+            prev = r;
+        }
+        assert_eq!(Glass::depth_reach_doc(0.0, 400.0), 1.0);
+        assert_eq!(Glass::depth_reach_doc(500.0, 400.0), 100.0);
+
+        // Zoom-invariance is structural: inputs and output are document units only, and the capped
+        // reach/node fraction is a constant regardless of the node's pixel size.
+        for nd in [40.0_f64, 80.0, 160.0, 400.0] {
+            let r = Glass::depth_reach_doc(100.0, nd);
+            assert!((r / nd - Glass::DEPTH_REACH_FRAC).abs() < 1e-9, "clamped reach/node is a constant, node={nd}");
+        }
+    }
+
     /// A node hanging over the canvas edge must be clamped, not cropped past the texture's end:
     /// an unclamped `copy_texture_to_texture` is a wgpu validation error that panics the render
     /// thread, which is exactly how a bound material can silently never appear.

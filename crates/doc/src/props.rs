@@ -1780,3 +1780,11 @@ impl ExportSetting {
         }
     }
 }
+
+// NOTE: tests for `Glass::depth_reach_doc` live in `figcraft-ui-gpui`'s `wgsl_runner::tests` (see
+// `depth_reach_is_monotonic_capped_and_leaves_low_notches_untouched`). This crate's lib-test target
+// does not compile even at HEAD — the tracked `effects_tests.rs` references
+// `Node::layer_effects_reach` and constructs `NodeKind::Page` without its `guides` field, neither of
+// which exists in the tracked `node.rs`. That breakage predates and is unrelated to this change, so a
+// `#[cfg(test)]` module here would be un-runnable; the pure function is exercised through the GPU
+// material path's tests instead.

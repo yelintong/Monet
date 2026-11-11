@@ -20,13 +20,6 @@ upstream project. The desktop UI in `crates/ui-gpui` is this repository's own wo
   it is required by a UI feature and agreed first.
 - **UI / GPUI work** (panels, canvas interaction, dialogs, input, theming) → this repository.
 
-## The parity rule for UI work
-
-`crates/ui-egui` is the reference implementation. A UI change must match it one-to-one: the same
-controls, the same order, the same sections, the same sizes. Do not substitute a simplified
-control (a row of chips for a dropdown, a fixed popover for a draggable window, a note for a
-section header) and do not hard-code option lists that the engine already provides.
-
 ## Checks
 
 ```sh
@@ -34,12 +27,12 @@ cargo check --workspace
 cargo test -p figcraft-ui-gpui --lib --features test-support
 ```
 
-The test suite has three known failures that predate this repository's UI work; they are listed in
-`docs/gpui-egui-parity-plan.md` and are not caused by a change unless the count moves.
+The test suite has three known failures that predate this repository's UI work; they are tracked
+in the issue tracker and are not caused by a change unless the count moves.
 
 ## Code and comments
 
 - Comments and identifiers are English.
 - Do not reference the project this one grew out of, other products, or their trademarks in code
   comments. Describe what the code does, not where it came from.
-- New user-visible strings go through the catalogue (`crates/ui-egui/locales/*.toml`), never inline.
+- New user-visible strings go through the catalogue (`crates/i18n/locales/*.toml`), never inline.

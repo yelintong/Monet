@@ -471,6 +471,16 @@ impl AssetSource for IconAssets {
         if let Some(bytes) = crate::widgets::layer_icons::load(path) {
             return Ok(Some(Cow::Borrowed(bytes)));
         }
+        // The two halves of the colour mark, tinted separately by the caller.
+        match path {
+            "brand/monet-dots.svg" => {
+                return Ok(Some(Cow::Borrowed(include_bytes!("../../assets/brand/monet-dots.svg").as_slice())));
+            }
+            "brand/monet-path.svg" => {
+                return Ok(Some(Cow::Borrowed(include_bytes!("../../assets/brand/monet-path.svg").as_slice())));
+            }
+            _ => {}
+        }
         // Resolve by full path so `icons/*.svg` and `brand/*.svg` share one table.
         Ok(table()
             .iter()

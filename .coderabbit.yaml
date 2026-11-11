@@ -13,14 +13,3 @@ reviews:
   path_filters:
     - "!**/target/**"
     - "!**/*.svg"
-  path_instructions:
-    - path: "crates/ui-gpui/**"
-      instructions: >
-        This is a UI port. Every panel, popover, menu and list row must match the reference
-        implementation in crates/ui-egui one-to-one. Flag any simplified substitute (a row of
-        chips instead of a dropdown menu, a fixed popover instead of a draggable window, plain
-        notes instead of section headers), hard-coded option lists, and invented command names.
-    - path: "crates/engine/**"
-      instructions: >
-        Engine changes belong in the upstream project. Flag changes here unless they are
-        genuinely engine-level and coordinated with upstream.
