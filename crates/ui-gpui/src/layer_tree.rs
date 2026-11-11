@@ -28,11 +28,17 @@ use crate::widgets::icon::paint as paint_icon;
 use crate::widgets::{Icon, IconButton, SectionHeader, SectionHeaderVariant, pt, rgba, tokens};
 use crate::CanvasView;
 
-/// 每行的视觉缩进（与控件树自己的 `depth * INDENT` 对齐）。
-const LAYER_INDENT: f32 = 16.0;
+/// 子集每一层往里缩进 24（用户 2026-11-11 口径；egui 是 16，此处按用户数值）。
+const LAYER_INDENT: f32 = 24.0;
 /// 行内左右各缩 8pt（egui layers 的 `r.shrink2(vec2(8,0))`）。
 const ROW_INSET: f32 = 8.0;
+/// 行步进 32 = 单个色块 24 + 块间间距 8。用户 2026-11-11：图标 / 色块高 24，
+/// 每一个单独颜色块之间的间距是 8，别把它们连成一整块。
 const ROW_H: f32 = 32.0;
+/// 图标格 24×24（用户 2026-11-11）。
+const ICON_BOX: f32 = 24.0;
+/// 色块上下各留 4 → 块高 ROW_H - 8 = 24，相邻两块的间距正好 8。
+const BLOCK_PAD: f32 = 4.0;
 
 /// 拖拽载荷：被拖的那一行的节点 id（gpui 内建拖拽要求 `T: 'static`）。
 struct LayerDrag(pub NodeId);
@@ -68,7 +74,7 @@ pub struct LayerRow {
 #[derive(Clone, Copy, PartialEq)]
 enum Mark { None, Child, Selected }
 
-/// 选中行及其后代算一个连续 run，整块只画一次（egui `marks` / `selection_runs`）。
+/// 选中行 = Selected、其后代 = Child、其余 = None；据此给每行定深浅底色。
 fn marks(rows: &[LayerRow]) -> Vec<Mark> {
     let mut open: Vec<usize> = Vec::new();
     let mut out = Vec::with_capacity(rows.len());
@@ -79,22 +85,6 @@ fn marks(rows: &[LayerRow]) -> Vec<Mark> {
         else { out.push(Mark::Child); }
     }
     out
-}
-
-fn selection_runs(m: &[Mark]) -> (Vec<usize>, Vec<usize>) {
-    let n = m.len();
-    let mut first = vec![0usize; n];
-    let mut last = vec![0usize; n];
-    let mut i = 0;
-    while i < n {
-        if m[i] != Mark::None {
-            let start = i;
-            while i < n && m[i] != Mark::None { i += 1; }
-            let end = i - 1;
-            for j in start..=end { first[j] = start; last[j] = end; }
-        } else { i += 1; }
-    }
-    (first, last)
 }
 
 /// band 里全图标 → `icon_layer_row`，全组件 → `component_row`，否则 `selected_row`。
@@ -380,13 +370,13 @@ impl CanvasView {
         self.layer_tree.drag_rows = drag_rows;
         let drag = self.layer_tree.drag.as_ref().map(|d| d.from_id);
         let marked = marks(&rows);
-        let (first, last) = selection_runs(&marked);
-        // 选中高亮改为**逐行**画在行内：整棵树的行都在 `overflow_y_scroll` 里，早先把整块
+        // 选中高亮**逐行**画在行内：整棵树的行都在 `overflow_y_scroll` 里，早先把整块
         // run / band 用「容器级 absolute + top(i*ROW_H)」盖在滚动容器上，节点一多需要滚动时
         // 高亮块与行错位（用户 2026-11-11「项目一多这棵树就乱」）。行内 `relative()+absolute()`
-        // 跟着行走，滚动与行数都不影响。视觉仍 1:1 保留 egui 的 run 浅底 + band 实色 +
-        // 只在 run 上下两端的圆角与 4pt 内缩。
-        // 每行所属 band（连续 Selected 段）的实色；None = Child 行，只画 run 浅底。
+        // 跟着行走，滚动与行数都不影响。
+        // 用户 2026-11-11 规格：每个色块独立、高 24，上下各留 4（块间间距 8），
+        // 不再把连续选中拼成一整块；父集（Selected）用深实色、子集（Child）用同色系浅色。
+        // 每行所属 band 的实色；None = Child / None 行，画浅色或只有 hover。
         let mut band: Vec<Option<gpui::Rgba>> = vec![None; rows.len()];
         let mut k = 0;
         while k < rows.len() {
@@ -399,14 +389,8 @@ impl CanvasView {
         }
         let mut divs: Vec<Stateful<Div>> = Vec::with_capacity(rows.len());
         for (index, r) in rows.iter().enumerate() {
-            let in_run = marked[index] != Mark::None;
-            // (run 顶, run 底, 该行 band 实色) —— 逐行下发给 `layer_row`。
-            let hl = (
-                in_run && index == first[index],
-                in_run && index == last[index],
-                band[index].clone(),
-            );
-            divs.push(self.layer_row(index, r, drag, marked[index], hl, cx));
+            // 只下发该行 band 实色（Selected 才有）；每个色块都是独立的 24 高块。
+            divs.push(self.layer_row(index, r, drag, marked[index], band[index].clone(), cx));
         }
         div()
             .id("layer-scroll")
@@ -425,10 +409,9 @@ impl CanvasView {
         r: &LayerRow,
         dragging: Option<u64>,
         mark: Mark,
-        hl: (bool, bool, Option<gpui::Rgba>),
+        band_color: Option<gpui::Rgba>,
         cx: &mut Context<Self>,
     ) -> Stateful<Div> {
-        let (run_top, run_bottom, band_color) = hl;
         let t = tokens();
         let is_dragging = dragging == Some(r.id.0);
         let row_h = pt(ROW_H);
@@ -455,8 +438,8 @@ impl CanvasView {
 
         let chevron = if has_children {
             div()
-                .w(px(16.0))
-                .h(px(16.0))
+                .w(px(ICON_BOX))
+                .h(px(ICON_BOX))
                 .flex()
                 .items_center()
                 .justify_center()
@@ -466,14 +449,14 @@ impl CanvasView {
                         this.layer_toggle_expand(id, cx);
                     }),
                 )
-                .child(paint_icon(if expanded { Icon::ChevronDown } else { Icon::ChevronRight }, rgba(t.text_secondary), 16.0))
+                .child(paint_icon(if expanded { Icon::ChevronDown } else { Icon::ChevronRight }, rgba(t.text_secondary), ICON_BOX))
         } else {
-            div().w(px(16.0))
+            div().w(px(ICON_BOX))
         };
 
         let eye = div()
-            .w(px(18.0))
-            .h_full()
+            .w(px(ICON_BOX))
+            .h(px(ICON_BOX))
             .flex()
             .items_center()
             .justify_center()
@@ -483,11 +466,11 @@ impl CanvasView {
                     this.layer_toggle_visible(id, cx);
                 }),
             )
-            .child(paint_icon(if visible { Icon::Eye } else { Icon::EyeOff }, rgba(if visible { t.text_secondary } else { t.text_tertiary }), 16.0));
+            .child(paint_icon(if visible { Icon::Eye } else { Icon::EyeOff }, rgba(if visible { t.text_secondary } else { t.text_tertiary }), ICON_BOX));
 
         let lock = div()
-            .w(px(18.0))
-            .h_full()
+            .w(px(ICON_BOX))
+            .h(px(ICON_BOX))
             .flex()
             .items_center()
             .justify_center()
@@ -497,33 +480,27 @@ impl CanvasView {
                     this.layer_toggle_lock(id, cx);
                 }),
             )
-            .child(paint_icon(if locked { Icon::Lock } else { Icon::Unlock }, rgba(if locked { t.accent } else { t.text_tertiary }), 16.0));
+            .child(paint_icon(if locked { Icon::Lock } else { Icon::Unlock }, rgba(if locked { t.accent } else { t.text_tertiary }), ICON_BOX));
 
         // 起手拖拽：立刻置位（egui `drag_started`），并记住整组被拖的行与跟随光标的标签。
         let me_start = me.clone();
         // 移动：把命中行的真实窗口矩形交给通用件校准，再用全局指针重算落点。
         let me_move = me.clone();
 
-        // 选中/父子集整块改由**每行自己**画（行内 absolute，跟着行一起滚动）。
-        // Mark::None 只有 hover；Child 行画 run 浅底；Selected 行画所属 band 的实色。
-        // 圆角与 4pt 内缩只在 run 的上下两端，run 内相邻行接缝保持直角、不留缝，
-        // 这样连续选中仍读成一整块（egui `layers.rs` 同式）。
-        let in_run = mark != Mark::None;
-        let pad_top = if !in_run || run_top { 4.0 } else { 0.0 };
-        let pad_bottom = if !in_run || run_bottom { 4.0 } else { 0.0 };
-        let highlight = if !in_run {
+        // 每个色块都是**独立**一块：24 高（ROW_H 32 上下各留 4），相邻块间距 8。
+        // 用户 2026-11-11 明确「每一个单独的颜色块之间的间距是 8」，不再拼成连块。
+        // 父集（Selected）用 band 实色（深），子集（Child）用同色系浅色，深浅差异不丢。
+        let highlight = if mark == Mark::None {
             div().size_full().rounded(pt(5.0)).group_hover(group.clone(), |s| s.bg(rgba(t.hover)))
         } else {
-            let mut h = div().size_full().bg(band_color.unwrap_or(rgba(t.selected_row_child)));
-            if run_top { h = h.rounded_t(pt(5.0)); }
-            if run_bottom { h = h.rounded_b(pt(5.0)); }
-            h
+            div().size_full().rounded(pt(5.0)).bg(band_color.unwrap_or(rgba(t.selected_row_child)))
         };
 
         div()
             .group(group)
             .id(row_id)
             .relative()
+            .flex_none()
             .h(row_h)
             .w_full()
             .flex()
@@ -538,8 +515,8 @@ impl CanvasView {
                     .left_0()
                     .size_full()
                     .px(pt(ROW_INSET))
-                    .pt(pt(pad_top))
-                    .pb(pt(pad_bottom))
+                    .pt(pt(BLOCK_PAD))
+                    .pb(pt(BLOCK_PAD))
                     .child(highlight),
             )
             .when(is_dragging, |d| d.opacity(0.5))
@@ -559,7 +536,7 @@ impl CanvasView {
             })
             .child(div().w(px(indent)))
             .child(chevron)
-            .child(div().w(px(16.0)).h(px(16.0)).child(paint_icon(icon, rgba(t.text), 16.0)))
+            .child(div().w(px(ICON_BOX)).h(px(ICON_BOX)).child(paint_icon(icon, rgba(t.text), ICON_BOX)))
             .child(
                 div()
                     .flex_1()

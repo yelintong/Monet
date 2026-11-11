@@ -224,7 +224,9 @@ impl Tokens {
             accent_on,
             // 选中行：向白/黑混合（egui 同式），不是透明叠加。
             selected_row: if dark { toward(color, Color32::BLACK, 0.85) } else { toward(color, Color32::WHITE, 0.86) },
-            selected_row_child: if dark { c(0x12, 0x37, 0x2D) } else { c(0xF1, 0xFC, 0xF7) },
+            // 父集（Selected）深、子集（Child）浅，必须是**同一主题色派生的深浅**；
+            // 之前 child 写死浅绿，换品牌色后父子变成两种颜色而不是深浅（用户 2026-11-11）。
+            selected_row_child: if dark { toward(color, Color32::BLACK, 0.90) } else { toward(color, Color32::WHITE, 0.93) },
             component_row: if dark { c(0x3E, 0x30, 0x52) } else { c(0xF1, 0xE9, 0xFF) },
             icon_layer_row: if dark { c(0x4A, 0x38, 0x1C) } else { c(0xFD, 0xF0, 0xDD) },
             guide: c(0xF2, 0x48, 0x22),

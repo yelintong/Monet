@@ -23,10 +23,10 @@
 | # | 界面 | EGUI 参照 | GPUI 现状（证据） | 影响 | 优先级 | 规模 |
 |---|---|---|---|---|---|---|
 | A1 | **首页 Home**（Recents / Online / Templates / Getting started） | `home.rs` + `home/` | ✅ `doc.home` → `home` ui_request → `ExtraKind::Home`；`home_body` 读 `prefs.recent_files` / `getting_started_dismissed`，命令全走引擎（`file.openRecent` 等），复用面板 `pill`/`note` | Online 区与缩略图网格仍未做 | P1 | 大 |
-| A2 | **画板模式 Boards**（笔/荧光笔/橡皮/便签/画板形状/连接线 + 画板画布） | `canvas/board_bar.rs`、`canvas/board_facilitate.rs`、`canvas/board_connect.rs`、`widgets/board_picker.rs`、`engine/src/boards`（**原文写的 `panels/boards/*` 目录不存在**） | 工具条无 `Marker/Highlighter/Eraser/Sticky/BoardShape/Connector` 任何 id（`toolbar.rs:60-82` 只有设计模式 6 组）；`board.timer` / `board.vote` / `addConnected` / `facilitate` / `BoardTimer` 全部 0 命中 | 整块白板功能不可用（计时器、投票、自动连线、模板选择器也一起缺） | P1 | 大 |
+| A2 | **画板模式 Boards**（笔/荧光笔/橡皮/便签/画板形状/连接线 + 画板画布） | `canvas/board_bar.rs`、`canvas/board_facilitate.rs`、`canvas/board_connect.rs`、`widgets/board_picker.rs`、`engine/src/boards`（**原文写的 `panels/boards/*` 目录不存在**） | 工具条无 `Marker/Highlighter/Eraser/Sticky/BoardShape/Connector` 任何 id（`toolbar.rs:60-82` 只有设计模式 6 组）；`board.timer` / `board.vote` / `addConnected` / `facilitate` / `BoardTimer` 全部 0 命中 | 整块白板功能不可用（计时器、投票、自动连线仍缺）；**2026-11-11 自检更正**：模板选择器已落地（M 节），此列原写「一起缺」是落后描述 | P1 | 大 |
 | A3 | **评论 Comments**（评论工具之外的评论列表/气泡/回复） | `comments_*`、`canvas/comments.rs` | 只有工具按钮 `ToolId::Comment`（`toolbar.rs:80`），无评论面板/线程 UI | 能点工具，无处查看/回复评论 | P1 | 中 |
 | A4 | **插件面板 Plugins**（浏览、安装、启用） | `dialogs/plugins_ui.rs`、`plugin_panel` | 只有主菜单 `"Plugins"` 字样（`main_menu.rs:37`），无浏览/管理面板 | 插件生态入口缺失 | P1 | 中 |
-| A5 | **图标面板 Icons**（图标库插入） | `icons_panel.rs`（469 行） | ✅ 2026-11-11 落地 `crates/ui-gpui/src/icons_panel.rs`：搜索（名称 / 码位 / `U+` 前缀）、`New icon font`（`icon.font.create`）、字体条目（名称 + 重建 `icon.generateFont` + 删除 `icon.font.delete`）、图标行（按 outline 真实光栅化的预览、名称、`U+XXXX`、删除 `icon.delete`、点击复制字符到剪贴板）；空态两条。托管在 `ExtraKind::Icons`（与 Assets 同一套整面板浮层约定），入口 `ui.set {leftTab:"icons"}`，与 egui 的唯一入口一致 | 拖到画布插入文字层、行内改名 / 改码位、拖拽排序、导出字体（`icon.exportFont` + 保存对话框）未移植（egui 有）；重建按钮已按 egui 语义先逐图标 `icon.update` 再 `icon.generateFont` | P2 | 中 |
+| A5 | **图标面板 Icons**（图标库插入） | `icons_panel.rs`（469 行） | ✅ 2026-11-11 落地 `crates/ui-gpui/src/icons_panel.rs`：搜索（名称 / 码位 / `U+` 前缀）、`New icon font`（`icon.font.create`）、字体条目（名称 + 重建 `icon.generateFont` + 删除 `icon.font.delete`）、图标行（按 outline 真实光栅化的预览、名称、`U+XXXX`、删除 `icon.delete`、点击复制字符到剪贴板）；空态两条。**2026-11-11 自检更正（R.4）**：入口 `ui.set {leftTab:"icons"}` → 左面板 tab 2，不再走 `ExtraKind::Icons` 居中浮层；原写「同一套整面板浮层约定」属错配残留，见 R / T 节 | 拖到画布插入文字层、行内改名 / 改码位、拖拽排序、导出字体（`icon.exportFont` + 保存对话框）未移植（egui 有）；重建按钮已按 egui 语义先逐图标 `icon.update` 再 `icon.generateFont` | P2 | 中 |
 | A6 | **导出对话框 Export**（格式/倍数/预览/多选导出） | `dialogs/export.rs:64 export_dialog` | ✅ A19 通用壳 + `Field::Preview` 位图预览（`export_preview.rs` 调 `figcraft_render::render_node`） | 多选导出、逐格式参数、原生路径选择仍缺；预览为 0.25 倍位图，不随格式实时切换 | P0 | 中 |
 | A7 | **首选项 Preferences 对话框** | `dialogs.rs:211 show`（Preferences 分支） | ✅ 补上 Language（`pref.language`）、Scroll wheel（`pref.scrollWheelZoom`）、`Reset widths`（`view.panelWidths` 空参数 = 引擎自带的重置语义） | 语言框只列 6 个常用项，其余 BCP 47 代码引擎仍支持但 UI 未列 | P0 | 中 |
 | A8 | **批量重命名 Batch rename** | `dialogs/batch_rename.rs` | 搜 `"Rename layers"` 0 命中 | 多选改名只能逐个 | P2 | 小 |
@@ -34,14 +34,14 @@
 | A10 | **色彩配置 Color profile** | `dialogs/color_profile.rs` | 仅 `panels/right/sections.rs:1823` 注释提到 Page 设置 | 色域 / 配置文件不可设 | P2 | 小 |
 | A11 | **Credits / 贡献者** | `dialogs/credits.rs` | 0 处引用 | 关于页缺失 | P3 | 小 |
 | A12 | **导入报告 Import report** | `dialogs/import_report.rs` | 0 处引用 | 导入结果/警告不可见 | P2 | 小 |
-| A13 | **缺失字体提示 Missing fonts** | `dialogs/missing_fonts.rs` | 0 处引用 | 打开缺字体文件无提示/替换入口 | P2 | 小 |
+| A13 | **缺失字体提示 Missing fonts** | `dialogs/missing_fonts.rs` | **2026-11-11 自检更正**：已落地 `dialogs.rs::Kind::MissingFonts`（`dialog.missingFonts` → Spec + 形状测试），原「0 处引用」是**判断失误** | ~~打开缺字体文件无提示/替换入口~~ 已可做替换（仍是居中对话框） | P2 | 小 |
 | A14 | **更新对话框 Updates** | `dialogs/updates_ui.rs` + craft-update | 0 处引用 | 无法检查/安装更新 | P1 | 中 |
 | A15 | **取色器 Eyedropper / Sampled color** | `dialogs/sampled_color.rs` | 只有光标名命中（`canvas/cursors.rs`），无取样 UI | 屏幕取色不可用 | P2 | 小 |
 | A16 | **多窗口**（File ▸ New window / Open in new window / 标签拖出成窗口） | `windows.rs` | `open_window` 是弹层 `popovers::WindowState`，非 OS 多窗口 | 只能单窗口 | P2 | 大 |
 | A17 | **菜单项取值对话框**（Create link / Offset path / Move to page 等） | `dialogs/menu_input.rs` | 无对应实现 | 这些命令没有输入入口 | P2 | 小 |
 | A18 | **标签关闭未保存询问**（Don't Save / Cancel / Save；Alt+close 直接丢弃） | `windows.rs:392,422,542`（引擎请求 `dialog.unsaved`，**原文写的 `app.rs` #2032 不是对话框所在处**） | ✅ 已落地：`tabs_view.rs:388,392` 的 `force: e.modifiers.alt`、`lib.rs:1400` 消费 `dialog.unsaved`、`dialogs.rs:285-295` 三问 | Save 后不会自动再关闭；拖出成窗口（A16）仍缺（见 I 节） | P1 | 小 |
-| **A19** | **通用对话框框架**（数据驱动：标题 / 说明 / 字段 / 按钮 / 确认取消 / Escape / 遮罩） | `dialogs.rs`（579 行，`renderers()` 统一 About·Preferences·Shortcuts·Find·Rename·Variables·Export） | `tabs_view.rs:11` 自认「还没有对话框框架」；`control.rs:356` 只有 `"dialogs": null` | **A6/A7/A8/A10/A11/A12/A13/A15/A17/A18 十个对话框的共同前置**；不做就只能每个各造一套壳 | **P0** | 中 |
-| **A20** | **查找替换 Find and replace** | `dialogs.rs:368-404`（`edit.findReplace`） | `edit.findReplace` / `find_replace` / `Find and replace` 全 0 命中 | 文档内文本无法批量查找替换 | P1 | 小 |
+| **A19** | **通用对话框框架**（数据驱动：标题 / 说明 / 字段 / 按钮 / 确认取消 / Escape / 遮罩） | `dialogs.rs`（579 行，`renderers()` 统一 About·Preferences·Shortcuts·Find·Rename·Variables·Export） | **2026-11-11 自检更正**：已落地 `dialogs.rs`（`Kind::ALL` 16 种 + `Spec` + `parity_contract` 双向比对）；原两处是 2026-11-10 扫描快照，现已过时 | **A6/A7/A8/A10/A11/A12/A13/A15/A17/A18 十个对话框的共同前置**；不做就只能每个各造一套壳 | **P0** | 中 |
+| **A20** | **查找替换 Find and replace** | `dialogs.rs:368-404`（`edit.findReplace`） | **2026-11-11 自检更正**：已落地 `Kind::Find`（`edit.findReplace` / `dialog.find` → Spec + Find / Replace all 按钮 + 3 条测试），原「全 0 命中」是**判断失误** | ~~无法批量查找替换~~ 已可用（仍是居中对话框，非 EGUI 内联） | P1 | 小 |
 | **A21** | **无障碍 a11y**（AccessKit 树、F6/Shift+F6 区域切换、Tab 焦点环、方向键导航） | `a11y.rs`（1071 行，`focus.region` 请求） | `AccessKit` / `accesskit` / `focus_ring` / `Key::F6` 全 0；`tabs_view.rs:13` 自认「a11y（AccessKit，P4）」 | 键盘/读屏用户不可用 | P2 | 大 |
 | **A22** | **双向文字 + 界面缩放**（UAX#9 名称、阿拉伯连字、括号镜像；`pref.uiScale`） | `bidi.rs`（127 行）、`ui_scale.rs`（117 行） | `bidi` / `UAX` / `ui_scale` / `pixels_per_point` 全 0；`tabs_view.rs:134` 自认没有 `bidi::paint_name` | RTL 语言图层名错乱；界面大小不可调（A7 只以「等设置」带过） | P2 | 中 |
 | **A23** | **平台服务层**（原生文件对话框 / 剪贴板 / `OPEN_EXTENSIONS` / 拖放进度卡片 / IME） | `services.rs`、`open.rs`、`pending_open.rs`、`app/ime.rs`、`app/clipboard.rs` | `pick_open` / `OPEN_EXTENSIONS` / `pending_open` 全 0；`context_menu.rs:44` 自认「clipboard and file dialogs — which this front-end does not have yet」 | 打开/另存/复制粘贴走不通原生路径 | P2 | 中 |
@@ -176,7 +176,8 @@
 | 17 | `crates/ui-gpui/src/panels/right/sections.rs` | 右栏 tabs 去掉第三个「开发模式」按钮 | 既有 `tab(...)`，只减少一项数据；面板功能仍由底部工具栏 开发 / Shift+D 进入 | ✅ |
 | 18 | `crates/ui-gpui/src/icons_panel.rs`（新）+ `panels/extra.rs`（`ExtraKind::Icons`）+ `lib.rs`（`ui.set {leftTab}`） | A5 | `search_field` / `IconButton` / `CmdQueue` / `note` / `pill`；预览走 `figcraft_render::render_path` + `screen_buffer` 同路 | ✅ |
 | 19 | `crates/ui-gpui/src/panels.rs` + `lib.rs`（rail 调用点） | 左栏 rail 三项高亮互斥 | 抽纯函数 `rail_active(...)` + 4 条穷举回归测试；`left_rail` 签名收敛为 `(left_tab, variables_open, variables_full)`，未新增控件 | ✅（S 节） |
-| 20 | `crates/ui-gpui/src/layer_tree.rs` | 图层树节点多时选中高亮错位 | 容器级 `absolute` 浮层 → 逐行 `relative()+absolute()` 绘制；复用既有 `marks` / `selection_runs` / `run_color`，未新增控件 | ✅（S 节；虚拟化未做，见 S.5） |
+| 20 | `crates/ui-gpui/src/layer_tree.rs` | 图层树节点多时选中高亮错位 + 24pt 规格 | 逐行 `relative()+absolute()` 绘制；**2026-11-11 18:5x 追加**：色块/图标高 24、图标格 24×24、块间距 8、每层缩进 24、每行 `flex_none()` 防压缩；`selection_runs` 已删（不再拼连块） | ✅（S / T 节；虚拟化未做） |
+| 21 | `crates/ui-gpui/src/theme.rs` | 父集/子集选中色不是深浅差异 | `selected_row_child` 改由同一品牌色派生（白 0.93 / 黑 0.90），不再写死浅绿 | ✅（T 节） |
 
 ---
 
@@ -526,7 +527,7 @@ EGUI 原文件再动手，禁止再出现简化替代**；完成后同步 `CONTR
 | `icons_panel.rs`（新） | `listed()`（名称 / 码位 / `U+` 前缀过滤，可测纯函数）、`Act` / `command()`（每个按钮 → 真实引擎命令）、`body()` 渲染搜索 + `New icon font` + 字体条目 + 图标行 | `ui-egui/src/icons_panel.rs` |
 | 图标行 | 预览由 `figcraft_render::render_path` 从图标**存储的 outline** 光栅化（未编译字体也能显示），`screen_image` 转 GPUI 图；名称、`U+XXXX`、✕（`icon.delete`）、整行点击把字符写进剪贴板 | 同上 `icon_row` / `build_thumb` |
 | 字体条目 | 名称 + 重建 + 删除；重建**先逐图标 `icon.update` 再 `icon.generateFont`**（否则编译的是旧轮廓），与 egui `Act::Generate` 同语义 | 同上 `font_header` / `Act::Generate` |
-| `ExtraKind::Icons` | 面板托管沿用本项目整面板浮层约定（README 第 137 行的 `assets_panel.rs → ExtraKind::Assets` 同理），标题 `Icons` | `panels/layers.rs:200` 的 `LeftTab::Icons` 分支 |
+| `ExtraKind::Icons` | ~~沿用整面板浮层约定~~ **2026-11-11 自检更正（R.4）**：已改为左面板 `left_tab==2`；`ExtraKind::Icons` 变体与 `extra.rs::render` 分支是**未清理的死路径残留**，见 T.2 | `panels/layers.rs:200` 的 `LeftTab::Icons` 分支 |
 | `ui.set {leftTab}` | `icons` → 打开 Icons、`assets` → Assets、其它 → 回到图层面板；`set` 语义幂等（不是 toggle） | `ui-egui/src/control.rs:1128-1133` |
 
 ### 验证
@@ -567,13 +568,15 @@ EGUI 原文件再动手，禁止再出现简化替代**；完成后同步 `CONTR
   `board.editText` 全部路由到 `Kind::Rename`（居中对话框）。这些在 EGUI 里都是**贴着控件/画布的内联编辑框**，不是弹窗。
 - 左栏 rail 的 `rail-assets` 按钮（`panels.rs:1663`）`on_click` 为 `None`——点击无反应；Assets/Icons 只能靠
   `ui.set {leftTab}` / `panel.assets` 打开，而打开的仍是 `ExtraKind` 浮层，不是左面板 tab。
+  **2026-11-11 自检更正**：前半已由 R.4 修复（按钮接上点击、入口改 `left_tab`）；但 `ExtraKind::Assets/Icons`
+  变体与 `extra.rs::render` 的 760×520 卡片分支**仍未删除**，是死路径残留（T.2）。
 
 ### R.1 错配清单（每条都是下次整改的硬要求）
 
 | # | 交互 | EGUI 原版形态（证据） | GPUI 现状（错误） | 整改要求 |
 |---|---|---|---|---|
-| R1 | **资源面板 Assets** | 左栏 tab：`LeftTab::Assets` → `assets_panel::show` 渲染进**左面板**（同 Pages/Layers 同一栏，面板宽） | `ExtraKind::Assets` 居中浮层（`extra.rs` + `ui.set{leftTab:"assets"}`） | ✅ **已实施（2026-11-11）**：见 R.4，Assets 进左栏 tab，不再弹浮层 |
-| R2 | **图标面板 Icons** | 左栏 tab：`LeftTab::Icons` → `icons_panel::show` 渲染进**左面板** | `ExtraKind::Icons` 居中浮层 | ✅ **已实施（2026-11-11）**：同 R1 机制，`ui.set{leftTab:"icons"}` 进左面板 tab 2 |
+| R1 | **资源面板 Assets** | 左栏 tab：`LeftTab::Assets` → `assets_panel::show` 渲染进**左面板**（同 Pages/Layers 同一栏，面板宽） | `ExtraKind::Assets` 居中浮层（`extra.rs` + `ui.set{leftTab:"assets"}`） | ⚠️ **入口已改，变体未清**（T.2）：见 R.4，Assets 进左栏 tab；但 `ExtraKind::Assets` 变体 + `render` 卡片分支仍在 |
+| R2 | **图标面板 Icons** | 左栏 tab：`LeftTab::Icons` → `icons_panel::show` 渲染进**左面板** | `ExtraKind::Icons` 居中浮层 | ⚠️ **入口已改，变体未清**（T.2）：同 R1 机制进左面板 tab 2；但 `ExtraKind::Icons` 变体仍在 |
 | R3 | **首页 Home** | 替换**整个工作区**（占满窗口，240pt 侧栏 + 主区），不是居中小窗 | ~~`ExtraKind::Home` 居中浮层~~ **已修复**：`panels/extra.rs::render` 对 `Home` 走 `div().absolute().top(TITLE_H).left(0).right(0).bottom(0)` 占满窗口（注释明写「1:1 with egui `home.rs` CentralPanel，不是 760×520 居中卡片」） | ✅ 无需整改（视觉已占满窗口，与 EGUI 一致） |
 | R4 | **画框标签改名** `canvas.renameLabel` | `canvas/frame_labels.rs::rename_field`：**在画布标签的屏幕坐标上**盖一个内联编辑框，Enter/失焦改名、Esc 保留 | `dialogs.rs:302` → `Kind::Rename` 居中对话框 | 改回画布内联编辑：双击标签 → 在标签处画 `TextField`，走 `object.rename`；不要弹窗 |
 | R5 | **图层面板改名** `layers.rename` | 在 Layers 列表行内**就地**改（egui `layers_rename_tests.rs`） | `dialogs.rs:302` → `Kind::Rename` 居中对话框 | 改回列表行内联编辑（GPUI 左面板已用 `TextField` 做文件头改名，图层行同理） |
@@ -652,6 +655,10 @@ EGUI 原文件再动手，禁止再出现简化替代**；完成后同步 `CONTR
 
 未新增任何控件 / 命令，改的都是行内 `relative()+absolute()` 这一既有通用行为；`AnyElement` 仍由 `layer_overlay` 使用，无遗留死代码。
 
+> **2026-11-11 18:5x 用户口径更正（覆盖上表第二行，详见 T.3）**：不再把连续选中拼成一整块。
+> 每个色块独立 24 高、上下各留 4 → 相邻块间距恒为 8；`selection_runs` 随之删除。
+> 这是**有意的产品口径偏差**（EGUI 是 run 连块 + 16 缩进），不是回归。
+
 ### S.4 验证
 
 - `cargo check -p figcraft-ui-gpui --lib`：RC=0。
@@ -666,4 +673,95 @@ EGUI 原文件再动手，禁止再出现简化替代**；完成后同步 `CONTR
 - 左栏 rail 仍无独立 Icons 按钮、Assets/Icons tab 下没有「收起面板」按钮（R.4 余量）。
 - R4–R9 仍按原计划留待下次整改。
 
-**当前下一步**：若要彻底对齐 EGUI 的「项目极多也不卡」，把 `render_layer_tree` 接到现成的 `v_virtual_list`（`drag::calibrate` 已按 pitch 推算整列，可复用）；随后继续 G 表第 7 行（Actions 调色板三 tab 键盘导航）。涉及 `widgets/**` 冻结件的改动（A24）必须先与用户确认。
+**当前下一步（2026-11-11 自检更正）**：G 表第 7 行 / B2 三 tab 已 ✅（H 节 18:4x），原写「继续第 7 行」是落后描述；
+实际剩余是 B2 的**键盘上下键导航 + Enter 运行 + 实时过滤**，以及 T.2 的弹窗化残留清理。
+若要彻底对齐 EGUI 的「节点极多也不卡」，把 `render_layer_tree` 接到现成的 `v_virtual_list`。
+涉及 `widgets/**` 冻结件的改动（A24）必须先与用户确认。
+
+---
+
+## T. 2026-11-11 18:5x 差异表全面自检 + 图层树 24pt 规格
+
+用户要求：「对这个差异表格进行一下自检，看看是不是有落后的，是不是还有要更新的，之前没有检查到的。
+或者判断失误的，**之前有把任何面板都当成弹窗来做的重大失误**」，并明确「不要死板执行，按照最好的方法来，
+只要数值对就行」。
+
+### T.1 自检方法
+
+不是只看表格，而是**逐条回源码核对**：`grep` 命令 id / `Kind` 变体 / `UiAction` 分支 / `render()` 形态，
+再与表格的「现状」列对照。共核对 A 表 28 项中的可疑项、B/C 表状态、G 表 21 行、R 节 9 条、Q 节、
+`parity_contract.rs`、以及所有 `overflow_y_scroll` 容器。
+
+### T.2 结论一：**「把面板当弹窗做」的重大失误没清干净**（最重要）
+
+R 节（17:0x 审计）把 R1/R2 标成「✅ 已实施」，但回源码核对发现**只改了入口，没删变体**：
+
+| 残留 | 证据 | 结论 |
+|---|---|---|
+| `ExtraKind::Assets` / `ExtraKind::Icons` | `panels/extra.rs:266-267` 仍在 `render()` 分支里；`lib.rs:1704` 仍判断这两个变体；测试 `extra.rs:1325,1327` 仍构造它们 | 入口已改走 `left_tab`，但**死路径未删**，容易再次被误当作「浮层约定」。R.1 表 R1/R2 已改为 ⚠️ |
+| **R7 快捷键 Shortcuts** | `ui_action:106` → `Toggle(ExtraKind::Shortcuts)` → `extra.rs:292-337` **760×520 居中卡片** | 仍是弹窗，EGUI 是窗口底部常驻条 |
+| **R8 版本历史 Versions** | `ui_action:107` → `Toggle(ExtraKind::Versions)` → 同一张居中卡片 | 仍是弹窗，EGUI 是独立面板 |
+| **R9 Dev 对比** | `ui_action:109` → `Compare` → `ExtraKind::DevCompare` → 同一张居中卡片 | 仍是弹窗，EGUI 占满工作区 |
+| **R4/R5/R6 内联改名** | `dialogs.rs:302` 仍把 `layers.rename` / `canvas.renameLabel` / `board.editText` 路由到 `Kind::Rename` 居中对话框 | 仍是弹窗，EGUI 是控件处内联编辑 |
+| R3 首页 Home | `extra.rs:270-287` `absolute()` 占满窗口 | ✅ 确已修复，无误判 |
+
+⇒ **9 条错配里，真正闭环的只有 R3；R1/R2 半闭环（入口改了、变体没删）；R4–R9 六条完全没动。**
+这是本次自检发现的最大遗漏，不能再用「已实施」概括。
+
+### T.3 结论二：判断失误（表格写「没有」，源码里已落地）
+
+| 行 | 表格旧说法 | 源码实际 | 处理 |
+|---|---|---|---|
+| A13 Missing fonts | 「0 处引用」 | `dialogs.rs::Kind::MissingFonts`（`dialog.missingFonts` → Spec + 形状测试 + 3 处断言） | 已就地更正为已落地 |
+| A20 Find and replace | 「`edit.findReplace` / `find_replace` 全 0 命中」 | `Kind::Find`，`dialog.find` / `edit.findReplace` → Spec + Find / Replace all 两按钮 + 3 条测试 | 已就地更正 |
+| A19 通用对话框框架 | 「`tabs_view.rs:11` 自认还没有对话框框架」 | `dialogs.rs` 已落地，`Kind::ALL` 16 种，且被 `parity_contract` 双向比对 | 标注为 2026-11-10 扫描快照、已过时 |
+| A2 画板 | 「模板选择器也一起缺」 | 模板选择器 M 节已落地（`board_picker.rs`） | 已就地更正 |
+| A5 / Q 节 Icons | 「与 Assets 同一套整面板浮层约定」 | R.4 已改为左面板 tab 2 | 已就地更正，并标出变体残留 |
+| S.5 下一步 | 「继续 G 表第 7 行（调色板三 tab）」 | G 表第 7 行 / B2 三 tab 已 ✅（H 节 18:4x） | 改为实际剩余：键盘导航 / Enter / 实时过滤 |
+
+**未误报的**：A28 Live 协作。源码里 `canvas::Live` 是「拖动时当帧重抓的实时图层补丁」，
+不是协作光标 / 聊天 / spotlight；表格写「GPUI 完全没有 live 协作」仍成立，不能因 grep 到 `live` 就翻案。
+
+### T.4 结论三：之前没检查到的
+
+- **防回归机制与规划表脱节**：`parity_contract.rs` 的 `Kind::ALL`（16 种）早已覆盖 Find / MissingFonts，
+  但 A 表仍写「0 命中」——说明 `CONTRACTS` 只锁「代码有没有」，锁不住「表格有没有更新」。
+  后续应把 A 表的「现状」列也纳入双向比对，或至少每次落地对话框后同步 A 表。
+- **状态标记未收敛**：全文 15 个 ⬜ / 0 个 🔄 / 51 个 ✅，但 G 表 12–15 行的 ⬜ 里，
+  部分（A21 a11y、A23 services、A24 field_math）确实没做，属真实未完成，不算遗漏。
+- `extra.rs` 第 9–11 行模块注释仍把 Assets 写成「与 egui 的差异 / 居中浮层」，R.2 早已要求标注为 TODO，
+  **该注释至今未改**——这是规划错配的源头，下次整改应一并处理。
+
+### T.5 本轮代码：图层树 24pt 规格（用户口径，有意偏离 EGUI 的 32/16）
+
+用户明确数值，**只要数值对、结构取最直白的做法**，不强行 1:1 复刻 EGUI 的 run 连块：
+
+| 项 | 数值 | 落地 |
+|---|---|---|
+| 图标 / 单个选中色块高度 | **24** | `ICON_BOX = 24`；所有图标格 24×24（前置 chevron、节点类型、后置 eye / lock） |
+| **相邻单独色块间距** | **8** | `ROW_H = 32`（步进）、`BLOCK_PAD = 4` 上下各留 → 块高 24、块间距 8 |
+| 每层子集缩进 | **24** | `LAYER_INDENT = 24`（EGUI 是 16，按用户口径覆盖） |
+| 项多被压缩 | — | 每行加 `.flex_none()` 钉死 32 步进，超出由 `overflow_y_scroll` 滚动，不再被 flex 压扁 |
+| 父子选中不是深浅差异 | — | `theme.rs` 的 `selected_row_child` 由硬编码浅绿改为**同一品牌色派生**（亮 0.93 / 暗 0.90），与 `selected_row`（0.86 / 0.85）构成深浅；父集取 band 实色、子集取浅色 |
+| 连续选中拼块 | — | 按用户「每个单独色块间距 8」，**不再拼成一整块**；`selection_runs()` 随之删除，每块独立圆角 |
+
+改动全部复用既有通用行为（行内 `relative()+absolute()`、既有 `marks` / `run_color` / `Icon` / `paint_icon`），
+未新增控件、未碰 `widgets/**` 冻结件、未新增命令。
+
+### T.6 验证
+
+- `cargo check -p figcraft-ui-gpui --lib`：RC=0；两个改动文件 CRLF 完整（`layer_tree.rs` 859、`theme.rs` 290，无裸 LF）。
+- `cargo test -p figcraft-ui-gpui --lib --features test-support`：**251 通过 / 3 失败 / 3 忽略**；
+  3 条失败仍是记录在案的基线（main_menu aim / extra Shift+D / panel_resize hit area），**无新增回归**（比上轮多 4 条通过）。
+- 改动文件：`crates/ui-gpui/src/layer_tree.rs`、`crates/ui-gpui/src/theme.rs`、`docs/gpui-egui-parity-plan.md`。
+
+### T.7 诚实边界（本轮没做）
+
+- **T.2 的六条弹窗化残留一条都没改**：本轮只做「自检 + 记录」，没有动 R4–R9 的实现；
+  它们是下一次整改的硬要求，不能因为写进了表格就当完成。
+- 图层树仍未接入 `v_virtual_list` 虚拟化；节点极多时的性能差距仍在。
+- `ExtraKind::Assets/Icons` 死路径未删（涉及 `extra.rs` / `lib.rs` / 测试，需单独一轮并核对 WIP）。
+- A21 a11y / A23 services / A24 field_math（冻结件，改前须问用户）仍为 ⬜。
+
+**当前下一步**：优先级 ① 清理 T.2 的六条弹窗化残留（R4–R9）与 `ExtraKind` 死变体；
+② B2 剩余的键盘导航 / Enter / 实时过滤；③ 图层树虚拟化。涉及 `widgets/**` 冻结件的改动必须先与用户确认。
