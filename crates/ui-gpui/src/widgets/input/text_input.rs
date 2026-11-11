@@ -91,6 +91,13 @@ pub fn centred_line_origin(bounds: Bounds<Pixels>, line: &ShapedLine, _font_size
     (point(bounds.origin.x, top), line_height)
 }
 
+/// Blink state shared across every frame of one editor: `visible` flips every 530 ms while the
+/// field has focus. `started` keeps the ticker from being spawned once per frame.
+struct CaretBlink {
+    visible: std::cell::Cell<bool>,
+    started: std::cell::Cell<bool>,
+}
+
 /// A primitive single-line editor. Embed it in any view: hold a `TextInput`, render
 /// [`TextInput::element`] with the view's `Entity` and focus handle, and delegate the view's
 /// `EntityInputHandler` to the `input_*` methods (see `TextField` for the complete wiring).
@@ -109,6 +116,7 @@ pub struct TextInput {
     /// A computed value (a Fill child's size) reads at 50% ink in egui's number fields.
     dim: bool,
     align: TextAlign,
+    caret_blink: Rc<CaretBlink>,
 }
 
 impl TextInput {
@@ -128,6 +136,10 @@ impl TextInput {
             suffix: SharedString::new(""),
             dim: false,
             align: TextAlign::Left,
+            caret_blink: Rc::new(CaretBlink {
+                visible: std::cell::Cell::new(true),
+                started: std::cell::Cell::new(false),
+            }),
         }
     }
 
@@ -237,6 +249,8 @@ impl TextInput {
         cursor: Option<gpui::CursorStyle>,
     ) -> impl IntoElement {
         let (display, is_composed) = self.display(focused);
+        let blink = self.caret_blink.clone();
+        let blink_entity = entity.clone();
         let font_size = self.font_size;
         // ⛔ 颜色**每帧从 `tokens()` 重新取**，不要用构造时存下来的 `self.color`：
         // `TextInput::new()` 只在实体创建时跑一次，那一刻主题还没设定（线程局部还是默认
@@ -273,7 +287,7 @@ impl TextInput {
         let preedit_bytes = c.composing.then(|| (byte_at(&c.text, c.mark_start), byte_at(&c.text, c.mark_end)));
         let cache = self.cache.clone();
 
-        let prepaint = move |bounds: Bounds<Pixels>, window: &mut Window, _cx: &mut App| {
+        let prepaint = move |bounds: Bounds<Pixels>, window: &mut Window, cx: &mut App| {
             let run = TextRun {
                 len: display.as_ref().len(),
                 font: window.text_style().font(),
@@ -296,20 +310,36 @@ impl TextInput {
                 let x1 = line.x_for_index(b);
                 fill(Bounds { origin: point(text_x + x0, bounds.origin.y + bounds.size.height - px(2.0)), size: size(x1 - x0, px(1.0)) }, color)
             });
-            let caret_quad = if focused && sel_a == sel_b {
+            // Blink: one ticker per editor, 530 ms on / 530 ms off, restarted whenever the field
+            // gains focus and reset to visible when it loses it.
+            if !focused {
+                blink.visible.set(true);
+                blink.started.set(false);
+            } else if !blink.started.get() {
+                blink.started.set(true);
+                let b = blink.clone();
+                let e = blink_entity.clone();
+                cx.spawn(async move |cx: &mut gpui::AsyncApp| loop {
+                    cx.background_executor().timer(std::time::Duration::from_millis(530)).await;
+                    b.visible.set(!b.visible.get());
+                    if e.update(cx, |_, cx| cx.notify()).is_err() {
+                        break;
+                    }
+                })
+                .detach();
+            }
+            let caret_visible = blink.visible.get();
+            // The caret shares the line box with the glyphs: same top, same height. Computing it
+            // from the field's own height instead (height − 8, centred) made the caret a
+            // different height from the text in every field that was not exactly 24 pt tall.
+            let (line_origin, text_height) = centred_line_origin(bounds, &line, font_size, window);
+            let text_top = line_origin.y;
+            let caret_quad = if focused && caret_visible && sel_a == sel_b {
                 let x = line.x_for_index(caret_byte);
-                let h = (bounds.size.height - px(8.0)).max(px(8.0));
-                let top = bounds.origin.y + (bounds.size.height - h) * 0.5;
-                Some(fill(Bounds { origin: point(text_x + x, top), size: size(px(1.0), h) }, caret_color))
+                Some(fill(Bounds { origin: point(text_x + x, line_origin.y), size: size(px(1.0), text_height) }, caret_color))
             } else {
                 None
             };
-            // Centre the *visual* glyph height, not the line box. A line box carries leading
-            // below the baseline, so centring `ascent + descent` leaves digits visibly low
-            // (~3 pt in this font). Put the cap-height centre on the field's centre instead:
-            // baseline = centre + cap/2, top = baseline − ascent.
-            let (line_origin, text_height) = centred_line_origin(bounds, &line, font_size, window);
-            let text_top = line_origin.y;
             if std::env::var_os("FC_DEBUG_TEXT").is_some() {
                 eprintln!(
                     "[text] bounds_y={} h={} ascent={} descent={} top={} h_line={}",

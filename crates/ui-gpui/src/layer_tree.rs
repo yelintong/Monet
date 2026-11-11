@@ -664,7 +664,9 @@ impl CanvasView {
             div()
                 .flex_1()
                 .min_w(px(0.0))
-                .h_full()
+                // Same 24 pt box as the page-name editor: the glyphs then sit on the row's
+                // centre line, exactly where the label sat before the edit started.
+                .h(pt(24.0))
                 .flex()
                 .items_center()
                 .on_mouse_down(MouseButton::Left, |_e, _w, cx| cx.stop_propagation())
