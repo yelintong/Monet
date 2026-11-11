@@ -59,6 +59,14 @@ apps/
 - **Accessible by construction.** Focus order, keyboard navigation and screen-reader roles are part
   of the widget layer rather than an afterthought.
 
+## Motion
+
+Every property can be keyframed. The timeline sits under the canvas, one track per animated
+property, and a clip's settings open in a card — from the clip's handles, or by pressing the line
+between two keyframes:
+
+![The timeline, and the card a segment opens](docs/images/motion-timeline.svg)
+
 ## Building
 
 Requires a recent stable Rust toolchain. On Windows the MSVC toolchain is expected.
