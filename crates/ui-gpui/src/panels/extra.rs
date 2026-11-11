@@ -55,6 +55,8 @@ pub(crate) enum ExtraKind {
     Assets,
     /// A1: `doc.home` 的首页（Recents / Templates / Getting started）。
     Home,
+    /// A5: 图标面板（egui `icons_panel.rs`，原本是左栏 `LeftTab::Icons`）。
+    Icons,
 }
 
 impl ExtraKind {
@@ -65,6 +67,7 @@ impl ExtraKind {
             Self::DevCompare { .. } => tr("Compare changes"),
             Self::Assets => tr("Assets"),
             Self::Home => tr("Home"),
+            Self::Icons => tr("Icons"),
         }
     }
 }
@@ -164,6 +167,12 @@ pub(crate) struct ExtraState {
     pub template_thumbs: Rc<RefCell<std::collections::HashMap<&'static str, Option<std::sync::Arc<gpui::RenderImage>>>>>,
     /// Recents sort: 0 name / 1 edited (egui `home_recents::SortKey`).
     pub home_sort: Rc<RefCell<u8>>,
+    // ── A5 Icons (egui `icons_panel.rs`) ──
+    /// 图标面板的搜索词（小写）。
+    pub icons_query: Rc<RefCell<String>>,
+    pub icons_search: Entity<TextField>,
+    /// 图标预览缓存（`font:icon:outline-hash` → 图）：渲一次就留着。
+    pub icon_thumbs: Rc<RefCell<std::collections::HashMap<String, Option<std::sync::Arc<gpui::RenderImage>>>>>,
 }
 
 impl ExtraState {
@@ -204,6 +213,16 @@ impl ExtraState {
                 hw.wake();
             });
         });
+        let icons_query = Rc::new(RefCell::new(String::new()));
+        let icons_search = search_field(cx, 200.0, "", tr("Search icons"));
+        let iq = icons_query.clone();
+        let iw = cmds.clone();
+        icons_search.update(cx, move |tf, _| {
+            tf.set_on_change(move |text, _, _| {
+                *iq.borrow_mut() = text.trim().to_lowercase();
+                iw.wake();
+            });
+        });
         Self {
             group: Rc::new(RefCell::new(0usize)),
             query,
@@ -227,6 +246,9 @@ impl ExtraState {
             home_view_grid: Rc::new(RefCell::new(true)),
             template_thumbs: Rc::new(RefCell::new(std::collections::HashMap::new())),
             home_sort: Rc::new(RefCell::new(1)),
+            icons_query,
+            icons_search,
+            icon_thumbs: Rc::new(RefCell::new(std::collections::HashMap::new())),
         }
     }
 }
@@ -239,6 +261,7 @@ pub(crate) fn render(kind: &ExtraKind, app: &CanvasApp, cmds: &Cmds, state: &Ext
         ExtraKind::Versions => versions_body(app, cmds, state, cx),
         ExtraKind::DevCompare { id, version } => compare_body(app, cmds, state, *id, version.as_deref()),
         ExtraKind::Assets => assets_body(app, cmds, state, cx),
+        ExtraKind::Icons => crate::icons_panel::body(app, cmds, state, cx),
         ExtraKind::Home => crate::home::body(app, cmds, state),
     };
     if matches!(kind, ExtraKind::Home) {
@@ -1298,6 +1321,7 @@ mod tests {
             ExtraKind::DevCompare { id: None, version: Some("v1".into()) },
             ExtraKind::Assets,
             ExtraKind::Home,
+            ExtraKind::Icons,
         ] {
             assert!(!k.title().is_empty());
         }

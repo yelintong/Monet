@@ -26,7 +26,7 @@
 | A2 | **画板模式 Boards**（笔/荧光笔/橡皮/便签/画板形状/连接线 + 画板画布） | `canvas/board_bar.rs`、`canvas/board_facilitate.rs`、`canvas/board_connect.rs`、`widgets/board_picker.rs`、`engine/src/boards`（**原文写的 `panels/boards/*` 目录不存在**） | 工具条无 `Marker/Highlighter/Eraser/Sticky/BoardShape/Connector` 任何 id（`toolbar.rs:60-82` 只有设计模式 6 组）；`board.timer` / `board.vote` / `addConnected` / `facilitate` / `BoardTimer` 全部 0 命中 | 整块白板功能不可用（计时器、投票、自动连线、模板选择器也一起缺） | P1 | 大 |
 | A3 | **评论 Comments**（评论工具之外的评论列表/气泡/回复） | `comments_*`、`canvas/comments.rs` | 只有工具按钮 `ToolId::Comment`（`toolbar.rs:80`），无评论面板/线程 UI | 能点工具，无处查看/回复评论 | P1 | 中 |
 | A4 | **插件面板 Plugins**（浏览、安装、启用） | `dialogs/plugins_ui.rs`、`plugin_panel` | 只有主菜单 `"Plugins"` 字样（`main_menu.rs:37`），无浏览/管理面板 | 插件生态入口缺失 | P1 | 中 |
-| A5 | **图标面板 Icons**（图标库插入） | `icons_panel.rs` | 0 处引用 | 图标字体插入路径缺失 | P2 | 中 |
+| A5 | **图标面板 Icons**（图标库插入） | `icons_panel.rs`（469 行） | ✅ 2026-11-11 落地 `crates/ui-gpui/src/icons_panel.rs`：搜索（名称 / 码位 / `U+` 前缀）、`New icon font`（`icon.font.create`）、字体条目（名称 + 重建 `icon.generateFont` + 删除 `icon.font.delete`）、图标行（按 outline 真实光栅化的预览、名称、`U+XXXX`、删除 `icon.delete`、点击复制字符到剪贴板）；空态两条。托管在 `ExtraKind::Icons`（与 Assets 同一套整面板浮层约定），入口 `ui.set {leftTab:"icons"}`，与 egui 的唯一入口一致 | 拖到画布插入文字层、行内改名 / 改码位、拖拽排序、导出字体（`icon.exportFont` + 保存对话框）未移植（egui 有）；重建按钮已按 egui 语义先逐图标 `icon.update` 再 `icon.generateFont` | P2 | 中 |
 | A6 | **导出对话框 Export**（格式/倍数/预览/多选导出） | `dialogs/export.rs:64 export_dialog` | ✅ A19 通用壳 + `Field::Preview` 位图预览（`export_preview.rs` 调 `figcraft_render::render_node`） | 多选导出、逐格式参数、原生路径选择仍缺；预览为 0.25 倍位图，不随格式实时切换 | P0 | 中 |
 | A7 | **首选项 Preferences 对话框** | `dialogs.rs:211 show`（Preferences 分支） | ✅ 补上 Language（`pref.language`）、Scroll wheel（`pref.scrollWheelZoom`）、`Reset widths`（`view.panelWidths` 空参数 = 引擎自带的重置语义） | 语言框只列 6 个常用项，其余 BCP 47 代码引擎仍支持但 UI 未列 | P0 | 中 |
 | A8 | **批量重命名 Batch rename** | `dialogs/batch_rename.rs` | 搜 `"Rename layers"` 0 命中 | 多选改名只能逐个 | P2 | 小 |
@@ -165,15 +165,16 @@
 | 6 | `crates/ui-gpui/src/tabs_view.rs` | A18 / B4 | 关闭去掉写死的 `force:true`，只有 Alt+close 才直接丢弃；引擎 `dialog.unsaved` → 通用三问（Don't Save / Cancel / Save），弹窗前 `doc.switch` 到目标标签 | ✅ |
 | 7 | `crates/ui-gpui/src/palette.rs`（新）+ `menu_card.rs` + `lib.rs` | B2 | 既有 `menu_card::rows` / `Palette` 弹层；`Item.key` 让运行时 action key 复用同一套 `OnPick` | ✅ |
 | 8 | `crates/ui-gpui/src/panels/extra.rs`（`ExtraKind::Home` + `home_body`） | A1 | 既有整面板 chrome + `pill`/`note`；数据与命令全来自引擎 | ✅ |
-| 9 | `crates/ui-gpui/src/comments.rs`（新） | A3 | 通用浮层 + 输入框系列 | ⬜ |
-| 10 | `crates/ui-gpui/src/plugins.rs`（新） | A4 / A25 | 通用浮层 + `widget_bar` 复用同一行模型 | ⬜ |
-| 11 | `crates/ui-gpui/src/toolbar.rs` + `boards/*`（新） | A2 / B3 / A27 | `GROUPS` 既有工具组模型（只加数据，不改控件） | ⬜ |
+| 9 | `crates/ui-gpui/src/comments.rs`（新） | A3 | 通用浮层 + 输入框系列 | ✅（L 节；回复 / 编辑 / 表情未接） |
+| 10 | `crates/ui-gpui/src/plugins.rs`（新） | A4 / A25 | 通用浮层 + `widget_bar` 复用同一行模型 | 🔄（A25 ✅；A4 只剩网络 Browse） |
+| 11 | `crates/ui-gpui/src/toolbar.rs` + `board_bar.rs` / `board_picker.rs` | A2 / B3 / A27 | `GROUPS` 既有工具组模型（只加数据，不改控件） | 🔄（工具组 + 模板选择器已落地见 M 节；计时器 / 投票 / 连线未核） |
 | 12 | `crates/ui-gpui/src/present/*`（新） | B8 | `present.rs` 既有播放状态机 | ⬜ |
 | 13 | `crates/ui-gpui/src/a11y.rs`（新）/ `bidi.rs` / `ui_scale.rs` | A21 / A22 | 通用焦点环 / 名称渲染钩子 | ⬜ |
 | 14 | `crates/ui-gpui/src/services.rs`（新） | A23 | 平台能力接口（保持 UI 可替换） | ⬜ |
 | 15 | `crates/ui-gpui/src/widgets/field_math.rs`（新，需解冻确认） | A24 | 通用数字字段（**冻结件，改前必须先问用户**） | ⬜ |
 | 16 | `crates/ui-gpui/src/panels.rs` | 右栏 48 pt 顶栏（头像 / Present / Share）恢复 | 既有 `right::topbar::top_bar` 通用顶栏，只补一行调用，与 Motion 分支同序 | ✅ |
 | 17 | `crates/ui-gpui/src/panels/right/sections.rs` | 右栏 tabs 去掉第三个「开发模式」按钮 | 既有 `tab(...)`，只减少一项数据；面板功能仍由底部工具栏 开发 / Shift+D 进入 | ✅ |
+| 18 | `crates/ui-gpui/src/icons_panel.rs`（新）+ `panels/extra.rs`（`ExtraKind::Icons`）+ `lib.rs`（`ui.set {leftTab}`） | A5 | `search_field` / `IconButton` / `CmdQueue` / `note` / `pill`；预览走 `figcraft_render::render_path` + `screen_buffer` 同路 | ✅ |
 
 ---
 
@@ -513,3 +514,30 @@ EGUI 原文件再动手，禁止再出现简化替代**；完成后同步 `CONTR
 
 **仍未做**：`pending_open` 那种「读取中」卡片（桌面有路径是同步读，不需要）、
 从资源面板把素材拖到画布（GPUI 的资源面板还没有内容）、浏览器端的 `data` + `name` 形式。
+
+## Q. 2026-11-11 08:2x 第 3 批 ②：A5 图标面板
+
+### 落地内容
+
+| 件 | 内容 | 对照的 EGUI 源 |
+|---|---|---|
+| `icons_panel.rs`（新） | `listed()`（名称 / 码位 / `U+` 前缀过滤，可测纯函数）、`Act` / `command()`（每个按钮 → 真实引擎命令）、`body()` 渲染搜索 + `New icon font` + 字体条目 + 图标行 | `ui-egui/src/icons_panel.rs` |
+| 图标行 | 预览由 `figcraft_render::render_path` 从图标**存储的 outline** 光栅化（未编译字体也能显示），`screen_image` 转 GPUI 图；名称、`U+XXXX`、✕（`icon.delete`）、整行点击把字符写进剪贴板 | 同上 `icon_row` / `build_thumb` |
+| 字体条目 | 名称 + 重建 + 删除；重建**先逐图标 `icon.update` 再 `icon.generateFont`**（否则编译的是旧轮廓），与 egui `Act::Generate` 同语义 | 同上 `font_header` / `Act::Generate` |
+| `ExtraKind::Icons` | 面板托管沿用本项目整面板浮层约定（README 第 137 行的 `assets_panel.rs → ExtraKind::Assets` 同理），标题 `Icons` | `panels/layers.rs:200` 的 `LeftTab::Icons` 分支 |
+| `ui.set {leftTab}` | `icons` → 打开 Icons、`assets` → Assets、其它 → 回到图层面板；`set` 语义幂等（不是 toggle） | `ui-egui/src/control.rs:1128-1133` |
+
+### 验证
+
+- `cargo test -p figcraft-ui-gpui --lib --features test-support`：**220 通过 / 3 失败**（失败仍是文档记录的 3 条基线：main_menu aim / extra Shift+D / panel_resize hit area）；新增 2 条（搜索过滤、命令真实性）全部通过。
+- `cargo build -p figcraft-ui-gpui --example run`：通过。
+- **真实窗口实测**：`ui.set {leftTab:"icons"}` 打开面板（标题 / 搜索 / `New icon font` / 空态可见）；
+  点击 `New icon font` 后引擎返回 `{"fonts":[{"id":"iconfont-1","name":"Icons","glyphs":[]}]}`，
+  面板同时出现字体条目与「No icons in this font yet.」——按钮 → 引擎 → 文档 → 重绘整条链路成立。
+
+### 诚实边界（未做）
+
+- 拖到画布插入文字层（egui 的 `IconDrag` + 画布落点）：GPUI 目前没有「外部 payload → 画布放置文本」这条路。
+- 行内改名 / 改码位、拖拽排序：`text_field_inline` 在冻结件里，逐行内联编辑需要先确认能否复用。
+- 导出字体（`icon.exportFont` + 保存对话框）。
+- 字体折叠（egui 折叠状态里的 `collapsed` 集合）——本版所有字体默认展开。

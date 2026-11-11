@@ -81,6 +81,8 @@ mod home;
 
 mod comments;
 
+mod icons_panel;
+
 mod board_bar;
 
 mod board_picker;
@@ -1645,6 +1647,32 @@ impl CanvasView {
                     let idx = match tab { "prototype" => 1, "inspect" | "devMode" => 2, _ => 0 };
 
                     self.fields.set_right_tab(idx);
+
+                }
+
+                // `ui.set {leftTab}`：egui 用它切左栏的 File / Assets / Icons。GPUI 把这几块
+                // 「整面板」统一挂在可关闭浮层里（见 `panels/extra.rs` 的说明），所以这里
+                // 把 tab 名映射成对应浮层：`set` 语义是幂等的，不是 toggle。
+                if let Some(tab) = r.data.get("leftTab").and_then(serde_json::Value::as_str) {
+
+                    match tab {
+
+                        "icons" => self.extra = Some(panels::extra::ExtraKind::Icons),
+
+                        "assets" => self.extra = Some(panels::extra::ExtraKind::Assets),
+
+                        // `file`（以及未知值）就是图层面板：收起这两块浮层。
+                        _ => {
+
+                            if matches!(self.extra, Some(panels::extra::ExtraKind::Icons | panels::extra::ExtraKind::Assets)) {
+
+                                self.extra = None;
+
+                            }
+
+                        }
+
+                    }
 
                 }
 
