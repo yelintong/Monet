@@ -2375,7 +2375,7 @@ fn ls_folder(name: &str) -> String {
 
 /// `entries()` 产出的扁平树的一行（egui `style_picker::local_styles` 的 Folder / Style 行）。
 enum LsLine {
-    Folder { label: String, depth: usize },
+    Folder { path: String, label: String, depth: usize },
     /// `idx` 是样式在 `list` 中的下标；`depth` 是缩进层级。
     Style(usize, usize),
 }
@@ -2435,7 +2435,7 @@ fn ls_branch_of(nodes: &mut Vec<LsBranch>, path: &str) -> usize {
 /// 一个分支的头 + 其下全部内容（egui `flatten`）。
 fn ls_flatten(nodes: &[LsBranch], node: usize, depth: usize, folded: &dyn Fn(&str) -> bool, out: &mut Vec<LsLine>) {
     let n = &nodes[node];
-    out.push(LsLine::Folder { label: n.label.clone(), depth });
+    out.push(LsLine::Folder { path: n.path.clone(), label: n.label.clone(), depth });
     if folded(&n.path) {
         return;
     }
@@ -2466,22 +2466,114 @@ fn local_style_caption(title: SharedString, plus: IconButton) -> FieldRow {
 }
 
 /// 文件夹头行（egui `local_styles` 的 Folder 行：chevron + 文件夹名，按层级缩进）。
-/// 本遍不做折叠态，始终展开（chevron 朝下）。
-fn local_style_folder(label: &str, depth: usize) -> FieldRow {
+/// 与 egui 一一对应地补齐三件事：① 左键整行切换折叠/展开（chevron 随之翻转）；
+/// ② 行尾 `+` 在该文件夹内新建同类型样式（`style.create {type, name:"<folder>/<default>"}`）；
+/// ③ 右键 "Rename folder" → 内联复用通用 `TextField`，提交即 `style.renameFolder`。
+fn local_style_folder(f: &RightFields, label: &str, path: &str, ty: &'static str, depth: usize, _cx: &mut App) -> FieldRow {
     let t = tokens();
-    let body = div()
-        .w_full()
-        .h_full()
-        .flex()
-        .flex_row()
-        .items_center()
-        .gap(pt(8.0))
-        .pl(pt(24.0 * depth as f32))
-        .pr(pt(8.0))
-        .cursor_pointer()
-        .child(crate::widgets::icon::paint(Icon::ChevronDown, rgba(t.text_secondary), 12.0))
-        .child(div().flex_1().min_w(px(0.0)).overflow_hidden().text_size(pt(11.0)).text_color(rgba(t.text_secondary)).child(SharedString::from(label.to_string())));
-    field_row_full(div().w_full().h_full().rounded(pt(5.0)).hover(|s| s.bg(rgba(t.hover))).child(body))
+    // 是否正在重命名这个文件夹（egui `renaming.as_deref() == Some(path)`）。
+    let is_renaming = f.local_style_renaming.borrow().as_deref() == Some(path);
+
+    // ② 行尾 `+`：在该文件夹内新建一个同类型样式（egui `ls_add_in`）。
+    let cmds = f.cmds.clone();
+    let ty_c = ty;
+    let path_c = path.to_string();
+    let plus = IconButton::new(Icon::Plus)
+        .size(16.0)
+        .on_click(move |_e, _w, _cx| {
+            cmds.push(Cmd { id: "style.create", params: Some(serde_json::json!({ "type": ty_c, "name": format!("{}/{}", path_c, ls_default_name(ty_c)) })) });
+        });
+
+    // ① 折叠态：egui 用 "<type>/<folder path>" 作 key。
+    let folded = f.local_style_folded.clone();
+    let key = format!("{}/{}", ty, path);
+    let open = !folded.borrow().contains(&key);
+
+    // ③ 右键 "Rename folder"：记下正在重命名的文件夹，并预填内联输入框的当前名。
+    let root = f.root.clone();
+    let renaming_r = f.local_style_renaming.clone();
+    let path_r = path.to_string();
+    let rename_input = f.local_style_rename_input.clone();
+
+    // 名称区：重命名时换成内联输入框；否则 chevron + 文件夹名，并挂折叠/右键菜单。
+    let name_area = if is_renaming {
+        div()
+            .w_full()
+            .h_full()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(pt(8.0))
+            .pl(pt(24.0 * depth as f32))
+            .pr(pt(8.0))
+            .child(rename_input)
+    } else {
+        let chevron = if open { Icon::ChevronDown } else { Icon::ChevronRight };
+        div()
+            .w_full()
+            .h_full()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(pt(8.0))
+            .pl(pt(24.0 * depth as f32))
+            .pr(pt(8.0))
+            .cursor_pointer()
+            // ① 左键整行切换折叠（egui `resp.clicked()`）。
+            .on_mouse_down(MouseButton::Left, {
+                let folded = folded.clone();
+                let key = key.clone();
+                move |_e, _w, _cx| {
+                    let mut s = folded.borrow_mut();
+                    if s.contains(&key) {
+                        s.remove(&key);
+                    } else {
+                        s.insert(key.clone());
+                    }
+                }
+            })
+            // ③ 右键菜单 "Rename folder"（egui `context_popup`）。
+            .on_mouse_down(MouseButton::Right, {
+                let root = root.clone();
+                let renaming_r = renaming_r.clone();
+                let path_r = path_r.clone();
+                let rename_input = rename_input.clone();
+                move |e: &gpui::MouseDownEvent, _w, cx: &mut App| {
+                    let root = root.clone();
+                    let renaming_r = renaming_r.clone();
+                    let path_r = path_r.clone();
+                    let rename_input = rename_input.clone();
+                    let rows = vec![MenuRow::new("Rename folder")];
+                    let Some(root) = root else { return };
+                    let anchor = gpui::Bounds::new(e.position, gpui::size(px(0.0), px(0.0)));
+                    root.update(cx, move |cv, cx| {
+                        cv.open_menu(anchor, Some(160.0), rows, Rc::new(move |label: &str, _window, _cx| {
+                            if label == "Rename folder" {
+                                renaming_r.borrow_mut().replace(path_r.clone());
+                                rename_input.update(_cx, |tf, _| tf.set_value(path_r.clone()));
+                            }
+                        }), cx);
+                    });
+                }
+            })
+            .child(crate::widgets::icon::paint(chevron, rgba(t.text_secondary), 12.0))
+            .child(div().flex_1().min_w(px(0.0)).overflow_hidden().text_size(pt(11.0)).text_color(rgba(t.text_secondary)).child(SharedString::from(label.to_string())))
+    };
+
+    field_row_full(div().w_full().h_full().rounded(pt(5.0)).hover(|s| s.bg(rgba(t.hover))).child(
+        div().w_full().h_full().flex().flex_row().items_center().gap(pt(4.0)).child(name_area).child(plus),
+    ))
+}
+
+/// 文件夹 `+` 新建样式所用的默认名（egui `StyleSlot::default_name`）。
+fn ls_default_name(ty: &str) -> &'static str {
+    match ty {
+        "text" => "Text",
+        "paint" => "Color",
+        "effect" => "Effect",
+        "grid" => "Grid",
+        _ => "Style",
+    }
 }
 
 /// 类型分组标题栏的 `+`：弹出「建哪种样式」菜单（egui `local_styles` 的头部 `+`）。
@@ -2523,13 +2615,30 @@ fn local_styles_add_button(f: &RightFields) -> IconButton {
 
 /// Page 节「Local styles」里的一行（egui `style_picker::local_styles` 的 Style 行，1:1）：
 /// 左侧徽标 16×16 —— paint 用圆形色板、text 用 "Ag" + 右侧 "32/Auto" 预览、effect/grid 用类型图标；
-/// 整行悬停高亮（圆角 t.hover 块，与行同高、内缩 8px）、左键把样式应用到选区、右键 Duplicate / Delete；
+/// 整行悬停高亮（圆角 t.hover 块，与行同高、内缩 8px）、左键把样式应用到选区、右键 Edit style / Duplicate / Delete；
 /// 文件夹层级用 `depth * 24px` 缩进（egui `LS_STEP`）。
-fn local_style_row(f: &RightFields, s: &LocalStyleRow, depth: usize, ty: &'static str) -> FieldRow {
+fn local_style_row(f: &RightFields, d: &PanelData, s: &LocalStyleRow, depth: usize, ty: &'static str) -> FieldRow {
     let t = tokens();
     let cmds = f.cmds.clone();
+    let popups = f.popups();
+    let queue = f.queue();
     let sid = s.id.clone();
     let name = leaf_name(&s.name);
+    // 右键「Edit style」暂用现有样式列表弹窗占位（egui 真 1:1 是打开 `edit_local` 编辑器，
+    // GPUI 目前没有该弹窗）；列出同类型样式、点击即 `style.apply`（与 `style_menu` 一致）。
+    let edit_title = match ty {
+        "text" => tr("Text styles"),
+        "paint" => tr("Color styles"),
+        "effect" => tr("Effect styles"),
+        "grid" => tr("Grid styles"),
+        _ => tr("Styles"),
+    };
+    let edit_rows: Vec<(String, &'static str, Value)> = d
+        .styles
+        .iter()
+        .filter(|x| x.ty == ty)
+        .map(|x| (x.name.clone(), "style.apply", json!({ "style": x.id })))
+        .collect();
     // 左侧徽标（egui `paint_dot` / "Ag" / `slot.icon()`）。
     let badge: gpui::AnyElement = match &s.paint {
         Some(p) => div().flex_none().size(pt(16.0)).rounded_full().overflow_hidden().child(swatch(p.clone(), 16.0)).into_any_element(),
@@ -2584,19 +2693,28 @@ fn local_style_row(f: &RightFields, s: &LocalStyleRow, depth: usize, ty: &'stati
     if let Some(meta) = &s.text_meta {
         body = body.child(div().flex_none().text_size(pt(11.0)).text_color(rgba(t.text_tertiary)).child(meta.clone()));
     }
-    // 右键：Duplicate / Delete（egui 的 context_popup）。
+    // 右键：Edit style / Duplicate / Delete（egui 的 context_popup 三项）。
     let cmds_r = cmds.clone();
     let root = f.root.clone();
+    let popups_r = popups.clone();
+    let queue_r = queue.clone();
+    let edit_label: String = tr("Edit style").to_string();
     let dup_label: String = tr("Duplicate").to_string();
     let del_label: String = tr("Delete").to_string();
+    let edit_rows_r = edit_rows.clone();
+    // `edit_title` 是 &str（Copy），可直接随 move 闭包拷贝；`edit_rows` 是 Vec，需 clone。
     body = body.on_mouse_down(MouseButton::Right, move |e: &gpui::MouseDownEvent, _w, cx: &mut App| {
         let cmds_r = cmds_r.clone();
         let sid = sid.clone();
+        let popups_r = popups_r.clone();
+        let queue_r = queue_r.clone();
+        let edit_rows_r = edit_rows_r.clone();
         // `on_mouse_down` 的监听是 `Fn`（可多次触发），不能把捕获的 String 移出去，
         // 每次调用先克隆成本地变量再 move 进菜单回调。
+        let edit = edit_label.clone();
         let dup = dup_label.clone();
         let del = del_label.clone();
-        let rows = vec![MenuRow::new(dup.clone()).separator(), MenuRow::new(del.clone())];
+        let rows = vec![MenuRow::new(edit.clone()), MenuRow::new(dup.clone()).separator(), MenuRow::new(del.clone())];
         let Some(root) = root.clone() else { return };
         let anchor = gpui::Bounds::new(e.position, gpui::size(px(0.0), px(0.0)));
         root.update(cx, move |cv, cx| {
@@ -2604,10 +2722,15 @@ fn local_style_row(f: &RightFields, s: &LocalStyleRow, depth: usize, ty: &'stati
                 anchor,
                 Some(160.0),
                 rows,
-                Rc::new(move |label: &str, _w, _cx| {
-                    let id = if dup.as_str() == label {
+                Rc::new(move |label: &str, window, _cx| {
+                    if edit == label {
+                        // 「Edit style」占位：打开现有样式列表弹窗（真 1:1 应为 edit_local 编辑器）。
+                        open_list_window(popups_r.clone(), queue_r.clone(), _cx, window.mouse_position(), ListWindow::Styles, SharedString::from(edit_title), edit_rows_r.clone());
+                        return;
+                    }
+                    let id = if dup == label {
                         "style.duplicate"
-                    } else if del.as_str() == label {
+                    } else if del == label {
                         "style.delete"
                     } else {
                         return;
@@ -2711,12 +2834,13 @@ pub(crate) fn page(f: &RightFields, d: &PanelData, row_w: f32, n: &mut usize, cx
         });
         styles_sec = styles_sec.child(local_style_caption(SharedString::from(tr(cap_key)), plus));
         // 文件夹树（本遍展开全部）：先文件夹头、后其下样式、再递归子文件夹。
-        for line in ls_entries(&list, &|_| false) {
+        let ls_folded = f.local_style_folded.clone();
+        for line in ls_entries(&list, &|p| ls_folded.borrow().contains(&format!("{}/{}", *ty, p))) {
             match line {
-                LsLine::Folder { label, depth, .. } => styles_sec = styles_sec.child(local_style_folder(&label, depth)),
+                LsLine::Folder { path, label, depth } => styles_sec = styles_sec.child(local_style_folder(f, &label, &path, *ty, depth, cx)),
                 LsLine::Style(idx, depth) => {
                     let s = &list[idx];
-                    styles_sec = styles_sec.child(local_style_row(f, s, depth, *ty));
+                    styles_sec = styles_sec.child(local_style_row(f, d, s, depth, *ty));
                 }
             }
         }

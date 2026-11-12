@@ -529,6 +529,13 @@ pub(crate) struct RightFields {
     selection_colors_hover: std::rc::Rc<std::cell::RefCell<bool>>,
     /// 右栏当前标签：0 = Design，1 = Prototype，2 = Inspect（egui `app.ui.right_tab`）。纯 UI 状态，不进文档。
     right_tab: std::rc::Rc<std::cell::RefCell<u8>>,
+    /// Local styles 文件夹：正在重命名的文件夹路径（egui `folder_rename_id` 临时值）；`None` = 没在改名。
+    /// 复用同一个通用 `TextField`（`local_style_rename_input`）做内联重命名输入框。
+    local_style_renaming: std::rc::Rc<std::cell::RefCell<Option<String>>>,
+    /// Local styles 文件夹内联重命名输入框（egui `rename_field`）；提交即 `style.renameFolder`。
+    local_style_rename_input: Entity<TextField>,
+    /// Local styles 文件夹的折叠态（egui `folded_id`）：键为 `"<type>/<folder path>"`。
+    local_style_folded: std::rc::Rc<std::cell::RefCell<std::collections::HashSet<String>>>,
     /// A3: the Comments panel's local state (filter / sort / search / open thread).
     comment_ui: crate::comments::CommentState,
     /// Inspect 标签的三个选择：代码语言下标、颜色格式下标、Web 语言是否用 rem。
@@ -903,6 +910,7 @@ impl RightFields {
             }));
         }
         let scale_ctx = std::rc::Rc::new(std::cell::RefCell::new(crate::panels::right::data::ScaleData::default()));
+        let local_style_renaming = std::rc::Rc::new(std::cell::RefCell::new(None::<String>));
         let mut fields = Self {
             x: n(cx, "X", 0.0, "", 1.0, Some(Prop::X)),
             y: n(cx, "Y", 0.0, "", 1.0, Some(Prop::Y)),
@@ -931,6 +939,22 @@ impl RightFields {
             selection_colors_open: std::rc::Rc::new(std::cell::RefCell::new(std::collections::HashMap::new())),
             selection_colors_hover: std::rc::Rc::new(std::cell::RefCell::new(false)),
             right_tab: std::rc::Rc::new(std::cell::RefCell::new(0u8)),
+            local_style_renaming: local_style_renaming.clone(),
+            local_style_rename_input: TextField::build(cx, DEFAULT_COL, {
+                let renaming = local_style_renaming.clone();
+                let cmds = cmds.clone();
+                move |tf, _| {
+                    tf.set_on_commit(move |text: &str, _window, _cx| {
+                        let Some(folder) = renaming.borrow_mut().take() else { return };
+                        let name = text.trim().to_string();
+                        if name.is_empty() || name == folder {
+                            return;
+                        }
+                        cmds.push(Cmd { id: "style.renameFolder", params: Some(serde_json::json!({ "folder": folder, "name": name })) });
+                    });
+                }
+            }),
+            local_style_folded: std::rc::Rc::new(std::cell::RefCell::new(std::collections::HashSet::new())),
             comment_ui: std::rc::Rc::new(std::cell::RefCell::new(crate::comments::CommentUi::default())),
             inspect_lang: std::rc::Rc::new(std::cell::RefCell::new(0usize)),
             inspect_fmt: std::rc::Rc::new(std::cell::RefCell::new(0usize)),
@@ -2024,206 +2048,17 @@ pub(crate) fn right_panel(
         // 的 trail 菜单（Fixed/Hug/Fill + min/max），min/max 用 `any_min/any_max` 行，3×3 对齐
         // picker 由 `right::picker::alignment_picker` 自绘。grid tracks 见 `grid_track_rows`。
         // 矢量点被选中时整节让位给点面板（egui `if !points_selected { layout_section(…) }`）。
-        .child(if points_selected {
-            div().into_any_element()
-        } else {
-            // egui `layout_panel.rs::layout_section` 的 `btns` 三分支：in_instance → 不画；
-            // frames && !has_al → `+`；has_al → `−`；其余 → 不画。此前无条件画 `+`/`−`。
-            // ChevronDown 在 egui 的 layout header 里**根本不存在**，之前是上一轮多画的、
-            // 连 on_click 都没有的幽灵按钮；高级设置入口本来由下面的 `layout_dots` 承担，故移除。
-            let layout_btn = visibility::layout_header(&sel).map(|id| {
-                let cmds = f.cmds.clone();
-                IconButton::new(if id == "layout.remove" { Icon::Minus } else { Icon::Plus }).size(20.0).on_click(move |_e, _window, _cx| {
-                    cmds.push(Cmd { id, params: None });
-                })
-            });
-            let mut sec = PanelSection::new(if sel.has_al { tr("Auto layout") } else { tr("Layout") });
-            if let Some(b) = layout_btn {
-                sec = sec.header_trail(b);
-            }
-
-            // ── 顺序照 `layout_section`：① 方向（仅 has_al）② Dimensions（无条件）③ 对齐/间距（仅 has_al）──
-
-            // ① 方向切换（egui `direction`，标题 "Layout" 下）。
-            if sel.has_al {
-                let active = match sel.layout_dir {
-                    LayoutDir::Vertical => Some(0),
-                    LayoutDir::Horizontal => Some(1),
-                    LayoutDir::Grid => Some(2),
-                    LayoutDir::None => None,
-                };
-                let dir_cmds = f.cmds.clone();
-                let dir = Segmented::icons(&[
-                    (Icon::AlignVCenter, tr("Vertical")),
-                    (Icon::AlignHCenter, tr("Horizontal")),
-                    (Icon::ViewGrid, tr("Grid")),
-                ])
-                .active(active)
-                .on_pick(move |i: usize, _w: &mut Window, _cx: &mut App| {
-                    let m = match i {
-                        0 => "vertical",
-                        1 => "horizontal",
-                        2 => "grid",
-                        _ => return,
-                    };
-                    dir_cmds.push(Cmd { id: "node.set", params: Some(serde_json::json!({ "props": { "layout": m } })) });
-                });
-                sec = sec.child(sublabel_row(tr("Layout"))).child(field_row_full(dir));
-            }
-
-            // ② Dimensions（egui `dimensions`：**无条件**显示）。
-            let dims = data.dimensions.clone().unwrap_or_default();
-            right::sections::dim_trail_menu(f, cx, &f.w, true, &dims);
-            right::sections::dim_trail_menu(f, cx, &f.h, false, &dims);
-            let lock_cmds = f.cmds.clone();
-            let lock_on = dims.constrain;
-            let constrain =
-                IconButton::new(if lock_on { Icon::LinkOn } else { Icon::LinkOff }).size(24.0).active(lock_on).on_click(move |_e, _w, _cx| {
-                    lock_cmds.push(Cmd { id: "node.set", params: Some(serde_json::json!({ "props": { "constrainProportions": !lock_on } })) });
-                });
-            sec = sec.child(sublabel_row(tr("Dimensions"))).child(field_row(vec![f.w.clone(), f.h.clone()], vec![constrain]));
-            // 选中文字时的「调整大小」三格（用户 2026-11-11：从 Typography 段移到 Layout 段）。
-            // 值仍是 `textAutoResize`，与 Typography 之前那个下拉同一条命令。
-            if let Some(t) = data.text.as_ref() {
-                let active = match t.auto_resize {
-                    Some("widthAndHeight") => Some(0usize),
-                    Some("height") => Some(1),
-                    Some("none") => Some(2),
-                    _ => None,
-                };
-                let cmds = f.cmds.clone();
-                let seg = crate::widgets::segmented::Segmented::new(vec![
-                    crate::widgets::segmented::SegItem::text(tr("Auto width")),
-                    crate::widgets::segmented::SegItem::text(tr("Auto height")),
-                    crate::widgets::segmented::SegItem::text(tr("Fixed")),
-                ])
-                .active(active)
-                .on_pick(move |i: usize, _w: &mut Window, _cx: &mut App| {
-                    let v = match i { 0 => "widthAndHeight", 1 => "height", 2 => "none", _ => return };
-                    cmds.push(Cmd { id: "node.set", params: Some(serde_json::json!({ "props": { "textAutoResize": v } })) });
-                });
-                sec = sec.child(sublabel_row(tr("Resizing"))).child(field_row_full(seg));
-            }
-            // Min/Max：仅当该轴已设值、或刚从 sizing 菜单 Add 时才显示（egui `limit_row_v`）。
-            let lo = *f.limit_open.borrow();
-            let any_min = dims.min_w.is_some() || dims.min_h.is_some() || lo[0] || lo[2];
-            let any_max = dims.max_w.is_some() || dims.max_h.is_some() || lo[1] || lo[3];
-            if any_max {
-                let left = if dims.max_w.is_some() || lo[1] { f.dim_max_w.clone().into_any_element() } else { div().into_any_element() };
-                let right = if dims.max_h.is_some() || lo[3] { f.dim_max_h.clone().into_any_element() } else { div().into_any_element() };
-                sec = sec.child(sublabel_row2(tr("Max W"), tr("Max H"))).child(field_row(vec![left, right], Vec::<IconButton>::new()));
-            }
-            if any_min {
-                let left = if dims.min_w.is_some() || lo[0] { f.dim_min_w.clone().into_any_element() } else { div().into_any_element() };
-                let right = if dims.min_h.is_some() || lo[2] { f.dim_min_h.clone().into_any_element() } else { div().into_any_element() };
-                sec = sec.child(sublabel_row2(tr("Min W"), tr("Min H"))).child(field_row(vec![left, right], Vec::<IconButton>::new()));
-            }
-
-            // ③ 对齐 picker + 间距 + 内边距（egui `alignment` / `spacing`，仅 has_al）。
-            if sel.has_al {
-                // egui `alignment`：picker 一列跨两行，右侧是 gap 字段（1 个或 2 个），再右边一个 24。
-                let picker = right::picker::alignment_picker(f, sel.layout_dir, &data.layout);
-                // egui `alignment` 的标题：栅格时左标题写 "Grid"，否则 "Align"；右侧恒为 "Spacing"。
-                let left_cap = if sel.layout_dir == LayoutDir::Grid { tr("Grid") } else { tr("Align") };
-                // `two_gaps = mode == Grid || wrap`：只有这时才显示两个 gap；普通流只有一个 gap
-                // （`gap_and_mode`），第二个字段位置留空。
-                let two_gaps = sel.layout_dir == LayoutDir::Grid || data.layout.wrap;
-                // 布局（用户 2026-11-05 明确要求，纯统一网格、零 cell 内包裹）：
-                // 左列 = 对齐 picker，本身**跨两行**（`field_row_h` 把行高撑到 `ROW_H*2`=64，
-                // picker 56 在其中上下各留 4 pt）；右列 = 间距，每个字段**各占一行**（gap 第一行、
-                // cross_gap 第二行，仅 Grid / wrap 时），左列用空占位。picker 在左、跨两行，
-                // gap / cross_gap 在右、各自一行 —— 完全由 `field_row` / `field_row_h` 表达，
-                // 不在任何单元格里再套 `flex_col`。
-                // picker 跨两行、在左；间距在右列、gap 占第一行、cross_gap 占第二行，二者与
-                // picker **并排在同一个两行高的块里**（而不是堆到 picker 下方）。统一网格的
-                // `field_row_h` 是一行两 cell、整行高 64；右列要分两行只能在该 cell 内用 `flex_col`
-                // 排 gap / cross_gap（这是表达「右列两行」的标准方式，不是多余包裹）；`items_start`
-                // 让仅一个 gap 时只占第一行、下方空出第二行。
-                // 右列：gap / cross_gap 各自占一个 `ROW_H`(32) 高的网格行，内部把 24pt 的字段
-                // **垂直居中**（上下各留 4pt）——这是「32 网格 / 24 内容」的标准对齐，不能 `items_start`
-                // 把内容整体顶上去。`flex_col` + `items_start` 让整列从顶部排成两个 32 行。
-                let right_col = if two_gaps {
-                    div()
-                        .w_full()
-                        .h_full()
-                        .flex()
-                        .flex_col()
-                        .items_start()
-                        .gap(pt(0.0))
-                        .child(div().w_full().h(pt(crate::widgets::ROW_H)).flex().items_center().child(f.gap.clone().into_any_element()))
-                        .child(div().w_full().h(pt(crate::widgets::ROW_H)).flex().items_center().child(f.cross_gap.clone().into_any_element()))
-                } else {
-                    div()
-                        .w_full()
-                        .h_full()
-                        .flex()
-                        .flex_col()
-                        .items_start()
-                        .gap(pt(0.0))
-                        .child(div().w_full().h(pt(crate::widgets::ROW_H)).flex().items_center().child(f.gap.clone().into_any_element()))
-                };
-                // Gap 行右侧那颗 dots（egui `layout_panel::settings_toggle` 的 "Advanced"）：
-                // 打开的是通用窗口弹层「Layout」，不再是旧版的一串下拉菜单。
-                let popups = f.popups();
-                let settings_queue = f.queue();
-                let settings_data = data.clone();
-                let layout_dots = IconButton::new(Icon::Menu).id("layout-settings-dots").size(24.0).on_click(move |_e, window, cx: &mut App| {
-                    if std::env::var_os("FC_DEBUG_POPUP_BTN").is_some() {
-                        eprintln!("[popup-btn] layout dots clicked");
-                    }
-                    let anchor = window.mouse_position();
-                    let w = crate::popovers::WindowState::layout(settings_queue.clone(), &settings_data, cx, anchor);
-                    popups.request(w);
-                });
-                sec = sec.child(sublabel_row2(left_cap, tr("Spacing"))).child(crate::widgets::field_row_h(
-                    vec![picker, right_col],
-                    vec![layout_dots],
-                    crate::widgets::ROW_H * 2.0,
-                ));
-
-                // Padding（egui `spacing`）：默认水平/垂直两字段；点右侧按钮切「独立内边距」→
-                // 四个字段（L/T、R/B，按 egui 的 sides 顺序）。
-                let individual = *f.pad_individual.borrow();
-                let toggle_cmds = f.cmds.clone();
-                let pad_flag = f.pad_individual.clone();
-                let toggle = IconButton::new(Icon::AbsolutePosition).size(24.0).active(individual).on_click(move |_e, _w, _cx| {
-                    let new_val = !*pad_flag.borrow();
-                    *pad_flag.borrow_mut() = new_val;
-                    // 翻转后必须唤醒视图重绘，否则右栏读到的还是旧 `pad_individual`，四个内边距字段不展开。
-                    toggle_cmds.wake();
-                });
-                sec = sec.child(sublabel_row(tr("Padding")));
-                if individual {
-                    sec = sec
-                        .child(field_row(vec![f.pad_l.clone(), f.pad_t.clone()], Vec::<IconButton>::new()))
-                        .child(field_row(vec![f.pad_r.clone(), f.pad_b.clone()], vec![toggle]));
-                } else {
-                    sec = sec.child(field_row(vec![f.pad_h.clone(), f.pad_v.clone()], vec![toggle]));
-                }
-            }
-            // ④ 网格轨道（egui `layout_panel.rs::tracks`，只在 grid frame 上出现）：
-            // 每轴一组「Column sizes / Row sizes」+ 每条轨道一行（序号 / 尺寸 / sizing 下拉）。
-            sec = right::sections::grid_track_rows(f, data, cx, &mut n, sec);
-            sec.into_any_element()
-        })
+        .child(auto_layout_section(f, sel, data, cx, &mut n, points_selected, true))
         .child(sep());
 
     // ── Arc：仅当全部选中都是 Ellipse（原版 `arc_section` 返回 false 就不画） ──────
     if sel.all_ellipse && !points_selected {
-        body = body
-            .child(
-                section(tr("Arc"), false, &[])
-                    .child(field_row(vec![f.arc_start.clone(), f.arc_sweep.clone()], Vec::<IconButton>::new()))
-                    .child(field_row(vec![f.arc_ratio.clone()], Vec::<IconButton>::new())),
-            )
-            .child(sep());
+        body = body.child(arc_section(f)).child(sep());
     }
 
     // ── Star：仅当全部选中都是 Polygon/Star（原版 `points_section`） ──────────────
     if sel.all_points && !points_selected {
-        body = body
-            .child(section(tr("Star"), false, &[]).child(field_row(vec![f.star_points.clone(), f.star_ratio.clone()], Vec::<IconButton>::new())))
-            .child(sep());
+        body = body.child(star_section(f)).child(sep());
     }
 
     body = body
@@ -2264,6 +2099,219 @@ pub(crate) fn right_panel(
     // ── Export（egui `export_panel.rs::setting_row`）──────────────────────────────
     wrap(body.child(export_sec))
 }
+
+/// Arc 段（仅椭圆）：起始角 / 扫过角 / 内径比例。设计面板与 Motion 右栏共用。
+pub(crate) fn arc_section(f: &RightFields) -> PanelSection {
+    PanelSection::new(tr("Arc"))
+        .child(field_row(vec![f.arc_start.clone(), f.arc_sweep.clone()], Vec::<IconButton>::new()))
+        .child(field_row(vec![f.arc_ratio.clone()], Vec::<IconButton>::new()))
+}
+
+/// Star 段（仅多边形 / 星形）：角数 / 内径比例。设计面板与 Motion 右栏共用。
+pub(crate) fn star_section(f: &RightFields) -> PanelSection {
+    PanelSection::new(tr("Star")).child(field_row(vec![f.star_points.clone(), f.star_ratio.clone()], Vec::<IconButton>::new()))
+}
+
+/// Auto layout 段（egui `layout_panel.rs`）：方向 / 尺寸 / 对齐+间距 / 内边距 / 网格轨道。
+///
+/// `with_dimensions = false` 时跳过 W/H 行（Motion 右栏用自己的关键帧字段画尺寸），
+/// 但保留 ± 自动布局开关与方向/对齐/间距/内边距——画框与普通图层的右栏差异就在这里。
+pub(crate) fn auto_layout_section(
+    f: &RightFields,
+    sel: PanelSel,
+    data: &right::data::PanelData,
+    cx: &mut App,
+    n: &mut usize,
+    points_selected: bool,
+    with_dimensions: bool,
+) -> gpui::AnyElement {
+    if points_selected {
+        return div().into_any_element();
+    }
+
+    // egui `layout_panel.rs::layout_section` 的 `btns` 三分支：in_instance → 不画；
+    // frames && !has_al → `+`；has_al → `−`；其余 → 不画。此前无条件画 `+`/`−`。
+    // ChevronDown 在 egui 的 layout header 里**根本不存在**，之前是上一轮多画的、
+    // 连 on_click 都没有的幽灵按钮；高级设置入口本来由下面的 `layout_dots` 承担，故移除。
+    let layout_btn = visibility::layout_header(&sel).map(|id| {
+        let cmds = f.cmds.clone();
+        IconButton::new(if id == "layout.remove" { Icon::Minus } else { Icon::Plus }).size(20.0).on_click(move |_e, _window, _cx| {
+            cmds.push(Cmd { id, params: None });
+        })
+    });
+    let mut sec = PanelSection::new(if sel.has_al { tr("Auto layout") } else { tr("Layout") });
+    if let Some(b) = layout_btn {
+        sec = sec.header_trail(b);
+    }
+
+    // ── 顺序照 `layout_section`：① 方向（仅 has_al）② Dimensions（无条件）③ 对齐/间距（仅 has_al）──
+
+    // ① 方向切换（egui `direction`，标题 "Layout" 下）。
+    if sel.has_al {
+        let active = match sel.layout_dir {
+            LayoutDir::Vertical => Some(0),
+            LayoutDir::Horizontal => Some(1),
+            LayoutDir::Grid => Some(2),
+            LayoutDir::None => None,
+        };
+        let dir_cmds = f.cmds.clone();
+        let dir = Segmented::icons(&[
+            (Icon::AlignVCenter, tr("Vertical")),
+            (Icon::AlignHCenter, tr("Horizontal")),
+            (Icon::ViewGrid, tr("Grid")),
+        ])
+        .active(active)
+        .on_pick(move |i: usize, _w: &mut Window, _cx: &mut App| {
+            let m = match i {
+                0 => "vertical",
+                1 => "horizontal",
+                2 => "grid",
+                _ => return,
+            };
+            dir_cmds.push(Cmd { id: "node.set", params: Some(serde_json::json!({ "props": { "layout": m } })) });
+        });
+        sec = sec.child(sublabel_row(tr("Layout"))).child(field_row_full(dir));
+    }
+
+    if with_dimensions {
+    // ② Dimensions（egui `dimensions`：**无条件**显示）。
+    let dims = data.dimensions.clone().unwrap_or_default();
+    right::sections::dim_trail_menu(f, cx, &f.w, true, &dims);
+    right::sections::dim_trail_menu(f, cx, &f.h, false, &dims);
+    let lock_cmds = f.cmds.clone();
+    let lock_on = dims.constrain;
+    let constrain =
+        IconButton::new(if lock_on { Icon::LinkOn } else { Icon::LinkOff }).size(24.0).active(lock_on).on_click(move |_e, _w, _cx| {
+            lock_cmds.push(Cmd { id: "node.set", params: Some(serde_json::json!({ "props": { "constrainProportions": !lock_on } })) });
+        });
+    sec = sec.child(sublabel_row(tr("Dimensions"))).child(field_row(vec![f.w.clone(), f.h.clone()], vec![constrain]));
+    // 选中文字时的「调整大小」三格（用户 2026-11-11：从 Typography 段移到 Layout 段）。
+    // 值仍是 `textAutoResize`，与 Typography 之前那个下拉同一条命令。
+    if let Some(t) = data.text.as_ref() {
+        let active = match t.auto_resize {
+            Some("widthAndHeight") => Some(0usize),
+            Some("height") => Some(1),
+            Some("none") => Some(2),
+            _ => None,
+        };
+        let cmds = f.cmds.clone();
+        let seg = crate::widgets::segmented::Segmented::new(vec![
+            crate::widgets::segmented::SegItem::text(tr("Auto width")),
+            crate::widgets::segmented::SegItem::text(tr("Auto height")),
+            crate::widgets::segmented::SegItem::text(tr("Fixed")),
+        ])
+        .active(active)
+        .on_pick(move |i: usize, _w: &mut Window, _cx: &mut App| {
+            let v = match i { 0 => "widthAndHeight", 1 => "height", 2 => "none", _ => return };
+            cmds.push(Cmd { id: "node.set", params: Some(serde_json::json!({ "props": { "textAutoResize": v } })) });
+        });
+        sec = sec.child(sublabel_row(tr("Resizing"))).child(field_row_full(seg));
+    }
+    // Min/Max：仅当该轴已设值、或刚从 sizing 菜单 Add 时才显示（egui `limit_row_v`）。
+    let lo = *f.limit_open.borrow();
+    let any_min = dims.min_w.is_some() || dims.min_h.is_some() || lo[0] || lo[2];
+    let any_max = dims.max_w.is_some() || dims.max_h.is_some() || lo[1] || lo[3];
+    if any_max {
+        let left = if dims.max_w.is_some() || lo[1] { f.dim_max_w.clone().into_any_element() } else { div().into_any_element() };
+        let right = if dims.max_h.is_some() || lo[3] { f.dim_max_h.clone().into_any_element() } else { div().into_any_element() };
+        sec = sec.child(sublabel_row2(tr("Max W"), tr("Max H"))).child(field_row(vec![left, right], Vec::<IconButton>::new()));
+    }
+    if any_min {
+        let left = if dims.min_w.is_some() || lo[0] { f.dim_min_w.clone().into_any_element() } else { div().into_any_element() };
+        let right = if dims.min_h.is_some() || lo[2] { f.dim_min_h.clone().into_any_element() } else { div().into_any_element() };
+        sec = sec.child(sublabel_row2(tr("Min W"), tr("Min H"))).child(field_row(vec![left, right], Vec::<IconButton>::new()));
+    }
+
+    }
+
+    // ③ 对齐 picker + 间距 + 内边距（egui `alignment` / `spacing`，仅 has_al）。
+    if sel.has_al {
+        // egui `alignment`：picker 一列跨两行，右侧是 gap 字段（1 个或 2 个），再右边一个 24。
+        let picker = right::picker::alignment_picker(f, sel.layout_dir, &data.layout);
+        // egui `alignment` 的标题：栅格时左标题写 "Grid"，否则 "Align"；右侧恒为 "Spacing"。
+        let left_cap = if sel.layout_dir == LayoutDir::Grid { tr("Grid") } else { tr("Align") };
+        // `two_gaps = mode == Grid || wrap`：只有这时才显示两个 gap；普通流只有一个 gap
+        // （`gap_and_mode`），第二个字段位置留空。
+        let two_gaps = sel.layout_dir == LayoutDir::Grid || data.layout.wrap;
+        // 布局（用户 2026-11-05 明确要求，纯统一网格、零 cell 内包裹）：
+        // 左列 = 对齐 picker，本身**跨两行**（`field_row_h` 把行高撑到 `ROW_H*2`=64，
+        // picker 56 在其中上下各留 4 pt）；右列 = 间距，每个字段**各占一行**（gap 第一行、
+        // cross_gap 第二行，仅 Grid / wrap 时），左列用空占位。picker 在左、跨两行，
+        // gap / cross_gap 在右、各自一行 —— 完全由 `field_row` / `field_row_h` 表达，
+        // 不在任何单元格里再套 `flex_col`。
+        // picker 跨两行、在左；间距在右列、gap 占第一行、cross_gap 占第二行，二者与
+        // picker **并排在同一个两行高的块里**（而不是堆到 picker 下方）。统一网格的
+        // `field_row_h` 是一行两 cell、整行高 64；右列要分两行只能在该 cell 内用 `flex_col`
+        // 排 gap / cross_gap（这是表达「右列两行」的标准方式，不是多余包裹）；`items_start`
+        // 让仅一个 gap 时只占第一行、下方空出第二行。
+        // 右列：gap / cross_gap 各自占一个 `ROW_H`(32) 高的网格行，内部把 24pt 的字段
+        // **垂直居中**（上下各留 4pt）——这是「32 网格 / 24 内容」的标准对齐，不能 `items_start`
+        // 把内容整体顶上去。`flex_col` + `items_start` 让整列从顶部排成两个 32 行。
+        let right_col = if two_gaps {
+            div()
+                .w_full()
+                .h_full()
+                .flex()
+                .flex_col()
+                .items_start()
+                .gap(pt(0.0))
+                .child(div().w_full().h(pt(crate::widgets::ROW_H)).flex().items_center().child(f.gap.clone().into_any_element()))
+                .child(div().w_full().h(pt(crate::widgets::ROW_H)).flex().items_center().child(f.cross_gap.clone().into_any_element()))
+        } else {
+            div()
+                .w_full()
+                .h_full()
+                .flex()
+                .flex_col()
+                .items_start()
+                .gap(pt(0.0))
+                .child(div().w_full().h(pt(crate::widgets::ROW_H)).flex().items_center().child(f.gap.clone().into_any_element()))
+        };
+        // Gap 行右侧那颗 dots（egui `layout_panel::settings_toggle` 的 "Advanced"）：
+        // 打开的是通用窗口弹层「Layout」，不再是旧版的一串下拉菜单。
+        let popups = f.popups();
+        let settings_queue = f.queue();
+        let settings_data = data.clone();
+        let layout_dots = IconButton::new(Icon::Menu).id("layout-settings-dots").size(24.0).on_click(move |_e, window, cx: &mut App| {
+            if std::env::var_os("FC_DEBUG_POPUP_BTN").is_some() {
+                eprintln!("[popup-btn] layout dots clicked");
+            }
+            let anchor = window.mouse_position();
+            let w = crate::popovers::WindowState::layout(settings_queue.clone(), &settings_data, cx, anchor);
+            popups.request(w);
+        });
+        sec = sec.child(sublabel_row2(left_cap, tr("Spacing"))).child(crate::widgets::field_row_h(
+            vec![picker, right_col],
+            vec![layout_dots],
+            crate::widgets::ROW_H * 2.0,
+        ));
+
+        // Padding（egui `spacing`）：默认水平/垂直两字段；点右侧按钮切「独立内边距」→
+        // 四个字段（L/T、R/B，按 egui 的 sides 顺序）。
+        let individual = *f.pad_individual.borrow();
+        let toggle_cmds = f.cmds.clone();
+        let pad_flag = f.pad_individual.clone();
+        let toggle = IconButton::new(Icon::AbsolutePosition).size(24.0).active(individual).on_click(move |_e, _w, _cx| {
+            let new_val = !*pad_flag.borrow();
+            *pad_flag.borrow_mut() = new_val;
+            // 翻转后必须唤醒视图重绘，否则右栏读到的还是旧 `pad_individual`，四个内边距字段不展开。
+            toggle_cmds.wake();
+        });
+        sec = sec.child(sublabel_row(tr("Padding")));
+        if individual {
+            sec = sec
+                .child(field_row(vec![f.pad_l.clone(), f.pad_t.clone()], Vec::<IconButton>::new()))
+                .child(field_row(vec![f.pad_r.clone(), f.pad_b.clone()], vec![toggle]));
+        } else {
+            sec = sec.child(field_row(vec![f.pad_h.clone(), f.pad_v.clone()], vec![toggle]));
+        }
+    }
+    // ④ 网格轨道（egui `layout_panel.rs::tracks`，只在 grid frame 上出现）：
+    // 每轴一组「Column sizes / Row sizes」+ 每条轨道一行（序号 / 尺寸 / sizing 下拉）。
+    sec = right::sections::grid_track_rows(f, data, cx, n, sec);
+    sec.into_any_element()
+}
+
 
 /// The bottom animation bar (skeleton — header only).
 pub(crate) fn animation_bar() -> Div {

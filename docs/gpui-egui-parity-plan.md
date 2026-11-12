@@ -841,24 +841,56 @@ R 节（17:0x 审计）把 R1/R2 标成「✅ 已实施」，但回源码核对�
   effect/grid 用类型图标（GPUI 无 `Icon::Effects`/`Icon::Grid`，分别用 `Star`/`ViewGrid`）；
   名字占满中间，文本样式的 `32/Auto` **贴行尾**（egui 右对齐在 `r.max.x - LS_TRAIL`）；
   层级 `depth * 24` 缩进（egui `LS_STEP`）；整行悬停 `t.hover` 圆角 5 高亮。
-- **动作**：左键 → `style.apply {style}`；右键 → `Duplicate` / `Delete`（`style.duplicate` /
-  `style.delete`），全部走既有 `f.cmds` 通道。
+- **动作**：左键 → `style.apply {style}`；右键 → `Edit style` / `Duplicate` / `Delete`
+  （`style.duplicate` / `style.delete`），全部走既有 `f.cmds` 通道。
+  - **`Edit style` 为占位**：GPUI 无 `edit_local` 编辑器浮层，暂用现有「样式列表弹窗」
+    （`open_list_window` + `ListWindow::Styles`，与 `style_menu` 同款，点击即 `style.apply`）顶替；
+    真 1:1 需单独立项移植 `edit_local`。
 
 ### V.3 与 EGUI 的**有意偏差**（诚实边界）
 
-1. **左键语义**：egui 左键 `edit_local` 打开样式编辑器浮层（`Picker { edit }`）；GPUI 尚无该浮层，
-   本轮改为 `style.apply`（应用到当前选区，可撤销）。**样式编辑器浮层未移植**，如需 1:1 应单独立项。
+1. **左键 / 右键 Edit 语义**：egui 左键、右键 `Edit style` 都打开 `edit_local` 样式编辑器浮层
+   （`Picker { edit }`）；GPUI 尚无该浮层，本轮左键改为 `style.apply`（应用到当前选区，可撤销），
+   右键 `Edit style` 暂用现有「样式列表弹窗」（`open_list_window` + `ListWindow::Styles`）占位。
+   **样式编辑器浮层（`edit_local`）未移植**，如需 1:1 应单独立项。
 2. **行高**：egui 样式/文件夹行 `LS_ROW_H = 24`；GPUI 复用通用件 `field_row_full`（`ROW_H = 32`），
    未改冻结件 `panel_section.rs`。caption 已与 egui 的 32pt 一致。
-3. **未做**：文件夹折叠（`folded` 恒 false）、拖拽重排（`style.move` / `drop_move`）、
-   文件夹改名（`style.renameFolder` / 右键「Rename folder」）、组内/文件夹行尾 `+`（建到该文件夹）。
+3. **文件夹交互已 1:1**（2026-11-12 补齐，见 V.5）：折叠态 `local_style_folded: Rc<RefCell<HashSet<String>>>`
+   （键 `"<type>/<folder>"`）左键整行切换、chevron 随开合翻转（`ChevronDown`/`ChevronRight`）；
+   文件夹行尾 `+` → `style.create {type, name:"<folder>/<default>"}`（与 egui `ls_add_in` 一致）；
+   右键「Rename folder」→ 内联复用通用 `TextField`（`local_style_rename_input`，一次性预填当前名、
+   `sync` 用 `mem::take` 不会覆盖草稿），提交即 `style.renameFolder {folder, name}`
+   （空名 / 同名直接丢弃，防误提交）。三处均照搬 `style_picker.rs::local_styles`，未自造控件。
+   **仍缺**：`style.move` 拖拽重排（`drop_move`）—— egui 整组是一条 drag 线，GPUI 尚未接 `ListDrag`。
 
 ### V.4 验证
 
-- `cargo check -p figcraft-ui-gpui --lib`：RC=0，无新警告。
-- `cargo test -p figcraft-ui-gpui --lib --features test-support`：**251 通过 / 3 失败 / 3 忽略**；
-  3 条仍是记录在案的基线（main_menu aim / extra Shift+D / panel_resize hit area），无新增回归。
-- 改动文件：`crates/ui-gpui/src/panels/right/data.rs`、`crates/ui-gpui/src/panels/right/sections.rs`。
+- `cargo check -p figcraft-ui-gpui --lib`：RC=0，无新错误（增量缓存锁文件告警可忽略）。
+- `cargo test -p figcraft-ui-gpui --lib --features test-support`：稳定基线 **278 通过 / 3 失败 / 3 忽略**；
+  3 条为记录在案的基线（main_menu aim / extra Shift+D / panel_resize hit area），与本次改动无关。
+  `present::tests` 下 3 个帧时序测试为**环境抖动**（headless 负载下偶发失败，空闲时连跑 3 遍全过）。
+- 文件夹交互补齐（V.5，2026-11-12）：`cargo test` 仍为 **3 条基线失败、无新增回归**；
+  基线通过数由 270 升到 278（其它分支同期并入的测试，非本次新增）。
+- 改动文件：`crates/ui-gpui/src/panels.rs`（`RightFields` 增 `local_style_renaming` /
+  `local_style_rename_input` / `local_style_folded` 三个字段）、
+  `crates/ui-gpui/src/panels/right/sections.rs`（`local_style_folder` 重写 + `ls_entries` 接 `folded`）、
+  `crates/ui-gpui/src/panels/right/data.rs`、`docs/gpui-egui-parity-plan.md`（本 V 节）。
+
+### V.5 2026-11-12 文件夹交互补齐（折叠 / 行尾 + / 改名）
+
+用户原话「啃上面哪个缺口，记得用可复用」→ 选 V.3 第 3 条里除 `style.move` 外的三件事，全部复用现有通用件：
+
+- **折叠**：`LsLine::Folder` 增加 `path` 字段（沿用 `ls_branch_of` 的文件夹路径），`ls_entries` 的
+  `folded` 闭包读 `local_style_folded`（键 `"<type>/<folder>"`），与 egui `folded_id` 一致；
+  左键整行 `on_mouse_down(Left)` 切 `insert/remove`，chevron 在 `ChevronDown`/`ChevronRight` 间翻转。
+- **行尾 `+`**：`local_style_folder` 末尾挂 `IconButton::Plus`，`on_click` 推
+  `style.create {type: ty, name: "<path>/<ls_default_name(ty)>"}`（`ls_default_name` 对齐 egui
+  `StyleSlot::default_name`：Text/Color/Effect/Grid）。
+- **改名**：右键菜单「Rename folder」→ `local_style_renaming.borrow_mut().replace(path)`，
+  并在同一 `on_pick` 里 `local_style_rename_input.update(set_value(path))` 预填；下一帧 `local_style_folder`
+  见 `renaming == Some(path)` 即把行内 `label` 换成该 `TextField`。提交走 `local_style_rename_input` 的
+  `on_commit`（建在 `RightFields::new`，读 `renaming.take()` 推 `style.renameFolder`），空名/同名丢弃。
+- **未做**：`style.move` 拖拽重排（egui 走整组 `ListDrag` + `drop_move`，GPUI 未接 `ListDrag`）。
 
 ---
 
