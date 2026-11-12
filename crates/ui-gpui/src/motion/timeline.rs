@@ -128,11 +128,26 @@ fn prop_of(row: &Row) -> AnimProperty {
     }
 }
 
-/// egui `build_rows` (L141-176): **the selected layers**, clips first, then non-empty tracks.
-fn build_rows(doc: &Document, selection: &[NodeId], ui: &MotionUi, page: NodeId, settings: TimelineSettings) -> Vec<Row> {
+/// Build one group's rows: **every animated layer under `scope`**, clips first, then non-empty
+/// tracks. 一个画框 = 一个动画组（用户 2026-11-12）：框内所有组件共用同一条时间轴、播放头和
+/// 总时长，必须**一起显示**在各自的行上 —— 所以行列表取 `scope` 子树里有动画的节点，而不是
+/// 只看画布选中的那一个。`scope` 由 `scope_of` 算出（选画框内子元素或画框本身 → 最外层画框；
+/// 页级/空选 → 页），已由 host 透传进这里；之前被 `let _ = page` 丢弃，导致只列选中节点。
+///
+/// 并上 `selection` 是刻意的：无动画的选中层也要出现，用户才能在时间轴上给它加第一个
+/// key/clip（inspector::selected_layer 的既有语义，别让空白文档无处下手）。
+fn build_rows(doc: &Document, selection: &[NodeId], ui: &MotionUi, scope: NodeId, settings: TimelineSettings) -> Vec<Row> {
     let dur = settings.duration_ms;
+    // 空选 → 整条时间轴不列任何轨道（用户 2026-11-12）。此前 scope 回退到页面时会把整页所有
+    // 有动画的层都列出来，看着像「什么都没选还满屏动画轨道」。选中任意层/画框才聚合该 scope。
+    if selection.is_empty() {
+        return Vec::new();
+    }
+    // paint order：整棵 scope 子树里，有动画的节点 + 当前选中节点。
+    let animated = crate::motion::animated_nodes(doc, scope);
+    let nodes = doc.subtree(scope).into_iter().filter(|id| animated.contains(id) || selection.contains(id));
     let mut rows = Vec::new();
-    for id in selection.iter().copied().filter(|n| doc.node(*n).is_some()) {
+    for id in nodes {
         let Some(n) = doc.node(id) else { continue };
         rows.push(Row {
             node: id,
@@ -161,7 +176,6 @@ fn build_rows(doc: &Document, selection: &[NodeId], ui: &MotionUi, page: NodeId,
             });
         }
     }
-    let _ = page;
     rows
 }
 
@@ -952,6 +966,21 @@ pub fn bar(
                 begin_drag(&q_down, hit, pos, scale, looping, scrolling_x, &drag_doc, drag_duration, e.modifiers.shift, double);
             }
         })
+        // 整帧复制（用户 2026-11-12 D2）：右键时间轴某一时刻，把该时刻所有 track 的真实 key
+        // （含 easing）复制到播放头。走 engine `motion.keyframeCopy`（单步 undo、只读门控）。
+        // 只响应轨道/刻度区（x ≥ LEFT_W），左侧图层列的右键不碰。
+        .on_mouse_down(MouseButton::Right, {
+            let q = queue.clone();
+            let bo = bar_origin.clone();
+            move |e: &MouseDownEvent, _window, cx: &mut App| {
+                cx.stop_propagation();
+                let o = *bo.borrow();
+                let local_x = f32::from(e.position.x) - f32::from(o.x);
+                if local_x >= LEFT_W {
+                    q.push(Act::CopyFrame { from: time_at(local_x, scale, scrolling_x) });
+                }
+            }
+        })
         // 只在指针于时间轴内移动时请求一帧（悬停反馈按实时指针位置绘制）。拖拽本身仍由根视图
         // 的窗口级 move/up 接管：gpui 的逐元素处理器只在悬停时触发，指针一离开就断。
         .on_mouse_move({
@@ -1097,23 +1126,21 @@ fn dispatch_down(
             GRABBED.with(|g| *g.borrow_mut() = Some(crate::motion::SelectedKey { node: n, property: p, time_ms: t }));
         }
         HitKind::Segment(n, p, t) => {
-            // egui L700-702：点中两帧之间的线就是「选中这一段」——不再顺带把起点关键帧也选上。
+            // 点中两帧之间的线 = 选中这一段，并弹出**独立的缓动浮窗**（只 Curve/Spring 曲线，
+            // 编辑 `EaseTarget::Key`（段起点帧的 easing），不碰 clip 的 preset 字段）。
+            // 用户 2026-11-12：帧间线的设置是「单独的」，但**必须能弹窗**——前一版误把整段删掉、
+            // 导致曲线没法设，这里用独立状态 `segment_ease` 恢复，且与 clip 窗互斥。
             let item = SelItem::Segment(n, p, t);
             if shift {
                 q.push(Act::Click(item, true));
             } else {
                 q.push(Act::EnsureSelected(item));
             }
-            // The segment is also the clip's own span: pressing it opens that clip's settings in
-            // the same popover the clip's edges use, so the animation can be edited from the line
-            // between two keyframes instead of only from its handles.
-            if let Some(clip) = doc.node(n).and_then(|node| {
-                node.motion.clips.iter().find(|c| {
-                    c.kind.properties().contains(&p) && t >= c.delay_ms && t <= c.delay_ms + c.duration_ms
-                })
-            }) {
-                q.push(Act::OpenClipPopover(n, clip.id));
-            }
+            // 锚点：卡片顶边与点击处齐高、右缘贴右栏左缘（x 由 panel 算）。`pos` 是 bar 局部
+            // 坐标，转成窗口 y 再记，否则卡片会跑到时间轴上方。
+            let bo = BAR_ORIGIN.with(|o| *o.borrow());
+            q.push(Act::SetClipAnchorY(pos.y + f32::from(bo.y)));
+            q.push(Act::OpenSegmentEase(crate::motion::SelectedKey { node: n, property: p, time_ms: t }));
         }
         HitKind::ClipEdge(node, id, edge) => {
             q.push(Act::Click(SelItem::Clip(node, id), shift));
@@ -1338,6 +1365,28 @@ mod tests {
 
     fn doc() -> Document {
         sample_doc()
+    }
+
+    /// 空选 → 时间轴不列任何动画轨道（用户 2026-11-12）。此前空选时 scope 回退到页面，
+    /// `animated_nodes` 会把整页所有有动画的层都列出来，看着像「什么都没选还满屏轨道」。
+    #[test]
+    fn empty_selection_lists_no_tracks() {
+        use figcraft_doc::anim::motion::{AnimProperty, AnimValue};
+        use figcraft_doc::NodeKind;
+
+        let mut d = Document::new("empty-selection-tracks");
+        let page = d.first_page().unwrap();
+        let frame = d.create(page, NodeKind::Frame, "Card", 0.0, 0.0, 100.0, 100.0).unwrap();
+        let dot = d.create(frame, NodeKind::Rectangle, "Dot", 2.0, 2.0, 8.0, 8.0).unwrap();
+        if let Some(n) = d.node_mut(dot) {
+            let tr = n.motion.ensure_track(AnimProperty::Position);
+            tr.set_key(0, AnimValue::Vec2(figcraft_geom::Vec2::new(0.0, 0.0)), None);
+            tr.set_key(500, AnimValue::Vec2(figcraft_geom::Vec2::new(10.0, 0.0)), None);
+        }
+        let page_scope = page; // 空选时 scope_of 回退到页面。
+        let settings = TimelineSettings { duration_ms: 1000, fps: 30, looping: false };
+        assert!(build_rows(&d, &[], &MotionUi::default(), page_scope, settings).is_empty(), "空选不列轨道");
+        assert!(!build_rows(&d, &[dot], &MotionUi::default(), frame, settings).is_empty(), "选中层仍要列出轨道");
     }
 
     /// Regression test for the "handles won't drag at all" bug. The root cause was that the
@@ -1617,6 +1666,73 @@ mod tests {
         assert!(matches!(eye, Some(HitKind::Visible(id)) if id == g.id), "图层行的眼睛命中区要一直在，实得 {eye:?}");
         let track_eye = hit_at(&with_hover, pos2(LEFT_W - 15.0, g.key_y)).map(|h| h.kind);
         assert!(matches!(track_eye, Some(HitKind::TrackVisible(id, AnimProperty::Position)) if id == g.id), "轨道的眼睛命中区也要在，实得 {track_eye:?}");
+    }
+
+    // ---- 画框 = 一个动画组：选中框内任意层/框本身，都要列出整框所有有动画节点的轨道 ----
+
+    /// 造一份测试文档：Frame 1 内含 Blue / Red，页级另有 Seam Left。
+    /// 给 Blue、Red、Seam Left 各加一条带关键帧的 Opacity 轨道；Frame 1 自身与页级容器无动画。
+    fn framed_doc_with_three_animated() -> (Document, NodeId, NodeId, NodeId, NodeId, NodeId) {
+        use figcraft_doc::anim::motion::{AnimValue, Ease};
+        let mut doc = sample_doc();
+        let page = doc.pages[0];
+        let find = |doc: &Document, name: &str| -> NodeId {
+            doc.subtree(page).into_iter().find(|id| doc.node(*id).is_some_and(|n| n.name == name)).unwrap()
+        };
+        let frame = find(&doc, "Frame 1");
+        let blue = find(&doc, "Blue");
+        let red = find(&doc, "Red");
+        let seam = find(&doc, "Seam Left");
+        for id in [blue, red, seam] {
+            let tr = doc.node_mut(id).unwrap().motion.ensure_track(AnimProperty::Opacity);
+            tr.set_key(0, AnimValue::Scalar(1.0), Some(Ease::Linear));
+            tr.set_key(500, AnimValue::Scalar(0.3), None);
+        }
+        (doc, page, frame, blue, red, seam)
+    }
+
+    /// Layer 行 = 顶层节点行（RowKind::Layer），每个有动画节点恰好一行。
+    fn layer_nodes(rows: &[Row]) -> Vec<NodeId> {
+        rows.iter().filter(|r| matches!(r.kind, RowKind::Layer)).map(|r| r.node).collect()
+    }
+
+    #[test]
+    fn selecting_a_child_lists_every_animated_layer_in_the_frame() {
+        let (doc, _page, _frame, blue, red, seam) = framed_doc_with_three_animated();
+        let ui = MotionUi::default();
+        let settings = settings_of(&doc, _frame);
+        // 只选中 Blue（框内一个子元素），作用域 = Frame 1。
+        let rows = build_rows(&doc, &[blue], &ui, _frame, settings);
+        let layers = layer_nodes(&rows);
+        assert!(layers.contains(&blue), "选中的 Blue 必须在");
+        assert!(layers.contains(&red), "同框另一个有动画的 Red 必须一起显示（bug 修复点）");
+        assert!(!layers.contains(&seam), "框外的 Seam Left 不属于这个动画组");
+        assert_eq!(layers.iter().filter(|id| **id == blue || **id == red).count(), 2, "每个节点恰好一行");
+    }
+
+    #[test]
+    fn selecting_the_frame_itself_lists_all_its_animated_children() {
+        let (doc, _page, frame, blue, red, seam) = framed_doc_with_three_animated();
+        let ui = MotionUi::default();
+        let settings = settings_of(&doc, frame);
+        // 直接选中画框本身 → 同样列出框内所有有动画子节点。
+        let layers = layer_nodes(&build_rows(&doc, &[frame], &ui, frame, settings));
+        assert!(layers.contains(&blue) && layers.contains(&red), "选画框本身也要一起显示框内所有动画层");
+        assert!(!layers.contains(&seam), "框外节点仍不混入");
+    }
+
+    #[test]
+    fn a_plain_selected_layer_joins_the_animated_group_without_losing_others() {
+        use figcraft_doc::NodeKind;
+        let (mut doc, _page, frame, blue, red, _seam) = framed_doc_with_three_animated();
+        // 在框内再造一个**没有动画**的层并选中它：它要出现（好加第一个 key），
+        // 同时不能挤掉 Blue / Red 的轨道。
+        let plain = doc.create(frame, NodeKind::Rectangle, "Plain", 0.0, 0.0, 10.0, 10.0).unwrap();
+        let ui = MotionUi::default();
+        let settings = settings_of(&doc, frame);
+        let layers = layer_nodes(&build_rows(&doc, &[plain], &ui, frame, settings));
+        assert!(layers.contains(&blue) && layers.contains(&red), "无动画层被选中时，其它动画层仍要一起显示");
+        assert!(layers.contains(&plain), "被选中的无动画层也要出现，才能加第一个关键帧");
     }
 }
 

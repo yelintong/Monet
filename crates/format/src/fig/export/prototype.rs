@@ -124,6 +124,10 @@ impl<'d> Exporter<'d> {
                 self.warn("variable and conditional prototype actions were left out");
                 None
             }
+            Action::Animation { .. } => {
+                self.warn("control-animation prototype actions were left out (no .fig equivalent)");
+                None
+            }
         }
     }
 

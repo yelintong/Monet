@@ -268,16 +268,24 @@ fn paint_circle(window: &mut Window, center: Pos2, radius: f32, fill: Color32, s
         window.paint_quad(quad);
     }
     if stroke.width > 0.0 && stroke.color.a() > 0 {
-        // 描边用折线近似（细分随半径增长）。
+        // 描边必须是**一条闭合的 stroke 路径**：以前逐段 `paint_line` 拼几十个独立四边形，
+        // 段与段之间没有 join，宽描边会碎成一段一段的弧块（动画 gizmo 的 5pt 白色底环最
+        // 明显，半径越大越碎）。lyon 的 StrokeTessellator 对闭合路径会自动补 join，得到
+        // 连续的一整圈；用折线近似而非贝塞尔，避开 GPUI 0.2.1 对曲线路径填充的问题。
         let segments = ((radius * 2.5) as usize).clamp(16, 96);
-        let mut pts = Vec::with_capacity(segments);
+        let mut b = PathBuilder::stroke(px(stroke.width));
         for i in 0..segments {
             let t = i as f32 / segments as f32 * std::f32::consts::TAU;
-            pts.push(pos2(center.x + radius * t.cos(), center.y + radius * t.sin()));
+            let p = point(px(center.x + radius * t.cos()), px(center.y + radius * t.sin()));
+            if i == 0 {
+                b.move_to(p);
+            } else {
+                b.line_to(p);
+            }
         }
-        pts.push(pts[0]);
-        for pair in pts.windows(2) {
-            paint_line(window, pair[0], pair[1], &stroke);
+        b.close();
+        if let Ok(path) = b.build() {
+            window.paint_path(path, to_rgba(stroke.color));
         }
     }
 }

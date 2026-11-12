@@ -571,6 +571,34 @@ impl OverlayAnchor {
     }
 }
 
+/// What an [`Action::Animation`] does to a frame's timeline (desigma `AnimationOp`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum AnimationOp {
+    /// Play; `from_start` rewinds first, otherwise resumes (a finished one-shot restarts).
+    Play {
+        #[serde(default)]
+        from_start: bool,
+    },
+    /// Hold the timeline where it is.
+    Pause,
+    /// Rewind to the start and play.
+    Restart,
+    /// Pause when playing, resume otherwise.
+    TogglePlay,
+}
+
+impl AnimationOp {
+    /// `Play { from_start: false }`, the default "resume the frame's animation".
+    pub const RESUME: AnimationOp = AnimationOp::Play { from_start: false };
+}
+
+impl Default for AnimationOp {
+    fn default() -> Self {
+        Self::RESUME
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum Action {
@@ -637,6 +665,14 @@ pub enum Action {
     /// without a condition is the "else").
     Conditional {
         blocks: Vec<ConditionalBlock>,
+    },
+    /// Control another frame's motion timeline during a prototype (desigma "Control animation"):
+    /// Play / Pause / Restart / TogglePlay the animation group of `dest`. `op` has a serde default
+    /// (resume), so `{"type":"animation","dest":N}` is a valid action.
+    Animation {
+        dest: NodeId,
+        #[serde(default)]
+        op: AnimationOp,
     },
 }
 
@@ -743,6 +779,7 @@ impl Action {
             Action::SetVariable { .. } => "Set variable",
             Action::SetVariableMode { .. } => "Set variable mode",
             Action::Conditional { .. } => "Conditional",
+            Action::Animation { .. } => "Control animation",
         }
     }
 
@@ -767,7 +804,8 @@ impl Action {
             | Action::ScrollTo { dest, .. }
             | Action::OpenOverlay { dest, .. }
             | Action::SwapOverlay { dest }
-            | Action::ChangeTo { dest } => Some(*dest),
+            | Action::ChangeTo { dest }
+            | Action::Animation { dest, .. } => Some(*dest),
             _ => None,
         }
     }

@@ -410,7 +410,7 @@ fn draw_template_thumb(tpl: &figcraft_engine::templates::Template) -> Option<std
     let (w, h) = (226.0f64, 126.0f64);
     let area = figcraft_geom::Rect::new(bounds.x0, bounds.y0, bounds.x1, bounds.y1.min(bounds.y0 + bounds.width() * h / w * 1.5));
     let scale = (w / area.width()).min(h / area.height());
-    let pix = figcraft_render::render_area(&doc, &frames, area, scale.min(1.0))?;
+    let pix = crate::render_stack::on_render_stack(|| figcraft_render::render_area(&doc, &frames, area, scale.min(1.0)))??;
     Some(crate::canvas::render_worker::screen_image(&pix, doc.color_profile))
 }
 

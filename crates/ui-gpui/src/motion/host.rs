@@ -28,12 +28,13 @@ impl CanvasView {
             self.set_motion_open(false, cx);
             self.motion_ui.playing = false;
         }
+        let selection = self.app.session.selection();
         let settings = self
             .app
             .session
             .ds()
             .ok()
-            .map(|ds| motion::settings_of(&ds.doc, ds.page))
+            .map(|ds| motion::settings_of(&ds.doc, motion::scope_of(&ds.doc, &selection, ds.page)))
             .unwrap_or_default();
         if self.motion_ui.advance(settings) {
             cx.notify();
@@ -41,13 +42,37 @@ impl CanvasView {
         if self.motion {
             if let Ok(ds) = self.app.session.ds() {
                 let doc = ds.doc.clone();
-                let page = ds.page;
-                self.motion_ui.refresh_preview(&doc, page);
+                // Evaluate only the selected frame's subtree so all its components play together
+                // on one timeline; page scope (nothing in a frame selected) stays unchanged.
+                let scope = motion::scope_of(&doc, &selection, ds.page);
+                self.motion_ui.refresh_preview(&doc, scope);
             }
         } else {
             self.motion_ui.preview_doc = None;
             self.motion_ui.preview = None;
         }
+        // 画布上的运动路径 + 变换手柄：Motion 模式里只要有 `Position` 动画就画，
+        // 播放过程中藏起来（用户 2026-11-12）——播放时看的是成品，不停留 Controls。
+        // 静态源文档必须在"临时替换 ds.doc 为 preview"之前取：sync_motion 在 render 开头跑，
+        // 此刻 ds.doc 还是未求值的真实文档。轨迹 / 角度基准 / 命中都靠它保持同一坐标系。
+        let src_doc = self.app.session.ds().ok().map(|ds| ds.doc.clone());
+        self.app.motion_overlay = crate::canvas::motion_overlay::State::new(
+            self.motion,
+            self.motion_ui.playing,
+            self.motion_ui.playhead_ms,
+            settings.fps,
+            settings.duration_ms,
+            self.motion_ui.preview_doc.clone(),
+            src_doc,
+        );
+        // 让引擎的命中/悬停按「画面上显示的那份」算：动画模式播放头停在中间时，物体画在
+        // 动画位置，命中若仍读未求值的 ds.doc 就点不中（用户 2026-11-12）。
+        // 写操作不受影响——引擎的 `display_doc` 只用于命中几何，编辑仍走 `ds.doc`。
+        self.app.session.display_doc = if self.motion && !self.motion_ui.playing {
+            self.motion_ui.preview_doc.clone()
+        } else {
+            None
+        };
     }
 
     /// The document the canvas should draw while Motion is previewing a playhead position.
@@ -76,6 +101,34 @@ impl CanvasView {
         let playhead = self.motion_ui.playhead_ms.max(0.0) as u32;
         let fill_keyed = layer.is_some_and(|l| crate::motion::has_key(&doc, l, figcraft_doc::anim::motion::AnimProperty::FillColor, playhead));
         let stroke_keyed = layer.is_some_and(|l| crate::motion::has_key(&doc, l, figcraft_doc::anim::motion::AnimProperty::StrokeColor, playhead));
+        // ── 组件专属段（用户 2026-11-12）──
+        // Motion 右栏不能只有一套通用面板：选中什么组件，就长什么面板。这里与设计面板用同一批
+        // section（文本 → Typography、画框 → Auto layout / Layout grid、实例 → Component、
+        // 椭圆 → Arc、星形 → Star…），只是可动画字段仍走关键帧控件。
+        let mut before: Vec<AnyElement> = Vec::new();
+        if let Some(c) = crate::panels::right::component::section(&self.fields, &data, cx, &mut n) {
+            before.push(c.into_any_element());
+        }
+        if let Some(s) = crate::panels::right::sections::section(&self.fields, &data, 0.0) {
+            before.push(s.into_any_element());
+        }
+        // Auto layout 的附加行（方向 / 对齐 / 间距 / 内边距 / 网格轨道）。Motion 的
+        // Layout 段已经用关键帧字段画了 W/H，这里只要「自动布局」那部分，所以不重复尺寸行。
+        if sel.has_al {
+            before.push(crate::panels::auto_layout_section(&self.fields, sel, &data, cx, &mut n, false, false));
+        }
+        if sel.all_ellipse {
+            before.push(crate::panels::arc_section(&self.fields).into_any_element());
+        }
+        if sel.all_points {
+            before.push(crate::panels::star_section(&self.fields).into_any_element());
+        }
+        if let Some(m) = crate::panels::right::sections::variable_modes(&self.fields, &data, 0.0) {
+            before.push(m.into_any_element());
+        }
+        if sel.has_text {
+            before.push(crate::panels::right::sections::typography(&self.fields, &data).into_any_element());
+        }
         let fills = crate::panels::right::sections::paints(&self.fields, &data, true, sel.has_vector, 0.0, 0.0, &mut n, window, cx, layer, fill_keyed, &self.motion_q)
             .into_element()
             .into_any_element();
@@ -97,7 +150,15 @@ impl CanvasView {
         let effects = crate::panels::right::sections::effects(&self.fields, &data, 0.0, cx, keyframe)
             .into_element()
             .into_any_element();
-        let design_sections = vec![fills, strokes, effects];
+        // Fill / Stroke / Effects 之后的组件专属段：Layout grid（画框）+ Export（所有图层）。
+        let mut after: Vec<AnyElement> = Vec::new();
+        if sel.all_frame {
+            after.push(crate::panels::right::sections::grids(&self.fields, &data, 0.0).into_element().into_any_element());
+        }
+        after.push(crate::panels::right::sections::export(&self.fields, &data, 0.0, &mut n, cx).into_element().into_any_element());
+        let mut design_sections = before;
+        design_sections.extend([fills, strokes, effects]);
+        design_sections.extend(after);
         let root = cx.entity();
 
         motion::inspector::panel(
@@ -121,8 +182,10 @@ impl CanvasView {
         let vp = window.viewport_size();
         let width = f32::from(vp.width);
         let doc = self.app.session.doc().ok().cloned().unwrap_or_else(|| Document::new("motion"));
-        let page = self.app.session.ds().ok().map(|d| d.page).unwrap_or(figcraft_doc::NodeId(0));
         let selection = self.app.session.selection();
+        // The bottom timeline belongs to the selected frame (one animation group), not the whole
+        // page. `bar`'s `page` parameter is now this scope; build_rows still lists `selection`.
+        let scope = motion::scope_of(&doc, &selection, self.app.session.ds().ok().map(|d| d.page).unwrap_or(figcraft_doc::NodeId(0)));
         motion::timeline::bar(
             cx,
             &doc,
@@ -130,7 +193,7 @@ impl CanvasView {
             &self.motion_q,
             &selection,
             &self.motion_times,
-            page,
+            scope,
             width,
             window,
         )
@@ -140,7 +203,11 @@ impl CanvasView {
     pub(crate) fn motion_clip_popover_layer(&mut self, cx: &mut Context<Self>, vp: gpui::Size<gpui::Pixels>) -> Vec<AnyElement> {
         let doc = self.app.session.doc().ok().cloned().unwrap_or_else(|| Document::new("motion"));
         let root = cx.entity();
-        motion::clip_popover::panel(cx, &doc, &self.motion_ui, &self.motion_q, &mut self.motion_clip_fields, vp, root)
+        // `right_w` 在这里直接取（self 就是 CanvasView）。绝不能在 `panel()` 里 `root.read(cx)`：
+        // 那是渲染期，CanvasView 正被 update，再读自己会 panic
+        // `cannot read CanvasView while it is already being updated`（entity_map.rs:138）。
+        let right_w = self.right_w;
+        motion::clip_popover::panel(cx, &doc, &self.motion_ui, &self.motion_q, &mut self.motion_clip_fields, vp, root, right_w)
     }
 
     /// Open / close Motion mode: widen the right panel to the inspector width and back.

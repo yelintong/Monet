@@ -18,6 +18,7 @@ use crate::component_codegen::{Component, Param};
 use crate::params::{get, id_of, num_or, string, targets};
 use crate::{bad, spec};
 
+mod anim;
 mod arkui;
 mod compose;
 mod css;
@@ -78,6 +79,28 @@ pub fn specs() -> Vec<CommandSpec> {
                 _ => code,
             };
             Ok(json!({"code": code, "language": lang.id(), "connected": connected}))
+        }
+    ),
+    spec!(
+        "inspect.motionCode",
+        "Motion animation code",
+        "{id?, language?: css|swiftui|compose (default css)} → {code, language}. Dev Mode code for the Motion animations of a layer and everything below it: CSS @keyframes, SwiftUI keyframeAnimator or Compose keyframes. Static styling stays in `inspect.code`; this is the animation layer that goes on top. Empty code when nothing animates.",
+        false,
+        |s, p| {
+            let cmd = "inspect.motionCode";
+            let id = targets(s, p).first().copied().ok_or_else(|| bad(cmd, "select a layer"))?;
+            let lang = match string(p, "language").map(|l| l.to_ascii_lowercase()).as_deref() {
+                None | Some("css") => "css",
+                Some("swiftui") => "swiftui",
+                Some("compose") => "compose",
+                _ => return Err(bad(cmd, "language: css|swiftui|compose")),
+            };
+            let doc = s.doc()?;
+            if !doc.contains(id) {
+                return Err(bad(cmd, "no such layer"));
+            }
+            let code = anim::for_language(doc, id, lang).unwrap_or_default();
+            Ok(json!({"code": code, "language": lang}))
         }
     )]
 }
@@ -764,5 +787,34 @@ mod tests {
                 assert!(!t.starts_with("evil()") && !t.starts_with("more()"), "layer name leaked as code:\n{code}");
             }
         }
+    }
+
+    /// `inspect.motionCode` is the single command-path for Motion Dev Mode code (docs/architecture.md
+    /// "one path for every surface"): it dispatches css | swiftui | compose and returns empty code
+    /// when nothing on the layer animates. Static styling stays in `inspect.code`.
+    #[test]
+    fn motion_code_command_dispatches_languages_and_handles_no_animation() {
+        let mut s = Session::new();
+        let f = id_of(&s.execute("frame.create", &json!({"x": 0, "y": 0, "width": 100, "height": 40, "name": "Card"})).unwrap()["id"]).unwrap();
+        // No animation yet: empty code, but the language echoes back for every target.
+        for lang in ["css", "swiftui", "compose"] {
+            let v = s.execute("inspect.motionCode", &json!({"id": f, "language": lang})).unwrap();
+            assert_eq!(v["language"], lang);
+            assert_eq!(v["code"].as_str().unwrap(), "");
+        }
+        // Add two opacity keyframes through the engine command, then the same path yields CSS.
+        // AnimValue is an externally-tagged enum: Scalar(0.0) serialises as {"Scalar": 0.0}.
+        s.execute("motion.keyframe", &json!({"property": "Opacity", "time": 0, "value": {"Scalar": 0.0}, "ids": [f.0]})).unwrap();
+        s.execute("motion.keyframe", &json!({"property": "Opacity", "time": 1000, "value": {"Scalar": 1.0}, "ids": [f.0]})).unwrap();
+        let css = s.execute("inspect.motionCode", &json!({"id": f, "language": "css"})).unwrap();
+        assert_eq!(css["language"], "css");
+        assert!(css["code"].as_str().unwrap().contains("@keyframes card-opacity {"), "{css}");
+        assert!(css["code"].as_str().unwrap().contains("animation: card-opacity"), "{css}");
+        let sw = s.execute("inspect.motionCode", &json!({"id": f, "language": "swiftui"})).unwrap();
+        assert!(sw["code"].as_str().unwrap().contains(".keyframeAnimator("), "{sw}");
+        let kt = s.execute("inspect.motionCode", &json!({"id": f, "language": "compose"})).unwrap();
+        assert!(kt["code"].as_str().unwrap().contains("keyframes {"), "{kt}");
+        // unknown language is refused at the command boundary
+        assert!(s.execute("inspect.motionCode", &json!({"id": f, "language": "flutter"})).is_err());
     }
 }

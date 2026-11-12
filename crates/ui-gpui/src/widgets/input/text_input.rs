@@ -160,6 +160,13 @@ impl TextInput {
     pub fn set_dim(&mut self, d: bool) {
         self.dim = d;
     }
+    /// The glyph size. The inline rename editor sets this to match the label it replaces:
+    /// two different sizes mean two different line boxes, and centring each one in the row
+    /// leaves the baselines a pixel or two apart.
+    pub fn set_font_size(&mut self, size: Pixels) {
+        self.font_size = size;
+    }
+
     pub fn set_colors(&mut self, text: Hsla, placeholder: Hsla, caret: Hsla) {
         self.color = text;
         self.placeholder_color = placeholder;
@@ -336,7 +343,11 @@ impl TextInput {
             let text_top = line_origin.y;
             let caret_quad = if focused && caret_visible && sel_a == sel_b {
                 let x = line.x_for_index(caret_byte);
-                Some(fill(Bounds { origin: point(text_x + x, line_origin.y), size: size(px(1.0), text_height) }, caret_color))
+                // 1 pt wide with a 0.5 pt radius: both ends are round, so the caret reads as a
+                // pill rather than a hairline rectangle.
+                let mut quad = fill(Bounds { origin: point(text_x + x, line_origin.y), size: size(px(1.0), text_height) }, caret_color);
+                quad.corner_radii = gpui::Corners::all(px(0.5));
+                Some(quad)
             } else {
                 None
             };

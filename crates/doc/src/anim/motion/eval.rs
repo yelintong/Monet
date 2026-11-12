@@ -440,6 +440,6 @@ mod tests {
             let v = c.value_at(t);
             assert!(v.x.is_finite() && v.y.is_finite());
         }
-        let _ = Keyframe { time_ms: 0, value: AnimValue::Scalar(0.0), easing: super::super::easing::Ease::Linear };
+        let _ = Keyframe { time_ms: 0, value: AnimValue::Scalar(0.0), easing: super::super::easing::Ease::Linear, out_handle: None, in_handle: None };
     }
 }

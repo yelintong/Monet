@@ -45,6 +45,11 @@ pub struct CanvasApp {
     /// 画布上注解的分类过滤器（egui `CategoryFilter`）：
     /// `None` = 全部 / `Some("")` = 无分类 / `Some(id)` = 只看这个分类。
     pub dev_cat_filter: Option<String>,
+    /// Motion 模式的画布叠加层（运动路径 + 变换手柄）：每帧由 `CanvasView::sync_motion`
+    /// 从 Motion 状态同步过来（`None`/失活 = 不画）。
+    pub motion_overlay: crate::canvas::motion_overlay::State,
+    /// Motion gizmo 的跨帧拖动句柄（`State` 每帧重建，放不下）。
+    pub motion_gizmo: crate::canvas::motion_overlay::Interaction,
 }
 
 impl CanvasApp {
@@ -65,6 +70,8 @@ impl CanvasApp {
             ppp: 1.0,
             dev_inspect: false,
             dev_cat_filter: None,
+            motion_overlay: crate::canvas::motion_overlay::State::default(),
+            motion_gizmo: crate::canvas::motion_overlay::Interaction::default(),
         };
         // 预选一个自动布局容器：启动即可见 hatch（紧贴轮廓 + padding 蓝斜线 + spacing 粉斜线），
         // 不用先手动点选，方便核对"选中=1px / 悬停=2px"与边距斜线管线。

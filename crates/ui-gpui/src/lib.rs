@@ -48,6 +48,11 @@ mod title_bar;
 
 mod dock;
 
+/// 通用「按住拖动」状态机：尺寸拖动 / 浮窗整卡移动 / 对话框拖动共用一份。
+
+mod hold_drag;
+mod render_stack;
+
 /// 通用尺寸拖动状态机：左面板宽度 / 底部时间轴高度共用（thread_local + 窗口轴相对位移）。
 
 mod resize_drag;
@@ -974,6 +979,11 @@ impl CanvasView {
             te.set_inset_left(0.0);
 
             te.set_right_pad(0.0);
+
+            // Same size as the layer label it replaces: two sizes mean two line boxes, and
+            // centring each one in the row leaves the text a pixel or two lower.
+
+            te.set_font_size(px(11.0));
 
         });
 
@@ -1940,7 +1950,16 @@ impl CanvasView {
 
                 if let Some(fps) = r.data.get("fps").and_then(serde_json::Value::as_u64) {
 
-                    let _ = self.app.session.execute("motion.timeline", &serde_json::json!({ "fps": fps }));
+                    // Route to the selected frame's scope, matching the in-UI fps writes.
+                    let scope = self.app.session.ds().ok().map(|ds| {
+                        let sel = self.app.session.selection();
+                        crate::motion::scope_of(&ds.doc, &sel, ds.page)
+                    });
+                    let params = match scope {
+                        Some(s) => serde_json::json!({ "fps": fps, "page": s.0 }),
+                        None => serde_json::json!({ "fps": fps }),
+                    };
+                    let _ = self.app.session.execute("motion.timeline", &params);
 
                 }
 
@@ -2199,8 +2218,6 @@ impl CanvasView {
 
         }
 
-        let clicked = present::CLICK.with(|c| c.replace(false));
-
         let doc = self.app.session.doc().ok().cloned();
 
         if let (Some(st), Some(doc)) = (self.present.as_mut(), doc.as_ref()) {
@@ -2215,11 +2232,9 @@ impl CanvasView {
 
             }
 
-            if clicked {
-
-                st.click(doc);
-
-            }
+            // 画面点击：命中子图层 hotspot 就执行它自己的交互（含 Action::Animation），
+            // 没命中回退到画框自身第一条交互。坐标换算与命中都在 present 侧完成。
+            present::consume_click(doc, st);
 
             st.advance(doc);
 
@@ -2938,7 +2953,10 @@ impl CanvasView {
 
             alt: mods.alt,
 
-            cmd: mods.platform,
+            // `cmd` 与 egui 的 `modifiers.command` 同义：macOS 是 Cmd、Windows/Linux 是 **Ctrl**。
+            // 只传 `platform` 的话，Windows 上按 Ctrl 不算 command，引擎的 Bend 工具
+            // （`vectoredit/pointer.rs:567` 判 `ev.cmd`）永远不会触发 —— 用户按住 Ctrl 拉不出曲线。
+            cmd: mods.platform || mods.control,
 
             ctrl: mods.control,
 
@@ -4656,6 +4674,40 @@ impl CanvasView {
 
     }
 
+    /// 尺寸拖动的**窗口级接管**：左面板宽 + 底栏时间轴高共用 `resize_drag`。
+    ///
+    /// root 的 `on_mouse_move` 与 `on_window_drag_move` 都调这一份（以前两处逐字重复）。
+    /// 指针移出 4px 覆盖条 / 根 div 后逐元素 move 停发，靠窗口轴相对位移续算；窗口外松手时
+    /// 下一帧 move 不带左键，在这里收尾，避免状态残留。返回是否消费了这次移动。
+    fn route_size_drag(&mut self, pos: Point<Pixels>, pressed: bool) -> bool {
+
+        if !crate::resize_drag::any_active() {
+
+            return false;
+
+        }
+
+        if !pressed {
+
+            crate::resize_drag::end_any();
+
+        } else {
+
+            if let Some(w) = crate::resize_drag::route_move(
+                crate::resize_drag::Handle::LeftPanel, f32::from(pos.x)) {
+                self.left_w = w;
+            }
+            if let Some(h) = crate::resize_drag::route_move(
+                crate::resize_drag::Handle::BottomTimeline, f32::from(pos.y)) {
+                self.motion_q.push(crate::motion::Act::SetTimelineHeight(h));
+            }
+
+        }
+
+        true
+
+    }
+
     /// 指针在**没有按住左键**的情况下移动：一律收掉卡片拖动。
 
     ///
@@ -4676,6 +4728,12 @@ impl CanvasView {
 
         }
 
+        let clip_drag = crate::motion::clip_popover::drag_active();
+        if clip_drag {
+            // 窗口外松手后指针回来、左键没按住：收掉 clip 卡片拖动，绝不「没按住还跟着走」。
+            crate::motion::clip_popover::end_drag();
+        }
+
         let busy = self.window_drag_active() || self.popup_dragging() || self.popup_pending();
 
         if busy {
@@ -4684,7 +4742,7 @@ impl CanvasView {
 
         }
 
-        busy
+        busy || clip_drag
 
     }
 
@@ -4731,6 +4789,8 @@ impl CanvasView {
             || crate::motion::timeline::drag_active()
 
             || crate::motion::easing::drag_active()
+
+            || crate::motion::clip_popover::drag_active()
 
     }
 
@@ -4812,7 +4872,9 @@ impl CanvasView {
 
             || self.app.selection_spacing.is_dragging()
 
-            || self.app.handles.drag.is_some();
+            || self.app.handles.drag.is_some()
+
+            || self.app.motion_gizmo.drag.is_some();
 
         if !active {
 
@@ -4886,6 +4948,12 @@ impl CanvasView {
 
             }
 
+            if self.app.motion_gizmo.drag.is_some() {
+
+                let _ = canvas::motion_overlay::input(&mut self.app, pos, false, false, true, false);
+
+            }
+
             if self.app.handles.drag.is_some() {
 
                 let _ = canvas::handles::input(&mut self.app, pos, false, false, true, e.modifiers.shift);
@@ -4927,6 +4995,16 @@ impl CanvasView {
         }
 
         if self.zoom_drag.is_some() {
+
+            cx.notify();
+
+            return true;
+
+        }
+
+        if self.app.motion_gizmo.drag.is_some() {
+
+            let _ = canvas::motion_overlay::input(&mut self.app, pos, false, self.primary_down, false, e.modifiers.control);
 
             cx.notify();
 
@@ -5971,6 +6049,15 @@ impl Render for CanvasView {
 
                     }
 
+                    // Motion gizmo：圆环 / 箭头 / 缩放块的命中与起拖，优先于设计态手柄。
+                    if !this.space && !this.zoom_key && canvas::motion_overlay::input(&mut this.app, pos, true, true, false, e.modifiers.control) {
+
+                        cx.notify();
+
+                        return;
+
+                    }
+
                     if !this.space && !this.zoom_key && canvas::handles::input(&mut this.app, pos, true, true, false, e.modifiers.shift) {
 
                         cx.notify();
@@ -6145,6 +6232,14 @@ impl Render for CanvasView {
 
                 }
 
+                if canvas::motion_overlay::input(&mut this.app, pos, false, this.primary_down, false, e.modifiers.control) {
+
+                    cx.notify();
+
+                    return;
+
+                }
+
                 if canvas::handles::input(&mut this.app, pos, false, this.primary_down, false, e.modifiers.shift) {
 
                     cx.notify();
@@ -6234,6 +6329,16 @@ impl Render for CanvasView {
                             e.modifiers.shift,
 
                         );
+
+                        cx.notify();
+
+                        return;
+
+                    }
+
+                    if this.app.motion_gizmo.drag.is_some() {
+
+                        let _ = canvas::motion_overlay::input(&mut this.app, pos, false, false, true, false);
 
                         cx.notify();
 
@@ -6425,7 +6530,11 @@ impl Render for CanvasView {
 
                     let settings = this.app.session.ds().ok()
 
-                        .map(|ds| crate::motion::settings_of(&ds.doc, ds.page))
+                        .map(|ds| {
+                            let sel = this.app.session.selection();
+                            let scope = crate::motion::scope_of(&ds.doc, &sel, ds.page);
+                            crate::motion::settings_of(&ds.doc, scope)
+                        })
 
                         .unwrap_or_default();
 
@@ -7181,6 +7290,12 @@ impl Render for CanvasView {
             .w_full()
 
             .relative()
+
+            // 标签页头部栏（系统 TitleBar，y ∈ [0, TITLE_H)）与下方工作区之间的 1pt 分隔线
+            // （用户 2026-11-12）。用 `border_t` 而非插入一个 h(1) child：border 在盒子内，
+            // 不会把 top_row 下推 1pt 打乱 Dock 几何（`canvas_origin().y = TITLE_H`，命中/浮层
+            // 坐标都依赖它）。隐藏 / 收起 UI 时没有标签栏，这条线也不画。
+            .when(!ui_hidden && !ui_minimized, |d| d.border_t_1().border_color(crate::widgets::rgba(crate::widgets::tokens().border)))
 
             // B9：隐藏 UI 时左右侧栏、工具栏、分隔条命中区全部让位给画布；
             // 收起界面（minimize）时保留工具栏，右栏只在有选区时出现（egui `view.minimize` 语义）。
@@ -8624,14 +8739,16 @@ impl Render for CanvasView {
 
             .children(inline_el)
 
+            // Motion 的 clip 设置浮窗：复用 `Popover` 窗口外壳。它排在 `popup_el` **之前**：
+            // 卡片里的 Easing 是下拉菜单，菜单必须画在卡片之上，否则被卡片自己盖住
+            // （用户 2026-11-12「下拉菜单会被窗口遮挡」）。
+
+            .children(if self.motion && !variables_full { self.motion_clip_popover_layer(cx, vp) } else { Vec::new() })
+
             // Popups (dropdown menus, the main menu, the Actions palette) are drawn AFTER the
             // dialog layer, so a dropdown inside a dialog is not covered by it. This is the one
             // place the layer order lives, so every dropdown everywhere gets it.
             .children(popup_el)
-
-            // Motion 的 clip 设置浮窗：复用 `Popover` 窗口外壳，画在弹层之上。
-
-            .children(if self.motion && !variables_full { self.motion_clip_popover_layer(cx, vp) } else { Vec::new() })
 
             // 通用拖拽的视觉层（插入线 / Into 整行描边 / 跟随光标的标签）画在最上面，
 
@@ -8676,6 +8793,15 @@ impl Render for CanvasView {
                     this.motion && f32::from(e.position.y) >= vh - this.motion_bar_h(),
 
                 );
+
+                // Clip 设置弹窗的头部栏拖动：与 easing/timeline 同构，模块自持状态，
+                // 根 div 覆盖整窗，指针移出卡片仍连续。不能用 drag_router 的 pressed 判断
+                // （GPUI move 事件通常不带 pressed_button → 拖一下就 end）。
+                if crate::motion::clip_popover::drag_active() {
+                    crate::motion::clip_popover::route_move(e.position);
+                    cx.notify();
+                    return;
+                }
 
                 // Easing 曲线手柄拖拽：同样由窗口级 move 接管（相对位移，不需要元素原点）。
 
@@ -8761,22 +8887,8 @@ impl Render for CanvasView {
 
                 }
 
-                // 尺寸拖动的窗口级接管（左面板宽 + 底栏时间轴高共用 `resize_drag`）。根 div
-                // 覆盖整窗、永远悬停，指针移出 4px 覆盖条（拖到画布 / 面板上）仍连续；窗口外
-                // 松手时下一帧 move 不带左键，在这里优雅收尾，避免卡在拖拽态。
-                if crate::resize_drag::any_active() {
-                    if e.pressed_button != Some(MouseButton::Left) {
-                        crate::resize_drag::end_any();
-                    } else {
-                        if let Some(w) = crate::resize_drag::route_move(
-                            crate::resize_drag::Handle::LeftPanel, f32::from(e.position.x)) {
-                            this.left_w = w;
-                        }
-                        if let Some(h) = crate::resize_drag::route_move(
-                            crate::resize_drag::Handle::BottomTimeline, f32::from(e.position.y)) {
-                            this.motion_q.push(crate::motion::Act::SetTimelineHeight(h));
-                        }
-                    }
+                // 尺寸拖动的窗口级接管：与 `on_window_drag_move` 共用同一份 `route_size_drag`。
+                if this.route_size_drag(e.position, e.pressed_button == Some(MouseButton::Left)) {
                     cx.notify();
                     cx.stop_propagation();
                     return;
@@ -8818,6 +8930,20 @@ impl Render for CanvasView {
                 MouseButton::Left,
 
                 cx.listener(|this: &mut CanvasView, _e: &MouseUpEvent, _window, cx| {
+
+                    // Clip 弹窗头部栏抬起：`WindowDragLayer` 没挂，窗口级 up 不触发，
+                    // 收尾必须落在这对真正生效的根 div move/up 上（与 easing/timeline 同式）。
+                    if crate::motion::clip_popover::drag_active() {
+
+                        crate::motion::clip_popover::end_drag();
+
+                        cx.notify();
+
+                        cx.stop_propagation();
+
+                        return;
+
+                    }
 
                     // Easing 手柄抬起：整段拖拽收成一个 undo step。
 
@@ -8953,32 +9079,10 @@ impl drag_manager::WindowDragTarget for CanvasView {
 
         }
 
-        // 尺寸拖动窗口级接管（左面板宽 + 底栏时间轴高共用 `resize_drag`）。指针移出根 div
-        // （拖到画布 / 面板 / 窗口外）时逐元素 move 停发，靠窗口轴相对位移续算；松手收尾。
-
-        if crate::resize_drag::any_active() {
-
-            if e.pressed_button != Some(MouseButton::Left) {
-
-                crate::resize_drag::end_any();
-
-            } else {
-
-                if let Some(w) = crate::resize_drag::route_move(
-                    crate::resize_drag::Handle::LeftPanel, f32::from(e.position.x)) {
-                    self.left_w = w;
-                }
-                if let Some(h) = crate::resize_drag::route_move(
-                    crate::resize_drag::Handle::BottomTimeline, f32::from(e.position.y)) {
-                    self.motion_q.push(crate::motion::Act::SetTimelineHeight(h));
-                }
-
-            }
-
+        // 尺寸拖动窗口级接管：与 root 的 `on_mouse_move` 共用同一份 `route_size_drag`。
+        if self.route_size_drag(e.position, e.pressed_button == Some(MouseButton::Left)) {
             cx.notify();
-
             return;
-
         }
 
         // 整卡移动 / 变量编辑器 resize handle：按下后标题栏 on_mouse_down 进入 pending/dragging，
@@ -9084,6 +9188,12 @@ impl drag_manager::WindowDragTarget for CanvasView {
         self.primary_down = false;
 
 
+
+        // Clip 弹窗头部栏拖动收尾：必须在画布级分支之前清掉，否则松手落在画布上时
+        // 状态残留、下次移动鼠标卡片又跟着走。幂等。
+        if crate::motion::clip_popover::drag_active() {
+            crate::motion::clip_popover::end_drag();
+        }
 
         // 左分隔条收尾（thread_local，与 timeline 同式）：必须在画布级分支之前清掉，
         // 否则指针落在画布参考线 / 标尺区时 `guide_input` 提前 return，状态残留卡在拖拽态。
@@ -9219,6 +9329,18 @@ impl drag_manager::WindowDragTarget for CanvasView {
                 e.modifiers.shift,
 
             );
+
+            self.drag_just_ended = true;
+
+            cx.notify();
+
+            return;
+
+        }
+
+        if self.app.motion_gizmo.drag.is_some() {
+
+            let _ = canvas::motion_overlay::input(&mut self.app, pos, false, false, true, false);
 
             self.drag_just_ended = true;
 

@@ -21,6 +21,8 @@
 use std::cell::RefCell;
 use std::time::{Duration, Instant};
 
+use crate::hold_drag::HoldDrag;
+
 /// 哪条尺寸手柄在拖。`axis`/`sign`/夹紧范围/写入目标由调用方在 `begin` 时传入，本模块不关心。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Handle {
@@ -43,13 +45,14 @@ pub enum Edge {
 }
 
 /// 按下时 latch 的起点。`pos` 是沿拖动轴的窗口坐标（左栏 x、底栏 y）。
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug)]
 struct DragState {
     start_size: f32,
-    start_pos: f32,
     sign: f32,
     min: f32,
     max: f32,
+    /// 按下 latch → 相对位移 → 收尾，与浮窗拖动共用 [`HoldDrag`]（死区 0：分隔条即时响应）。
+    hold: HoldDrag,
 }
 
 thread_local! {
@@ -117,7 +120,9 @@ pub fn begin(
 ) -> bool {
     let i = idx(h);
     DRAG.with(|slots| {
-        *slots[i].borrow_mut() = Some(DragState { start_size, start_pos, sign, min, max });
+        let mut hold = HoldDrag::new(0.0);
+        hold.press_axis(start_pos);
+        *slots[i].borrow_mut() = Some(DragState { start_size, sign, min, max, hold });
     });
     let now = Instant::now();
     let double = LAST_PRESS.with(|slots| {
@@ -135,9 +140,11 @@ pub fn begin(
 /// `pos` 传左栏的窗口 x 或底栏的窗口 y。
 pub fn route_move(h: Handle, pos: f32) -> Option<f32> {
     DRAG.with(|slots| {
-        slots[idx(h)]
-            .borrow()
-            .map(|s| (s.start_size + s.sign * (pos - s.start_pos)).clamp(s.min, s.max))
+        let mut slot = slots[idx(h)].borrow_mut();
+        let s = slot.as_mut()?;
+        // 位移由通用按住拖动状态机给出（始终相对按下点，不随原点移动自我抵消）。
+        let delta = s.hold.advance_axis(pos)?;
+        Some((s.start_size + s.sign * delta).clamp(s.min, s.max))
     })
 }
 

@@ -11,7 +11,10 @@ use super::{
 impl Session {
     pub(super) fn move_down(&mut self, ev: &PointerEvent) -> Result<()> {
         let ds = self.ds()?;
-        let (doc, sel, page) = (ds.doc.clone(), ds.selection.clone(), ds.page);
+        // 命中/手柄几何按**显示文档**算（动画模式播放头中间时画面是求值后的文档）；
+        // 写操作仍走 `ds.doc`（下面用 `ds_mut`），所以不会把编辑写进求值副本。
+        let doc = self.display_doc.clone().unwrap_or_else(|| ds.doc.clone());
+        let (sel, page) = (ds.selection.clone(), ds.page);
         // Clicking outside the text being edited ends editing.
         if let Some(te) = ds.text_edit.clone() {
             let inside = doc.world_bounds(te.id).is_some_and(|b| b.inflate(ev.tol() * 4.0, ev.tol() * 4.0).contains(ev.p()));

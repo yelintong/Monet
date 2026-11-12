@@ -683,7 +683,7 @@ fn render_thumb(doc: &figcraft_doc::Document, id: figcraft_doc::NodeId) -> Optio
     let area = figcraft_render::export_bounds(doc, id)?;
     let longest = area.width().max(area.height()).max(1.0);
     let scale = (560.0 / longest).clamp(0.05, 2.0);
-    let pix = figcraft_render::render_node(doc, id, scale)?;
+    let pix = crate::render_stack::on_render_stack(|| figcraft_render::render_node(doc, id, scale))??;
     let (w, h) = (pix.width(), pix.height());
     let mut data = figcraft_render::to_rgba8(&pix);
     crate::canvas::render_worker::demultiply(&mut data);

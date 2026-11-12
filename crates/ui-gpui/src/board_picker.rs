@@ -53,7 +53,7 @@ fn picture(id: &str) -> Option<std::sync::Arc<RenderImage>> {
         return None;
     }
     let fit = (f64::from(CARD_W - 16.0) / b.width()).min(f64::from(PICTURE_H - 12.0) / b.height());
-    let pix = figcraft_render::render_area(&doc, &layers, b, fit.min(1.0))?;
+    let pix = crate::render_stack::on_render_stack(|| figcraft_render::render_area(&doc, &layers, b, fit.min(1.0)))??;
     Some(crate::canvas::render_worker::screen_image(&pix, doc.color_profile))
 }
 

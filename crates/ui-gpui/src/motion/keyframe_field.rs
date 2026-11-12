@@ -18,7 +18,7 @@ use figcraft_doc::anim::motion::AnimProperty;
 use figcraft_doc::{Document, NodeId};
 use gpui::{App, Context, Div, Entity, MouseButton, Render, Window, div, prelude::*};
 
-use crate::motion::{Act, MotionUi, Queue, has_key, value_of};
+use crate::motion::{Act, MotionUi, Queue, has_any_key, has_key, value_of};
 use crate::widgets::icon::{Icon, paint as paint_icon};
 use crate::widgets::input::Slot;
 use crate::widgets::input::template::{Input, Parts};
@@ -50,7 +50,10 @@ pub struct KeyframeField {
     property: AnimProperty,
     idx: usize,
     node: Option<NodeId>,
+    /// 播放头正好停在该属性的某个帧上 → 实心菱形（egui 原行为，保留）。
     keyed: bool,
+    /// 整条轨道有任意帧 → 插针常亮（空心、accent 描边 + 矩形底），与播放头无关。
+    has_any: bool,
     queue: Queue,
     edit: Entity<TextEdit>,
 }
@@ -64,6 +67,7 @@ impl KeyframeField {
             idx,
             node: None,
             keyed: false,
+            has_any: false,
             queue: queue.clone(),
             edit: TextEdit::build(cx, |e, _| {
                 e.set_numeric("", 1.0);
@@ -81,7 +85,10 @@ impl KeyframeField {
         self.node = node;
         let time = ui.playhead_ms;
         let value = node.and_then(|n| value_of(doc, n, self.property, self.idx, time));
+        // 两个独立状态：整条轨道有没有帧（→ 空心常亮）与播放头是否正停在帧上（→ 实心）。
+        let has_any = node.is_some_and(|n| has_any_key(doc, n, self.property));
         let keyed = node.is_some_and(|n| has_key(doc, n, self.property, ui.playhead_ms.max(0.0) as u32));
+        self.has_any = has_any;
         self.keyed = keyed;
         let text = value.map(|v| format!("{v}")).unwrap_or_default();
         let placeholder = value.is_none();
@@ -107,6 +114,7 @@ impl Render for KeyframeField {
     fn render(&mut self, window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
         let t = tokens();
         let keyed = self.keyed;
+        let has_any = self.has_any;
         let node = self.node;
         let property = self.property;
         let queue = self.queue.clone();
@@ -116,10 +124,14 @@ impl Render for KeyframeField {
         let selected = rgba(t.selected_row);
 
         // The trailing slot is a factory (GPUI elements are consumed every frame). It builds the
-        // 24 pt diamond button: filled when a keyframe sits at the playhead, outlined otherwise.
+        // 24 pt diamond button. Three states (用户 2026-11-12「轨道有帧就亮起、悬停到帧才实心」):
+        //   · 无帧            → 空心 Instance + text_secondary，无矩形底（熄灭）
+        //   · 有帧、播放头不在帧 → 空心 Instance + accent + 矩形底（常亮，轨道已有帧）
+        //   · 播放头正停在帧上  → 实心 Component + accent + 矩形底（egui 原行为，保持不变）
         let trail = Slot::custom(move || {
             let icon = if keyed { Icon::Component } else { Icon::Instance };
-            let colour = if keyed { on_color } else { off_color };
+            // 有帧就上 accent；只有完全无帧才用暗色。
+            let colour = if has_any { on_color } else { off_color };
             let q = queue.clone();
             let cell = div()
                 .size_full()
@@ -128,7 +140,8 @@ impl Render for KeyframeField {
                 .justify_center()
                 .rounded(pt(crate::widgets::RADIUS))
                 .cursor_pointer()
-                .when(keyed, |d| d.bg(selected))
+                // 整条轨道有帧就给矩形底（不再只在 keyed 时给）。
+                .when(has_any, |d| d.bg(selected))
                 .hover(move |s| s.bg(hover))
                 .on_mouse_down(MouseButton::Left, move |_, _window, _cx| {
                     if let Some(n) = node {

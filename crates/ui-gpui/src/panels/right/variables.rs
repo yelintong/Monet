@@ -2852,7 +2852,8 @@ impl VariablesEditor {
             st.borrow_mut().details = None;
             return div().into_any_element();
         };
-        let mut body = div().w_full().flex().flex_col().gap(pt(6.0));
+        // 与其它弹窗共用同一份 body 容器（项间距 8pt），不再自己写 6。
+        let mut body = crate::widgets::popover::popover_body();
         body = body.child(detail_label(tr("Name")));
         body = body.child(self.details_field(cx, &format!("d-name-{}", row.id), &row.full_name, &row.id, "name"));
         body = body.child(detail_label(tr("Description")));

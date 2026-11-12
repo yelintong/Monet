@@ -202,7 +202,9 @@ impl Session {
     pub(super) fn hover(&mut self, ev: &PointerEvent) -> Result<()> {
         let tool = self.acting_tool();
         let ds = self.ds()?;
-        let (doc, sel, page) = (ds.doc.clone(), ds.selection.clone(), ds.page);
+        // 悬停/光标也按显示文档算（动画模式播放头中间时，物体画在动画位置）。
+        let doc = self.display_doc.clone().unwrap_or_else(|| ds.doc.clone());
+        let (sel, page) = (ds.selection.clone(), ds.page);
         let mut cursor = tool.cursor();
         // The text being edited, and with the Text tool any text, takes the I-beam: a click there
         // puts the caret.

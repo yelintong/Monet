@@ -18,7 +18,7 @@ const PREVIEW_SCALE: f64 = 0.25;
 pub fn make(session: &Session) -> Option<Arc<RenderImage>> {
     let ds = session.ds().ok()?;
     let id = ds.selection.first().copied().unwrap_or(ds.page);
-    let pix = figcraft_render::render_node(&ds.doc, id, PREVIEW_SCALE)?;
+    let pix = crate::render_stack::on_render_stack(|| figcraft_render::render_node(&ds.doc, id, PREVIEW_SCALE))??;
     let (w, h) = (pix.width(), pix.height());
     if w == 0 || h == 0 {
         return None;

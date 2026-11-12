@@ -313,19 +313,38 @@ impl CanvasView {
         let me = cx.entity();
 
         // ── 40 pt header row ────────────────────────────────────────────────────────────────
+        // 用与 Layers/Assets/Icons **同一个**通用 `SectionHeader`（TITLE_PT=13 / MEDIUM /
+        // HEADER_H=40 / pl PAD=16 / pr PAD_RIGHT=8）。以前这里是手写 `h(40)+pl(16)+pr(8)` +
+        // `text_size(11).SEMIBOLD`，字号 11 vs 13、字重 SEMIBOLD vs MEDIUM，和 Layers 明显不一致
+        // （用户 2026-11-12 指出 Pages/Layers 字体大小不同）。折叠点击绑外层，搜索/加号进 trail
+        // 并各自 stop_propagation，避免点按钮误触发折叠。
         let open_slot = self.pages_open.clone();
         let search_slot = self.page_search.clone();
         let filter_slot = self.page_filter.clone();
         let me_add = me.clone();
+        let trail = div()
+            .flex()
+            .flex_row()
+            .gap(pt(4.0))
+            .child(IconButton::new(Icon::Search).size(24.0).active(searching).on_click({
+                let me = me.clone();
+                move |_e, _, cx: &mut App| {
+                    cx.stop_propagation();
+                    let next = !*search_slot.borrow();
+                    *search_slot.borrow_mut() = next;
+                    if next {
+                        filter_slot.borrow_mut().clear();
+                    }
+                    me.update(cx, |_, cx| cx.notify());
+                }
+            }))
+            .child(IconButton::new(Icon::Plus).size(24.0).on_click(move |_e, _, cx: &mut App| {
+                cx.stop_propagation();
+                me_add.update(cx, |cv, cx| cv.run_command("page.add", serde_json::json!({}), cx));
+            }));
         let head = div()
             .flex_none()
             .w_full()
-            .h(pt(40.0))
-            .flex()
-            .flex_row()
-            .items_center()
-            .pl(pt(16.0))
-            .pr(pt(8.0))
             .cursor_pointer()
             .on_mouse_down(MouseButton::Left, {
                 let me = me.clone();
@@ -335,21 +354,7 @@ impl CanvasView {
                     me.update(cx, |_, cx| cx.notify());
                 }
             })
-            .child(div().flex_1().text_size(pt(11.0)).font_weight(gpui::FontWeight::SEMIBOLD).text_color(ink()).child(tr("Pages")))
-            .child(IconButton::new(Icon::Search).size(24.0).active(searching).on_click({
-                let me = me.clone();
-                move |_e, _, cx| {
-                    let next = !*search_slot.borrow();
-                    *search_slot.borrow_mut() = next;
-                    if next {
-                        filter_slot.borrow_mut().clear();
-                    }
-                    me.update(cx, |_, cx| cx.notify());
-                }
-            }))
-            .child(IconButton::new(Icon::Plus).size(24.0).on_click(move |_e, _, cx| {
-                me_add.update(cx, |cv, cx| cv.run_command("page.add", serde_json::json!({}), cx));
-            }));
+            .child(SectionHeader::new(tr("Pages")).variant(SectionHeaderVariant::Normal).trail(trail));
 
         let mut sec = div().id("pages-section").flex_none().w_full().flex().flex_col().child(head);
         if !open {
@@ -366,7 +371,9 @@ impl CanvasView {
                     me_field.update(cx, |_, cx| cx.notify());
                 });
             });
-            sec = sec.child(div().px(pt(8.0)).pb(pt(4.0)).child(field));
+            // A height is what makes the field's `items_center` do anything: without one the
+            // box is as tall as its content and the glyphs drift to the bottom.
+            sec = sec.child(div().px(pt(8.0)).pb(pt(4.0)).h(pt(24.0)).child(field));
         }
         // lizard `pages()`: `resp.double_clicked()` starts an inline rename of that page row.
         let renaming_page = self.inline_rename.as_ref()
@@ -664,9 +671,10 @@ impl CanvasView {
             div()
                 .flex_1()
                 .min_w(px(0.0))
-                // Same 24 pt box as the page-name editor: the glyphs then sit on the row's
-                // centre line, exactly where the label sat before the edit started.
-                .h(pt(24.0))
+                // Full row height, exactly like the label it replaces: a 24 pt box inside a 32 pt
+                // row only lines up if the row centres it, and one extra box is one more place
+                // for the text to drift. Same box, same size, same centre.
+                .h_full()
                 .flex()
                 .items_center()
                 .on_mouse_down(MouseButton::Left, |_e, _w, cx| cx.stop_propagation())

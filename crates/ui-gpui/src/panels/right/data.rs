@@ -551,13 +551,20 @@ fn asset_thumb(doc: &Document, id: NodeId, side_px: f32) -> Option<(u32, u32, Ve
         return None;
     }
     let scale = (f64::from(side_px) / side).min(2.0);
-    let pix = if let Some(n) = slice {
-        let setting = n.exports.first().cloned().unwrap_or_default();
-        let layers = figcraft_engine::cmd::file::drawn_layers(doc, &[id], &setting);
-        figcraft_render::render_area(doc, &layers, b, scale)?
-    } else {
-        figcraft_render::render_node(doc, id, scale)?
-    };
+    // 渲染按层递归，深度取决于被渲染的树。这里原本直接在 UI 线程上跑，而 Windows 的主线程
+    // 栈只有约 1 MB（渲染线称是 8 MB，见 `figcraft_render::RENDER_STACK`）：组件树一深就
+    // `thread '<unknown>' has overflowed its stack`——它表现为偶发，因为浅树不会触发。
+    // 借 `doc` 到一条临时的大栈线程上渲染（`spawn_scoped` 不需要 clone 文档）；有 thread_local
+    // 缓存兜着，只在内容变化时才会走到这里。
+    let pix = crate::render_stack::on_render_stack(|| {
+        if let Some(n) = slice {
+            let setting = n.exports.first().cloned().unwrap_or_default();
+            let layers = figcraft_engine::cmd::file::drawn_layers(doc, &[id], &setting);
+            figcraft_render::render_area(doc, &layers, b, scale)
+        } else {
+            figcraft_render::render_node(doc, id, scale)
+        }
+    })??;
     // 与 `canvas::render_worker::screen_image` 相同：tiny-skia 是预乘 RGBA，
     // GPUI 纹理要直通 BGRA；非 sRGB 文档先转 sRGB。
     let mut buf = pix.data().to_vec();

@@ -312,9 +312,13 @@ fn run(job: &Job, view: &View, retained: &mut Retained, coarse: bool, reuse: Opt
     // 矩形的中心被自己的绿色填满、边缘才发白），而不是背后的画面。跳过它之后，合成读到的
     // 就是真正的背景 —— 和参考管线里 `texture0_` = BackdropCache（不含节点本身）一致。
     //
-    // 只在绘制用的 `Options` 里扩展，不动 `job.skip`：那份还决定拖动时用同步还是异步渲染
-    // （`drag_holds`），把材质节点塞进去会让普通拖动变成同步渲染。
+    // 只在绘制用的 `Options::skip` 里扩展，不动 `job.skip`：后者只标记「底图要跳过哪些被拖层」，
+    // 由 `GrabAsk` 替身补内容；材质节点属于离屏合成的挖空名单，不能混进 `job.skip` 的语义。
     let mut skip = job.skip.clone();
+    // 材质节点在主图里必须留空：材质是在这层 CPU 图上做离屏合成，玻璃采样的是「本帧图像
+    // 裁下来的那块」。节点自己若还在图里，玻璃就会折射自己的填充色（实测：绿色矩形的中心
+    // 被自己的绿色填满、边缘才发白），而不是背后的画面。拖动期间同样要挖空——效果优先，
+    // 材质在拖动中也要完整呈现（代价是拖动帧要等一次 GPU 合成）。
     if cfg!(feature = "gpu") {
         for id in job.doc.subtree(job.page) {
             if job.doc.node(id).is_some_and(|n| n.plugin_data.contains_key(crate::wgsl_material::BINDING_KEY)) {
@@ -700,6 +704,60 @@ pub struct Materials {
     legacy: Option<crate::wgsl_composite::WgslComposite>,
     /// The universal runner (`@fx param` / `Step` contract).
     runner: Option<crate::wgsl_runner::WgslRunner>,
+    /// The last composited picture, handed back while its inputs stay byte-identical.
+    last_composite: Option<LastComposite>,
+}
+
+/// One composited frame: what it was made from, and what it looked like.
+///
+/// A composite is a pure function of the page image it read (`base`) and of the passes describing
+/// the materials over it (`key`). Dragging a layer that nothing else depends on leaves both alone —
+/// the page image is the very same `Arc` (`run`'s `Work::Reused` path) and the passes come out of
+/// `passes_for` unchanged — so the picture is the same one as last frame's, and the whole
+/// composite (children layers, GPU region upload, readback, splice, and the full-page texture
+/// upload that follows) can be skipped without changing a pixel.
+#[cfg(feature = "gpu")]
+struct LastComposite {
+    base: Arc<RenderImage>,
+    key: u64,
+    image: Arc<RenderImage>,
+}
+
+/// Everything a composite reads besides its page image, hashed. `time` is not hashed on purpose:
+/// it only reaches a shader that **declares** a `time` uniform, and such a pass packs it into
+/// `uniforms`, so its key differs every frame and it recomposites — animation keeps running. A
+/// shader that ignores `time` packs nothing of it and keeps its key.
+#[cfg(feature = "gpu")]
+fn composite_key(passes: &[crate::wgsl_runner::RunPass], view: &View, w: u32, h: u32) -> u64 {
+    use std::hash::{Hash as _, Hasher as _};
+    let mut key = std::collections::hash_map::DefaultHasher::new();
+    (w, h).hash(&mut key);
+    view.origin.0.to_bits().hash(&mut key);
+    view.origin.1.to_bits().hash(&mut key);
+    view.scale.to_bits().hash(&mut key);
+    passes.len().hash(&mut key);
+    for p in passes {
+        p.effect.hash(&mut key);
+        p.node.0.hash(&mut key);
+        p.rect_px.hash(&mut key);
+        p.radii_px.iter().for_each(|v| v.to_bits().hash(&mut key));
+        (p.node_px.0.to_bits(), p.node_px.1.to_bits()).hash(&mut key);
+        (p.origin_px.0.to_bits(), p.origin_px.1.to_bits()).hash(&mut key);
+        p.field_band.to_bits().hash(&mut key);
+        p.field_bytes.hash(&mut key);
+        for (name, bytes) in &p.uniforms {
+            name.hash(&mut key);
+            bytes.hash(&mut key);
+        }
+    }
+    key.finish()
+}
+
+/// Last frame's composite, when this frame reads the same page image through the same passes.
+#[cfg(feature = "gpu")]
+fn reuse_composite(mats: &Materials, base: &Arc<RenderImage>, key: u64) -> Option<Arc<RenderImage>> {
+    let last = mats.last_composite.as_ref()?;
+    (last.key == key && Arc::ptr_eq(&last.base, base)).then(|| last.image.clone())
 }
 
 #[cfg(feature = "gpu")]
@@ -781,6 +839,13 @@ fn try_apply_wgsl_materials(mats: &mut Materials, doc: &Document, page: NodeId, 
 
     let passes = crate::wgsl_runner::passes_for(doc, page, &done.view, time);
     if passes.is_empty() { return material_ids(doc, page).is_empty(); }
+    // 同一张底图 + 同一组 passes：上一帧的合成图就是这一帧的图（拖动、hover 之类的帧间静止）。
+    let key = composite_key(&passes, &done.view, w, h);
+    if let Some(image) = reuse_composite(mats, &done.image, key) {
+        done.image = image;
+        return true;
+    }
+    let base_image = done.image.clone();
     // Straight BGRA in, straight BGRA out — the canvas texture is declared BGRA (see `FORMAT`), so
     // neither direction needs the whole-image channel swap the old path ran twice per frame.
     // 借用而非 `to_vec()`：`composite_steps` 只从这块画布里 crop 材质 region 上传、读回时用它
@@ -814,6 +879,7 @@ fn try_apply_wgsl_materials(mats: &mut Materials, doc: &Document, page: NodeId, 
         && let Some(out) = composited
     {
         done.image = wrap_bgra(w, h, out);
+        mats.last_composite = Some(LastComposite { base: base_image, key, image: done.image.clone() });
     }
     if render_log() {
         eprintln!(
@@ -825,9 +891,21 @@ fn try_apply_wgsl_materials(mats: &mut Materials, doc: &Document, page: NodeId, 
     ok
 }
 
-/// 尝试把这一帧的材质合成**异步**提交给 GPU：返回 `Ok(id)` 表示命令已入队、像素稍后由
-/// [`collect_ready`] 收；`Err(())` 表示本帧不能安全地异步（老多 pass 契约、shader 没编译齐、
-/// 没有 adapter、读回环满），调用方必须退回同步的 [`apply_wgsl_materials`]（含 CPU 兜底）。
+/// 一次异步提交的去向。
+#[cfg(feature = "gpu")]
+enum Submit {
+    /// 命令已入队、像素稍后由 [`collect_ready`] 收；`key` 让收齐时记下合成缓存。
+    Queued { id: u64, key: u64 },
+    /// 输入与上一帧相同：这张合成图直接可用，不必碰 GPU。
+    Reused(Arc<RenderImage>),
+    /// 本帧不能安全地异步（老多 pass 契约、shader 没编译齐、没有 adapter、读回环满），
+    /// 调用方退回同步的 [`apply_wgsl_materials`]（含 CPU 兜底）。
+    Sync,
+}
+
+/// 尝试把这一帧的材质合成**异步**提交给 GPU：`Queued` 表示命令已入队、像素稍后由
+/// [`collect_ready`] 收；`Sync` 表示本帧不能安全地异步，调用方必须退回同步的
+/// [`apply_wgsl_materials`]（含 CPU 兜底）。
 ///
 /// 同步与异步共用 [`passes_for`] / [`children_layer`] / [`assemble_steps`]，唯一区别是后者用
 /// `submit_async` 而非 `composite_steps`。提交前先用 `ensure_pipelines` 把缺的 shader 编译好并
@@ -839,32 +917,37 @@ fn try_submit_wgsl_materials(
     doc: &Document,
     page: NodeId,
     done: &Done,
-) -> Result<u64, ()> {
+) -> Submit {
     let (w, h) = {
         let sz = done.image.size(0);
         (u32::from(sz.width), u32::from(sz.height))
     };
     if w == 0 || h == 0 {
-        return Err(());
+        return Submit::Sync;
     }
     // 老 demo 的 `fs_tile→blur→glass` 多 pass 契约只走同步通道：它每帧一张、本就不值得为它
     // 单开异步状态机，保持与历史逐字节一致。
     if frame_uses_legacy_pipeline(doc, page) {
-        return Err(());
+        return Submit::Sync;
     }
     let passes = crate::wgsl_runner::passes_for(doc, page, &done.view, material_time());
     // 没有 universal-runner pass：交给同步路径判定「本来就无材质」或走 CPU 兜底。
     if passes.is_empty() {
-        return Err(());
+        return Submit::Sync;
     }
-    let canvas = done.image.as_bytes(0).ok_or(())?;
+    // 底图与 passes 逐字节没变：上一帧的合成图就是这一帧该显示的图，连 GPU 都不用碰。
+    let key = composite_key(&passes, &done.view, w, h);
+    if let Some(image) = reuse_composite(mats, &done.image, key) {
+        return Submit::Reused(image);
+    }
+    let Some(canvas) = done.image.as_bytes(0) else { return Submit::Sync };
     let layers: Vec<Option<(Vec<u8>, [u32; 4])>> = passes.iter()
         .map(|p| children_layer(doc, page, &done.view, p.node, w, h))
         .collect();
     if mats.runner.is_none() {
         mats.runner = crate::wgsl_runner::WgslRunner::new();
     }
-    let runner = mats.runner.as_mut().ok_or(())?;
+    let Some(runner) = mats.runner.as_mut() else { return Submit::Sync };
     let steps = assemble_steps(&passes, &layers);
     // 编译 + 判据：与同步 `try_apply_wgsl_materials` 的 `steps_drawn` 检查等价。必须先确保
     // shader 齐全再占用 slot——否则一个静默跳过 glass draw 的异步帧会把「有子层没玻璃」的
@@ -872,9 +955,12 @@ fn try_submit_wgsl_materials(
     // 只是 500ms 节流的 stale 检查，几乎免费。
     let (drawn, total) = runner.ensure_pipelines(w, h, &steps);
     if drawn != total || drawn == 0 {
-        return Err(());
+        return Submit::Sync;
     }
-    runner.submit_async(canvas, w, h, &steps).ok_or(())
+    match runner.submit_async(canvas, w, h, &steps) {
+        Some(id) => Submit::Queued { id, key },
+        None => Submit::Sync,
+    }
 }
 
 /// 一帧已提交到 GPU、readback 还在飞的完整上下文。收集成功后 `done.image` 从「未合成的
@@ -886,6 +972,9 @@ struct PendingFrame {
     done: Done,
     w: u32,
     h: u32,
+    /// The composite key this frame was submitted with; it labels the picture `collect_ready`
+    /// builds, so the next frame reading the same inputs can take it as it is.
+    key: u64,
 }
 
 /// render 线程在「有异步帧在飞」时的自驱间隔。只在 pending 非空时按这个节拍 `recv_timeout`，
@@ -956,7 +1045,10 @@ fn collect_ready(
     // 倒序移除，避免前面的帧被收走后索引漂移。
     for (i, pixels) in collected.into_iter().rev() {
         let mut pf = pending.remove(i);
+        // 收齐的这张就是「这张底图 + 这组 passes」的合成结果：记下来，下一帧输入没变就直接用它。
+        let base = pf.done.image.clone();
         pf.done.image = wrap_bgra(pf.w, pf.h, pixels);
+        guard.last_composite = Some(LastComposite { base, key: pf.key, image: pf.done.image.clone() });
         ready.push(pf.done);
     }
 }
@@ -997,7 +1089,7 @@ pub(crate) enum RefineOutcome {
     Ready(Done),
     /// 材质已异步提交、像素还在 GPU 上；带上未合成的 CPU 底图作为收集时的 base。
     /// 收集成功后 `collect_ready` 会把材质 region 拼回它、产出可上台的 Done。
-    Submitted { id: u64, base: Done, w: u32, h: u32 },
+    Submitted { id: u64, base: Done, w: u32, h: u32, key: u64 },
     /// 这一帧压根没渲出图。
     None,
 }
@@ -1143,7 +1235,8 @@ impl Renders {
         Some(done)
     }
 
-    /// 同步精修：走完整管线（含同步材质合成），给拖动补丁 / `render_now` / 测试用。
+    /// 同步精修：走完整管线（含同步材质合成），供 GPU 场景路径 / `render_now` / 测试用。
+    /// 普通拖动走 worker 的异步 `refine_async`，不再经过这条同步路径。
     pub fn refine(&mut self, job: &Job) -> Option<Done> {
         #[cfg(feature = "gpu")]
         if gpu_enabled() {
@@ -1205,22 +1298,30 @@ impl Renders {
         // 提交与编译判定在同一把 mats 锁内完成，避免 watchdog 线程在两者之间改了 runner 状态。
         let submitted = {
             let mut mats = self.mats.lock().unwrap_or_else(|e| e.into_inner());
-            try_submit_wgsl_materials(&mut mats, &job.doc, job.page, &base).ok()
+            try_submit_wgsl_materials(&mut mats, &job.doc, job.page, &base)
         };
         match submitted {
-            Some(id) => RefineOutcome::Submitted { id, base, w, h },
-            None => {
+            Submit::Queued { id, key } => RefineOutcome::Submitted { id, base, w, h, key },
+            // 合成输入没变：上一帧那张合成图就是这一帧的画面，没有 readback、没有新纹理。
+            Submit::Reused(image) => {
+                base.image = image;
+                RefineOutcome::Ready(base)
+            }
+            Submit::Sync => {
                 apply_wgsl_materials(&mut self.mats.lock().unwrap_or_else(|e| e.into_inner()), &job.doc, job.page, &mut base);
                 RefineOutcome::Ready(base)
             }
         }
     }
 
-    /// 拖动补丁：当帧同步渲染一小块**完整场景**（不是透明底的图层替身）。
+    /// 当帧同步渲染一小块**完整场景**（不是透明底的图层替身）。
     ///
     /// 走与整页精修图完全相同的 `run` + `apply_wgsl_materials`：内置效果、外置材质、容器
-    /// 裁剪、容器子层全都和静态画面一致，只是 `view` 缩到「旧位置 ∪ 新位置」那一块。
-    /// 每帧新建 `Retained` 是故意的 —— 补丁的 view 每帧都在变，增量缓存帮不上忙。
+    /// 裁剪、容器子层全都和静态画面一致，只是 `view` 缩到指定区域。每帧新建 `Retained`
+    /// 是故意的 —— 局部 view 每帧都在变，增量缓存帮不上忙。
+    ///
+    /// 生产拖动已改为「底图 latest wins + `GrabAsk` 替身」，不再经过这里；本入口留给
+    /// `render_now` 之类的同步局部渲染需求，以及下方验证「局部 view 下材质子节点可见」的回归测试。
     pub fn render_patch(&mut self, job: &Job) -> Option<Done> {
         let mut retained = Retained::default();
         let mut done = guarded(&mut retained, |r| run(job, &job.view, r, false, None))?;
@@ -1230,7 +1331,7 @@ impl Renders {
     }
 }
 
-/// 一次拖动补丁的作业：整页文档 + 局部 view，不挖空任何图层、不抓替身、不打粗预览。
+/// 一次局部同步渲染的作业：整页文档 + 局部 view，不抓替身、不打粗预览。
 pub(super) fn patch_job(doc: Arc<Document>, page: NodeId, view: View, bands: &[figcraft_render::Band], uid: u64) -> Job {
     Job {
         doc,
@@ -1511,8 +1612,8 @@ impl Worker {
                     // 仍当帧做完（`rasterize`），只有 GPU readback 被推迟。退回同步的帧走同一条
                     // `deliver`，与旧路径逐像素一致。
                     match renders.refine_async(&job) {
-                        RefineOutcome::Submitted { id, base, w, h } => {
-                            pending.push(PendingFrame { id, seq, done: answering(base, seq), w, h });
+                        RefineOutcome::Submitted { id, base, w, h, key } => {
+                            pending.push(PendingFrame { id, seq, done: answering(base, seq), w, h, key });
                         }
                         RefineOutcome::Ready(d) => {
                             if !deliver(&mut handoff, vec![answering(d, seq)], &done_tx, &done_with, &refined, &wake_done) {
@@ -1868,8 +1969,8 @@ mod material_foreground_tests {
         assert!(at(10, 10)[3] > 0, "容器自身矩形也要回来: {:?}", at(10, 10));
     }
 
-    /// 关键回归：拖动时的局部补丁走的是同一条 `run` + `apply_wgsl_materials`，
-    /// 所以容器里的东西在拖动过程中也看得见（旧路径里它是被替身盖掉的）。
+    /// 关键回归：局部同步渲染走的是同一条 `run` + `apply_wgsl_materials`，
+    /// 所以材质容器里的子节点不会因为 view 被裁小就消失。
     #[test]
     fn the_drag_patch_shows_a_material_container_children() {
         let _gpu = crate::wgsl_runner::GPU_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -2037,9 +2138,9 @@ mod async_refine_tests {
     }
 
     /// 按 render 线程的方式把一张已提交的异步帧收集成可上台的 Done，带 2000 轮上限防止坏驱动死等。
-    fn collect_one(renders: &Renders, id: u64, base: Done, w: u32, h: u32) -> Done {
+    fn collect_one(renders: &Renders, id: u64, base: Done, w: u32, h: u32, key: u64) -> Done {
         let seq = base.seq.max(1);
-        let mut pending = vec![PendingFrame { id, seq, done: answering(base, seq), w, h }];
+        let mut pending = vec![PendingFrame { id, seq, done: answering(base, seq), w, h, key }];
         let mats = renders.mats.clone();
         let mut ready = Vec::new();
         for _ in 0..2000 {
@@ -2066,7 +2167,7 @@ mod async_refine_tests {
 
         let outcome = renders.refine_async(&job);
         let (async_px, submitted) = match outcome {
-            RefineOutcome::Submitted { id, base, w, h } => (pixels(&collect_one(&renders, id, base, w, h)), true),
+            RefineOutcome::Submitted { id, base, w, h, key } => (pixels(&collect_one(&renders, id, base, w, h, key)), true),
             RefineOutcome::Ready(d) => (pixels(&d), false),
             RefineOutcome::None => panic!("a bound document must produce a picture"),
         };
@@ -2088,17 +2189,47 @@ mod async_refine_tests {
         let job = job_for(doc, page);
 
         let mut renders = Renders::default();
-        let (id, base, w, h) = match renders.refine_async(&job) {
-            RefineOutcome::Submitted { id, base, w, h } => (id, base, w, h),
+        let (id, base, w, h, key) = match renders.refine_async(&job) {
+            RefineOutcome::Submitted { id, base, w, h, key } => (id, base, w, h, key),
             RefineOutcome::Ready(_) => { eprintln!("no GPU adapter — skipping the submitted-branch assertion"); return; }
             RefineOutcome::None => panic!("a bound document must produce a picture"),
         };
 
         let before = pixels(&base);
-        let done = collect_one(&renders, id, base, w, h);
+        let done = collect_one(&renders, id, base, w, h, key);
         let after = pixels(&done);
         assert_ne!(after, before,
             "the material composite must change the uncomposited base — glass was really drawn, not passed through");
+    }
+
+    /// 拖动一层时画布自己画它、底图 skip 它：底图与 passes 逐字节没变，就绝不能再把这一帧送去
+    /// GPU——送一次就是一次 readback + 一张新纹理 + 一次整页重传，而画面一个像素都不会变。
+    /// 这条把 A1（被 skip 的层不算 damage → 底图 `Reused`）与 A2（合成复用）串起来验证。
+    #[test]
+    fn a_drag_frame_hands_back_the_same_composited_picture() {
+        let _gpu = crate::wgsl_runner::GPU_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let (mut doc, page) = glass_bound_square();
+        let dragged = doc.create(page, figcraft_doc::NodeKind::Rectangle, "Drag", 4.0, 4.0, 12.0, 12.0).expect("a rectangle");
+        let mut job = job_for(doc.clone(), page);
+        job.skip = vec![dragged];
+
+        let mut renders = Renders::default();
+        let first = match renders.refine_async(&job) {
+            RefineOutcome::Ready(d) => d.image,
+            RefineOutcome::Submitted { id, base, w, h, key } => collect_one(&renders, id, base, w, h, key).image,
+            RefineOutcome::None => panic!("a bound document must produce a picture"),
+        };
+
+        // 拖动只挪「画布自己画的那一层」：它在底图里被 skip，材质那一层一动没动。
+        doc.get_mut(dragged).expect("the dragged layer").transform = figcraft_geom::Affine::translate((18.0, 12.0));
+        job.doc = Arc::new(doc);
+        match renders.refine_async(&job) {
+            RefineOutcome::Ready(d) => {
+                assert!(Arc::ptr_eq(&d.image, &first), "the drag frame must reuse the composited picture, not build another one");
+            }
+            RefineOutcome::Submitted { .. } => panic!("the composite cannot have changed, yet it was submitted to the GPU again"),
+            RefineOutcome::None => panic!("a bound document must produce a picture"),
+        }
     }
 }
 

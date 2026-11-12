@@ -248,8 +248,10 @@ pub struct Document {
     /// The vote's ballots, by voter.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub votes: Ballots,
-    /// Motion timeline settings per page: duration, fps and loop. A page is the unit played and
-    /// exported, and pages at their defaults are left out of the file.
+    /// Motion timeline settings per animation scope — a page or a top-level frame: duration, fps
+    /// and loop. The frame/page its settings belong to is the unit played and exported; entries at
+    /// their defaults are left out of the file. A frame without its own entry falls back to the
+    /// containing page's.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub timelines: BTreeMap<NodeId, crate::anim::motion::TimelineSettings>,
     /// Ended votes' results kept in the file, oldest first.
@@ -470,6 +472,18 @@ impl Document {
             cur = n.parent?;
         }
         None
+    }
+
+    /// Timeline settings of an animation scope: a page, or a top-level frame inside one.
+    /// A frame with no entry of its own falls back to its containing page's settings, then to
+    /// defaults. Export (`Animation::new`) already uses this exact chain; the motion editor reads
+    /// through here too, so the timeline it edits is the one export produces.
+    pub fn timeline_settings_for(&self, scope: NodeId) -> crate::anim::motion::TimelineSettings {
+        self.timelines
+            .get(&scope)
+            .or_else(|| self.page_of(scope).and_then(|p| self.timelines.get(&p)))
+            .copied()
+            .unwrap_or_default()
     }
 
     pub fn first_page(&self) -> Option<NodeId> {
@@ -1195,8 +1209,11 @@ impl Document {
             Arc::make_mut(&mut self.libraries).store = store;
         }
         self.pages.retain(|p| self.nodes.get(p).is_some_and(|n| n.is_page()) && Some(*p) != store);
-        // Timeline settings belong to a page: the settings of a page that is gone are dropped.
-        self.timelines.retain(|k, _| self.nodes.get(k).is_some_and(|n| n.is_page()));
+        // Timeline settings belong to a page or a top-level frame: drop entries whose scope node is
+        // gone or is no longer a valid scope (a plain layer can't own a timeline). Frames are kept
+        // alongside pages so per-frame settings survive a load/repair cycle; a frame with no entry
+        // of its own falls back to its page's settings at read time.
+        self.timelines.retain(|k, _| self.nodes.get(k).is_some_and(|n| n.is_page() || n.kind.is_frame_like()));
         for (k, n) in self.nodes.iter() {
             if n.is_page() && !self.pages.contains(k) && Some(*k) != store {
                 self.pages.push(*k);
@@ -1290,7 +1307,8 @@ impl Document {
 fn remap_action(a: &mut proto::Action, map: &BTreeMap<NodeId, NodeId>) {
     use proto::Action::*;
     match a {
-        Navigate { dest, .. } | ScrollTo { dest, .. } | OpenOverlay { dest, .. } | SwapOverlay { dest } | ChangeTo { dest } => {
+        Navigate { dest, .. } | ScrollTo { dest, .. } | OpenOverlay { dest, .. } | SwapOverlay { dest } | ChangeTo { dest }
+        | Animation { dest, .. } => {
             if let Some(m) = map.get(dest) {
                 *dest = *m;
             }

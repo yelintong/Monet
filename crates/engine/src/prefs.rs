@@ -190,7 +190,8 @@ impl Default for Prefs {
             panel_widths: (240.0, 240.0),
             pages_height: None,
             variables: VariablesLayout::default(),
-            language: "system".into(),
+            // English unless the user picks another language in the preferences.
+            language: "en".into(),
             user_name: cmd::comment::DEFAULT_AUTHOR.into(),
             reduce_motion: false,
             ui_scale: 1.0,
