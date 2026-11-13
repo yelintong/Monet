@@ -272,18 +272,27 @@ pub fn panel(
         }
     });
 
-    let (_labels, visible, _factor) = labels_for(&c);
+    let (labels, visible, _factor) = labels_for(&c);
+    // One field per row, label above its control — the shape every other panel uses, and the
+    // shape egui's `field()` draws. Pairing two fields per row squeezed both dropdowns into half
+    // the card and pushed their labels out of line.
     let mut sec = panel_section("Clip")
-        .child(crate::widgets::panel_section::sublabel_row2(tr("Animation"), tr("Type")))
-        .child(field_row(vec![kind_row, mode_row], none()))
-        .child(crate::widgets::panel_section::sublabel_row2(tr("Direction"), tr("Easing")))
-        .child(field_row(vec![dir_row, ease_row], none()));
-    // 数值行按可见性两两配对（Custom 才显示 From/To，vec2 类型才有 Y）。
+        .child(sublabel_row(tr("Animation")))
+        .child(field_row(vec![kind_row], none()))
+        .child(sublabel_row(tr("Type")))
+        .child(field_row(vec![mode_row], none()));
+    // Only the fields this kind/mode shows (Custom shows From/To, vec2 kinds show Y).
     let shown: Vec<usize> = (0..7).filter(|i| visible[*i]).collect();
-    for pair in shown.chunks(2) {
-        let row: Vec<_> = pair.iter().map(|i| fields.field(*i)).collect();
-        sec = sec.child(field_row(row, none()));
+    for i in shown {
+        sec = sec
+            .child(sublabel_row(labels[i].clone()))
+            .child(field_row(vec![fields.field(i)], none()));
     }
+    sec = sec
+        .child(sublabel_row(tr("Direction")))
+        .child(field_row(vec![dir_row], none()))
+        .child(sublabel_row(tr("Easing")))
+        .child(field_row(vec![ease_row], none()));
     // egui clip_popover.rs:281 内嵌同一个 Curve|Spring easing 编辑器。
     sec = sec.child(field_row_full(
         crate::motion::easing::editor(cx, c.easing, crate::motion::EaseTarget::Clip(node, id), queue, "clip", false),
@@ -321,7 +330,7 @@ pub fn panel(
     let pop = popover_window(open)
         .width(WIDTH)
         .pad(12.0)
-        .height(420.0)
+        .height(560.0)
         .title(title_text(title))
         .body(sec)
         .on_drag_start(move |e, w, cx| drag(e, w, cx));
