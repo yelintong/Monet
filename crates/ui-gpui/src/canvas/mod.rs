@@ -263,9 +263,10 @@ pub fn show(app: &mut CanvasApp, worker: &mut Worker, ppp: f32, t: &Tokens) -> C
     // 底色交给视图层做容器背景（见 `CanvasOutput::bg` 的注释）。
     let mut painter = Painter::new(rect);
 
-    // 把上次渲染重投影到当前视图。
+    // 把上次渲染重投影到当前视图。贴图是否属于当前文件/页面，与叠加层共用同一道判定：
+    // 文档或页面切换后旧贴图还在台上，但不能让它的几何流到叠加层。
     let mut image = None;
-    if let (Some(tex), Some(v), true) = (app.canvas.texture.as_ref(), app.canvas.tex_view.as_ref(), shown.is_some() && app.canvas.tex_of == shown) {
+    if let (Some(tex), Some(v), true) = (app.canvas.texture.as_ref(), app.canvas.tex_view.as_ref(), texture_is_current(&app.canvas, shown)) {
         let tl = app.to_screen(v.origin.0, v.origin.1);
         let zoom = app.session.ds().map(|d| d.view.zoom).unwrap_or(1.0);
         let pixel_preview = app.session.ds().ok().and_then(|ds| ds.view.pixel_preview_scale()) == Some(v.scale);
@@ -305,6 +306,21 @@ pub fn show(app: &mut CanvasApp, worker: &mut Worker, ppp: f32, t: &Tokens) -> C
 }
 
 
+/// 台上贴图是否属于当前显示的文件/页面。图片显示与叠加层必须共用这一判定。
+fn texture_is_current(c: &CanvasState, shown: Option<(u64, NodeId)>) -> bool {
+    shown.is_some() && c.tex_of == shown
+}
+
+/// 叠加层能用的台上贴图文档：贴图与当前显示的文件/页面一致时，才是同帧同基准。
+/// 没有清空 `tex_doc` / `tex_of` 的重置路径，文档或页面切换后靠这道闸门挡住上一个文档的几何。
+pub(crate) fn on_screen_tex_doc(c: &CanvasState, shown: Option<(u64, NodeId)>) -> Option<Arc<Document>> {
+    if texture_is_current(c, shown) {
+        c.tex_doc.clone()
+    } else {
+        None
+    }
+}
+
 /// 叠加层读哪份文档：台上贴图的 > 本帧显示文档 > 源文档。
 /// 抽成纯函数，回归「选框与画面同帧」这条契约。
 pub(crate) fn overlay_doc(
@@ -330,7 +346,8 @@ pub(crate) fn draw_overlays(app: &mut CanvasApp, painter: &mut Painter, t: &Toke
     }
     // 选框跟台上那张贴图用同一份文档：贴图是后台某一帧的结果，叠加层若读当帧文档
     // 就会「框在跑、内容也在跑」。没有上台贴图时退回本帧显示文档，再到源文档。
-    let tex_doc = app.canvas.tex_doc.clone();
+    let shown = app.session.ds().map(|ds| (ds.uid, ds.page)).ok();
+    let tex_doc = on_screen_tex_doc(&app.canvas, shown);
     let display_doc = app.display_doc.clone();
     let (doc, sel) = match app.session.ds() {
         Ok(ds) => (overlay_doc(tex_doc, display_doc, &ds.doc), ds.selection.clone()),
@@ -339,7 +356,7 @@ pub(crate) fn draw_overlays(app: &mut CanvasApp, painter: &mut Painter, t: &Toke
     // 叠加层（选中框/手柄/尺寸/框选/参考线）——与原实现同一份画法。
     // `overlays` 同时返回每个顶层帧/section 名称标签的矩形；写入 `tool.labels`，
     // 引擎 `label_at` 据此在点击标签时选中/拖拽对应容器（照搬 `ui-egui`）。
-    app.session.tool.labels = overlays::overlays(app, painter, t);
+    app.session.tool.labels = overlays::overlays(app, painter, t, doc.clone());
     // Motion 模式：选中层的运动路径（轨迹曲线）与变换手柄。画在选中框之下、
     // 评论/注解手柄之上（用户 2026-11-12：有动画就显示，播放中隐藏）。
     motion_overlay::draw(app, painter, t);
@@ -420,5 +437,86 @@ mod display_doc_tests {
         assert_eq!(snap_origin(10.3, 20.7, 2.0, false), (10.5, 20.5));
         assert_eq!(snap_origin(10.3, 20.7, 1.0, true), (10.3, 20.7));
         assert_eq!(snap_origin(10.3, 20.7, 0.0, false), (10.3, 20.7));
+    }
+
+    #[test]
+    fn overlay_texture_document_is_gated_by_the_current_file_and_page() {
+        let tex = doc("tex");
+        let mut c = CanvasState::default();
+        c.tex_doc = Some(tex.clone());
+        c.tex_of = Some((7, NodeId(3)));
+
+        // 同一文件同一页面：叠加层可以用台上贴图那份文档。
+        let same = on_screen_tex_doc(&c, Some((7, NodeId(3)))).unwrap();
+        assert!(Arc::ptr_eq(&same, &tex));
+        assert!(texture_is_current(&c, Some((7, NodeId(3)))));
+
+        // 换文件 / 换页面 / 没有当前文档：旧贴图还在台上，但它的几何不能流到叠加层。
+        assert!(on_screen_tex_doc(&c, Some((8, NodeId(3)))).is_none());
+        assert!(on_screen_tex_doc(&c, Some((7, NodeId(4)))).is_none());
+        assert!(on_screen_tex_doc(&c, None).is_none());
+        assert!(!texture_is_current(&c, None));
+
+        // 贴图还没上台时（tex_of 为空），即使 shown 也为空也不能误判成「同一帧」。
+        c.tex_of = None;
+        assert!(on_screen_tex_doc(&c, None).is_none());
+    }
+
+    /// P0-6′ 组合矩阵（纯函数层）：状态 × 特效 × 旋转 × 视口缩放 × 贴图 scale。
+    /// 这里锁的是同帧契约：文档基准、投影尺寸、设备像素吸附在任意组合下都不变。
+    /// 特效的实际像素输出、旋转后的图形是否与选框重合，**仍需实机逐像素比对**，
+    /// 本测试不覆盖也不假称覆盖（见 docs/canvas-pipeline-plan.md §7.2）。
+    #[test]
+    fn p0_6_matrix_keeps_the_same_frame_baseline_in_every_combination() {
+        let source = doc("source");
+        let preview = doc("preview");
+        let tex = doc("tex");
+        // 状态：静态编辑 / Motion 预览 / 播放中 / 拖动中。
+        // 分别覆盖 overlay_doc 的「源文档 / 显示文档 / 贴图文档」三条路径。
+        let states = [("static", false, false), ("preview", true, false), ("playing", true, true), ("dragging", false, true)];
+        // 特效档位：无 / 玻璃 / 背景模糊 / 阴影 / 渐变。
+        // 特效只改变贴图内容，不改变叠加层该读哪份文档，也不改变投影几何。
+        let effects = ["none", "glass", "backdrop-blur", "shadow", "gradient"];
+        let rotations = [0.0_f64, 45.0, 90.0, 37.5];
+        let zooms = [0.25_f64, 1.0, 4.0];
+        let tex_scales = [0.5_f64, 1.0, 2.0, 4.0];
+        let mut cases = 0u32;
+
+        for (state, has_display, has_tex) in states {
+            for effect in effects {
+                for deg in rotations {
+                    for zoom in zooms {
+                        for tex_scale in tex_scales {
+                            cases += 1;
+                            let case = format!("{state}/{effect}/{deg}deg/z{zoom}/tex{tex_scale}");
+                            let display = has_display.then(|| preview.clone());
+                            let tex_doc = has_tex.then(|| tex.clone());
+                            let chosen = overlay_doc(tex_doc, display, &source);
+                            let expected = if has_tex { &tex } else if has_display { &preview } else { &source };
+                            assert!(Arc::ptr_eq(&chosen, expected), "{case}: 文档基准不对");
+
+                            // 旋转后的左上角：吸附必须落在设备像素上，且与特效/状态无关。
+                            let rad = deg.to_radians();
+                            let x = 100.0 + 30.0 * rad.cos();
+                            let y = 100.0 + 30.0 * rad.sin();
+                            let (sx, sy) = snap_origin(x as f32, y as f32, 2.0, false);
+                            assert_eq!(sx * 2.0, (sx * 2.0).round(), "{case}: x 没吸附到设备像素");
+                            assert_eq!(sy * 2.0, (sy * 2.0).round(), "{case}: y 没吸附到设备像素");
+
+                            // 缩放中贴图带旧 scale：显示尺寸按当前 zoom 投影，位置仍与 scale 无关。
+                            let view = figcraft_render::View { origin: (0.0, 0.0), scale: tex_scale, width: 1024, height: 768 };
+                            let r = presented_image_rect(pos2(x as f32, y as f32), &view, zoom, 2.0, false);
+                            let want_w = 1024.0 / tex_scale as f32 * zoom as f32;
+                            let want_h = 768.0 / tex_scale as f32 * zoom as f32;
+                            assert!((r.max.x - r.min.x - want_w).abs() < 0.01, "{case}: 宽度 {} 应为 {want_w}", r.max.x - r.min.x);
+                            assert!((r.max.y - r.min.y - want_h).abs() < 0.01, "{case}: 高度 {} 应为 {want_h}", r.max.y - r.min.y);
+                            assert_eq!(r.min.x, sx, "{case}: 位置吸附被贴图 scale 带偏");
+                            assert_eq!(r.min.y, sy, "{case}: 位置吸附被贴图 scale 带偏");
+                        }
+                    }
+                }
+            }
+        }
+        assert_eq!(cases, 4 * 5 * 4 * 3 * 4);
     }
 }

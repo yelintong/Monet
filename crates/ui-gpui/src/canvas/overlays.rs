@@ -3,7 +3,8 @@
 //! 拖放目标 → 选中轮廓与变换框（含连接线端点、旋转原点）→ 框选 → 钢笔/橡皮筋/套索/橡皮 →
 //! 吸附参考线与尺寸。
 
-use figcraft_doc::{NodeId, NodeKind};
+use figcraft_doc::{Document, NodeId, NodeKind};
+use std::sync::Arc;
 use figcraft_engine::tools::{ToolId, selection_box, selection_frame};
 use figcraft_geom::Point;
 
@@ -85,11 +86,10 @@ pub(super) fn accent(app: &CanvasApp) -> Color32 {
 
 /// 画布上所有叠加层。返回每个顶层帧/section 名称标签的屏幕矩形（页面坐标），
 /// 供引擎在点击标签时选中/拖拽对应容器（`ToolState::labels`，照搬 `ui-egui`）。
-pub(super) fn overlays(app: &CanvasApp, painter: &mut Painter, t: &Tokens) -> Vec<(NodeId, [Point; 4])> {
-    let tex_doc = app.canvas.tex_doc.clone();
-    let display_doc = app.display_doc.clone();
+pub(super) fn overlays(app: &CanvasApp, painter: &mut Painter, t: &Tokens, doc: Arc<Document>) -> Vec<(NodeId, [Point; 4])> {
+    // 文档基准由 `draw_overlays` 按「台上贴图是否属于当前文件/页面」一次性决定后传入，
+    // 这里不再读 `app.canvas.tex_doc`，避免旧贴图的几何混进当前页的选框。
     let Ok(ds) = app.session.ds() else { return Vec::new() };
-    let doc = super::overlay_doc(tex_doc, display_doc, &ds.doc);
     let page = ds.page;
     let mut labels = Vec::new();
     let sel = ds.selection.clone();
