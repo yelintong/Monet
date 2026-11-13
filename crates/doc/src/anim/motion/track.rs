@@ -136,7 +136,7 @@ impl Track {
         // two keys on one time. Saturate instead of letting the subtraction overflow, and hold the
         // first key's value when the two sit on the same time instead of dividing by zero.
         let span = b.time_ms.saturating_sub(a.time_ms) as f32;
-        if !(span > 0.0) {
+        if span <= 0.0 {
             return Some(a.value);
         }
         let p = a.easing.ease((t_ms - a.time_ms as f64) as f32 / span) as f64;

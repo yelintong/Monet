@@ -529,11 +529,15 @@ pub(crate) struct RightFields {
     selection_colors_hover: std::rc::Rc<std::cell::RefCell<bool>>,
     /// 右栏当前标签：0 = Design，1 = Prototype，2 = Inspect（egui `app.ui.right_tab`）。纯 UI 状态，不进文档。
     right_tab: std::rc::Rc<std::cell::RefCell<u8>>,
-    /// Local styles 文件夹：正在重命名的文件夹路径（egui `folder_rename_id` 临时值）；`None` = 没在改名。
-    /// 复用同一个通用 `TextField`（`local_style_rename_input`）做内联重命名输入框。
-    local_style_renaming: std::rc::Rc<std::cell::RefCell<Option<String>>>,
+    /// Local styles 文件夹：正在重命名的文件夹（egui `folder_rename_id` 临时值）；`None` = 没在改名。
+    /// 键是 **(样式类型, 文件夹路径)**：text 与 paint 可以各有 `Brand/Colors`，只按 path 会让
+    /// 两行同时进入编辑态、共用同一个输入框。复用通用 `TextField`（`local_style_rename_input`）。
+    local_style_renaming: std::rc::Rc<std::cell::RefCell<Option<(String, String)>>>,
     /// Local styles 文件夹内联重命名输入框（egui `rename_field`）；提交即 `style.renameFolder`。
     local_style_rename_input: Entity<TextField>,
+    /// 重命名输入框是否**曾经**进入过编辑态。用来区分「刚打开、焦点还没生效」与「编辑真的
+    /// 结束了」：只有后者才清 `local_style_renaming`（否则会在打开的第一帧就自己关掉）。
+    local_style_rename_seen: std::rc::Rc<std::cell::RefCell<bool>>,
     /// Local styles 文件夹的折叠态（egui `folded_id`）：键为 `"<type>/<folder path>"`。
     local_style_folded: std::rc::Rc<std::cell::RefCell<std::collections::HashSet<String>>>,
     /// A3: the Comments panel's local state (filter / sort / search / open thread).
@@ -910,7 +914,7 @@ impl RightFields {
             }));
         }
         let scale_ctx = std::rc::Rc::new(std::cell::RefCell::new(crate::panels::right::data::ScaleData::default()));
-        let local_style_renaming = std::rc::Rc::new(std::cell::RefCell::new(None::<String>));
+        let local_style_renaming = std::rc::Rc::new(std::cell::RefCell::new(None::<(String, String)>));
         let mut fields = Self {
             x: n(cx, "X", 0.0, "", 1.0, Some(Prop::X)),
             y: n(cx, "Y", 0.0, "", 1.0, Some(Prop::Y)),
@@ -940,12 +944,14 @@ impl RightFields {
             selection_colors_hover: std::rc::Rc::new(std::cell::RefCell::new(false)),
             right_tab: std::rc::Rc::new(std::cell::RefCell::new(0u8)),
             local_style_renaming: local_style_renaming.clone(),
+            local_style_rename_seen: std::rc::Rc::new(std::cell::RefCell::new(false)),
             local_style_rename_input: TextField::build(cx, DEFAULT_COL, {
                 let renaming = local_style_renaming.clone();
                 let cmds = cmds.clone();
                 move |tf, _| {
                     tf.set_on_commit(move |text: &str, _window, _cx| {
-                        let Some(folder) = renaming.borrow_mut().take() else { return };
+                        // 状态是 (类型, 路径)：改名只用到路径。
+                        let Some((_ty, folder)) = renaming.borrow_mut().take() else { return };
                         let name = text.trim().to_string();
                         if name.is_empty() || name == folder {
                             return;
@@ -1875,7 +1881,7 @@ pub(crate) fn right_panel(
     if sel.empty {
         // `view_bar` 已有下边框，这里不再补一条线。
         // egui `page_section` 是三节（Page / Local variables / Local styles），节间各一条线。
-        let secs = right::sections::page(f, data, row_w, &mut n, cx);
+        let secs = right::sections::page(f, data, row_w, &mut n, window, cx);
         let last = secs.len().saturating_sub(1);
         for (i, sec) in secs.into_iter().enumerate() {
             body = body.child(sec);

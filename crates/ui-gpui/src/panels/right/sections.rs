@@ -2467,21 +2467,40 @@ fn local_style_caption(title: SharedString, plus: IconButton) -> FieldRow {
 
 /// 文件夹头行（egui `local_styles` 的 Folder 行：chevron + 文件夹名，按层级缩进）。
 /// 与 egui 一一对应地补齐三件事：① 左键整行切换折叠/展开（chevron 随之翻转）；
-/// ② 行尾 `+` 在该文件夹内新建同类型样式（`style.create {type, name:"<folder>/<default>"}`）；
+/// ② 行尾 `+` 在该文件夹内新建同类型样式（`style.create {type, name:"<folder>/<default>", value}`，
+///    `value` 是该类型的起始值，见 `ls_create_params`）；
 /// ③ 右键 "Rename folder" → 内联复用通用 `TextField`，提交即 `style.renameFolder`。
-fn local_style_folder(f: &RightFields, label: &str, path: &str, ty: &'static str, depth: usize, _cx: &mut App) -> FieldRow {
+fn local_style_folder(f: &RightFields, d: &PanelData, label: &str, path: &str, ty: &'static str, depth: usize, window: &mut Window, cx: &mut App) -> FieldRow {
     let t = tokens();
     // 是否正在重命名这个文件夹（egui `renaming.as_deref() == Some(path)`）。
-    let is_renaming = f.local_style_renaming.borrow().as_deref() == Some(path);
+    // 按 **type + path** 匹配：text 与 paint 可以各有 `Brand/Colors`，只比 path 会让两行同时
+    // 进入编辑态、共用同一个输入框（CodeRabbit 指出）。
+    let rename_key = (ty.to_string(), path.to_string());
+    let mut is_renaming = f.local_style_renaming.borrow().as_ref().is_some_and(|k| *k == rename_key);
+    // 编辑结束（Enter 提交、失焦提交、或 Esc 取消）时把状态收掉：`TextEdit::on_commit` 只在
+    // **值变了**才回调，Esc 与「没改就离开」都不会回调，状态不清就会一直卡在改名态。
+    // egui `rename_field` 用返回的 `open` 决定：不 open 即关闭。
+    // 用「曾经激活过」守卫：刚打开的那一帧焦点可能还没落上，不能据此就关掉。
+    if is_renaming {
+        let active = f.local_style_rename_input.read(cx).edit().read(cx).is_active(window);
+        let mut seen = f.local_style_rename_seen.borrow_mut();
+        if active {
+            *seen = true;
+        } else if *seen {
+            drop(seen);
+            f.local_style_renaming.borrow_mut().take();
+            *f.local_style_rename_seen.borrow_mut() = false;
+            is_renaming = false;
+        }
+    }
 
     // ② 行尾 `+`：在该文件夹内新建一个同类型样式（egui `ls_add_in`）。
     let cmds = f.cmds.clone();
-    let ty_c = ty;
-    let path_c = path.to_string();
+    let create_params = ls_create_params(d, ty, path);
     let plus = IconButton::new(Icon::Plus)
         .size(16.0)
         .on_click(move |_e, _w, _cx| {
-            cmds.push(Cmd { id: "style.create", params: Some(serde_json::json!({ "type": ty_c, "name": format!("{}/{}", path_c, ls_default_name(ty_c)) })) });
+            cmds.push(Cmd { id: "style.create", params: Some(create_params.clone()) });
         });
 
     // ① 折叠态：egui 用 "<type>/<folder path>" 作 key。
@@ -2492,8 +2511,11 @@ fn local_style_folder(f: &RightFields, label: &str, path: &str, ty: &'static str
     // ③ 右键 "Rename folder"：记下正在重命名的文件夹，并预填内联输入框的当前名。
     let root = f.root.clone();
     let renaming_r = f.local_style_renaming.clone();
+    let rename_key_r = rename_key.clone();
     let path_r = path.to_string();
     let rename_input = f.local_style_rename_input.clone();
+    let seen_r = f.local_style_rename_seen.clone();
+    let wake = f.cmds.clone();
 
     // 名称区：重命名时换成内联输入框；否则 chevron + 文件夹名，并挂折叠/右键菜单。
     let name_area = if is_renaming {
@@ -2523,34 +2545,55 @@ fn local_style_folder(f: &RightFields, label: &str, path: &str, ty: &'static str
             .on_mouse_down(MouseButton::Left, {
                 let folded = folded.clone();
                 let key = key.clone();
+                let wake = wake.clone();
                 move |_e, _w, _cx| {
-                    let mut s = folded.borrow_mut();
-                    if s.contains(&key) {
-                        s.remove(&key);
-                    } else {
-                        s.insert(key.clone());
+                    {
+                        let mut s = folded.borrow_mut();
+                        if s.contains(&key) {
+                            s.remove(&key);
+                        } else {
+                            s.insert(key.clone());
+                        }
                     }
+                    // 折叠态是渲染期读的状态，改完必须唤醒一次，否则 chevron 要等别的事件才更新。
+                    wake.wake();
                 }
             })
             // ③ 右键菜单 "Rename folder"（egui `context_popup`）。
             .on_mouse_down(MouseButton::Right, {
                 let root = root.clone();
                 let renaming_r = renaming_r.clone();
+                let rename_key_r = rename_key_r.clone();
                 let path_r = path_r.clone();
                 let rename_input = rename_input.clone();
+                let seen_r = seen_r.clone();
+                let wake = wake.clone();
                 move |e: &gpui::MouseDownEvent, _w, cx: &mut App| {
                     let root = root.clone();
                     let renaming_r = renaming_r.clone();
+                    let rename_key_r = rename_key_r.clone();
                     let path_r = path_r.clone();
                     let rename_input = rename_input.clone();
+                    let seen_r = seen_r.clone();
+                    let wake = wake.clone();
                     let rows = vec![MenuRow::new("Rename folder")];
                     let Some(root) = root else { return };
                     let anchor = gpui::Bounds::new(e.position, gpui::size(px(0.0), px(0.0)));
                     root.update(cx, move |cv, cx| {
-                        cv.open_menu(anchor, Some(160.0), rows, Rc::new(move |label: &str, _window, _cx| {
+                        cv.open_menu(anchor, Some(160.0), rows, Rc::new(move |label: &str, window, cx| {
                             if label == "Rename folder" {
-                                renaming_r.borrow_mut().replace(path_r.clone());
-                                rename_input.update(_cx, |tf, _| tf.set_value(path_r.clone()));
+                                renaming_r.borrow_mut().replace(rename_key_r.clone());
+                                *seen_r.borrow_mut() = false;
+                                // 先写值、再进编辑态（`TextEdit::set_value` 在编辑中会保留草稿，
+                                // 顺序反了输入框会是空的）。聚焦由 egui `rename_field(start=true)`
+                                // 的 select-all 语义对齐。
+                                let edit = rename_input.read(cx).edit();
+                                edit.update(cx, |te, _cx| {
+                                    te.set_value(path_r.clone());
+                                    te.focus_editor(window);
+                                });
+                                // 改名态同样是渲染期读的：不唤醒就不会出现内联输入框。
+                                wake.wake();
                             }
                         }), cx);
                     });
@@ -2576,8 +2619,25 @@ fn ls_default_name(ty: &str) -> &'static str {
     }
 }
 
+/// `style.create` 的参数，1:1 照 egui `style_picker::new_style_params`：名字取
+/// `<folder>/<默认名> <n>`（`n` 让同名不重复），**没有选中图层时带上该类型的起始值**，
+/// 这样 Local styles 页的 `+`（该页本来就没有选区）不会静默失败。
+/// 引擎 `style.create` 只认 `from` 或 `value` 二者之一，缺了会报
+/// "pass `value` or select a layer to take it from"。
+fn ls_create_params(d: &PanelData, ty: &str, folder: &str) -> Value {
+    let base = if folder.is_empty() { ls_default_name(ty).to_string() } else { format!("{folder}/{}", ls_default_name(ty)) };
+    let name = (1..).map(|n| format!("{base} {n}")).find(|n| d.styles.iter().all(|s| &s.name != n)).unwrap_or(base);
+    let value = match ty {
+        "text" => json!({ "fontSize": 16.0 }),
+        "effect" | "grid" => json!([]),
+        // paint（以及兼容的 stroke）从纯黑开始。
+        _ => json!("#000000"),
+    };
+    json!({ "type": ty, "name": name, "value": value })
+}
+
 /// 类型分组标题栏的 `+`：弹出「建哪种样式」菜单（egui `local_styles` 的头部 `+`）。
-fn local_styles_add_button(f: &RightFields) -> IconButton {
+fn local_styles_add_button(f: &RightFields, d: &PanelData) -> IconButton {
     // (菜单标题, style.create 的 type, 默认名) —— 与 egui `StyleSlot::{title,create_type,default_name}` 对齐。
     // 必须是 `static`：菜单回调会逃出本函数，借本地数组会活不过函数体。
     static ITEMS: &[(&str, &str, &str)] = &[
@@ -2586,6 +2646,9 @@ fn local_styles_add_button(f: &RightFields) -> IconButton {
         ("Effect styles", "effect", "Effect"),
         ("Grid styles", "grid", "Grid"),
     ];
+    // 每个类型的 `style.create` 参数先算好（含默认 `value`，见 `ls_create_params`）：
+    // 菜单回调是 `Fn`，不能在里面重新借 `d`。
+    let create_params: Vec<Value> = ITEMS.iter().map(|(_, ctype, _)| ls_create_params(d, ctype, "")).collect();
     let root = f.root.clone();
     let cmds = f.cmds.clone();
     IconButton::new(Icon::Plus)
@@ -2596,15 +2659,15 @@ fn local_styles_add_button(f: &RightFields) -> IconButton {
             let anchor = Bounds { origin: window.mouse_position(), size: size(px(0.0), px(0.0)) };
             // `on_click` 是 `Fn`，捕获的 `cmds` 不能直接 move 进内层回调，先克隆一份。
             let cmds = cmds.clone();
+            let create_params = create_params.clone();
             root.update(cx, move |cv, cx| {
                 cv.open_menu(
                     anchor,
                     Some(200.0),
                     rows,
                     Rc::new(move |label: &str, _w, _cx| {
-                        if let Some(r) = ITEMS.iter().find(|r| r.0 == label) {
-                            let (_, ctype, dname) = *r;
-                            cmds.push(Cmd { id: "style.create", params: Some(json!({ "type": ctype, "name": dname })) });
+                        if let Some(i) = ITEMS.iter().position(|r| r.0 == label) {
+                            cmds.push(Cmd { id: "style.create", params: Some(create_params[i].clone()) });
                         }
                     }),
                     cx,
@@ -2615,30 +2678,16 @@ fn local_styles_add_button(f: &RightFields) -> IconButton {
 
 /// Page 节「Local styles」里的一行（egui `style_picker::local_styles` 的 Style 行，1:1）：
 /// 左侧徽标 16×16 —— paint 用圆形色板、text 用 "Ag" + 右侧 "32/Auto" 预览、effect/grid 用类型图标；
-/// 整行悬停高亮（圆角 t.hover 块，与行同高、内缩 8px）、左键把样式应用到选区、右键 Edit style / Duplicate / Delete；
+/// 整行悬停高亮（圆角 t.hover 块，与行同高、内缩 8px）、左键把样式应用到选区、右键 Duplicate / Delete；
 /// 文件夹层级用 `depth * 24px` 缩进（egui `LS_STEP`）。
-fn local_style_row(f: &RightFields, d: &PanelData, s: &LocalStyleRow, depth: usize, ty: &'static str) -> FieldRow {
+///
+/// `_d` 已不参与渲染（原先只为「Edit style」占位建同类型样式列表；那个动作已按 CodeRabbit 的
+/// 建议移除，等真正的 `edit_local` 编辑器落地再补），保留参数是为了调用处稳定。
+fn local_style_row(f: &RightFields, _d: &PanelData, s: &LocalStyleRow, depth: usize, ty: &'static str) -> FieldRow {
     let t = tokens();
     let cmds = f.cmds.clone();
-    let popups = f.popups();
-    let queue = f.queue();
     let sid = s.id.clone();
     let name = leaf_name(&s.name);
-    // 右键「Edit style」暂用现有样式列表弹窗占位（egui 真 1:1 是打开 `edit_local` 编辑器，
-    // GPUI 目前没有该弹窗）；列出同类型样式、点击即 `style.apply`（与 `style_menu` 一致）。
-    let edit_title = match ty {
-        "text" => tr("Text styles"),
-        "paint" => tr("Color styles"),
-        "effect" => tr("Effect styles"),
-        "grid" => tr("Grid styles"),
-        _ => tr("Styles"),
-    };
-    let edit_rows: Vec<(String, &'static str, Value)> = d
-        .styles
-        .iter()
-        .filter(|x| x.ty == ty)
-        .map(|x| (x.name.clone(), "style.apply", json!({ "style": x.id })))
-        .collect();
     // 左侧徽标（egui `paint_dot` / "Ag" / `slot.icon()`）。
     let badge: gpui::AnyElement = match &s.paint {
         Some(p) => div().flex_none().size(pt(16.0)).rounded_full().overflow_hidden().child(swatch(p.clone(), 16.0)).into_any_element(),
@@ -2693,28 +2742,24 @@ fn local_style_row(f: &RightFields, d: &PanelData, s: &LocalStyleRow, depth: usi
     if let Some(meta) = &s.text_meta {
         body = body.child(div().flex_none().text_size(pt(11.0)).text_color(rgba(t.text_tertiary)).child(meta.clone()));
     }
-    // 右键：Edit style / Duplicate / Delete（egui 的 context_popup 三项）。
+    // 右键：Duplicate / Delete（egui `context_popup`）。
+    //
+    // egui 的第一项是「Edit style」→ `edit_local` 样式编辑器（名称 / 描述 / 值）。GPUI 还没有
+    // 那个编辑器，之前用「同类型样式列表 + `style.apply`」占位，但这既名不副实（点下去是应用
+    // 不是编辑），在 Local styles 页（无选区）也毫无作用——`style.apply` 没有目标。故先移除，
+    // 等 `edit_local` 落地再补回（CodeRabbit 指出，勿再用 apply 列表冒充编辑器）。
     let cmds_r = cmds.clone();
     let root = f.root.clone();
-    let popups_r = popups.clone();
-    let queue_r = queue.clone();
-    let edit_label: String = tr("Edit style").to_string();
     let dup_label: String = tr("Duplicate").to_string();
     let del_label: String = tr("Delete").to_string();
-    let edit_rows_r = edit_rows.clone();
-    // `edit_title` 是 &str（Copy），可直接随 move 闭包拷贝；`edit_rows` 是 Vec，需 clone。
     body = body.on_mouse_down(MouseButton::Right, move |e: &gpui::MouseDownEvent, _w, cx: &mut App| {
         let cmds_r = cmds_r.clone();
         let sid = sid.clone();
-        let popups_r = popups_r.clone();
-        let queue_r = queue_r.clone();
-        let edit_rows_r = edit_rows_r.clone();
         // `on_mouse_down` 的监听是 `Fn`（可多次触发），不能把捕获的 String 移出去，
         // 每次调用先克隆成本地变量再 move 进菜单回调。
-        let edit = edit_label.clone();
         let dup = dup_label.clone();
         let del = del_label.clone();
-        let rows = vec![MenuRow::new(edit.clone()), MenuRow::new(dup.clone()).separator(), MenuRow::new(del.clone())];
+        let rows = vec![MenuRow::new(dup.clone()), MenuRow::new(del.clone())];
         let Some(root) = root.clone() else { return };
         let anchor = gpui::Bounds::new(e.position, gpui::size(px(0.0), px(0.0)));
         root.update(cx, move |cv, cx| {
@@ -2722,12 +2767,7 @@ fn local_style_row(f: &RightFields, d: &PanelData, s: &LocalStyleRow, depth: usi
                 anchor,
                 Some(160.0),
                 rows,
-                Rc::new(move |label: &str, window, _cx| {
-                    if edit == label {
-                        // 「Edit style」占位：打开现有样式列表弹窗（真 1:1 应为 edit_local 编辑器）。
-                        open_list_window(popups_r.clone(), queue_r.clone(), _cx, window.mouse_position(), ListWindow::Styles, SharedString::from(edit_title), edit_rows_r.clone());
-                        return;
-                    }
+                Rc::new(move |label: &str, _window, _cx| {
                     let id = if dup == label {
                         "style.duplicate"
                     } else if del == label {
@@ -2751,7 +2791,7 @@ fn local_style_row(f: &RightFields, d: &PanelData, s: &LocalStyleRow, depth: usi
 /// 之前这三块被塞进同一个 `PanelSection::new(tr("Page"))` 里，「Local variables」和「Local styles」
 /// 只是 `sublabel_row2` 的两个小字，样式列表更是压根没画——所以 Local styles 看着「没出现在
 /// 该出现的位置」。现在按 egui 拆成独立节，节与节之间由调用方补分隔线。
-pub(crate) fn page(f: &RightFields, d: &PanelData, row_w: f32, n: &mut usize, cx: &mut App) -> Vec<PanelSection> {
+pub(crate) fn page(f: &RightFields, d: &PanelData, row_w: f32, n: &mut usize, window: &mut Window, cx: &mut App) -> Vec<PanelSection> {
     let Some(p) = d.page.as_ref() else { return Vec::new() };
     let mut sec = PanelSection::new(tr("Page"));
     let hex_slot = slot(n);
@@ -2812,7 +2852,7 @@ pub(crate) fn page(f: &RightFields, d: &PanelData, row_w: f32, n: &mut usize, cx
     //       分成四组，每组一个小标题（带 `+`） + 该类型的样式行（含文件夹树）；空文档只有置灰标题。──
     let mut styles_sec = PanelSection::new(tr("Local styles"))
         .variant(if p.local_styles == 0 { SectionHeaderVariant::Dim } else { SectionHeaderVariant::Normal })
-        .header_trail(icon_row(vec![local_styles_add_button(f)]));
+        .header_trail(icon_row(vec![local_styles_add_button(f, d)]));
     // 分组顺序与 egui `StyleSlot` 一致：Text / Fill(Color) / Effect / Grid。
     let groups: &[(&str, &str, &str)] = &[
         ("text", "Text styles", "Text"),
@@ -2820,24 +2860,25 @@ pub(crate) fn page(f: &RightFields, d: &PanelData, row_w: f32, n: &mut usize, cx
         ("effect", "Effect styles", "Effect"),
         ("grid", "Grid styles", "Grid"),
     ];
-    for (ty, cap_key, dname) in groups {
+    for (ty, cap_key, _dname) in groups {
         let list: Vec<&LocalStyleRow> = d.styles.iter().filter(|s| s.ty == *ty).collect();
         if list.is_empty() {
             continue;
         }
         // 每组的小标题 + 该组的 `+`（直接建这种类型的样式；egui 同位置的 `+` 也是这个行为）。
         let cmds = f.cmds.clone();
-        let ctype = *ty;
-        let dname = *dname;
+        // 组标题的 `+` 同样走 `ls_create_params`：Local styles 页没有选区，必须自带 `value`，
+        // 否则 `style.create` 会以 "pass `value` or select a layer" 失败、`+` 看着没反应。
+        let create_params = ls_create_params(d, ty, "");
         let plus = IconButton::new(Icon::Plus).size(16.0).on_click(move |_anchor, _w, _cx| {
-            cmds.push(Cmd { id: "style.create", params: Some(json!({ "type": ctype, "name": dname })) });
+            cmds.push(Cmd { id: "style.create", params: Some(create_params.clone()) });
         });
         styles_sec = styles_sec.child(local_style_caption(SharedString::from(tr(cap_key)), plus));
         // 文件夹树（本遍展开全部）：先文件夹头、后其下样式、再递归子文件夹。
         let ls_folded = f.local_style_folded.clone();
         for line in ls_entries(&list, &|p| ls_folded.borrow().contains(&format!("{}/{}", *ty, p))) {
             match line {
-                LsLine::Folder { path, label, depth } => styles_sec = styles_sec.child(local_style_folder(f, &label, &path, *ty, depth, cx)),
+                LsLine::Folder { path, label, depth } => styles_sec = styles_sec.child(local_style_folder(f, d, &label, &path, *ty, depth, window, cx)),
                 LsLine::Style(idx, depth) => {
                     let s = &list[idx];
                     styles_sec = styles_sec.child(local_style_row(f, d, s, depth, *ty));
@@ -2853,6 +2894,33 @@ pub(crate) fn page(f: &RightFields, d: &PanelData, row_w: f32, n: &mut usize, cx
 mod view_menu_tests {
     use super::*;
     use std::collections::BTreeSet;
+
+    /// Local styles 的 `+` 必须自带 `value`：Local styles 页没有选区，引擎 `style.create` 只认
+    /// `from` 或 `value`，缺了会报 "pass `value` or select a layer to take it from"，`+` 看着
+    /// 就没反应（CodeRabbit 指出）。这里锁住每种类型的起始值与不重名的命名。
+    #[test]
+    fn local_style_create_params_carry_a_starting_value_and_a_unique_name() {
+        let mut d = PanelData::default();
+        d.styles.push(LocalStyleRow {
+            id: "s1".into(),
+            name: "Color 1".into(),
+            ty: "paint",
+            paint: None,
+            text_meta: None,
+            description: String::new(),
+        });
+        // paint：纯黑；名字避开已有的 "Color 1"。
+        let p = ls_create_params(&d, "paint", "");
+        assert_eq!(p["type"], "paint");
+        assert_eq!(p["value"], "#000000");
+        assert_eq!(p["name"], "Color 2");
+        // 文件夹前缀。
+        assert_eq!(ls_create_params(&d, "paint", "Brand/Colors")["name"], "Brand/Colors/Color 1");
+        // text / effect / grid 的起始值。
+        assert_eq!(ls_create_params(&d, "text", "")["value"], json!({ "fontSize": 16.0 }));
+        assert_eq!(ls_create_params(&d, "effect", "")["value"], json!([]));
+        assert_eq!(ls_create_params(&d, "grid", "")["value"], json!([]));
+    }
 
     /// `menu_check` 给勾选行加 `✓ ` / 四个空格前缀，`menu_popup` 在 on_pick 时 trim 掉。
     /// 所以行 label 本身不能带前后空格、也不能重复，否则会选中错的那条命令。

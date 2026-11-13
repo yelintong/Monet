@@ -443,7 +443,20 @@ pub fn panel(
     let n_items = n_fields + if collapsed { 0 } else { 1 };
     let item_gaps = (n_items.saturating_sub(1)) as f32 * ITEM_GAP;
     let editor_h = if collapsed { 0.0 } else { crate::motion::easing::clip_editor_height(c.easing) };
-    let est_h = HEADER_H + 24.0 + field_rows + item_gaps + editor_h;
+    let content_h = field_rows + item_gaps + editor_h;
+    // 视口可用高度：上下各留 `SCREEN_GAP`（与 `open_pos`/`clamp` 同一边距），再扣掉头部栏与
+    // body 的 12pt pad。`Popover::height` **只影响放置**、不约束渲染高度，也不带滚动；Custom
+    // Position / Scale / Size 的十一行字段 + 曲线编辑器在 720pt 高的窗口里会超出屏幕，最下面
+    // 的控件永远够不到（CodeRabbit 指出）。所以内容超出时把 body 夹到可用高度并让它滚动。
+    const SCREEN_GAP: f32 = 8.0;
+    let avail = (f32::from(vp.height) - SCREEN_GAP * 2.0 - HEADER_H - 24.0).max(120.0);
+    let scrolls = content_h > avail;
+    let body_el: AnyElement = if scrolls {
+        div().w_full().id("clip-popover-body").max_h(px(avail)).overflow_y_scroll().child(sec).into_any_element()
+    } else {
+        sec.into_any_element()
+    };
+    let est_h = HEADER_H + 24.0 + content_h.min(avail);
     // 卡片自身的 move：弹窗是独立 `occlude()` 浮层，根 div 的 on_mouse_move 收不到它上方的
     // 指针，所以必须把推进绑在卡片这一层（指针在弹窗内一定命中）。拖出弹窗后由根 div move
     // 兜底，两路都调同一个幂等的 `route_move`。
@@ -452,7 +465,7 @@ pub fn panel(
         .pad(12.0)
         .height(est_h)
         .title(title_text(title))
-        .body(sec)
+        .body(body_el)
         .on_drag_start(move |e, w, cx| drag(e, w, cx))
         .on_drag_move(move |e: &gpui::MouseMoveEvent, _, _| {
             route_move(e.position);

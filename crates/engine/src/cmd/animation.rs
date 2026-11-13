@@ -256,7 +256,7 @@ fn motion_auto_key(s: &mut Session, p: &Value) -> Result<Value> {
     let ids = req_targets(cmd, s, p)?;
     // Atomic shape check: refuse before writing anything if any target rejects the value.
     for id in &ids {
-        let accepts = s.doc()?.node(*id).is_some_and(|n| property.accepts(&value));
+        let accepts = s.doc()?.node(*id).is_some_and(|_| property.accepts(&value));
         if !accepts {
             return Err(bad(cmd, format!("`value` does not fit `{}` on node {id}", property.name())));
         }
