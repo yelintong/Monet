@@ -90,12 +90,9 @@ pub fn tiles_over(rect: PageRect, side: u32) -> Vec<TileCoord> {
     if !rect.iter().all(|v| v.is_finite()) || rect[2] <= rect[0] || rect[3] <= rect[1] {
         return Vec::new();
     }
-    let (Some(x0), Some(y0), Some(x1), Some(y1)) = (
-        floor_coord(rect[0] / s),
-        floor_coord(rect[1] / s),
-        floor_coord((rect[2] / s).ceil() - 1.0),
-        floor_coord((rect[3] / s).ceil() - 1.0),
-    ) else {
+    let (Some(x0), Some(y0), Some(x1), Some(y1)) =
+        (floor_coord(rect[0] / s), floor_coord(rect[1] / s), floor_coord((rect[2] / s).ceil() - 1.0), floor_coord((rect[3] / s).ceil() - 1.0))
+    else {
         return Vec::new();
     };
     let nx = i64::from(x1) - i64::from(x0) + 1;
@@ -166,15 +163,7 @@ fn hash_op(h: &mut DefaultHasher, op: &DrawOp, c: TileCoord, side: u32) {
     (op.kind as u8).hash(h);
     op.fields.hash(h);
     let origin = tile_origin(c, side);
-    hash_rect(
-        h,
-        [
-            op.visible[0] - origin.0,
-            op.visible[1] - origin.1,
-            op.visible[2] - origin.0,
-            op.visible[3] - origin.1,
-        ],
-    );
+    hash_rect(h, [op.visible[0] - origin.0, op.visible[1] - origin.1, op.visible[2] - origin.0, op.visible[3] - origin.1]);
     match op.clip {
         Some(r) => hash_rect(h, clipped_to_tile(r, origin, side)),
         None => hash_rect(h, [0.0, 0.0, -1.0, -1.0]),
@@ -203,11 +192,7 @@ pub fn tile_hashes(ops: &[DrawOp], region: PageRect, side: u32) -> HashMap<TileC
 
 /// 新旧哈希不同、或旧图里没有的格子，排序后返回。
 pub fn dirty_tiles(old: &HashMap<TileCoord, u64>, new: &HashMap<TileCoord, u64>) -> Vec<TileCoord> {
-    let mut dirty: Vec<TileCoord> = new
-        .iter()
-        .filter(|(c, hash)| old.get(c) != Some(*hash))
-        .map(|(c, _)| *c)
-        .collect();
+    let mut dirty: Vec<TileCoord> = new.iter().filter(|(c, hash)| old.get(c) != Some(*hash)).map(|(c, _)| *c).collect();
     dirty.sort();
     dirty
 }
@@ -241,11 +226,7 @@ pub fn crop_rect(c: TileCoord, side: u32) -> PageRect {
 pub fn uses_tiles(pixels: u64, scale: f64, effect_reach: f64, backdrop_radius: f64) -> bool {
     let big = pixels >= TILED_MIN_PIXELS || (scale >= 8.0 && pixels >= HIGH_ZOOM_TILED_MIN_PIXELS);
     let bleed = bleed_for(backdrop_radius, scale);
-    big
-        && effect_reach.is_finite()
-        && effect_reach >= 0.0
-        && effect_reach <= f64::from(TILE_SIDE)
-        && bleed < MAX_BLEED
+    big && effect_reach.is_finite() && effect_reach >= 0.0 && effect_reach <= f64::from(TILE_SIDE) && bleed < MAX_BLEED
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -272,12 +253,7 @@ pub struct PolicyInput {
 /// 三态决策。绕过条件抄 `fast::layers::policy::decide`：背景不是单色不透明、
 /// 有焦点输入或动画、滚动越过缓存范围、内容变化太频繁。
 pub fn decide(p: PolicyInput, dirty: &[TileCoord]) -> Decision {
-    if !p.opaque_background
-        || p.focused_input
-        || p.animation_requested
-        || p.moved_past_cache
-        || p.changed_in_last_16 >= BYPASS_CHANGED_FRAMES
-    {
+    if !p.opaque_background || p.focused_input || p.animation_requested || p.moved_past_cache || p.changed_in_last_16 >= BYPASS_CHANGED_FRAMES {
         return Decision::Bypass;
     }
     if dirty.is_empty() && p.only_offset_changed {
@@ -392,7 +368,7 @@ mod tests {
 /// 这一步只把「当前视口由哪些渲染单元组成」算出来，供后续 PR 接到 `JobKey`
 /// 与 `canvas::show`；本批不改变任何渲染行为。
 pub mod view_units {
-    use super::{PageRect, TileCoord, UnitKey, TILE_SIDE, tiles_over, zoom_bucket};
+    use super::{PageRect, TILE_SIDE, TileCoord, UnitKey, tiles_over, zoom_bucket};
 
     /// 生成单元键所需的、与格子位置无关的输入。
     #[derive(Clone, Copy, Debug)]
