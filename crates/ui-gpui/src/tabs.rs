@@ -61,10 +61,7 @@ impl TabMotion {
 
 /// `uid` 这个标签的入场进度（0..=1）；不在入场中就是 1。
 pub fn open_progress(opening: &[(u64, f64)], uid: u64, now: f64) -> f32 {
-    opening
-        .iter()
-        .find(|(u, _)| *u == uid)
-        .map_or(1.0, |(_, started)| ((now - started) / OPEN_TIME).clamp(0.0, 1.0) as f32)
+    opening.iter().find(|(u, _)| *u == uid).map_or(1.0, |(_, started)| ((now - started) / OPEN_TIME).clamp(0.0, 1.0) as f32)
 }
 
 /// 一次布局的结果：`first` 是第一个可见标签在 `preferred` 里的下标，`widths` 与之一一对应。
@@ -80,12 +77,7 @@ pub struct TabLayout {
 pub fn tab_layout(preferred: &[f32], available: f32, active: Option<usize>) -> TabLayout {
     let count = preferred.len();
     let overflow = count as f32 * MIN_TAB_WIDTH > available;
-    let visible = if overflow {
-        ((available - OVERFLOW_WIDTH).max(0.0) / MIN_TAB_WIDTH).floor() as usize
-    } else {
-        count
-    }
-    .min(count);
+    let visible = if overflow { ((available - OVERFLOW_WIDTH).max(0.0) / MIN_TAB_WIDTH).floor() as usize } else { count }.min(count);
     let first = active.unwrap_or(0).saturating_sub(visible / 2).min(count.saturating_sub(visible));
     let mut widths = preferred[first..first + visible].to_vec();
     let budget = (available - if overflow { OVERFLOW_WIDTH } else { 0.0 }).max(0.0);
@@ -130,11 +122,7 @@ pub fn present_room(room: f32, preferred: &[f32], files: bool) -> f32 {
 
 /// 演示标签的名字：`file - page`，页面无名时只有 `file`。
 pub fn present_tab_name(file: &str, page_name: &str) -> String {
-    if page_name.is_empty() {
-        file.to_string()
-    } else {
-        format!("{file} - {page_name}")
-    }
+    if page_name.is_empty() { file.to_string() } else { format!("{file} - {page_name}") }
 }
 
 /// 一个标签的 live 徽标状态：上游 `tabs.rs::live_mark` / `live_lost` 的纯逻辑。
@@ -177,8 +165,8 @@ pub fn present_tab_width(name: &str) -> f32 {
 #[cfg(test)]
 mod layout_tests {
     use super::{
-        LiveBadge, MIN_TAB_WIDTH, OPEN_TIME, OVERFLOW_WIDTH, TabMotion, live_badge, open_progress, preferred_width, present_room,
-        tab_drop_position, tab_layout,
+        LiveBadge, MIN_TAB_WIDTH, OPEN_TIME, OVERFLOW_WIDTH, TabMotion, live_badge, open_progress, preferred_width, present_room, tab_drop_position,
+        tab_layout,
     };
 
     #[test]
@@ -217,9 +205,7 @@ mod layout_tests {
 
     #[test]
     fn drop_position_places_a_tab_between_its_neighbors() {
-        let visible: Vec<_> = (0..4)
-            .map(|index| (index, (index as f32 * 120.0, (index + 1) as f32 * 120.0)))
-            .collect();
+        let visible: Vec<_> = (0..4).map(|index| (index, (index as f32 * 120.0, (index + 1) as f32 * 120.0))).collect();
         assert_eq!(tab_drop_position(&visible, 0, 330.0).map(|(to, _)| to), Some(2));
         assert_eq!(tab_drop_position(&visible, 3, 30.0).map(|(to, _)| to), Some(0));
         // 插入标记线落在目标标签的左 / 右边界（上游 `rect.min.x` / `rect.max.x`）。

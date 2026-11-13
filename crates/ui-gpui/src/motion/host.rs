@@ -29,13 +29,8 @@ impl CanvasView {
             self.motion_ui.playing = false;
         }
         let selection = self.app.session.selection();
-        let settings = self
-            .app
-            .session
-            .ds()
-            .ok()
-            .map(|ds| motion::settings_of(&ds.doc, motion::scope_of(&ds.doc, &selection, ds.page)))
-            .unwrap_or_default();
+        let settings =
+            self.app.session.ds().ok().map(|ds| motion::settings_of(&ds.doc, motion::scope_of(&ds.doc, &selection, ds.page))).unwrap_or_default();
         if self.motion_ui.advance(settings) {
             cx.notify();
         }
@@ -68,11 +63,7 @@ impl CanvasView {
         // 让引擎的命中/悬停按「画面上显示的那份」算：动画模式播放头停在中间时，物体画在
         // 动画位置，命中若仍读未求值的 ds.doc 就点不中（用户 2026-11-12）。
         // 写操作不受影响——引擎的 `display_doc` 只用于命中几何，编辑仍走 `ds.doc`。
-        self.app.session.display_doc = if self.motion && !self.motion_ui.playing {
-            self.motion_ui.preview_doc.clone()
-        } else {
-            None
-        };
+        self.app.session.display_doc = if self.motion && !self.motion_ui.playing { self.motion_ui.preview_doc.clone() } else { None };
     }
 
     /// The document the canvas should draw while Motion is previewing a playhead position.
@@ -129,27 +120,48 @@ impl CanvasView {
         if sel.has_text {
             before.push(crate::panels::right::sections::typography(&self.fields, &data).into_any_element());
         }
-        let fills = crate::panels::right::sections::paints(&self.fields, &data, true, sel.has_vector, 0.0, 0.0, &mut n, window, cx, layer, fill_keyed, &self.motion_q)
-            .into_element()
-            .into_any_element();
-        let strokes = crate::panels::right::sections::paints(&self.fields, &data, false, sel.has_vector, 0.0, 0.0, &mut n, window, cx, layer, stroke_keyed, &self.motion_q)
-            .into_element()
-            .into_any_element();
+        let fills = crate::panels::right::sections::paints(
+            &self.fields,
+            &data,
+            true,
+            sel.has_vector,
+            0.0,
+            0.0,
+            &mut n,
+            window,
+            cx,
+            layer,
+            fill_keyed,
+            &self.motion_q,
+        )
+        .into_element()
+        .into_any_element();
+        let strokes = crate::panels::right::sections::paints(
+            &self.fields,
+            &data,
+            false,
+            sel.has_vector,
+            0.0,
+            0.0,
+            &mut n,
+            window,
+            cx,
+            layer,
+            stroke_keyed,
+            &self.motion_q,
+        )
+        .into_element()
+        .into_any_element();
         let keyed_effects: Vec<figcraft_doc::anim::motion::AnimProperty> = layer
             .map(|l| {
-                [
-                    figcraft_doc::anim::motion::AnimProperty::ShadowBlur,
-                    figcraft_doc::anim::motion::AnimProperty::BlurRadius,
-                ]
-                .into_iter()
-                .filter(|p| crate::motion::has_key(&doc, l, *p, playhead))
-                .collect()
+                [figcraft_doc::anim::motion::AnimProperty::ShadowBlur, figcraft_doc::anim::motion::AnimProperty::BlurRadius]
+                    .into_iter()
+                    .filter(|p| crate::motion::has_key(&doc, l, *p, playhead))
+                    .collect()
             })
             .unwrap_or_default();
         let keyframe = layer.map(|l| (l, keyed_effects.clone(), &self.motion_q));
-        let effects = crate::panels::right::sections::effects(&self.fields, &data, 0.0, cx, keyframe)
-            .into_element()
-            .into_any_element();
+        let effects = crate::panels::right::sections::effects(&self.fields, &data, 0.0, cx, keyframe).into_element().into_any_element();
         // Fill / Stroke / Effects 之后的组件专属段：Layout grid（画框）+ Export（所有图层）。
         let mut after: Vec<AnyElement> = Vec::new();
         if sel.all_frame {
@@ -186,17 +198,7 @@ impl CanvasView {
         // The bottom timeline belongs to the selected frame (one animation group), not the whole
         // page. `bar`'s `page` parameter is now this scope; build_rows still lists `selection`.
         let scope = motion::scope_of(&doc, &selection, self.app.session.ds().ok().map(|d| d.page).unwrap_or(figcraft_doc::NodeId(0)));
-        motion::timeline::bar(
-            cx,
-            &doc,
-            &mut self.motion_ui,
-            &self.motion_q,
-            &selection,
-            &self.motion_times,
-            scope,
-            width,
-            window,
-        )
+        motion::timeline::bar(cx, &doc, &mut self.motion_ui, &self.motion_q, &selection, &self.motion_times, scope, width, window)
     }
 
     /// The clip settings floating window (a `Popover`), or nothing when closed.
@@ -234,5 +236,4 @@ impl CanvasView {
             0.0
         }
     }
-
 }

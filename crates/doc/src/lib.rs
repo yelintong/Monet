@@ -479,11 +479,7 @@ impl Document {
     /// defaults. Export (`Animation::new`) already uses this exact chain; the motion editor reads
     /// through here too, so the timeline it edits is the one export produces.
     pub fn timeline_settings_for(&self, scope: NodeId) -> crate::anim::motion::TimelineSettings {
-        self.timelines
-            .get(&scope)
-            .or_else(|| self.page_of(scope).and_then(|p| self.timelines.get(&p)))
-            .copied()
-            .unwrap_or_default()
+        self.timelines.get(&scope).or_else(|| self.page_of(scope).and_then(|p| self.timelines.get(&p))).copied().unwrap_or_default()
     }
 
     pub fn first_page(&self) -> Option<NodeId> {
@@ -1319,7 +1315,11 @@ impl Document {
 fn remap_action(a: &mut proto::Action, map: &BTreeMap<NodeId, NodeId>) {
     use proto::Action::*;
     match a {
-        Navigate { dest, .. } | ScrollTo { dest, .. } | OpenOverlay { dest, .. } | SwapOverlay { dest } | ChangeTo { dest }
+        Navigate { dest, .. }
+        | ScrollTo { dest, .. }
+        | OpenOverlay { dest, .. }
+        | SwapOverlay { dest }
+        | ChangeTo { dest }
         | Animation { dest, .. } => {
             if let Some(m) = map.get(dest) {
                 *dest = *m;

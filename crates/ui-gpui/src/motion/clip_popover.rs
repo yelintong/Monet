@@ -8,15 +8,15 @@
 //! The clip's floating settings window over the canvas. It is a `Popover` with a `title_text`
 //! header and a `PanelSection` body; the view owns open/close and the dragged position.
 
-use figcraft_i18n::tr_noop;
 use figcraft_i18n::tr;
+use figcraft_i18n::tr_noop;
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use crate::widgets::{pt, rgba, tokens};
 use figcraft_doc::anim::motion::{Clip, ClipKind, ClipMode, Ease};
 use figcraft_doc::{Document, NodeId};
 use gpui::{AnyElement, App, Entity, IntoElement, Point, SharedString, Size, Window, div, prelude::*, px};
-use crate::widgets::{pt, rgba, tokens};
 
 use crate::motion::{Act, MotionUi, Queue};
 use crate::widgets::dropdown::dropdown;
@@ -242,13 +242,7 @@ fn field_line(label: impl Into<SharedString>, control: impl IntoElement) -> gpui
                 .child(label.into()),
         )
         // 第 2 列：固定 124 pt、24 高的 control 槽（下拉 / 数字框 / 眼睛组填这里）。
-        .child(
-            div()
-                .w(pt(CONTROL_W))
-                .h(pt(CONTROL_H))
-                .flex_none()
-                .child(control),
-        )
+        .child(div().w(pt(CONTROL_W)).h(pt(CONTROL_H)).flex_none().child(control))
     // 240 − 108 − 124 = 8 pt 自然留在右侧（egui 的右边距），不再顶到卡片边缘。
 }
 
@@ -271,9 +265,7 @@ pub fn panel(
     }
     let Some((node, id)) = ui.clip_popover else { return Vec::new() };
     fields.sync(cx, doc, ui);
-    let Some(c) = doc.node(node).and_then(|n| n.motion.clips.iter().find(|c| c.id == id)).cloned() else {
-        return Vec::new()
-    };
+    let Some(c) = doc.node(node).and_then(|n| n.motion.clips.iter().find(|c| c.id == id)).cloned() else { return Vec::new() };
     let q = queue.clone();
 
     // ── Enum rows: each opens a MENU of its options on click (egui `menu_popup` + `menu_check`),
@@ -369,9 +361,7 @@ pub fn panel(
     // A plain column: the card's own title already names the clip, and the unified grid's
     // two-column rows are what squeezed these fields in the first place.
     // 通用 body 插槽容器：里面每一项之间 8pt，间距只在 `popover_body` 里定义一次。
-    let mut sec = popover_body()
-        .child(field_line(tr("Animation"), kind_row))
-        .child(field_line(tr("Type"), mode_row));
+    let mut sec = popover_body().child(field_line(tr("Animation"), kind_row)).child(field_line(tr("Type"), mode_row));
     // Only the fields this kind/mode shows (Custom shows From/To, vec2 kinds show Y).
     let shown: Vec<usize> = (0..7).filter(|i| visible[*i]).collect();
     for &i in &shown {
@@ -382,29 +372,26 @@ pub fn panel(
     // 状态按 clip 记在 `ui.easing_collapsed`，纯 UI，不写文档、不改 clip.visible。
     let q_eye = queue.clone();
     let collapsed = ui.easing_collapsed.contains(&(node, id));
-    let eye = crate::widgets::icon_button::IconButton::new(if collapsed {
-        crate::widgets::icon::Icon::EyeOff
-    } else {
-        crate::widgets::icon::Icon::Eye
-    })
-    .active(!collapsed)
-    .on_click(move |_, _, _| q_eye.push(Act::ToggleClipEasingFold(node, id)));
+    let eye =
+        crate::widgets::icon_button::IconButton::new(if collapsed { crate::widgets::icon::Icon::EyeOff } else { crate::widgets::icon::Icon::Eye })
+            .active(!collapsed)
+            .on_click(move |_, _, _| q_eye.push(Act::ToggleClipEasingFold(node, id)));
     let easing_control = div()
-        .flex().flex_row().items_center().gap(pt(4.0)).w_full()
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap(pt(4.0))
+        .w_full()
         .child(div().flex_1().min_w(px(0.0)).child(ease_row))
         .child(div().flex_none().child(eye));
-    sec = sec
-        .child(field_line(tr("Direction"), dir_row))
-        .child(field_line(tr("Easing"), easing_control));
+    sec = sec.child(field_line(tr("Direction"), dir_row)).child(field_line(tr("Easing"), easing_control));
     // egui PR#1624 `clip_popover::easing_rows`: Easing 下拉之后，编辑器直接占满卡片内容宽
     // (264 − 12×2 = 240)，高度由 `clip_editor_height` 给出。**不要**再套 `field_row_full`：
     // 那是 32pt 高的网格行，144pt 的图表会上下各溢出 56pt 压住标题和数值框，而且它自带的
     // 16/8/24 padding 会把 208pt 的画布挤到 128pt，横向画出卡片。
     // Easing 行的眼睛折叠时**不画曲线编辑器**（用户 2026-11-12：眼睛控曲线显示隐藏）。
     if !collapsed {
-        sec = sec.child(crate::motion::easing::clip_editor(
-            cx, c.easing, crate::motion::EaseTarget::Clip(node, id), queue, WIDTH - 24.0,
-        ));
+        sec = sec.child(crate::motion::easing::clip_editor(cx, c.easing, crate::motion::EaseTarget::Clip(node, id), queue, WIDTH - 24.0));
     }
 
     let title = format!("{} · {}", c.kind.name(), c.mode.label(c.kind));
@@ -424,17 +411,11 @@ pub fn panel(
 
     // egui `clip_popover::show`：卡片右缘贴「右栏左缘 − 8」，顶边与触发行顶边对齐；
     // `clip_at`（拖动落点 / 时间轴点击）优先。溢出由 `open_pos` 上抬 + `clamp` 夹回屏内。
-    let anchor_y = ANCHOR_Y.with(|a| a.get())
-        .or_else(|| ui.clip_anchor.map(|b| f32::from(b.origin.y)))
-        .unwrap_or(100.0);
+    let anchor_y = ANCHOR_Y.with(|a| a.get()).or_else(|| ui.clip_anchor.map(|b| f32::from(b.origin.y))).unwrap_or(100.0);
     // 「右边靠」：卡片右缘贴右栏左缘 − 8（`Open::Anchor` 的契约）。`right_w` 由调用方
     // 从 `self` 取好传入（渲染期读 root 会重入 panic），用户拖过右栏宽度后依然准确。
     let anchor_x = f32::from(vp.width) - right_w - 8.0;
-    let open = if let Some(p) = ui.clip_at {
-        PopoverOpen::At(p)
-    } else {
-        PopoverOpen::Anchor(Point { x: px(anchor_x), y: px(anchor_y) })
-    };
+    let open = if let Some(p) = ui.clip_at { PopoverOpen::At(p) } else { PopoverOpen::Anchor(Point { x: px(anchor_x), y: px(anchor_y) }) };
     // `Popover::height` 只用于抬升 / 夹住卡片的位置，按实际内容估：
     // 40 头部栏 + 24 pad + ROW_H/字段行 + 曲线编辑器（折叠时不含） + body 各项间的 8pt 间距。
     let n_fields = 2 + shown.len() + 2;
@@ -497,16 +478,11 @@ fn segment_ease_panel(
 ) -> Vec<AnyElement> {
     let Some(k) = ui.segment_ease else { return Vec::new() };
     // 段起点帧的 easing（与 easing::panel 读法一致）。帧不存在（被删）就关窗。
-    let Some(ease) = doc.node(k.node)
-        .and_then(|n| n.motion.track(k.property))
-        .and_then(|tr| tr.key_at(k.time_ms))
-        .map(|key| key.easing) else {
-        return Vec::new()
+    let Some(ease) = doc.node(k.node).and_then(|n| n.motion.track(k.property)).and_then(|tr| tr.key_at(k.time_ms)).map(|key| key.easing) else {
+        return Vec::new();
     };
 
-    let body = popover_body().child(crate::motion::easing::clip_editor(
-        cx, ease, crate::motion::EaseTarget::Key(k), queue, WIDTH - 24.0,
-    ));
+    let body = popover_body().child(crate::motion::easing::clip_editor(cx, ease, crate::motion::EaseTarget::Key(k), queue, WIDTH - 24.0));
     let dismiss: Rc<dyn Fn(&mut Window, &mut App)> = Rc::new({
         let q = queue.clone();
         move |_, _| q.push(Act::CloseSegmentEase)
@@ -523,11 +499,7 @@ fn segment_ease_panel(
     // 那是 clip **行**点击的 thread_local，读了会残留上次的位置、与段窗串味。
     let anchor_y = ui.clip_anchor.map(|b| f32::from(b.origin.y)).unwrap_or(100.0);
     let anchor_x = f32::from(vp.width) - right_w - 8.0;
-    let open = if let Some(p) = ui.clip_at {
-        PopoverOpen::At(p)
-    } else {
-        PopoverOpen::Anchor(Point { x: px(anchor_x), y: px(anchor_y) })
-    };
+    let open = if let Some(p) = ui.clip_at { PopoverOpen::At(p) } else { PopoverOpen::Anchor(Point { x: px(anchor_x), y: px(anchor_y) }) };
     // 高度：40 头 + 24 pad + 曲线编辑器（Curve/Spring + 图表 + 数值 + 可能弹簧参数行）。
     let est_h = HEADER_H + 24.0 + crate::motion::easing::clip_editor_height(ease);
     let pop = popover_window(open)
@@ -537,14 +509,16 @@ fn segment_ease_panel(
         .title(title_text(tr("Easing")))
         .body(body)
         .on_drag_start(move |e, w, cx| drag(e, w, cx))
-        .on_drag_move(move |e: &gpui::MouseMoveEvent, _, _| { route_move(e.position); })
-        .on_drag_up(move |_, _, _| { end_drag(); });
+        .on_drag_move(move |e: &gpui::MouseMoveEvent, _, _| {
+            route_move(e.position);
+        })
+        .on_drag_up(move |_, _, _| {
+            end_drag();
+        });
     let (origin, card) = pop.show(vp, dismiss);
     CLIP_ORIGIN.with(|o| *o.borrow_mut() = Some(origin));
     vec![card]
 }
-
-
 
 #[cfg(test)]
 mod tests {

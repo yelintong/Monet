@@ -120,13 +120,7 @@ impl Segmented {
     /// Build the element (`Div` so callers can `.flex_none()` / `.w(...)` it like any row child).
     pub fn build(self) -> Div {
         let t = tokens();
-        let mut bar = div()
-            .h(pt(self.height))
-            .rounded(pt(RADIUS))
-            .bg(rgba(t.field))
-            .flex()
-            .flex_row()
-            .items_center();
+        let mut bar = div().h(pt(self.height)).rounded(pt(RADIUS)).bg(rgba(t.field)).flex().flex_row().items_center();
         if let Some(w) = self.fixed_w {
             bar = bar.w(pt(w)).flex_none();
         } else if self.fill {

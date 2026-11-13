@@ -51,14 +51,7 @@ pub struct DockLayout {
 impl DockLayout {
     /// `left_w` / `right_w` 来自可拖拽的 dock 尺寸，`bottom_h` 来自 bottom dock 的折叠状态。
     pub fn new(left_w: f32, right_w: f32, bottom_h: f32) -> Self {
-        Self {
-            rail_w: panels::RAIL_W,
-            left_w,
-            right_w,
-            handle_w: panels::HANDLE_W,
-            titlebar_h: TITLEBAR_H,
-            bottom_h,
-        }
+        Self { rail_w: panels::RAIL_W, left_w, right_w, handle_w: panels::HANDLE_W, titlebar_h: TITLEBAR_H, bottom_h }
     }
 
     /// center dock 的左边缘（窗口坐标）：rail + left dock + 左分隔条。
@@ -78,10 +71,7 @@ impl DockLayout {
 
     /// 画布尺寸：center 宽 × (窗口高 − 标题栏 − bottom dock)。
     pub fn canvas_size(&self, viewport_w: f32, viewport_h: f32) -> (f32, f32) {
-        (
-            self.center_w(viewport_w),
-            (viewport_h - self.titlebar_h - self.bottom_h).max(1.0),
-        )
+        (self.center_w(viewport_w), (viewport_h - self.titlebar_h - self.bottom_h).max(1.0))
     }
 
     /// 窗口坐标 → 画布局部坐标（引擎里的 `app.canvas.rect` 原点恒为 0）。

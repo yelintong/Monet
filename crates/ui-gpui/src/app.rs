@@ -3,11 +3,11 @@
 //! 对应原文 `FigApp` 里画布用到的部分（`session` / `canvas` / `to_screen` / `to_page`），
 //! 让搬过来的画布代码不用改调用点。
 
-use figcraft_i18n::tr;
 use figcraft_doc::color::{Color, Paint};
 use figcraft_doc::{AutoLayout, Document, LayoutMode, NodeId, NodeKind};
 use figcraft_engine::Session;
 use figcraft_geom::Point;
+use figcraft_i18n::tr;
 
 use crate::canvas::CanvasState;
 use crate::canvas::cursors::Shown;

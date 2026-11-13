@@ -17,9 +17,9 @@
 //! produces a number — typing, arrow stepping, scrubbing and a value pushed in from the document —
 //! goes through [`NumberConfig::clamp`], so an out-of-range value can never enter the field.
 
-use figcraft_i18n::tr;
 use crate::widgets::input::Slot;
 use crate::widgets::input::text_field::TextField;
+use figcraft_i18n::tr;
 use gpui::{App, Entity, SharedString};
 
 /// A numeric field `width` wide, with no range limit. `value` of `None` shows "Mixed".

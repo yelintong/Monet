@@ -143,7 +143,15 @@ pub struct State {
 
 impl State {
     /// 显隐：打开 Motion 且不在播放，具体有没有选中层由 `draw` / `input` 再判。
-    pub fn new(open: bool, playing: bool, playhead_ms: f64, fps: u32, duration_ms: u32, preview: Option<Arc<Document>>, src: Option<Arc<Document>>) -> Self {
+    pub fn new(
+        open: bool,
+        playing: bool,
+        playhead_ms: f64,
+        fps: u32,
+        duration_ms: u32,
+        preview: Option<Arc<Document>>,
+        src: Option<Arc<Document>>,
+    ) -> Self {
         Self { active: open && !playing, playing, playhead_ms, fps, duration_ms, gizmo_hidden: false, preview, src }
     }
 }
@@ -231,12 +239,7 @@ fn geos(app: &CanvasApp) -> Vec<Geo> {
         let keys: Vec<(u32, Pos2)> = node
             .motion
             .track(AnimProperty::Position)
-            .map(|tr| {
-                tr.keys
-                    .iter()
-                    .filter_map(|k| path_point(app, &src, *id, f64::from(k.time_ms)).map(|p| (k.time_ms, p)))
-                    .collect()
-            })
+            .map(|tr| tr.keys.iter().filter_map(|k| path_point(app, &src, *id, f64::from(k.time_ms)).map(|p| (k.time_ms, p))).collect())
             .unwrap_or_default();
         // 选中关键帧的空间贝塞尔手柄端点（屏幕位置）：只有选中的帧才画 / 可拖（照矢量路径交互）。
         let zoom = app.session.ds().map(|d| d.view.zoom).unwrap_or(1.0).max(1e-6) as f32;
@@ -330,8 +333,12 @@ fn cursor_for(part: Part, g: &Geo) -> Shown {
     match part {
         Part::Center | Part::Keyframe(_) | Part::KeyframeHandle(_, _) => Shown::System(gpui::CursorStyle::ClosedHand),
         Part::Ring => Shown::Drawn(crate::canvas::cursors::Glyph::Rotate(g.delta_deg as f32)),
-        Part::ArrowX | Part::ScaleX => Shown::System(if g.axis_x.x.abs() >= g.axis_x.y.abs() { CursorStyle::ResizeLeftRight } else { CursorStyle::ResizeUpDown }),
-        Part::ArrowY | Part::ScaleY => Shown::System(if g.axis_y.x.abs() >= g.axis_y.y.abs() { CursorStyle::ResizeLeftRight } else { CursorStyle::ResizeUpDown }),
+        Part::ArrowX | Part::ScaleX => {
+            Shown::System(if g.axis_x.x.abs() >= g.axis_x.y.abs() { CursorStyle::ResizeLeftRight } else { CursorStyle::ResizeUpDown })
+        }
+        Part::ArrowY | Part::ScaleY => {
+            Shown::System(if g.axis_y.x.abs() >= g.axis_y.y.abs() { CursorStyle::ResizeLeftRight } else { CursorStyle::ResizeUpDown })
+        }
     }
 }
 
@@ -384,11 +391,8 @@ fn paint(painter: &mut Painter, app: &CanvasApp, st: &State, src: &Document, g: 
     //
     // **有关键帧时，相邻关键帧之间直接画直线**：Position 是线性插值，两点之间必是直线，
     // 采样只会引入视觉噪声（用户 2026-11-12 反复说"线就是弯的"）。纯 clip 才采样。
-    let key_times: Vec<f64> = node
-        .motion
-        .track(AnimProperty::Position)
-        .map(|tr| tr.keys.iter().map(|k| f64::from(k.time_ms)).collect())
-        .unwrap_or_default();
+    let key_times: Vec<f64> =
+        node.motion.track(AnimProperty::Position).map(|tr| tr.keys.iter().map(|k| f64::from(k.time_ms)).collect()).unwrap_or_default();
     if key_times.is_empty() {
         // 纯 clip：clip 的位移可能非线性，按帧率采样。
         let step = (1000.0 / f64::from(st.fps.max(1))).max(1.0);
@@ -520,13 +524,7 @@ pub(super) fn draw(app: &CanvasApp, painter: &mut Painter, _t: &Tokens) {
     let selected = app.motion_gizmo.selected_key;
     for g in geos(app) {
         // 拖动中锁定高亮为被拖部件（指针会离开部件），否则按当前指针现算 hover。
-        let hovered = drag
-            .as_ref()
-            .filter(|d| d.node == g.node)
-            .map(|d| {
-                d.part
-            })
-            .or_else(|| app.pointer.and_then(|p| hit(&g, p)));
+        let hovered = drag.as_ref().filter(|d| d.node == g.node).map(|d| d.part).or_else(|| app.pointer.and_then(|p| hit(&g, p)));
         paint(painter, app, st, &src, &g, hovered, selected);
     }
 }
@@ -561,10 +559,7 @@ fn apply(app: &mut CanvasApp, drag: &Drag, pos: Pos2) {
     // 删除（null，曲线回到直线），照矢量路径「手柄拖回锚点即归直」的交互（用户 2026-11-12）。
     if let Part::KeyframeHandle(t, end) = drag.part {
         let src = app.session.ds().ok().map(|d| d.doc.clone());
-        let c_screen = src
-            .as_ref()
-            .and_then(|s| path_point(app, s, drag.node, f64::from(t)))
-            .unwrap_or(drag.center);
+        let c_screen = src.as_ref().and_then(|s| path_point(app, s, drag.node, f64::from(t))).unwrap_or(drag.center);
         let dx = pos.x - c_screen.x;
         let dy = pos.y - c_screen.y;
         let hx = dx as f64 / zoom as f64;
@@ -615,7 +610,11 @@ fn apply(app: &mut CanvasApp, drag: &Drag, pos: Pos2) {
             let along = f64::from(d.x * axis.x + d.y * axis.y) * SCALE_PER_PX;
             let v = if drag.part == Part::ScaleX { drag.start_scale.x } else { drag.start_scale.y };
             let scaled = (v + along).max(0.05);
-            let n = if drag.part == Part::ScaleX { figcraft_geom::Vec2::new(scaled, drag.start_scale.y) } else { figcraft_geom::Vec2::new(drag.start_scale.x, scaled) };
+            let n = if drag.part == Part::ScaleX {
+                figcraft_geom::Vec2::new(scaled, drag.start_scale.y)
+            } else {
+                figcraft_geom::Vec2::new(drag.start_scale.x, scaled)
+            };
             (AnimProperty::Scale, AnimValue::Vec2(n))
         }
         // 手柄端点已在上方分支 return；这里兜底，理论不可达。
@@ -631,10 +630,8 @@ fn apply(app: &mut CanvasApp, drag: &Drag, pos: Pos2) {
     // 会 ensure_track + set_key）。不能用 `motion.autoKey` —— 它对无轨道属性只改静态 transform，
     // 那会让「拖一下旋转环/缩放块」看不到任何动画轨道，与手柄语义相悖。
     // undo 边界由 `input` 在按下/抬起时的 begin_interaction / commit_interaction 统一拥有。
-    let _ = app.session.execute(
-        "motion.keyframe",
-        &serde_json::json!({ "ids": [drag.node.0], "property": prop.name(), "time": time, "value": value }),
-    );
+    let _ =
+        app.session.execute("motion.keyframe", &serde_json::json!({ "ids": [drag.node.0], "property": prop.name(), "time": time, "value": value }));
 }
 
 /// 指针处理；返回 `true` 表示这一下归 gizmo（画布不要再当选择/拖拽）。
@@ -895,7 +892,14 @@ mod tests {
         let to = p0 + vec2(20.0, 10.0);
         input(&mut app, to, false, true, false, false);
         input(&mut app, to, false, false, true, false);
-        let v = app.session.doc().ok().and_then(|d| d.node(dot)).and_then(|n| n.motion.track(AnimProperty::Position)).and_then(|tr| tr.key_at(0)).map(|k| k.value);
+        let v = app
+            .session
+            .doc()
+            .ok()
+            .and_then(|d| d.node(dot))
+            .and_then(|n| n.motion.track(AnimProperty::Position))
+            .and_then(|tr| tr.key_at(0))
+            .map(|k| k.value);
         let Some(AnimValue::Vec2(p)) = v else { panic!("0ms 该有 Position 关键帧") };
         // 0ms 原值 (10,10)，屏幕拖 (20,10)（zoom=1）→ (30,20)。
         assert!((p.x - 30.0).abs() < 1e-3 && (p.y - 20.0).abs() < 1e-3, "关键帧空间位置：{p:?}");
@@ -916,11 +920,7 @@ mod tests {
         }
         on(&mut app, 0.0); // 重新取 src/preview，让 geos 带上手柄端点
         let g = geos(&app).pop().expect("one gizmo");
-        let (ht, hend, hp) = g
-            .handle_ends
-            .iter()
-            .find(|(t, e, _)| *t == 0 && *e == End::Out)
-            .expect("out 手柄端点应被画出");
+        let (ht, hend, hp) = g.handle_ends.iter().find(|(t, e, _)| *t == 0 && *e == End::Out).expect("out 手柄端点应被画出");
         assert_eq!(*ht, 0);
         assert_eq!(*hend, End::Out);
         // ① 点中手柄端点
@@ -931,7 +931,14 @@ mod tests {
         let center = g.center; // 关键帧在屏幕上的中心
         input(&mut app, center, false, true, false, false);
         input(&mut app, center, false, false, true, false);
-        let handle = app.session.doc().ok().and_then(|d| d.node(dot)).and_then(|n| n.motion.track(AnimProperty::Position)).and_then(|tr| tr.key_at(0)).and_then(|k| k.out_handle);
+        let handle = app
+            .session
+            .doc()
+            .ok()
+            .and_then(|d| d.node(dot))
+            .and_then(|n| n.motion.track(AnimProperty::Position))
+            .and_then(|tr| tr.key_at(0))
+            .and_then(|k| k.out_handle);
         assert!(handle.is_none(), "拖回中心应删除 out 手柄（曲线归直）：{:?}", handle);
         // ③ 重新给手柄，拖离中心 → 写回与绘制同基准的相对偏移
         {
@@ -948,7 +955,14 @@ mod tests {
         let to = g.center + vec2(40.0, 0.0);
         input(&mut app, to, false, true, false, false);
         input(&mut app, to, false, false, true, false);
-        let handle = app.session.doc().ok().and_then(|d| d.node(dot)).and_then(|n| n.motion.track(AnimProperty::Position)).and_then(|tr| tr.key_at(0)).and_then(|k| k.out_handle);
+        let handle = app
+            .session
+            .doc()
+            .ok()
+            .and_then(|d| d.node(dot))
+            .and_then(|n| n.motion.track(AnimProperty::Position))
+            .and_then(|tr| tr.key_at(0))
+            .and_then(|k| k.out_handle);
         let Some(h) = handle else { panic!("拖离中心应写回 out 手柄") };
         assert!((h[0] - 40.0).abs() < 1.0 && (h[1] - 0.0).abs() < 1.0, "手柄跟随指针偏移（与绘制同基准）：{:?}", h);
     }
@@ -965,7 +979,14 @@ mod tests {
         let to = g.center + vec2(24.0, -12.0);
         input(&mut app, to, false, true, false, false);
         input(&mut app, to, false, false, true, false);
-        let v = app.session.doc().ok().and_then(|d| d.node(dot)).and_then(|n| n.motion.track(AnimProperty::Position)).and_then(|tr| tr.key_at(500)).map(|k| k.value);
+        let v = app
+            .session
+            .doc()
+            .ok()
+            .and_then(|d| d.node(dot))
+            .and_then(|n| n.motion.track(AnimProperty::Position))
+            .and_then(|tr| tr.key_at(500))
+            .map(|k| k.value);
         let Some(AnimValue::Vec2(p)) = v else { panic!("播放头该有 Position 关键帧") };
         // 500ms 轨道插值 (60,35)，自由 2D 拖 24,-12 → (84,23)。
         assert!((p.x - 84.0).abs() < 1e-3 && (p.y - 23.0).abs() < 1e-3, "自由 2D 位移：{p:?}");
@@ -986,7 +1007,14 @@ mod tests {
         input(&mut app, to, false, true, false, false);
         input(&mut app, to, false, false, true, false);
         assert!(app.motion_gizmo.drag.is_none(), "抬起收尾");
-        let v = app.session.doc().ok().and_then(|d| d.node(dot)).and_then(|n| n.motion.track(AnimProperty::Position)).and_then(|tr| tr.key_at(500)).map(|k| k.value);
+        let v = app
+            .session
+            .doc()
+            .ok()
+            .and_then(|d| d.node(dot))
+            .and_then(|n| n.motion.track(AnimProperty::Position))
+            .and_then(|tr| tr.key_at(500))
+            .map(|k| k.value);
         let Some(AnimValue::Vec2(p)) = v else { panic!("播放头该有 Position 关键帧") };
         // 500ms 的插值起点 x=60/y=35；绿箭头朝上，沿它拖 30px → y 减 30，X 轴不动。
         assert!((p.x - 60.0).abs() < 1e-3, "X 轴不动：{p:?}");
@@ -1005,7 +1033,14 @@ mod tests {
         let to = press + g.axis_x * 50.0;
         input(&mut app, to, false, true, false, false);
         input(&mut app, to, false, false, true, false);
-        let v = app.session.doc().ok().and_then(|d| d.node(dot)).and_then(|n| n.motion.track(AnimProperty::Scale)).and_then(|tr| tr.key_at(0)).map(|k| k.value);
+        let v = app
+            .session
+            .doc()
+            .ok()
+            .and_then(|d| d.node(dot))
+            .and_then(|n| n.motion.track(AnimProperty::Scale))
+            .and_then(|tr| tr.key_at(0))
+            .map(|k| k.value);
         let Some(AnimValue::Vec2(sc)) = v else { panic!("该有 Scale 关键帧") };
         assert!((sc.x - 1.5).abs() < 1e-3, "正方向 = 放大：{sc:?}");
         assert!((sc.y - 1.0).abs() < 1e-3, "另一轴不动：{sc:?}");
@@ -1023,7 +1058,14 @@ mod tests {
         let to = g.center + vec2(-RING_R, 0.0); // 下方 → 左方 = 屏幕顺时针 90°
         input(&mut app, to, false, true, false, false);
         input(&mut app, to, false, false, true, false);
-        let v = app.session.doc().ok().and_then(|d| d.node(dot)).and_then(|n| n.motion.track(AnimProperty::Rotation)).and_then(|tr| tr.key_at(0)).map(|k| k.value);
+        let v = app
+            .session
+            .doc()
+            .ok()
+            .and_then(|d| d.node(dot))
+            .and_then(|n| n.motion.track(AnimProperty::Rotation))
+            .and_then(|tr| tr.key_at(0))
+            .map(|k| k.value);
         let Some(AnimValue::Scalar(r)) = v else { panic!("该有 Rotation 关键帧") };
         assert!((r + 90.0).abs() < 1e-2, "顺时针拖 → 动画增量 -90°（绝对角写 -90）：{r}");
     }
@@ -1045,11 +1087,7 @@ mod tests {
         // 半径恰为 RING_R 的是淡蓝填充 + 蓝色环；两条白描边在 RING_R ± outline_r。
         assert_eq!(ring, 1, "半径 RING_R 的只有蓝环一条（整圆淡蓝填充已删，用户 2026-11-12）");
         let accent = app.accent();
-        let filled = painter
-            .ops
-            .iter()
-            .filter(|o| matches!(o, Op::Poly { points, fill, .. } if points.len() == 4 && *fill == accent))
-            .count();
+        let filled = painter.ops.iter().filter(|o| matches!(o, Op::Poly { points, fill, .. } if points.len() == 4 && *fill == accent)).count();
         assert_eq!(filled, 1, "只有播放头处那颗关键帧画实心");
     }
 

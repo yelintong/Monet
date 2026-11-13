@@ -67,13 +67,7 @@ fn animation_action_serde_defaults_to_resume_and_roundtrips() {
     let a: Action = serde_json::from_value(json!({"type": "animation", "dest": 9})).unwrap();
     assert_eq!(a, Action::Animation { dest: NodeId(9), op: AnimationOp::RESUME }, "op 缺省 = resume");
 
-    for op in [
-        AnimationOp::RESUME,
-        AnimationOp::Play { from_start: true },
-        AnimationOp::Pause,
-        AnimationOp::Restart,
-        AnimationOp::TogglePlay,
-    ] {
+    for op in [AnimationOp::RESUME, AnimationOp::Play { from_start: true }, AnimationOp::Pause, AnimationOp::Restart, AnimationOp::TogglePlay] {
         let a = Action::Animation { dest: NodeId(9), op };
         let v = serde_json::to_value(&a).unwrap();
         assert_eq!(v["type"], "animation");

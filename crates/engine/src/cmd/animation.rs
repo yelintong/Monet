@@ -4,13 +4,13 @@
 //! canvas, the prototype panel and the agent control channel can drive transitions without knowing
 //! the geometry.
 
+use super::CommandSpec;
+use crate::params::*;
+use crate::{EngineError, Result, Session, bad, spec};
 use figcraft_doc::anim::motion::{self, AnimProperty, Clip, ClipKind, ClipMode, Ease, NodeMotion};
 use figcraft_doc::proto::Transition;
 use figcraft_geom::Vec2;
 use serde_json::{Value, json};
-use crate::params::*;
-use crate::{EngineError, Result, Session, bad, spec};
-use super::CommandSpec;
 
 pub(crate) fn specs() -> Vec<CommandSpec> {
     vec![
@@ -93,13 +93,7 @@ pub(crate) fn specs() -> Vec<CommandSpec> {
             true,
             clip_update
         ),
-        spec!(
-            "motion.clipDelete",
-            "Delete animation clip",
-            "{node, id} → removes one clip.",
-            true,
-            clip_delete
-        ),
+        spec!("motion.clipDelete", "Delete animation clip", "{node, id} → removes one clip.", true, clip_delete),
         spec!(
             "motion.track",
             "Show/hide track",
@@ -213,8 +207,8 @@ fn motion_keyframe(s: &mut Session, p: &Value) -> Result<Value> {
     if let Some(v) = &value {
         let doc = s.doc()?;
         for id in &ids {
-            let props: Vec<AnimProperty> = property
-                .map_or_else(|| doc.node(*id).map(|n| n.motion.tracks.iter().map(|t| t.property).collect()).unwrap_or_default(), |p| vec![p]);
+            let props: Vec<AnimProperty> =
+                property.map_or_else(|| doc.node(*id).map(|n| n.motion.tracks.iter().map(|t| t.property).collect()).unwrap_or_default(), |p| vec![p]);
             if let Some(prop) = props.iter().find(|prop| !prop.accepts(v)) {
                 return Err(bad("motion.keyframe", format!("`value` does not fit `{}`: it takes {}", prop.name(), shape(prop.kind()))));
             }
@@ -223,8 +217,8 @@ fn motion_keyframe(s: &mut Session, p: &Value) -> Result<Value> {
     let doc = s.doc_mut()?;
     let mut added = 0;
     for id in &ids {
-        let props: Vec<AnimProperty> = property
-            .map_or_else(|| doc.node(*id).map(|n| n.motion.tracks.iter().map(|t| t.property).collect()).unwrap_or_default(), |p| vec![p]);
+        let props: Vec<AnimProperty> =
+            property.map_or_else(|| doc.node(*id).map(|n| n.motion.tracks.iter().map(|t| t.property).collect()).unwrap_or_default(), |p| vec![p]);
         let mut keys: Vec<(AnimProperty, motion::AnimValue)> = Vec::new();
         for prop in props {
             let v = value.clone().or_else(|| doc.node(*id).and_then(|n| motion::keyframed_value_at(n, prop, time as f64)));
@@ -251,7 +245,9 @@ fn motion_keyframe(s: &mut Session, p: &Value) -> Result<Value> {
 fn motion_auto_key(s: &mut Session, p: &Value) -> Result<Value> {
     let cmd = "motion.autoKey";
     let time = num(p, "time").unwrap_or(0.0).max(0.0) as u32;
-    let property = string(p, "property").and_then(|name| property_of(&name)).ok_or_else(|| bad(cmd, "`property` is required and must be a known animatable property"))?;
+    let property = string(p, "property")
+        .and_then(|name| property_of(&name))
+        .ok_or_else(|| bad(cmd, "`property` is required and must be a known animatable property"))?;
     let value: motion::AnimValue = parse(cmd, p, "value")?.ok_or_else(|| bad(cmd, "`value` is required"))?;
     let ids = req_targets(cmd, s, p)?;
     // Atomic shape check: refuse before writing anything if any target rejects the value.
@@ -301,9 +297,8 @@ fn motion_keyframe_copy(s: &mut Session, p: &Value) -> Result<Value> {
     let from = num(p, "from").ok_or_else(|| bad(cmd, "`from` is required"))?.max(0.0) as u32;
     let to = num(p, "to").ok_or_else(|| bad(cmd, "`to` is required"))?.max(0.0) as u32;
     // Optional explicit property list; otherwise every animated track participates.
-    let props: Option<Vec<AnimProperty>> = p.get("properties").and_then(Value::as_array).map(|arr| {
-        arr.iter().filter_map(|v| v.as_str().and_then(property_of)).collect()
-    });
+    let props: Option<Vec<AnimProperty>> =
+        p.get("properties").and_then(Value::as_array).map(|arr| arr.iter().filter_map(|v| v.as_str().and_then(property_of)).collect());
     if let Some(list) = &props {
         if list.is_empty() {
             return Err(bad(cmd, "`properties` is empty or has no known animatable property"));
@@ -587,7 +582,8 @@ mod tests {
             "id": cid, "kind": "Position", "mode": "In", "direction": "Bottom",
             "amount": 0.0, "from": [0.0, 0.0], "to": [0.0, 0.0],
             "delay_ms": 0, "duration_ms": 500
-        })).unwrap();
+        }))
+        .unwrap();
         clip.delay_ms = 250;
         ex(&mut s, "motion.clipUpdate", json!({"node": n.0, "id": cid, "clip": clip}));
         assert_eq!(node(&s, n).motion.clips[0].delay_ms, 250);
@@ -717,13 +713,25 @@ mod tests {
                     property: AnimProperty::Opacity,
                     keys: vec![
                         motion::Keyframe { time_ms: 0, value: motion::AnimValue::Scalar(0.2), easing: ease, out_handle: None, in_handle: None },
-                        motion::Keyframe { time_ms: 200, value: motion::AnimValue::Scalar(0.9), easing: Ease::default(), out_handle: None, in_handle: None },
+                        motion::Keyframe {
+                            time_ms: 200,
+                            value: motion::AnimValue::Scalar(0.9),
+                            easing: Ease::default(),
+                            out_handle: None,
+                            in_handle: None,
+                        },
                     ],
                     visible: true,
                 },
                 motion::Track {
                     property: AnimProperty::Position,
-                    keys: vec![motion::Keyframe { time_ms: 0, value: motion::AnimValue::Vec2(Vec2::new(5.0, 6.0)), easing: Ease::default(), out_handle: None, in_handle: None }],
+                    keys: vec![motion::Keyframe {
+                        time_ms: 0,
+                        value: motion::AnimValue::Vec2(Vec2::new(5.0, 6.0)),
+                        easing: Ease::default(),
+                        out_handle: None,
+                        in_handle: None,
+                    }],
                     visible: true,
                 },
             ],
@@ -768,5 +776,4 @@ mod tests {
         assert!(node(&s, n).motion.track(AnimProperty::Opacity).unwrap().key_at(500).is_some());
         assert!(node(&s, n).motion.track(AnimProperty::Position).unwrap().key_at(500).is_none(), "filtered-out track not touched");
     }
-
 }

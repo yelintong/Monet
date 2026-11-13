@@ -84,9 +84,19 @@ impl Menu {
     /// defaults the original sets.
     pub fn at(anchor: Bounds<Pixels>) -> Self {
         Self {
-            anchor, width: Width::Anchor, align: RectAlign::BottomStart, gap: 4.0, menu: true,
-            vw: 0.0, vh: 0.0, content_w: 0.0, rows_h: 0.0, row_h: 28.0,
-            tag: "popup".into(), measured: false, extras: Vec::new(),
+            anchor,
+            width: Width::Anchor,
+            align: RectAlign::BottomStart,
+            gap: 4.0,
+            menu: true,
+            vw: 0.0,
+            vh: 0.0,
+            content_w: 0.0,
+            rows_h: 0.0,
+            row_h: 28.0,
+            tag: "popup".into(),
+            measured: false,
+            extras: Vec::new(),
         }
     }
 
@@ -112,20 +122,33 @@ impl Menu {
     }
 
     /// 视口尺寸：开启上下防溢出 + 水平贴边。
-    pub fn viewport(mut self, vw: f32, vh: f32) -> Self { self.vw = vw; self.vh = vh; self }
+    pub fn viewport(mut self, vw: f32, vh: f32) -> Self {
+        self.vw = vw;
+        self.vh = vh;
+        self
+    }
 
     /// 内容测量值：最宽行的内容宽、行高总和、单行高。`Fit` 档据此给确定宽，
     /// 于是「以最宽那一项为标准，其它项左右填充」由这一个控件统一完成。
     pub fn content(mut self, content_w: f32, rows_h: f32, row_h: f32) -> Self {
-        self.content_w = content_w; self.rows_h = rows_h; self.row_h = row_h;
-        self.measured = true; self
+        self.content_w = content_w;
+        self.rows_h = rows_h;
+        self.row_h = row_h;
+        self.measured = true;
+        self
     }
 
     /// 滚动视口的唯一 id 前缀（多级菜单会同时出现多个）。
-    pub fn tag(mut self, tag: impl Into<String>) -> Self { self.tag = tag.into(); self }
+    pub fn tag(mut self, tag: impl Into<String>) -> Self {
+        self.tag = tag.into();
+        self
+    }
 
     /// 不进滚动视口的绝对定位元素（子菜单）。
-    pub fn extras(mut self, extras: Vec<AnyElement>) -> Self { self.extras = extras; self }
+    pub fn extras(mut self, extras: Vec<AnyElement>) -> Self {
+        self.extras = extras;
+        self
+    }
 
     /// Draws the card at its anchor and hands the content a body to fill; `None` when the popup
     /// has no anchor (a point anchor with nothing to hang off).
@@ -156,14 +179,14 @@ impl Menu {
                 Width::Min(w) => natural.max(w),
                 Width::Anchor => natural.max(aw.max(48.0)),
             })
-        } else { None };
+        } else {
+            None
+        };
         let left = match (self.vw > 0.0, width) {
             (true, Some(w)) => left.min((self.vw - w - PAD).max(PAD)).max(PAD),
             _ => left,
         };
-        let (top, viewport_h, scroll) = if self.vh > 0.0 {
-            fit_vertical(top, self.rows_h, self.vh, self.row_h)
-        } else { (top, self.rows_h, false) };
+        let (top, viewport_h, scroll) = if self.vh > 0.0 { fit_vertical(top, self.rows_h, self.vh, self.row_h) } else { (top, self.rows_h, false) };
 
         let mut card = if self.menu { menu_surface() } else { div() }.absolute().left(pt(left)).top(pt(top));
         card = match width {
@@ -178,12 +201,11 @@ impl Menu {
             // 底部 8pt 让位给 24pt 箭头条：不是 8+24=32，而是「原本 8 变成 24」。
             card = card.pb(pt(0.0));
         }
-        if self.menu { card = card.occlude(); }
+        if self.menu {
+            card = card.occlude();
+        }
         let body = content();
-        Some(card
-            .children(fit_rows(body, viewport_h, scroll, &self.tag))
-            .children(self.extras)
-            .into_any_element())
+        Some(card.children(fit_rows(body, viewport_h, scroll, &self.tag)).children(self.extras).into_any_element())
     }
 }
 
@@ -206,7 +228,9 @@ fn fit_vertical(top: f32, rows_h: f32, vh: f32, row_h: f32) -> (f32, f32, bool) 
 
 /// 不滚动就直接铺；滚动则套一层隐藏滚动条的视口 + 24pt 居中向下箭头，不出现拖动滑条。
 fn fit_rows(body: AnyElement, viewport_h: f32, scroll: bool, tag: &str) -> Vec<AnyElement> {
-    if !scroll { return vec![body]; }
+    if !scroll {
+        return vec![body];
+    }
     let t = tokens();
     let viewport = div()
         .id(ElementId::from(SharedString::from(format!("popup-viewport-{tag}"))))
@@ -217,7 +241,9 @@ fn fit_rows(body: AnyElement, viewport_h: f32, scroll: bool, tag: &str) -> Vec<A
         .into_any_element();
     let aff = div()
         .h(pt(AFFORDANCE))
-        .flex().items_center().justify_center()
+        .flex()
+        .items_center()
+        .justify_center()
         .child(paint_icon(Icon::ChevronDown, rgba(t.menu_dim), 24.0))
         .into_any_element();
     vec![viewport, aff]

@@ -300,7 +300,6 @@ pub fn show(app: &mut CanvasApp, worker: &mut Worker, ppp: f32, t: &Tokens) -> C
     CanvasOutput { image, overview, live, painter, bg, in_flight, retired }
 }
 
-
 /// 画叠加层：标尺 + （后续）选中框/手柄/参考线/标签。
 ///
 /// 抽成公开的入口，`show()` 与无头预览用同一份代码，保证两边完全一致。

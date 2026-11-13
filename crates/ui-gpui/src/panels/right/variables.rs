@@ -10,21 +10,20 @@
 //! 这是**表格 / 弹窗**，不是右栏 `PanelSection` 行，所以不受「统一网格 / 禁止手算列宽」约束；
 //! 列宽来自 egui 的 `NAME_W = 240` / `ADD_W = 40`，mode 列等分剩余宽度。
 
-use figcraft_i18n::tr_noop;
-use figcraft_i18n::tr;
 use crate::canvas::geom::Color32;
 use crate::drag::{self, Config as DragCfg, Row as DragRow, Target as DragTarget};
+use crate::panels::right::virtual_list::{VirtualListScrollHandle, v_virtual_list};
 use crate::panels::{Cmd, Cmds};
 use crate::widgets::icon::paint as paint_icon;
 use crate::widgets::{
-    Icon, IconButton, PopoverOpen, Slot, Surface, TextField, number_field, popover_window, pt, rgba,
-    search_field, text_field, title_text, tokens,
+    Icon, IconButton, PopoverOpen, Slot, Surface, TextField, number_field, popover_window, pt, rgba, search_field, text_field, title_text, tokens,
 };
+use figcraft_i18n::tr;
+use figcraft_i18n::tr_noop;
 use gpui::{
-    AnyElement, App, Bounds, Div, Entity, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point, ScrollHandle, SharedString, Size, Stateful, Window, div, point,
-    prelude::*, px, size,
+    AnyElement, App, Bounds, Div, Entity, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point, ScrollHandle, SharedString, Size,
+    Stateful, Window, div, point, prelude::*, px, size,
 };
-use crate::panels::right::virtual_list::{VirtualListScrollHandle, v_virtual_list};
 use serde_json::{Value, json};
 use std::cell::RefCell;
 use std::collections::{BTreeSet, HashMap};
@@ -66,7 +65,12 @@ const SEARCH_W: f32 = 174.0;
 /// 过滤按钮与搜索框拼接后的总宽（egui `SEARCH_W + FILTER_W`）。
 const FILTER_W: f32 = 25.0;
 const VALUE_FIELD_W: f32 = 150.0;
-const TYPES: [(&str, VarKind); 4] = [(tr_noop("Color"), VarKind::Color), (tr_noop("Number"), VarKind::Number), (tr_noop("String"), VarKind::String), (tr_noop("Boolean"), VarKind::Boolean)];
+const TYPES: [(&str, VarKind); 4] = [
+    (tr_noop("Color"), VarKind::Color),
+    (tr_noop("Number"), VarKind::Number),
+    (tr_noop("String"), VarKind::String),
+    (tr_noop("Boolean"), VarKind::Boolean),
+];
 
 /// `figcraft_doc::VariableType` 的显示形态（egui `kind_glyph`）。
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -256,16 +260,7 @@ pub fn read(doc: &figcraft_doc::Document) -> VariablesData {
                 })
                 .collect();
             groups.sort();
-            CollectionSnap {
-                id: c.id.clone(),
-                name: c.name.clone(),
-                modes,
-                rows,
-                groups,
-                library: None,
-                extends: c.extends.clone(),
-                editable: true,
-            }
+            CollectionSnap { id: c.id.clone(), name: c.name.clone(), modes, rows, groups, library: None, extends: c.extends.clone(), editable: true }
         })
         .collect();
     VariablesData { collections, libraries: Vec::new() }
@@ -330,11 +325,7 @@ pub fn read_libraries(cache: &figcraft_engine::library::Cache, doc: &figcraft_do
 
 /// `FC_DEBUG_POPUP=variables_table` 用的合成数据。
 pub fn sample() -> VariablesData {
-    let color = |r: u8, g: u8, b: u8, hex: &str| VarCell::Color {
-        color: Color32::from_rgb(r, g, b),
-        hex: hex.to_string(),
-        alpha: 100,
-    };
+    let color = |r: u8, g: u8, b: u8, hex: &str| VarCell::Color { color: Color32::from_rgb(r, g, b), hex: hex.to_string(), alpha: 100 };
     let row = |id: &str, name: &str, group: &str, kind: VarKind, values: Vec<VarCell>| VarRow {
         id: id.to_string(),
         full_name: if group.is_empty() { name.to_string() } else { format!("{group}/{name}") },
@@ -606,29 +597,14 @@ fn group_header_div(name: &str) -> Div {
 }
 
 impl VariablesEditor {
-    pub fn new(
-        cmds: Cmds,
-        data: VariablesData,
-        cx: &mut App,
-        on_full: Rc<dyn Fn(bool, &mut App)>,
-        on_close: Rc<dyn Fn(&mut App)>,
-    ) -> Self {
+    pub fn new(cmds: Cmds, data: VariablesData, cx: &mut App, on_full: Rc<dyn Fn(bool, &mut App)>, on_close: Rc<dyn Fn(&mut App)>) -> Self {
         let state: State = Rc::new(RefCell::new(EditorState::new()));
         let search = search_field(cx, SEARCH_W, "", "Search variables");
         let q = state.clone();
         search.update(cx, move |tf, _| {
             tf.set_on_commit(move |text, _, _| q.borrow_mut().query = text.trim().to_lowercase());
         });
-        Self {
-            state,
-            data,
-            cmds,
-            search,
-            row_caches: Rc::new(RefCell::new(RowCaches::default())),
-            details_fields: HashMap::new(),
-            on_full,
-            on_close,
-        }
+        Self { state, data, cmds, search, row_caches: Rc::new(RefCell::new(RowCaches::default())), details_fields: HashMap::new(), on_full, on_close }
     }
 
     pub fn is_full(&self) -> bool {
@@ -760,17 +736,12 @@ impl VariablesEditor {
 
     /// 导出：系统「另存为」对话框 → `variable.export {format, path}`。
     fn export_dialog(cmds: &Cmds, format: &str) {
-        let Some(path) = rfd::FileDialog::new()
-            .set_file_name(&format!("variables.{format}"))
-            .add_filter(format.to_uppercase(), &[format])
-            .save_file()
+        let Some(path) =
+            rfd::FileDialog::new().set_file_name(&format!("variables.{format}")).add_filter(format.to_uppercase(), &[format]).save_file()
         else {
             return;
         };
-        cmds.push(Cmd {
-            id: "variable.export",
-            params: Some(json!({ "format": format, "path": path.to_string_lossy().to_string() })),
-        });
+        cmds.push(Cmd { id: "variable.export", params: Some(json!({ "format": format, "path": path.to_string_lossy().to_string() })) });
     }
 
     /// 导入：系统「打开」对话框 → `variable.import {variables: path}`。
@@ -778,10 +749,7 @@ impl VariablesEditor {
         let Some(path) = rfd::FileDialog::new().add_filter("Variables JSON", &["json"]).pick_file() else {
             return;
         };
-        cmds.push(Cmd {
-            id: "variable.import",
-            params: Some(json!({ "variables": path.to_string_lossy().to_string() })),
-        });
+        cmds.push(Cmd { id: "variable.import", params: Some(json!({ "variables": path.to_string_lossy().to_string() })) });
     }
 
     /// 当前来源（本文件 / 库）下的集合切片。
@@ -886,9 +854,7 @@ impl VariablesEditor {
             .filter(|v| {
                 let in_group = st.group.as_ref().is_none_or(|g| v.group == *g);
                 let full_name = if v.group.is_empty() { v.name.clone() } else { format!("{}/{}", v.group, v.name) };
-                in_group
-                    && !st.hidden[v.kind.index()]
-                    && (q.is_empty() || full_name.to_lowercase().contains(q))
+                in_group && !st.hidden[v.kind.index()] && (q.is_empty() || full_name.to_lowercase().contains(q))
             })
             .cloned()
             .collect();
@@ -907,7 +873,15 @@ impl VariablesEditor {
 
     /// 主体：`body_h` 是通用窗口留给 body 的高度（Full 时是整个视口减去 header）；
     /// `viewport` 供详情浮层用通用 `Popover` 做边界夹取。
-    pub fn render(&mut self, cx: &mut App, body_h: f32, viewport: Size<Pixels>, origin: Point<Pixels>, drag_start: Option<DragStart>, card_w: f32) -> AnyElement {
+    pub fn render(
+        &mut self,
+        cx: &mut App,
+        body_h: f32,
+        viewport: Size<Pixels>,
+        origin: Point<Pixels>,
+        drag_start: Option<DragStart>,
+        card_w: f32,
+    ) -> AnyElement {
         let t = tokens();
         let st = self.state.clone();
         let cmds = self.cmds.clone();
@@ -945,8 +919,7 @@ impl VariablesEditor {
                 let st = st.clone();
                 let cmds = cmds.clone();
                 let cid = coll.as_ref().map(|c| c.id.clone()).unwrap_or_default();
-                let mode_ids: Vec<String> =
-                    coll.as_ref().map(|c| c.modes.iter().map(|m| m.id.clone()).collect()).unwrap_or_default();
+                let mode_ids: Vec<String> = coll.as_ref().map(|c| c.modes.iter().map(|m| m.id.clone()).collect()).unwrap_or_default();
                 move |_e: &MouseUpEvent, _, _| {
                     {
                         let mut s = st.borrow_mut();
@@ -993,10 +966,7 @@ impl VariablesEditor {
                             }
                             if to != from {
                                 if let Some(mid) = mode_ids.get(from) {
-                                    cmds.push(Cmd {
-                                        id: "variable.moveMode",
-                                        params: Some(json!({ "collection": cid, "mode": mid, "to": to })),
-                                    });
+                                    cmds.push(Cmd { id: "variable.moveMode", params: Some(json!({ "collection": cid, "mode": mid, "to": to })) });
                                 }
                             }
                         }
@@ -1007,8 +977,7 @@ impl VariablesEditor {
         root = root.child(self.header(&st, &data, full, drag_start));
         let body = div().flex().flex_row().flex_1().min_h(pt(0.0)).w_full();
         let body = if sidebar {
-            body.child(self.sidebar(&st, &data, cx, body_h))
-                .child(div().flex_none().w(pt(1.0)).h_full().bg(rgba(t.border)))
+            body.child(self.sidebar(&st, &data, cx, body_h)).child(div().flex_none().w(pt(1.0)).h_full().bg(rgba(t.border)))
         } else {
             body
         };
@@ -1023,13 +992,7 @@ impl VariablesEditor {
         // 跨帧保留的 root 矩形（prepaint 写入，下一帧读；每帧新建会永远读到 None）。
         let root_bounds = st.borrow().root_bounds.clone();
         let rb = root_bounds.clone();
-        root = root.child(
-            gpui::canvas(move |bounds, _, _| rb.set(Some(bounds)), |_, _, _, _| {})
-                .absolute()
-                .top_0()
-                .left_0()
-                .size_full(),
-        );
+        root = root.child(gpui::canvas(move |bounds, _, _| rb.set(Some(bounds)), |_, _, _, _| {}).absolute().top_0().left_0().size_full());
         if let Some(el) = self.drag_line(&st, root_bounds.get()) {
             root = root.child(el);
         }
@@ -1258,21 +1221,14 @@ impl VariablesEditor {
         let st = st.clone();
         let old = group.to_string();
         let prefix = format!("{group}/");
-        let members: Vec<(String, String)> = c
-            .rows
-            .iter()
-            .filter(|r| r.full_name.starts_with(&prefix))
-            .map(|r| (r.id.clone(), r.full_name[prefix.len()..].to_string()))
-            .collect();
+        let members: Vec<(String, String)> =
+            c.rows.iter().filter(|r| r.full_name.starts_with(&prefix)).map(|r| (r.id.clone(), r.full_name[prefix.len()..].to_string())).collect();
         f.update(cx, move |tf, _| {
             tf.set_on_commit(move |text, _, _| {
                 let name = text.trim().replace('/', "-");
                 if !name.is_empty() && name != old {
                     for (id, rest) in &members {
-                        cmds.push(Cmd {
-                            id: "variable.update",
-                            params: Some(json!({ "variable": id, "name": format!("{name}/{rest}") })),
-                        });
+                        cmds.push(Cmd { id: "variable.update", params: Some(json!({ "variable": id, "name": format!("{name}/{rest}") })) });
                     }
                 }
                 st.borrow_mut().rename_group = None;
@@ -1310,8 +1266,15 @@ impl VariablesEditor {
         // ① Collections 标题 + 新建（unique 命名，不再用时间戳）。
         col = col.child(
             div()
-                .flex_none().w_full().h(pt(34.0)).flex().flex_row().items_center().pl(pt(16.0))
-                .text_size(pt(11.0)).text_color(rgba(t.text_secondary))
+                .flex_none()
+                .w_full()
+                .h(pt(34.0))
+                .flex()
+                .flex_row()
+                .items_center()
+                .pl(pt(16.0))
+                .text_size(pt(11.0))
+                .text_color(rgba(t.text_secondary))
                 .child(tr("Collections"))
                 .child(div().flex_1().min_w(pt(0.0)))
                 .child(IconButton::new(Icon::Plus).id("vars-add-collection").size(24.0).on_click({
@@ -1345,7 +1308,13 @@ impl VariablesEditor {
             cl = cl.child(
                 div()
                     .id(SharedString::from(format!("vcoll-{i}")))
-                    .flex_none().w_full().h(pt(SIDE_ROW_H)).flex().flex_row().items_center().px(pt(8.0))
+                    .flex_none()
+                    .w_full()
+                    .h(pt(SIDE_ROW_H))
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .px(pt(8.0))
                     .on_mouse_down(MouseButton::Left, {
                         let st = st.clone();
                         let ids = coll_ids.clone();
@@ -1371,7 +1340,8 @@ impl VariablesEditor {
                         let cid = c.id.clone();
                         move |e: &MouseDownEvent, _, _| {
                             st.borrow_mut().menu = Some(Menu {
-                                x: f32::from(e.position.x), y: f32::from(e.position.y),
+                                x: f32::from(e.position.x),
+                                y: f32::from(e.position.y),
                                 items: vec![
                                     MenuItem::new("Rename collection", "ui.renameCollection", json!({ "collection": cid })),
                                     MenuItem::new(tr("Delete collection"), "variable.deleteCollection", json!({ "collection": cid })),
@@ -1386,8 +1356,16 @@ impl VariablesEditor {
         for lib in &data.libraries {
             cl = cl.child(
                 div()
-                    .flex_none().w_full().h(pt(26.0)).flex().flex_row().items_center().gap(pt(6.0)).pl(pt(22.0))
-                    .text_size(pt(11.0)).text_color(rgba(t.text_secondary))
+                    .flex_none()
+                    .w_full()
+                    .h(pt(26.0))
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap(pt(6.0))
+                    .pl(pt(22.0))
+                    .text_size(pt(11.0))
+                    .text_color(rgba(t.text_secondary))
                     .child(paint_icon(Icon::Component, rgba(t.text_secondary), 12.0))
                     .child(lib.name.clone()),
             );
@@ -1409,7 +1387,13 @@ impl VariablesEditor {
                     .child(div().text_size(pt(11.0)).text_color(rgba(t.text_tertiary)).child(format!("{count}")));
                 cl = cl.child(
                     div()
-                        .flex_none().w_full().h(pt(SIDE_ROW_H)).flex().flex_row().items_center().px(pt(8.0))
+                        .flex_none()
+                        .w_full()
+                        .h(pt(SIDE_ROW_H))
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .px(pt(8.0))
                         .on_mouse_down(MouseButton::Left, {
                             let st = st.clone();
                             move |_: &MouseDownEvent, _, _| {
@@ -1427,8 +1411,13 @@ impl VariablesEditor {
                             let lid_r = lib.id.clone();
                             move |e: &MouseDownEvent, _, _| {
                                 st.borrow_mut().menu = Some(Menu {
-                                    x: f32::from(e.position.x), y: f32::from(e.position.y),
-                                    items: vec![MenuItem::new(tr("Extend collection"), "library.extendCollection", json!({ "library": lid_r, "collection": cid }))],
+                                    x: f32::from(e.position.x),
+                                    y: f32::from(e.position.y),
+                                    items: vec![MenuItem::new(
+                                        tr("Extend collection"),
+                                        "library.extendCollection",
+                                        json!({ "library": lid_r, "collection": cid }),
+                                    )],
                                 });
                             }
                         })
@@ -1441,7 +1430,12 @@ impl VariablesEditor {
         // ③ 7pt 可拖分隔条（egui `vars_split`）。
         col = col.child(
             div()
-                .flex_none().w_full().h(pt(7.0)).flex().items_center().cursor_pointer()
+                .flex_none()
+                .w_full()
+                .h(pt(7.0))
+                .flex()
+                .items_center()
+                .cursor_pointer()
                 .child(div().w_full().h(pt(1.0)).bg(rgba(t.border)))
                 .on_mouse_down(MouseButton::Left, {
                     let st = st.clone();
@@ -1453,8 +1447,16 @@ impl VariablesEditor {
         );
         // ④ Groups 标题。
         col = col.child(
-            div().flex_none().w_full().h(pt(34.0)).flex().items_center().pl(pt(16.0))
-                .text_size(pt(11.0)).text_color(rgba(t.text_secondary)).child(tr("Groups")),
+            div()
+                .flex_none()
+                .w_full()
+                .h(pt(34.0))
+                .flex()
+                .items_center()
+                .pl(pt(16.0))
+                .text_size(pt(11.0))
+                .text_color(rgba(t.text_secondary))
+                .child(tr("Groups")),
         );
         let coll_snap = match &library_sel {
             Some(l) => data.libraries.iter().find(|x| &x.id == l).and_then(|x| x.collections.get(cur)).cloned(),
@@ -1473,7 +1475,12 @@ impl VariablesEditor {
         all_inner = all_inner.child(div().text_size(pt(11.0)).text_color(rgba(t.text_secondary)).child(tr("All variables")));
         gl = gl.child(
             div()
-                .flex_none().w_full().h(pt(SIDE_ROW_H)).flex().items_center().px(pt(8.0))
+                .flex_none()
+                .w_full()
+                .h(pt(SIDE_ROW_H))
+                .flex()
+                .items_center()
+                .px(pt(8.0))
                 .on_mouse_down(MouseButton::Left, {
                     let st = st.clone();
                     move |_: &MouseDownEvent, _, _| {
@@ -1504,17 +1511,11 @@ impl VariablesEditor {
                 inner = inner.hover(move |s| s.bg(rgba(hover)));
             }
             let x0 = 8.0 + (level - 1) as f32 * 24.0;
-            inner = inner.child(
-                div()
-                    .flex_none().w(pt(24.0)).h_full().flex().items_center().justify_center()
-                    .child(
-                        if has_children {
-                            paint_icon(if is_collapsed { Icon::ChevronRight } else { Icon::ChevronDown }, rgba(t.text_secondary), 12.0).into_any_element()
-                        } else {
-                            div().into_any_element()
-                        },
-                    ),
-            );
+            inner = inner.child(div().flex_none().w(pt(24.0)).h_full().flex().items_center().justify_center().child(if has_children {
+                paint_icon(if is_collapsed { Icon::ChevronRight } else { Icon::ChevronDown }, rgba(t.text_secondary), 12.0).into_any_element()
+            } else {
+                div().into_any_element()
+            }));
             inner = if renaming_group.as_deref() == Some(g.as_str()) {
                 let f = coll_snap.as_ref().map(|c| self.group_rename_field(cx, st, c, g, &short));
                 match f {
@@ -1528,10 +1529,16 @@ impl VariablesEditor {
             let g_toggle = g.clone();
             let g_sel = g.clone();
             let g_dbl = g.clone();
-            let vars: Vec<String> = coll_snap.as_ref().map(|c| c.rows.iter().filter(|r| r.group == *g).map(|r| r.id.clone()).collect()).unwrap_or_default();
+            let vars: Vec<String> =
+                coll_snap.as_ref().map(|c| c.rows.iter().filter(|r| r.group == *g).map(|r| r.id.clone()).collect()).unwrap_or_default();
             gl = gl.child(
                 div()
-                    .flex_none().w_full().h(pt(SIDE_ROW_H)).flex().items_center().pl(pt(x0))
+                    .flex_none()
+                    .w_full()
+                    .h(pt(SIDE_ROW_H))
+                    .flex()
+                    .items_center()
+                    .pl(pt(x0))
                     .on_mouse_down(MouseButton::Left, {
                         let st = st.clone();
                         let ids = group_ids.clone();
@@ -1553,7 +1560,8 @@ impl VariablesEditor {
                         let st = st.clone();
                         move |e: &MouseDownEvent, _, _| {
                             st.borrow_mut().menu = Some(Menu {
-                                x: f32::from(e.position.x), y: f32::from(e.position.y),
+                                x: f32::from(e.position.x),
+                                y: f32::from(e.position.y),
                                 items: vec![
                                     MenuItem::new(tr("Rename group"), "ui.renameGroup", json!({ "group": g_toggle })),
                                     MenuItem::new(tr("Delete group"), "ui.deleteGroup", json!({ "variables": vars })),
@@ -1566,46 +1574,41 @@ impl VariablesEditor {
         }
         col = col.child(gl);
         // ⑥ 侧栏右缘 6pt 拖动柄（egui `vars_sidebar_edge`，180..420）。
-        col.child(
-            div()
-                .absolute().right(pt(0.0)).top(pt(0.0)).w(pt(6.0)).h_full()
-                .on_mouse_down(MouseButton::Left, {
-                    let st = st.clone();
-                    move |e: &MouseDownEvent, _, _| {
-                        let mut s = st.borrow_mut();
-                        s.sidebar_resize = Some((f32::from(e.position.x), s.sidebar_w));
-                    }
-                }),
-        )
+        col.child(div().absolute().right(pt(0.0)).top(pt(0.0)).w(pt(6.0)).h_full().on_mouse_down(MouseButton::Left, {
+            let st = st.clone();
+            move |e: &MouseDownEvent, _, _| {
+                let mut s = st.borrow_mut();
+                s.sidebar_resize = Some((f32::from(e.position.x), s.sidebar_w));
+            }
+        }))
     }
 
     // ── table ─────────────────────────────────────────────────────────────────────────────
-    fn table(
-        &mut self,
-        st: &State,
-        coll: &Option<CollectionSnap>,
-        cx: &mut App,
-        body_h: f32,
-        table_w: f32,
-        table_left: f32,
-    ) -> Stateful<Div> {
+    fn table(&mut self, st: &State, coll: &Option<CollectionSnap>, cx: &mut App, body_h: f32, table_w: f32, table_left: f32) -> Stateful<Div> {
         let t = tokens();
         let Some(c) = coll else {
-            return div()
-                .id("vars-empty")
-                .flex_1()
-                .min_w(pt(0.0))
-                .h_full()
-                .flex()
-                .flex_col()
-                .child(
-                    div().flex_1().w_full().flex().flex_col().items_center().justify_center().gap(pt(12.0))
-                        .child(div().text_size(pt(11.0)).text_color(rgba(t.text_secondary)).child(tr("Variables store reusable values (colours, numbers, strings, booleans) with modes such as Light and Dark.")))
-                        .child(IconButton::new(Icon::Plus).id("vars-add-collection-empty").size(24.0).on_click({
-                            let cmds = self.cmds.clone();
-                            move |_, _, _| cmds.push(Cmd { id: "variable.createCollection", params: Some(json!({ "name": "Collection 1", "modes": ["Mode 1"] })) })
-                        })),
-                );
+            return div().id("vars-empty").flex_1().min_w(pt(0.0)).h_full().flex().flex_col().child(
+                div()
+                    .flex_1()
+                    .w_full()
+                    .flex()
+                    .flex_col()
+                    .items_center()
+                    .justify_center()
+                    .gap(pt(12.0))
+                    .child(
+                        div()
+                            .text_size(pt(11.0))
+                            .text_color(rgba(t.text_secondary))
+                            .child(tr("Variables store reusable values (colours, numbers, strings, booleans) with modes such as Light and Dark.")),
+                    )
+                    .child(IconButton::new(Icon::Plus).id("vars-add-collection-empty").size(24.0).on_click({
+                        let cmds = self.cmds.clone();
+                        move |_, _, _| {
+                            cmds.push(Cmd { id: "variable.createCollection", params: Some(json!({ "name": "Collection 1", "modes": ["Mode 1"] })) })
+                        }
+                    })),
+            );
         };
         // 列宽数组与集合的 mode 数对齐，算出一个确定的表格总宽：横向滚动靠它。
         {
@@ -1654,31 +1657,23 @@ impl VariablesEditor {
                 .child(tr("Name"))
                 .child(div().absolute().right_0().top_0().w(pt(1.0)).h_full().bg(rgba(t.border)))
                 // 右缘 6pt 拖动柄；双击自动适配。
-                .child(
-                    div()
-                        .absolute()
-                        .right(pt(0.0))
-                        .top(pt(0.0))
-                        .w(pt(6.0))
-                        .h_full()
-                        .on_mouse_down(MouseButton::Left, {
-                            let st = st.clone();
-                            move |e: &MouseDownEvent, _, cx: &mut App| {
-                                // 列宽柄是单元格的子节点：不拦冒泡的话，父级 mode 单元格的
-                                // on_mouse_down 会把 `last_mode_down` 覆盖成 mode id，双击判定
-                                // 永远等不到同一个键 → 双击列边永远不生效（用户 2026-11-07）。
-                                cx.stop_propagation();
-                                let mut s = st.borrow_mut();
-                                let dbl = s.last_mode_down.as_ref().is_some_and(|(at, id)| id == "__name" && at.elapsed().as_millis() < 400);
-                                s.last_mode_down = Some((Instant::now(), "__name".into()));
-                                if dbl {
-                                    s.name_w = auto_name_w;
-                                } else {
-                                    s.col_resize = Some((f32::from(e.position.x), s.name_w));
-                                }
-                            }
-                        }),
-                ),
+                .child(div().absolute().right(pt(0.0)).top(pt(0.0)).w(pt(6.0)).h_full().on_mouse_down(MouseButton::Left, {
+                    let st = st.clone();
+                    move |e: &MouseDownEvent, _, cx: &mut App| {
+                        // 列宽柄是单元格的子节点：不拦冒泡的话，父级 mode 单元格的
+                        // on_mouse_down 会把 `last_mode_down` 覆盖成 mode id，双击判定
+                        // 永远等不到同一个键 → 双击列边永远不生效（用户 2026-11-07）。
+                        cx.stop_propagation();
+                        let mut s = st.borrow_mut();
+                        let dbl = s.last_mode_down.as_ref().is_some_and(|(at, id)| id == "__name" && at.elapsed().as_millis() < 400);
+                        s.last_mode_down = Some((Instant::now(), "__name".into()));
+                        if dbl {
+                            s.name_w = auto_name_w;
+                        } else {
+                            s.col_resize = Some((f32::from(e.position.x), s.name_w));
+                        }
+                    }
+                })),
         );
         let n_modes = c.modes.len();
         // mode 列区：固定宽度 + 裁切，内容按 `sx` 左移（egui `modes_rect` + `sx`）。
@@ -1751,53 +1746,65 @@ impl VariablesEditor {
                         let mut items = vec![
                             MenuItem::new(tr("Rename mode"), "ui.renameMode", json!({ "mode": mid.clone() })),
                             MenuItem::new(tr("Add mode"), "variable.addMode", json!({ "collection": cid.clone(), "name": tr("Mode") })),
-                            MenuItem::new("Duplicate mode", "variable.addMode", json!({ "collection": cid.clone(), "name": format!("{} copy", mname), "from": mid.clone() })),
+                            MenuItem::new(
+                                "Duplicate mode",
+                                "variable.addMode",
+                                json!({ "collection": cid.clone(), "name": format!("{} copy", mname), "from": mid.clone() }),
+                            ),
                         ];
                         if mi > 0 {
-                            items.push(MenuItem::new(tr("Set as default"), "variable.moveMode", json!({ "collection": cid.clone(), "mode": mid.clone(), "to": 0 })));
-                            items.push(MenuItem::new("Move left", "variable.moveMode", json!({ "collection": cid.clone(), "mode": mid.clone(), "to": mi - 1 })));
+                            items.push(MenuItem::new(
+                                tr("Set as default"),
+                                "variable.moveMode",
+                                json!({ "collection": cid.clone(), "mode": mid.clone(), "to": 0 }),
+                            ));
+                            items.push(MenuItem::new(
+                                "Move left",
+                                "variable.moveMode",
+                                json!({ "collection": cid.clone(), "mode": mid.clone(), "to": mi - 1 }),
+                            ));
                         }
                         if mi + 1 < n_modes {
-                            items.push(MenuItem::new("Move right", "variable.moveMode", json!({ "collection": cid.clone(), "mode": mid.clone(), "to": mi + 1 })));
+                            items.push(MenuItem::new(
+                                "Move right",
+                                "variable.moveMode",
+                                json!({ "collection": cid.clone(), "mode": mid.clone(), "to": mi + 1 }),
+                            ));
                         }
                         items.push(MenuItem::new("Copy column", "ui.copyColumn", json!({ "mode": mid.clone() })));
                         if has_clip_col {
                             items.push(MenuItem::new("Paste column", "ui.pasteColumn", json!({ "mode": mid.clone() })));
                         }
                         if n_modes > 1 {
-                            items.push(MenuItem::new(tr("Delete mode"), "variable.removeMode", json!({ "collection": cid.clone(), "mode": mid.clone() })));
+                            items.push(MenuItem::new(
+                                tr("Delete mode"),
+                                "variable.removeMode",
+                                json!({ "collection": cid.clone(), "mode": mid.clone() }),
+                            ));
                         }
                         st.borrow_mut().menu = Some(Menu { x: f32::from(e.position.x), y: f32::from(e.position.y), items });
                     }
                 });
             cell = cell.child(div().absolute().right_0().top_0().w(pt(1.0)).h_full().bg(rgba(t.border)));
-            cell = cell.child(
-                div()
-                    .absolute()
-                    .right(pt(0.0))
-                    .top(pt(0.0))
-                    .w(pt(6.0))
-                    .h_full()
-                    .on_mouse_down(MouseButton::Left, {
-                        let st = st.clone();
-                        let edge_key = format!("{mid}-edge");
-                        move |e: &MouseDownEvent, _, cx: &mut App| {
-                            // 同 Name 列：先拦冒泡，父级单元格不会再把 `last_mode_down`
-                            // 覆盖成 mode id（否则双击列边自动宽度永远不生效）。
-                            cx.stop_propagation();
-                            let mut s = st.borrow_mut();
-                            let dbl = s.last_mode_down.as_ref().is_some_and(|(at, id)| id == &edge_key && at.elapsed().as_millis() < 400);
-                            s.last_mode_down = Some((Instant::now(), edge_key.clone()));
-                            if dbl {
-                                if let Some(w) = s.mode_ws.get_mut(mi) {
-                                    *w = auto_mw;
-                                }
-                            } else {
-                                s.mode_resize = Some((mi, f32::from(e.position.x), mw));
-                            }
+            cell = cell.child(div().absolute().right(pt(0.0)).top(pt(0.0)).w(pt(6.0)).h_full().on_mouse_down(MouseButton::Left, {
+                let st = st.clone();
+                let edge_key = format!("{mid}-edge");
+                move |e: &MouseDownEvent, _, cx: &mut App| {
+                    // 同 Name 列：先拦冒泡，父级单元格不会再把 `last_mode_down`
+                    // 覆盖成 mode id（否则双击列边自动宽度永远不生效）。
+                    cx.stop_propagation();
+                    let mut s = st.borrow_mut();
+                    let dbl = s.last_mode_down.as_ref().is_some_and(|(at, id)| id == &edge_key && at.elapsed().as_millis() < 400);
+                    s.last_mode_down = Some((Instant::now(), edge_key.clone()));
+                    if dbl {
+                        if let Some(w) = s.mode_ws.get_mut(mi) {
+                            *w = auto_mw;
                         }
-                    }),
-            );
+                    } else {
+                        s.mode_resize = Some((mi, f32::from(e.position.x), mw));
+                    }
+                }
+            }));
             modes_inner = modes_inner.child(cell);
         }
         modes_head = modes_head.child(modes_inner);
@@ -1805,10 +1812,10 @@ impl VariablesEditor {
         let mut add_cell = div().relative().flex_none().w(pt(ADD_W)).h_full().flex().items_center().justify_center();
         if c.editable {
             add_cell = add_cell.child(IconButton::new(Icon::Plus).id("vars-add-mode").size(24.0).on_click({
-                    let cmds = self.cmds.clone();
-                    let cid = c.id.clone();
-                    move |_, _, _| cmds.push(Cmd { id: "variable.addMode", params: Some(json!({ "collection": cid, "name": tr("Mode") })) })
-                }));
+                let cmds = self.cmds.clone();
+                let cid = c.id.clone();
+                move |_, _, _| cmds.push(Cmd { id: "variable.addMode", params: Some(json!({ "collection": cid, "name": tr("Mode") })) })
+            }));
         }
         add_cell = add_cell.child(div().absolute().left_0().top_0().w(pt(1.0)).h_full().bg(rgba(t.border)));
         head = head.child(add_cell);
@@ -1899,15 +1906,21 @@ impl VariablesEditor {
 
         if visible.is_empty() {
             col = col.child(
-                div().flex_none().w_full().h(pt(ROW_H)).flex().items_center().pl(pt(16.0))
-                    .text_size(pt(11.0)).text_color(rgba(t.text_secondary)).child(tr("No matching variables")),
+                div()
+                    .flex_none()
+                    .w_full()
+                    .h(pt(ROW_H))
+                    .flex()
+                    .items_center()
+                    .pl(pt(16.0))
+                    .text_size(pt(11.0))
+                    .text_color(rgba(t.text_secondary))
+                    .child(tr("No matching variables")),
             );
         } else {
             // 每项尺寸：宽 = 表格可用宽度（行内 Name/add 固定、mode 区自己裁切）；
             // 高 = 该条目类型固定高度。
-            let item_sizes: Rc<Vec<Size<Pixels>>> = Rc::new(
-                items.iter().map(|it| size(px(table_w), px(it.height()))).collect(),
-            );
+            let item_sizes: Rc<Vec<Size<Pixels>>> = Rc::new(items.iter().map(|it| size(px(table_w), px(it.height()))).collect());
             let scroll = st.borrow().scroll.clone();
             let st2 = st.clone();
             let cmds2 = self.cmds.clone();
@@ -1919,19 +1932,13 @@ impl VariablesEditor {
                 for ix in range {
                     let Some(item) = items.get(ix) else { continue };
                     let el: AnyElement = match item {
-                        RowItem::Gap => div()
-                            .flex_none()
-                            .w(px(table_w))
-                            .h(px(GROUP_GAP))
-                            .into_any_element(),
-                        RowItem::GroupHeader { name } => {
-                            group_header_div(name).w(px(table_w)).into_any_element()
+                        RowItem::Gap => div().flex_none().w(px(table_w)).h(px(GROUP_GAP)).into_any_element(),
+                        RowItem::GroupHeader { name } => group_header_div(name).w(px(table_w)).into_any_element(),
+                        RowItem::Row { index, row } => {
+                            VariablesEditor::var_row(&st2, &cmds2, &caches2, &c2, row, *index, &ids2, row_tops.clone(), name_eff, modes_room, sx, cx)
+                                .w(px(table_w))
+                                .into_any_element()
                         }
-                        RowItem::Row { index, row } => VariablesEditor::var_row(
-                            &st2, &cmds2, &caches2, &c2, row, *index, &ids2, row_tops.clone(), name_eff, modes_room, sx, cx,
-                        )
-                        .w(px(table_w))
-                        .into_any_element(),
                     };
                     out.push(el);
                 }
@@ -1974,24 +1981,9 @@ impl VariablesEditor {
             })
             .child(div().absolute().left(pt(track_start)).top(pt(5.0)).w(pt(track_w)).h(pt(2.0)).bg(rgba(t.border)))
             .child(
-                div()
-                    .absolute()
-                    .left(pt(track_start + thumb_x))
-                    .top(pt(4.0))
-                    .w(pt(thumb_w))
-                    .h(pt(4.0))
-                    .rounded(pt(2.0))
-                    .bg(rgba(t.border_strong)),
+                div().absolute().left(pt(track_start + thumb_x)).top(pt(4.0)).w(pt(thumb_w)).h(pt(4.0)).rounded(pt(2.0)).bg(rgba(t.border_strong)),
             );
-        div()
-            .id("vars-table")
-            .flex_1()
-            .min_w(pt(0.0))
-            .h_full()
-            .flex()
-            .flex_col()
-            .child(col)
-            .child(bar)
+        div().id("vars-table").flex_1().min_w(pt(0.0)).h_full().flex().flex_col().child(col).child(bar)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -2012,12 +2004,7 @@ impl VariablesEditor {
         let t = tokens();
         let (selected, renaming, mode_ws, has_clip) = {
             let s = st.borrow();
-            (
-                s.selected.as_deref() == Some(r.id.as_str()),
-                s.rename.as_deref() == Some(r.id.as_str()),
-                s.mode_ws.clone(),
-                s.clipboard.is_some(),
-            )
+            (s.selected.as_deref() == Some(r.id.as_str()), s.rename.as_deref() == Some(r.id.as_str()), s.mode_ws.clone(), s.clipboard.is_some())
         };
         // 库变量 / 扩展集合里继承来的变量：不可拖拽、改名、删除。
         let movable = c.editable && !r.inherited;
@@ -2090,9 +2077,8 @@ impl VariablesEditor {
             let ed = Self::ensure_rename_field(caches, cmds, cx, &rname, st, &rid);
             name_cell = name_cell.child(div().flex_1().min_w(pt(0.0)).child(ed));
         } else {
-            name_cell = name_cell.child(
-                div().flex_1().min_w(pt(0.0)).overflow_hidden().text_size(pt(11.0)).text_color(rgba(t.text)).child(rname.clone()),
-            );
+            name_cell =
+                name_cell.child(div().flex_1().min_w(pt(0.0)).overflow_hidden().text_size(pt(11.0)).text_color(rgba(t.text)).child(rname.clone()));
         }
         name_cell = name_cell.child(div().absolute().right_0().top_0().w(pt(1.0)).h_full().bg(rgba(t.border)));
         row = row.child(name_cell);
@@ -2105,17 +2091,7 @@ impl VariablesEditor {
             let cell = r.values.get(mi).cloned().unwrap_or(VarCell::Empty);
             let overridden = r.overrides.get(mi).copied().unwrap_or(false);
             let cw = mode_ws.get(mi).copied().unwrap_or(MODE_W);
-            let mut cellbox = div()
-                .relative()
-                .flex_none()
-                .w(pt(cw))
-                .h_full()
-                .flex()
-                .flex_row()
-                .items_center()
-                .gap(pt(4.0))
-                .pl(pt(4.0))
-                .pr(pt(8.0));
+            let mut cellbox = div().relative().flex_none().w(pt(cw)).h_full().flex().flex_row().items_center().gap(pt(4.0)).pl(pt(4.0)).pr(pt(8.0));
             if overridden {
                 cellbox = cellbox.child(div().absolute().left(pt(4.0)).top(pt(8.0)).w(pt(2.0)).h(pt(24.0)).bg(rgba(t.accent)));
             }
@@ -2153,14 +2129,7 @@ impl VariablesEditor {
         row.child(div().absolute().bottom_0().left_0().w_full().h(pt(1.0)).bg(rgba(t.border)))
     }
 
-    fn ensure_rename_field(
-        caches: &Rc<RefCell<RowCaches>>,
-        cmds: &Cmds,
-        cx: &mut App,
-        initial: &str,
-        st: &State,
-        rid: &str,
-    ) -> Entity<TextField> {
+    fn ensure_rename_field(caches: &Rc<RefCell<RowCaches>>, cmds: &Cmds, cx: &mut App, initial: &str, st: &State, rid: &str) -> Entity<TextField> {
         // 换了一行改名时必须重建输入框，否则会沿用上一行的初值。
         if caches.borrow().rename_field_id.as_deref() == Some(rid) {
             if let Some(e) = &caches.borrow().rename_field {
@@ -2214,10 +2183,7 @@ impl VariablesEditor {
             tf.set_on_commit(move |text, _, _| {
                 let name = text.trim();
                 if !name.is_empty() {
-                    cmds.push(Cmd {
-                        id: "variable.renameMode",
-                        params: Some(json!({ "collection": cid, "mode": mid, "name": name })),
-                    });
+                    cmds.push(Cmd { id: "variable.renameMode", params: Some(json!({ "collection": cid, "mode": mid, "name": name })) });
                 }
                 let mut s = st.borrow_mut();
                 s.rename_mode = None;
@@ -2384,15 +2350,17 @@ impl VariablesEditor {
                     .relative()
                     .overflow_hidden()
                     .child(div().absolute().left(pt(6.0)).top(pt(4.0)).child(Self::value_swatch(*color, &t)))
-                    .child(
-                        div()
-                            .absolute()
-                            .left(pt(28.0))
-                            .top(pt(0.0))
-                            .w(pt(76.0))
-                            .h(pt(24.0))
-                            .child(Self::text_value_field(caches, &cmds, cx, &hkey, hex, &r.id, &m.id, VarKind::Color, 76.0)),
-                    )
+                    .child(div().absolute().left(pt(28.0)).top(pt(0.0)).w(pt(76.0)).h(pt(24.0)).child(Self::text_value_field(
+                        caches,
+                        &cmds,
+                        cx,
+                        &hkey,
+                        hex,
+                        &r.id,
+                        &m.id,
+                        VarKind::Color,
+                        76.0,
+                    )))
                     .child(
                         div()
                             .absolute()
@@ -2438,12 +2406,8 @@ impl VariablesEditor {
                 let vid = r.id.clone();
                 let mid = m.id.clone();
                 let kind = r.kind;
-                let candidates: Vec<(String, String)> = c
-                    .rows
-                    .iter()
-                    .filter(|x| x.kind == kind && x.id != vid)
-                    .map(|x| (x.id.clone(), x.full_name.clone()))
-                    .collect();
+                let candidates: Vec<(String, String)> =
+                    c.rows.iter().filter(|x| x.kind == kind && x.id != vid).map(|x| (x.id.clone(), x.full_name.clone())).collect();
                 let mut d = Self::value_shell(&t).cursor_pointer();
                 d = d.child(
                     div()
@@ -2517,43 +2481,29 @@ impl VariablesEditor {
             .iter()
             .map(|(label, k)| MenuItem::new(*label, "variable.create", json!({ "collection": cid, "name": name, "type": k.id(), "value": "0" })))
             .collect();
-        div()
-            .flex_none()
-            .w_full()
-            .h(pt(BOTTOM_H))
-            .flex()
-            .flex_row()
-            .items_center()
-            .px(pt(16.0))
-            .border_t_1()
-            .border_color(rgba(t.border))
-            .child(
-                div()
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .gap(pt(4.0))
-                    .h(pt(24.0))
-                    .px(pt(6.0))
-                    .rounded(pt(4.0))
-                    .cursor_pointer()
-                    .text_size(pt(11.0))
-                    .text_color(rgba(t.text_secondary))
-                    .hover(move |s| s.bg(rgba(t.hover)))
-                    .on_mouse_down(MouseButton::Left, {
-                        let st = st.clone();
-                        move |e: &MouseDownEvent, _, cx| {
-                            cx.stop_propagation();
-                            st.borrow_mut().menu = Some(Menu {
-                                x: f32::from(e.position.x),
-                                y: f32::from(e.position.y) - 130.0,
-                                items: items.clone(),
-                            });
-                        }
-                    })
-                    .child(paint_icon(Icon::Plus, rgba(t.text_secondary), 14.0))
-                    .child(tr("+ Create variable")),
-            )
+        div().flex_none().w_full().h(pt(BOTTOM_H)).flex().flex_row().items_center().px(pt(16.0)).border_t_1().border_color(rgba(t.border)).child(
+            div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap(pt(4.0))
+                .h(pt(24.0))
+                .px(pt(6.0))
+                .rounded(pt(4.0))
+                .cursor_pointer()
+                .text_size(pt(11.0))
+                .text_color(rgba(t.text_secondary))
+                .hover(move |s| s.bg(rgba(t.hover)))
+                .on_mouse_down(MouseButton::Left, {
+                    let st = st.clone();
+                    move |e: &MouseDownEvent, _, cx| {
+                        cx.stop_propagation();
+                        st.borrow_mut().menu = Some(Menu { x: f32::from(e.position.x), y: f32::from(e.position.y) - 130.0, items: items.clone() });
+                    }
+                })
+                .child(paint_icon(Icon::Plus, rgba(t.text_secondary), 14.0))
+                .child(tr("+ Create variable")),
+        )
     }
 
     // ── 内联菜单 ──────────────────────────────────────────────────────────────────────────
@@ -2630,13 +2580,9 @@ impl VariablesEditor {
                             "ui.export" => Self::export_dialog(&cmds, params["format"].as_str().unwrap_or("json")),
                             "ui.import" => Self::import_dialog(&cmds),
                             "ui.setAlias" => {
-                                if let (Some(v), Some(m), Some(a)) =
-                                    (params["variable"].as_str(), params["mode"].as_str(), params["alias"].as_str())
+                                if let (Some(v), Some(m), Some(a)) = (params["variable"].as_str(), params["mode"].as_str(), params["alias"].as_str())
                                 {
-                                    cmds.push(Cmd {
-                                        id: "variable.set",
-                                        params: Some(json!({ "variable": v, "mode": m, "value": { "alias": a } })),
-                                    });
+                                    cmds.push(Cmd { id: "variable.set", params: Some(json!({ "variable": v, "mode": m, "value": { "alias": a } })) });
                                 }
                             }
                             "ui.copy" => Self::copy_row(&state, &data),
@@ -2652,7 +2598,10 @@ impl VariablesEditor {
                                 }
                             }
                             "ui.deleteGroup" => {
-                                let ids: Vec<String> = params["variables"].as_array().map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect()).unwrap_or_default();
+                                let ids: Vec<String> = params["variables"]
+                                    .as_array()
+                                    .map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect())
+                                    .unwrap_or_default();
                                 for id in ids {
                                     cmds.push(Cmd { id: "variable.delete", params: Some(json!({ "variable": id })) });
                                 }
@@ -2869,24 +2818,17 @@ impl VariablesEditor {
                 .items_center()
                 .gap(pt(6.0))
                 .cursor_pointer()
-                .child(
-                    div()
-                        .flex_none()
-                        .size(pt(14.0))
-                        .rounded(pt(3.0))
-                        .border_1()
-                        .border_color(rgba(t.border_strong))
-                        .bg(rgba(if hidden { t.accent } else { t.panel })),
-                )
+                .child(div().flex_none().size(pt(14.0)).rounded(pt(3.0)).border_1().border_color(rgba(t.border_strong)).bg(rgba(if hidden {
+                    t.accent
+                } else {
+                    t.panel
+                })))
                 .child(div().text_size(pt(11.0)).text_color(rgba(t.text)).child(tr("Hide from publishing")))
                 .on_mouse_down(MouseButton::Left, {
                     let cmds = self.cmds.clone();
                     let vid = row.id.clone();
                     move |_: &MouseDownEvent, _, _| {
-                        cmds.push(Cmd {
-                            id: "variable.update",
-                            params: Some(json!({ "variable": vid, "hiddenFromPublishing": !hidden })),
-                        });
+                        cmds.push(Cmd { id: "variable.update", params: Some(json!({ "variable": vid, "hiddenFromPublishing": !hidden })) });
                     }
                 }),
         );
@@ -2916,15 +2858,11 @@ impl VariablesEditor {
                 .items_center()
                 .gap(pt(6.0))
                 .cursor_pointer()
-                .child(
-                    div()
-                        .flex_none()
-                        .size(pt(14.0))
-                        .rounded(pt(3.0))
-                        .border_1()
-                        .border_color(rgba(t.border_strong))
-                        .bg(rgba(if all_scopes { t.accent } else { t.panel })),
-                )
+                .child(div().flex_none().size(pt(14.0)).rounded(pt(3.0)).border_1().border_color(rgba(t.border_strong)).bg(rgba(if all_scopes {
+                    t.accent
+                } else {
+                    t.panel
+                })))
                 .child(div().text_size(pt(11.0)).text_color(rgba(t.text)).child(tr("All supported properties")))
                 .on_mouse_down(MouseButton::Left, {
                     let cmds = self.cmds.clone();
@@ -2938,16 +2876,8 @@ impl VariablesEditor {
                 }),
         );
         for scope in row.scopes.clone().unwrap_or_default() {
-            body = body.child(
-                div()
-                    .pl(pt(16.0))
-                    .h(pt(22.0))
-                    .flex()
-                    .items_center()
-                    .text_size(pt(11.0))
-                    .text_color(rgba(t.text_secondary))
-                    .child(scope),
-            );
+            body =
+                body.child(div().pl(pt(16.0)).h(pt(22.0)).flex().items_center().text_size(pt(11.0)).text_color(rgba(t.text_secondary)).child(scope));
         }
         let close_st = st.clone();
         let dismiss: Rc<dyn Fn(&mut Window, &mut App)> = Rc::new(move |_, _| close_st.borrow_mut().details = None);
@@ -2984,16 +2914,7 @@ impl VariablesEditor {
             return None;
         }
         let _ = ox;
-        Some(
-            div()
-                .absolute()
-                .left(pt(x0))
-                .top(pt(y))
-                .w(pt((x1 - x0).max(40.0)))
-                .h(pt(2.0))
-                .bg(rgba(t.accent))
-                .into_any_element(),
-        )
+        Some(div().absolute().left(pt(x0)).top(pt(y)).w(pt((x1 - x0).max(40.0))).h(pt(2.0)).bg(rgba(t.accent)).into_any_element())
     }
 }
 
@@ -3066,13 +2987,8 @@ fn kind_glyph(r: &VarRow) -> AnyElement {
             .child("#")
             .into_any_element(),
         VarKind::String => paint_icon(Icon::Text, rgba(t.text_secondary), 14.0).into_any_element(),
-        VarKind::Boolean => div()
-            .flex_none()
-            .w(pt(14.0))
-            .h(pt(8.0))
-            .rounded(pt(4.0))
-            .border_1()
-            .border_color(rgba(t.text_secondary))
-            .into_any_element(),
+        VarKind::Boolean => {
+            div().flex_none().w(pt(14.0)).h(pt(8.0)).rounded(pt(4.0)).border_1().border_color(rgba(t.text_secondary)).into_any_element()
+        }
     }
 }

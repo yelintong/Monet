@@ -30,12 +30,13 @@
 //! lifts it when its bottom would pass the screen; [`Open::At`] puts its top-left exactly there.
 //! `at()` overrides both (a dragged card). Everything is clamped inside the viewport.
 
-use figcraft_i18n::tr;
 use crate::canvas::geom::Color32;
 use crate::widgets::icon::{Icon, paint as paint_icon};
 use crate::widgets::{pt, rgba, tokens};
+use figcraft_i18n::tr;
 use gpui::{
-    AnyElement, App, BoxShadow, IntoElement, MouseButton, MouseDownEvent, MouseMoveEvent, Pixels, Point, SharedString, Size, Window, div, point, prelude::*, px,
+    AnyElement, App, BoxShadow, IntoElement, MouseButton, MouseDownEvent, MouseMoveEvent, Pixels, Point, SharedString, Size, Window, div, point,
+    prelude::*, px,
 };
 use std::rc::Rc;
 
@@ -227,14 +228,7 @@ impl Popover {
         let mut stack = div().w_full().flex().flex_col();
         if let Some(title) = self.title {
             // 头部栏插槽：整块 40pt 都是插槽，内容垂直居中；左 16、右让开 X 的 24 + 8。
-            let mut head = div()
-                .w_full()
-                .h(pt(HEADER_H))
-                .flex()
-                .items_center()
-                .pl(pt(TITLE_LEFT))
-                .pr(pt(CLOSE + CLOSE_RIGHT))
-                .child(title);
+            let mut head = div().w_full().h(pt(HEADER_H)).flex().items_center().pl(pt(TITLE_LEFT)).pr(pt(CLOSE + CLOSE_RIGHT)).child(title);
             // ⛔ 通用拖动能力只绑在头部栏插槽，不是整张卡片：绑整卡会让点 body 里任何
             // 地方都开始拖窗口（用户 2026-11-07 指出）。X 自己 stop_propagation。
             if let Some(f) = self.on_drag.clone() {
@@ -269,20 +263,16 @@ impl Popover {
             .child(paint_icon(Icon::Close, rgba(if dark { t.menu_text } else { t.icon }), 12.0));
 
         // 拖动：整张卡片（除 X 以外）都是拖动区。
-        let mut card = div()
-            .absolute()
-            .left(pt(f32::from(origin.x)))
-            .top(pt(f32::from(origin.y)))
-            .w(pt(self.width))
-            .flex()
-            .flex_col()
-            .bg(rgba(fill))
-            .occlude();
+        let mut card =
+            div().absolute().left(pt(f32::from(origin.x))).top(pt(f32::from(origin.y))).w(pt(self.width)).flex().flex_col().bg(rgba(fill)).occlude();
         // 全屏 = egui `Frame::NONE`：不要圆角、不要阴影，贴边铺满编辑器区。
         if !self.flush {
-            card = card
-                .rounded(pt(RADIUS))
-                .shadow(vec![BoxShadow { color: rgba(t.shadow).into(), offset: point(px(0.0), px(4.0)), blur_radius: px(16.0), spread_radius: px(0.0) }]);
+            card = card.rounded(pt(RADIUS)).shadow(vec![BoxShadow {
+                color: rgba(t.shadow).into(),
+                offset: point(px(0.0), px(4.0)),
+                blur_radius: px(16.0),
+                spread_radius: px(0.0),
+            }]);
         }
         // 拖动区已绑在标题行（见上），整张卡片不再接收拖动按下。
         // 整卡 move 路由：与 `on_drag_start` 同构，把卡片上的移动交给根视图的拖拽状态机。
@@ -311,9 +301,16 @@ pub fn title_text(text: impl Into<SharedString>) -> gpui::Div {
     // egui 用 `elide_font` 按可用宽度裁标题；GPUI 这边保持同一效果：不换行 + 溢出隐藏。
     // `h_full + items_center` 让标题在 40pt 头部栏插槽里真正垂直居中（只靠外层 items_center
     // 时，文本自身的行盒 leading 会让字看起来偏上/偏下 1~2pt）。
-    div().h_full().flex().items_center()
-        .text_size(pt(11.0)).font_weight(gpui::FontWeight::SEMIBOLD).text_color(rgba(tokens().text))
-        .whitespace_nowrap().overflow_hidden().child(text.into())
+    div()
+        .h_full()
+        .flex()
+        .items_center()
+        .text_size(pt(11.0))
+        .font_weight(gpui::FontWeight::SEMIBOLD)
+        .text_color(rgba(tokens().text))
+        .whitespace_nowrap()
+        .overflow_hidden()
+        .child(text.into())
 }
 
 /// **body 插槽的统一容器**：把弹窗里的每一项 `.child(...)` 进来，各项之间固定 8pt。

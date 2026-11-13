@@ -118,7 +118,8 @@ pub(super) fn request_render(
     skip: &[NodeId],
     grab_ask: Option<GrabAsk>,
     bands: &[figcraft_render::Band],
-) {    let Ok(ds) = app.session.ds() else { return };
+) {
+    let Ok(ds) = app.session.ds() else { return };
     let rect = app.canvas.rect;
     let (mut ox, mut oy) = ds.view.origin();
     let (scale, visible_w, visible_h) = if let Some(k) = ds.view.pixel_preview_scale() {
@@ -278,4 +279,3 @@ mod tests {
         }
     }
 }
-

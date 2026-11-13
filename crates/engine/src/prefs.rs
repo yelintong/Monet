@@ -48,16 +48,7 @@ pub struct VariablesLayout {
 impl Default for VariablesLayout {
     fn default() -> Self {
         // Mirrors the panel's own defaults (`SIDEBAR_W`, `NAME_W`, `MODE_W`, an even split).
-        Self {
-            sidebar: true,
-            sidebar_w: 264.0,
-            sidebar_split: 0.5,
-            name_w: 240.0,
-            mode_w: 200.0,
-            mode_ws: BTreeMap::new(),
-            size: None,
-            pos: None,
-        }
+        Self { sidebar: true, sidebar_w: 264.0, sidebar_split: 0.5, name_w: 240.0, mode_w: 200.0, mode_ws: BTreeMap::new(), size: None, pos: None }
     }
 }
 

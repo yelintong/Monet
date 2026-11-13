@@ -395,9 +395,7 @@ fn half(src: &Pixmap) -> Option<Pixmap> {
     let mut out = Pixmap::new(nw, nh)?;
     let sd = src.data();
     let od = out.data_mut();
-    let at = |x: u32, y: u32, c: u32| -> u32 {
-        u32::from(sd[((y.min(h - 1) * w + x.min(w - 1)) * 4 + c) as usize])
-    };
+    let at = |x: u32, y: u32, c: u32| -> u32 { u32::from(sd[((y.min(h - 1) * w + x.min(w - 1)) * 4 + c) as usize]) };
     for y in 0..nh {
         let (y0, y1) = ((y * 2).min(h - 1), (y * 2 + 1).min(h - 1));
         for x in 0..nw {
@@ -421,9 +419,7 @@ fn upsample(src: &Pixmap, w: u32, h: u32) -> Option<Pixmap> {
     let mut out = Pixmap::new(w, h)?;
     let sd = src.data();
     let od = out.data_mut();
-    let at = |x: u32, y: u32, c: u32| -> f32 {
-        f32::from(sd[((y.min(sh - 1) * sw + x.min(sw - 1)) * 4 + c) as usize])
-    };
+    let at = |x: u32, y: u32, c: u32| -> f32 { f32::from(sd[((y.min(sh - 1) * sw + x.min(sw - 1)) * 4 + c) as usize]) };
     let (kx, ky) = (sw as f32 / w as f32, sh as f32 / h as f32);
     for y in 0..h {
         let fy = (y as f32 + 0.5) * ky - 0.5;
@@ -1043,12 +1039,7 @@ pub fn glass(g: &Glass, frame: EffectFrame<'_>, rect: Option<RoundedRect>) -> Op
 /// drives the *reach* only — the render wasm copies `bevelSize` into its uniform block at 179 write
 /// sites with zero `f32.mul`, so there is no Depth → band coefficient to reproduce. This stays for
 /// callers that want a wider or narrower band for their own reasons; nothing else differs.
-pub fn glass_with_bevel(
-    g: &Glass,
-    frame: EffectFrame<'_>,
-    rect: Option<RoundedRect>,
-    bevel_doc: f64,
-) -> Option<Pixmap> {
+pub fn glass_with_bevel(g: &Glass, frame: EffectFrame<'_>, rect: Option<RoundedRect>, bevel_doc: f64) -> Option<Pixmap> {
     let EffectFrame { shape, back, pad, size: (w, h), xf, scale } = frame;
     let g = g.sanitized();
     // The panel's Depth is a notch (1..100), not a pixel length. Convert it to the lens's actual
@@ -1161,7 +1152,9 @@ pub fn glass_with_bevel(
 /// distance → smoothed normal pipeline the built-in CPU glass reads, so the GPU and CPU paths
 /// describe identical geometry. `smoothing` is the normal-smoothing radius in pixels.
 pub fn outline_fields_half(outline: &Outline, xf: Affine, w: u32, h: u32, smoothing: usize) -> Option<Vec<u8>> {
-    if w == 0 || h == 0 { return Some(Vec::new()); }
+    if w == 0 || h == 0 {
+        return Some(Vec::new());
+    }
     // Real coverage of the arbitrary shape (white, premultiplied → alpha channel is coverage).
     let cov = spread_alpha(std::slice::from_ref(outline), 0.0, xf, w, h)?;
     let (ww, hh) = (w as usize, h as usize);

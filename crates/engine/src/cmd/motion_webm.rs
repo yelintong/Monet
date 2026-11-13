@@ -247,11 +247,7 @@ fn flatten_rgb(pm: &figcraft_render::Pixmap, bg: [u8; 3]) -> Vec<u8> {
 
 /// Strip a leading temporal delimiter OBU (Matroska stores temporal units without them).
 fn strip_temporal_delimiter(data: &[u8]) -> &[u8] {
-    if data.len() >= 2 && data[0] == 0x12 && data[1] == 0x00 {
-        &data[2..]
-    } else {
-        data
-    }
+    if data.len() >= 2 && data[0] == 0x12 && data[1] == 0x00 { &data[2..] } else { data }
 }
 
 /// Encode the animation as an AV1 WebM. Returns the file bytes.
@@ -330,10 +326,10 @@ pub fn encode_webm(anim: &Animation, o: &WebmOptions) -> Result<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use figcraft_doc::anim::motion::TimelineSettings;
     use figcraft_doc::anim::motion::{AnimProperty, AnimValue};
     use figcraft_doc::geom::Vec2;
     use figcraft_doc::{Document, NodeId, NodeKind};
-    use figcraft_doc::anim::motion::TimelineSettings;
 
     fn tiny_animated_doc() -> (Document, NodeId) {
         let mut d = Document::new("t");
@@ -381,7 +377,9 @@ mod tests {
     fn odd_size_is_refused_before_allocation() {
         let (mut d, frame) = tiny_animated_doc();
         // Make the frame an odd width: 17 px at scale 1.
-        if let Some(n) = d.node_mut(frame) { n.width = 17.0; }
+        if let Some(n) = d.node_mut(frame) {
+            n.width = 17.0;
+        }
         let anim = Animation::new(&d, frame, 1.0).unwrap();
         let o = WebmOptions { fps: 5, speed: 10, threads: 1, tiles: 1, ..Default::default() };
         assert!(encode_webm(&anim, &o).is_err(), "4:2:0 AV1 requires even dimensions");

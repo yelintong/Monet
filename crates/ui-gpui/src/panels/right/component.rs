@@ -7,13 +7,11 @@
 //!
 //! 全部走冻结通用控件与列表行编辑器池，没有新建控件。
 
-use figcraft_i18n::tr;
 use super::data::{ComponentData, PanelData};
 use super::sections::{icon_cmd, icon_row, pick_dropdown, slot};
 use crate::panels::{RightFields, RowEditCtx};
-use crate::widgets::{
-    Icon, IconButton, PanelSection, SectionHeaderVariant, field_row, field_row_full, pt, rgba, sublabel_row, tokens,
-};
+use crate::widgets::{Icon, IconButton, PanelSection, SectionHeaderVariant, field_row, field_row_full, pt, rgba, sublabel_row, tokens};
+use figcraft_i18n::tr;
 use gpui::{App, Div, IntoElement, SharedString, div, prelude::*, px};
 use serde_json::{Value, json};
 
@@ -60,11 +58,8 @@ fn instance_section(f: &RightFields, c: &ComponentData, cx: &mut App, n: &mut us
     let mut sec = PanelSection::new(SharedString::from(c.title)).header_trail(icon_row(trail));
 
     // ── 主组件（swap 下拉）+ 「去主组件 / 恢复主组件」──
-    let swap_rows: Vec<(String, &'static str, Value)> = c
-        .components
-        .iter()
-        .map(|(id, name)| (name.clone(), "instance.swap", json!({ "component": id })))
-        .collect();
+    let swap_rows: Vec<(String, &'static str, Value)> =
+        c.components.iter().map(|(id, name)| (name.clone(), "instance.swap", json!({ "component": id }))).collect();
     let main_dd = pick_dropdown(f, c.main_name.clone(), 0.0, swap_rows);
     let mut main_trail: Vec<IconButton> = Vec::new();
     if c.missing {
@@ -77,23 +72,13 @@ fn instance_section(f: &RightFields, c: &ComponentData, cx: &mut App, n: &mut us
     // ── 主组件描述（次要文字）──
     if !c.description.is_empty() {
         sec = sec.child(field_row_full(
-            div()
-                .w_full()
-                .text_size(pt(11.0))
-                .text_color(rgba(t.text_secondary))
-                .child(SharedString::from(c.description.clone())),
+            div().w_full().text_size(pt(11.0)).text_color(rgba(t.text_secondary)).child(SharedString::from(c.description.clone())),
         ));
     }
 
     // ── 嵌在主组件里的实例：把属性暴露给实例 ──
     if c.nested_in_main {
-        let expose = icon_cmd(
-            Icon::Check,
-            "component.exposeInstance",
-            json!({ "exposed": !c.exposed }),
-            f,
-            c.exposed,
-        );
+        let expose = icon_cmd(Icon::Check, "component.exposeInstance", json!({ "exposed": !c.exposed }), f, c.exposed);
         sec = sec.child(field_row(vec![plain_label(tr("Expose properties to instances"))], vec![expose]));
     }
 
@@ -102,22 +87,11 @@ fn instance_section(f: &RightFields, c: &ComponentData, cx: &mut App, n: &mut us
         sec = sec.child(sublabel_row(tr("Properties")));
     }
     for p in &c.props {
-        let label = div()
-            .w(px(84.0))
-            .flex_none()
-            .text_size(pt(11.0))
-            .text_color(rgba(t.text_secondary))
-            .child(SharedString::from(p.name.clone()));
+        let label = div().w(px(84.0)).flex_none().text_size(pt(11.0)).text_color(rgba(t.text_secondary)).child(SharedString::from(p.name.clone()));
         let control: gpui::AnyElement = match p.kind {
             "boolean" => {
                 let on = p.value == "true";
-                let btn = icon_cmd(
-                    Icon::Check,
-                    "instance.setProperties",
-                    json!({ "properties": { p.name.clone(): !on } }),
-                    f,
-                    on,
-                );
+                let btn = icon_cmd(Icon::Check, "instance.setProperties", json!({ "properties": { p.name.clone(): !on } }), f, on);
                 div().flex().flex_row().items_center().child(btn).into_any_element()
             }
             "text" => f
@@ -143,9 +117,7 @@ fn instance_section(f: &RightFields, c: &ComponentData, cx: &mut App, n: &mut us
                 let rows: Vec<(String, &'static str, Value)> = p
                     .options
                     .iter()
-                    .map(|(label, value)| {
-                        (label.clone(), "instance.setProperties", json!({ "properties": { p.name.clone(): value.clone() } }))
-                    })
+                    .map(|(label, value)| (label.clone(), "instance.setProperties", json!({ "properties": { p.name.clone(): value.clone() } })))
                     .collect();
                 pick_dropdown(f, p.value.clone(), 0.0, rows).into_any_element()
             }

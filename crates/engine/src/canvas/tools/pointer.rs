@@ -246,8 +246,7 @@ impl Session {
                 // 画框本体的悬停只在「按下去真能选中它」时才算：顶层非自动布局 frame 的本体
                 // 和画布一样（按下是框选），悬它显示描边会骗人——那种框只认标题。
                 hover = label_at(&doc, page, &self.tool.labels, ev.p()).or_else(|| {
-                    leaf.filter(|l| ev.cmd || !super::frame_background(&doc, page, *l))
-                        .map(|leaf| select_target(&doc, leaf, &sel, ev.cmd))
+                    leaf.filter(|l| ev.cmd || !super::frame_background(&doc, page, *l)).map(|leaf| select_target(&doc, leaf, &sel, ev.cmd))
                 });
                 // Alt over a selected layer: a drag from here duplicates it.
                 if ev.alt && !self.tool.dev_mode && tool == ToolId::Move && hover.is_some_and(|h| sel.contains(&h) && !locked_in(&doc, h)) {

@@ -6,7 +6,6 @@
 //! `IconButton` / `swatch`）。语言 / 颜色格式 / rem 是**纯 UI 状态**（egui 存在 `ui.data`），
 //! 走 `RightFields` 的 `RefCell` 并唤醒一帧，不推引擎命令。
 
-use figcraft_i18n::tr;
 use super::data::{AssetRow, InspectData, InspectSection, PanelData};
 use super::sections::{icon_row, slot};
 use crate::panels::RightFields;
@@ -15,6 +14,7 @@ use crate::widgets::{
     swatch, tokens,
 };
 use figcraft_doc::{ExportFormat, NodeId};
+use figcraft_i18n::tr;
 use gpui::{App, Div, ImageSource, IntoElement, SharedString, Window, div, img, prelude::*, px};
 use serde_json::json;
 use std::cell::{Ref, RefCell};
@@ -78,13 +78,14 @@ pub(crate) fn panel(f: &RightFields, d: &PanelData, cx: &mut App, n: &mut usize)
 
     // ── Color format：属性值里颜色的写法（Hex / RGB / CSS / HSL / HSB）──
     let fmt = f.inspect_fmt.clone();
-    let fmt_rows: Vec<(String, usize)> =
-        data.formats.iter().enumerate().map(|(i, (label, _))| (label.to_string(), i)).collect();
-    body = body.child(
-        PanelSection::new(tr("Color format"))
-            .variant(SectionHeaderVariant::Dim)
-            .child(field_row_full(local_dropdown(f, data.fmt_label.into(), 0.0, fmt_rows, fmt))),
-    );
+    let fmt_rows: Vec<(String, usize)> = data.formats.iter().enumerate().map(|(i, (label, _))| (label.to_string(), i)).collect();
+    body = body.child(PanelSection::new(tr("Color format")).variant(SectionHeaderVariant::Dim).child(field_row_full(local_dropdown(
+        f,
+        data.fmt_label.into(),
+        0.0,
+        fmt_rows,
+        fmt,
+    ))));
 
     // ── 属性分组 ──
     for section in &data.sections {
@@ -106,8 +107,8 @@ pub(crate) fn panel(f: &RightFields, d: &PanelData, cx: &mut App, n: &mut usize)
             });
         })
     };
-    let mut assets = PanelSection::new(tr("Assets"))
-        .variant(if data.assets.is_empty() { SectionHeaderVariant::Dim } else { SectionHeaderVariant::Normal });
+    let mut assets =
+        PanelSection::new(tr("Assets")).variant(if data.assets.is_empty() { SectionHeaderVariant::Dim } else { SectionHeaderVariant::Normal });
     if !data.assets.is_empty() {
         assets = assets.header_trail(icon_row(vec![export_all]));
     }
@@ -169,8 +170,8 @@ fn connect_section(f: &RightFields, data: &InspectData, cx: &mut App, n: &mut us
     let t = tokens();
     let owner = data.connect_owner?;
     let base = serde_json::json!({ "id": owner, "language": data.lang });
-    let mut sec = PanelSection::new(tr("Connect to code"))
-        .variant(if data.link.is_none() { SectionHeaderVariant::Dim } else { SectionHeaderVariant::Normal });
+    let mut sec =
+        PanelSection::new(tr("Connect to code")).variant(if data.link.is_none() { SectionHeaderVariant::Dim } else { SectionHeaderVariant::Normal });
     let Some(link) = &data.link else {
         let btn = if data.connectable {
             super::sections::icon_cmd(Icon::Plus, "codeConnect.set", base.clone(), f, false)
@@ -190,11 +191,7 @@ fn connect_section(f: &RightFields, data: &InspectData, cx: &mut App, n: &mut us
     sec = sec.header_trail(icon_row(vec![btn]));
 
     // ── Connected 徽标 + 片段来源 ──
-    let from = if link.import_path.is_empty() {
-        link.name.clone()
-    } else {
-        format!("{} from {}", link.name, link.import_path)
-    };
+    let from = if link.import_path.is_empty() { link.name.clone() } else { format!("{} from {}", link.name, link.import_path) };
     let badge = div()
         .flex_none()
         .px(pt(5.0))
@@ -233,9 +230,7 @@ fn connect_section(f: &RightFields, data: &InspectData, cx: &mut App, n: &mut us
     // ── 模板（egui 是 3 行 multiline；GPUI 只有单行框）──
     let template = link_field(f, cx, n, &base, "template", &link.template, "<Button size={size}>{label}</Button>");
     sec = sec.child(field_row_full(div().w_full().child(template)));
-    Some(sec.child(field_row_full(note(
-        tr("{property} is its value; {property ? \"a\" : \"b\"} picks a string. Other {…} stays as written."),
-    ))))
+    Some(sec.child(field_row_full(note(tr("{property} is its value; {property ? \"a\" : \"b\"} picks a string. Other {…} stays as written.")))))
 }
 
 /// 「Connect to code」里的一行文本编辑（import 路径 / 组件名 / 模板），提交走 `codeConnect.set`。
@@ -312,12 +307,7 @@ fn asset_row(f: &RightFields, a: &AssetRow) -> Div {
                 .min_w(px(0.0))
                 .flex_col()
                 .child(div().text_size(pt(11.0)).text_color(rgba(t.text)).child(SharedString::from(a.name.clone())))
-                .child(
-                    div()
-                        .text_size(pt(10.0))
-                        .text_color(rgba(t.text_secondary))
-                        .child(SharedString::from(a.exports.join(", "))),
-                ),
+                .child(div().text_size(pt(10.0)).text_color(rgba(t.text_secondary)).child(SharedString::from(a.exports.join(", ")))),
         )
         .child(asset_format_dropdown(f, a))
         .child(export)
@@ -357,13 +347,7 @@ fn local_dropdown_flag(f: &RightFields, label: SharedString, width: f32, rows: V
     local_dropdown_impl(f, label, width, rows, move |i| *slot.borrow_mut() = i == 1)
 }
 
-fn local_dropdown_impl(
-    f: &RightFields,
-    label: SharedString,
-    width: f32,
-    rows: Vec<(String, usize)>,
-    set: impl Fn(usize) + 'static,
-) -> Dropdown {
+fn local_dropdown_impl(f: &RightFields, label: SharedString, width: f32, rows: Vec<(String, usize)>, set: impl Fn(usize) + 'static) -> Dropdown {
     let menu: Vec<MenuRow> = rows.iter().map(|(l, _)| MenuRow::new(l.clone())).collect();
     let mut d = Dropdown::new(label, width, None).fill();
     if let Some(root) = f.root.clone() {
@@ -390,12 +374,7 @@ fn inspect_section(s: &InspectSection) -> PanelSection {
     let t = tokens();
     let mut sec = PanelSection::new(s.title);
     for row in &s.rows {
-        let label = div()
-            .w(px(88.0))
-            .flex_none()
-            .text_size(pt(11.0))
-            .text_color(rgba(t.text_secondary))
-            .child(SharedString::from(row.label.clone()));
+        let label = div().w(px(88.0)).flex_none().text_size(pt(11.0)).text_color(rgba(t.text_secondary)).child(SharedString::from(row.label.clone()));
         let mut value = div().flex().flex_row().items_center().gap(pt(6.0)).flex_1().min_w(px(0.0));
         if let Some(hex) = &row.color
             && let Some(c) = figcraft_color::Color::from_hex(hex)

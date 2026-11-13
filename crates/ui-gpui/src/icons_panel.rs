@@ -200,13 +200,7 @@ fn icon_row(f: &IconFont, g: &IconGlyph, colour: &figcraft_color::Color, state: 
     let preview = match thumb(state, &f.id, g, *colour) {
         Some(tex) => div().flex_none().child(img(ImageSource::Render(tex)).max_w(px(THUMB)).max_h(px(THUMB))),
         // The outline holds nothing to draw: a dimmed stand-in rather than a wrong glyph.
-        None => div()
-            .flex_none()
-            .w(px(THUMB))
-            .h(px(THUMB))
-            .rounded(pt(3.0))
-            .border_1()
-            .border_color(rgba(t.text_tertiary)),
+        None => div().flex_none().w(px(THUMB)).h(px(THUMB)).rounded(pt(3.0)).border_1().border_color(rgba(t.text_tertiary)),
     };
     let copy = {
         let cmds = cmds.clone();
@@ -246,15 +240,7 @@ fn icon_row(f: &IconFont, g: &IconGlyph, colour: &figcraft_color::Color, state: 
         .h(px(34.0))
         .child(preview)
         .child(
-            copy.child(
-                div()
-                    .flex_1()
-                    .min_w(px(0.0))
-                    .text_size(pt(11.0))
-                    .text_color(rgba(t.text))
-                    .child(SharedString::from(g.name.clone())),
-            )
-            .child(
+            copy.child(div().flex_1().min_w(px(0.0)).text_size(pt(11.0)).text_color(rgba(t.text)).child(SharedString::from(g.name.clone()))).child(
                 div()
                     .flex_none()
                     .w(px(56.0))
@@ -342,11 +328,7 @@ mod tests {
     /// Every non-copy action must name a real engine command (`icon.*`), never an invented one.
     #[test]
     fn actions_use_engine_commands() {
-        let acts = [
-            Act::Delete { font: "f".into(), icon: "i".into() },
-            Act::Generate { font: "f".into() },
-            Act::DeleteFont { font: "f".into() },
-        ];
+        let acts = [Act::Delete { font: "f".into(), icon: "i".into() }, Act::Generate { font: "f".into() }, Act::DeleteFont { font: "f".into() }];
         for act in acts {
             let (id, _) = command(&act).expect("a simple act has a command");
             assert!(id.starts_with("icon."), "{id} is not an icon command");

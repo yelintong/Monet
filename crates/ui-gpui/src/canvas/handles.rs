@@ -11,10 +11,10 @@
 //! 还没搬：`handles.rs` 里的渐变 / 模糊 / 裁剪手柄（要面板的颜色选择器 `colorpicker::PickerTarget`
 //! 与 Dev Mode 的 `RightTab`），等面板搬过来再接。
 
-use figcraft_i18n::tr;
 use figcraft_doc::{ContentAlign, LayoutMode, NodeId};
 use figcraft_engine::ToolId;
 use figcraft_geom::Point;
+use figcraft_i18n::tr;
 use serde_json::json;
 
 use super::geom::*;

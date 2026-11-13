@@ -47,12 +47,7 @@ impl HoldDrag {
     /// `dead_zone` 是曼哈顿距离阈值（保持旧代码的 `dx.abs() + dy.abs() < 3.0` 语义）。
     /// 分隔条不需要死区，传 0 即可。
     pub fn new(dead_zone: f32) -> Self {
-        Self {
-            press: None,
-            origin: Point { x: px(0.0), y: px(0.0) },
-            latched: false,
-            dead_zone: dead_zone.max(0.0),
-        }
+        Self { press: None, origin: Point { x: px(0.0), y: px(0.0) }, latched: false, dead_zone: dead_zone.max(0.0) }
     }
 
     /// 按下：只记状态、**不重绘**。GPUI 靠 `ElementId` 匹配同一次 click 的 down/up，
@@ -105,13 +100,7 @@ impl HoldDrag {
             self.latched = true;
         }
         let delta = Point { x: px(dx), y: px(dy) };
-        Some(Step {
-            delta,
-            place: Point {
-                x: px(f32::from(self.origin.x) + dx),
-                y: px(f32::from(self.origin.y) + dy),
-            },
-        })
+        Some(Step { delta, place: Point { x: px(f32::from(self.origin.x) + dx), y: px(f32::from(self.origin.y) + dy) } })
     }
 
     /// 单轴推进（分隔条只关心 x 或 y）：返回沿轴的相对位移。

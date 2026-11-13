@@ -65,7 +65,9 @@ async fn delete_and_ctrl_z_reach_the_engine(cx: &mut TestAppContext) {
     let before = view.update(window, |cv, _| {
         let ds = cv.app.session.ds_mut().expect("a document");
         let page = ds.page;
-        let id = std::sync::Arc::make_mut(&mut ds.doc).create(page, figcraft_doc::NodeKind::Rectangle, "Temp", 10.0, 10.0, 40.0, 40.0).expect("a rectangle");
+        let id = std::sync::Arc::make_mut(&mut ds.doc)
+            .create(page, figcraft_doc::NodeKind::Rectangle, "Temp", 10.0, 10.0, 40.0, 40.0)
+            .expect("a rectangle");
         ds.doc.node(id).is_some()
     });
     assert!(before);

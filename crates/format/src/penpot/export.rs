@@ -293,9 +293,12 @@ fn penpot_type(node: &Node) -> Option<&'static str> {
         return Some("svg-raw");
     }
     Some(match &node.kind {
-        NodeKind::Frame | NodeKind::Icon { .. } | NodeKind::Component { .. } | NodeKind::ComponentSet { .. } | NodeKind::Instance { .. } | NodeKind::Section { .. } => {
-            "frame"
-        }
+        NodeKind::Frame
+        | NodeKind::Icon { .. }
+        | NodeKind::Component { .. }
+        | NodeKind::ComponentSet { .. }
+        | NodeKind::Instance { .. }
+        | NodeKind::Section { .. } => "frame",
         NodeKind::Group => "group",
         NodeKind::BooleanOp { .. } => "bool",
         NodeKind::Rectangle => "rect",

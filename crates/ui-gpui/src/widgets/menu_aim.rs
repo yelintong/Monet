@@ -208,19 +208,11 @@ impl MenuAim {
                 // 子菜单行：先立即 truncate 掉旧子菜单，再等
                 // 150ms 展开新行。所以这里「立刻收起旧子菜单」+「保留一个 150ms 后的展开」。
                 l.pending = Some((Some(row), now, MENU_HOVER_DELAY));
-                if l.open.is_some() {
-                    AimAction::Close(level)
-                } else {
-                    AimAction::Hold
-                }
+                if l.open.is_some() { AimAction::Close(level) } else { AimAction::Hold }
             }
             None => {
                 l.pending = None;
-                if l.open.is_some() {
-                    AimAction::Close(level)
-                } else {
-                    AimAction::Hold
-                }
+                if l.open.is_some() { AimAction::Close(level) } else { AimAction::Hold }
             }
         }
     }
@@ -301,12 +293,7 @@ mod aim_tests {
 
     fn triangle_geometry(aim: &mut MenuAim) {
         aim.set_open(0, Some(0));
-        aim.set_geometry(
-            0,
-            r(60.0, 70.0, 170.0, 176.0),
-            Some(r(60.0, 78.0, 170.0, 32.0)),
-            Some(r(390.0, 70.0, 170.0, 176.0)),
-        );
+        aim.set_geometry(0, r(60.0, 70.0, 170.0, 176.0), Some(r(60.0, 78.0, 170.0, 32.0)), Some(r(390.0, 70.0, 170.0, 176.0)));
     }
 
     /// 2026-11-08：用户要求「关一下」。默认态下，斜着划过的行必须立刻接管，
@@ -318,11 +305,7 @@ mod aim_tests {
         assert!(!aim.aim_enabled());
         triangle_geometry(&mut aim);
         assert_eq!(aim.hover(0, 0, true, p(200.0, 94.0), 0.0), AimAction::Hold);
-        assert_eq!(
-            aim.hover(0, 1, false, p(250.0, 126.0), 0.05),
-            AimAction::Close(0),
-            "斜向划过不该再被三角吞掉"
-        );
+        assert_eq!(aim.hover(0, 1, false, p(250.0, 126.0), 0.05), AimAction::Close(0), "斜向划过不该再被三角吞掉");
         assert!(aim.next_wakeup(0.05).is_none(), "不应再安排 MENU_AIM_REST 唤醒");
     }
 

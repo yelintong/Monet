@@ -136,10 +136,7 @@ impl TextInput {
             suffix: SharedString::new(""),
             dim: false,
             align: TextAlign::Left,
-            caret_blink: Rc::new(CaretBlink {
-                visible: std::cell::Cell::new(true),
-                started: std::cell::Cell::new(false),
-            }),
+            caret_blink: Rc::new(CaretBlink { visible: std::cell::Cell::new(true), started: std::cell::Cell::new(false) }),
         }
     }
 
@@ -326,11 +323,13 @@ impl TextInput {
                 blink.started.set(true);
                 let b = blink.clone();
                 let e = blink_entity.clone();
-                cx.spawn(async move |cx: &mut gpui::AsyncApp| loop {
-                    cx.background_executor().timer(std::time::Duration::from_millis(530)).await;
-                    b.visible.set(!b.visible.get());
-                    if e.update(cx, |_, cx| cx.notify()).is_err() {
-                        break;
+                cx.spawn(async move |cx: &mut gpui::AsyncApp| {
+                    loop {
+                        cx.background_executor().timer(std::time::Duration::from_millis(530)).await;
+                        b.visible.set(!b.visible.get());
+                        if e.update(cx, |_, cx| cx.notify()).is_err() {
+                            break;
+                        }
                     }
                 })
                 .detach();

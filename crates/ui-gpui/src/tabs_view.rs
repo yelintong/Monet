@@ -20,15 +20,15 @@ use std::rc::Rc;
 use std::time::Instant;
 
 use gpui::{
-    App, Bounds, ClickEvent, Entity, MouseButton, MouseDownEvent, Pixels, Point, SharedString, Stateful, Div, Window,
-    WindowControlArea, div, prelude::*, px, size,
+    App, Bounds, ClickEvent, Div, Entity, MouseButton, MouseDownEvent, Pixels, Point, SharedString, Stateful, Window, WindowControlArea, div,
+    prelude::*, px, size,
 };
 use serde_json::json;
 
 use crate::panels::{Cmd, Cmds};
 use crate::tabs::{
-    BAR_BUTTON, BAR_ICON, CLOSE_ICON, HEIGHT, LIVE_MARK_WIDTH, LiveBadge, OVERFLOW_WIDTH, TabMotion, VisibleTab, live_badge,
-    open_progress, preferred_width, tab_drop_position, tab_layout,
+    BAR_BUTTON, BAR_ICON, CLOSE_ICON, HEIGHT, LIVE_MARK_WIDTH, LiveBadge, OVERFLOW_WIDTH, TabMotion, VisibleTab, live_badge, open_progress,
+    preferred_width, tab_drop_position, tab_layout,
 };
 use crate::title_bar;
 use crate::widgets::icon::{self, Icon};
@@ -92,10 +92,7 @@ struct TabDrag {
 
 impl TabDragState {
     fn begin(&self, from: usize, at: Point<Pixels>) {
-        *self.0.borrow_mut() = DragInner {
-            current: Some(TabDrag { from, start: at, pointer: at, moved: false }),
-            visible: Vec::new(),
-        };
+        *self.0.borrow_mut() = DragInner { current: Some(TabDrag { from, start: at, pointer: at, moved: false }), visible: Vec::new() };
     }
     fn set_visible(&self, visible: Vec<VisibleTab>) {
         self.0.borrow_mut().visible = visible;
@@ -193,14 +190,8 @@ fn begin_tab_drag(state: &TabDragState, cmds: &Cmds, from: usize, at: Point<Pixe
 
 /// 溢出菜单：所有文档（含未显示的）都能从这里切换，勾选当前文档。
 fn open_overflow_menu(me: &Entity<CanvasView>, cmds: &Cmds, docs: &[TabDoc], active: usize, home: bool, at_x: f32, cx: &mut App) {
-    let labels: Vec<(String, usize)> = docs
-        .iter()
-        .map(|d| (if d.dirty { format!("{} •", d.name) } else { d.name.clone() }, d.index))
-        .collect();
-    let rows: Vec<MenuRow> = labels
-        .iter()
-        .map(|(label, i)| MenuRow::new(label.clone()).checked(Some(*i == active && !home)))
-        .collect();
+    let labels: Vec<(String, usize)> = docs.iter().map(|d| (if d.dirty { format!("{} •", d.name) } else { d.name.clone() }, d.index)).collect();
+    let rows: Vec<MenuRow> = labels.iter().map(|(label, i)| MenuRow::new(label.clone()).checked(Some(*i == active && !home))).collect();
     let cmds_pick = cmds.clone();
     let me_pick = me.clone();
     let on_pick: Rc<dyn Fn(&str, &mut Window, &mut App)> = Rc::new(move |label: &str, _window, cx| {
@@ -210,10 +201,7 @@ fn open_overflow_menu(me: &Entity<CanvasView>, cmds: &Cmds, docs: &[TabDoc], act
         }
     });
     // 通用 Menu 自己按「锚点底边 + 4pt」定位；给 40pt 高的锚点正好落在标签条下方 4pt。
-    let anchor = Bounds {
-        origin: Point::new(px(at_x), px(0.0)),
-        size: size(px(OVERFLOW_WIDTH), px(HEIGHT)),
-    };
+    let anchor = Bounds { origin: Point::new(px(at_x), px(0.0)), size: size(px(OVERFLOW_WIDTH), px(HEIGHT)) };
     me.update(cx, |cv, cx| cv.open_menu(anchor, Some(200.0), rows, on_pick, cx));
 }
 
@@ -354,9 +342,7 @@ pub(crate) fn tab_strip(
                     .text_color(rgba(t.text))
                     .child(SharedString::from(name)),
             )
-            .when(d.dirty, |d| {
-                d.child(div().flex_none().text_size(pt(12.0)).text_color(rgba(t.text)).child("•"))
-            })
+            .when(d.dirty, |d| d.child(div().flex_none().text_size(pt(12.0)).text_color(rgba(t.text)).child("•")))
             .when(badge.visible(), move |d| {
                 // 上游 `paint_tab`：先判 lost（danger），否则按 shared 画 online::mark。
                 // `widgets/icon.rs` 是 FROZEN 文件，本次不新增 LiveShared / LivePrivate 变体，
@@ -440,59 +426,29 @@ pub(crate) fn tab_strip(
     // 新标签 +。
     let cmds_new = cmds.clone();
     let me_new = me.clone();
-    strip = strip.child(
-        div()
-            .flex_none()
-            .h_full()
-            .flex()
-            .items_center()
-            .pl(pt(6.0))
-            .child(
-                bar_button(Icon::Plus, t, "tab-new").on_click(move |_e: &ClickEvent, _window, cx: &mut App| {
-                    cmds_new.push(Cmd { id: "file.new", params: Some(json!({})) });
-                    me_new.update(cx, |cv, _| cv.close_home());
-                }),
-            ),
-    );
+    strip = strip.child(div().flex_none().h_full().flex().items_center().pl(pt(6.0)).child(bar_button(Icon::Plus, t, "tab-new").on_click(
+        move |_e: &ClickEvent, _window, cx: &mut App| {
+            cmds_new.push(Cmd { id: "file.new", params: Some(json!({})) });
+            me_new.update(cx, |cv, _| cv.close_home());
+        },
+    )));
 
     // 空白区 = 系统标题栏的拖拽区（上游 `drag_free_space()` 的 `StartDrag`）。
     // 壳整条已标 `WindowControlArea::Drag`；这里再标一次，保证这块 flex_1 hitbox
     // 命中时平台仍按 HTCAPTION 处理，标签 / Home / 按钮的子 hitbox 不受影响。
-    strip = strip.child(
-        div()
-            .flex_1()
-            .min_w(pt(0.0))
-            .h_full()
-            .window_control_area(WindowControlArea::Drag),
-    );
+    strip = strip.child(div().flex_1().min_w(pt(0.0)).h_full().window_control_area(WindowControlArea::Drag));
 
     // 主题切换（engine `view.themeLight/Dark` 改 prefs，render 每帧据此重建 Tokens）。
     let cmds_theme = cmds.clone();
-    strip = strip.child(
-        div()
-            .flex_none()
-            .h_full()
-            .flex()
-            .items_center()
-            .pr(pt(10.0))
-            .child(
-                bar_button(if dark { Icon::Sun } else { Icon::Moon }, t, "tab-theme").on_click(move |_e: &ClickEvent, _window, _cx| {
-                    cmds_theme.push(Cmd { id: if dark { "view.themeLight" } else { "view.themeDark" }, params: Some(json!({})) });
-                }),
-            ),
-    );
+    strip = strip.child(div().flex_none().h_full().flex().items_center().pr(pt(10.0)).child(
+        bar_button(if dark { Icon::Sun } else { Icon::Moon }, t, "tab-theme").on_click(move |_e: &ClickEvent, _window, _cx| {
+            cmds_theme.push(Cmd { id: if dark { "view.themeLight" } else { "view.themeDark" }, params: Some(json!({})) });
+        }),
+    ));
 
     // 拖拽插入线（3pt 竖线，画在标签条内、所有标签之上）。
     if let Some((_, at)) = state.drag.marker() {
-        strip = strip.child(
-            div()
-                .absolute()
-                .left(px(at - content_x0))
-                .top(pt(5.0))
-                .w(pt(3.0))
-                .h(pt(HEIGHT - 10.0))
-                .bg(rgba(t.accent)),
-        );
+        strip = strip.child(div().absolute().left(px(at - content_x0)).top(pt(5.0)).w(pt(3.0)).h(pt(HEIGHT - 10.0)).bg(rgba(t.accent)));
     }
     strip
 }

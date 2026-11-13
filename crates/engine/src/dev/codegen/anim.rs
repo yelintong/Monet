@@ -20,10 +20,8 @@
 
 use std::collections::BTreeSet;
 
-use figcraft_doc::anim::motion::{
-    base_position, base_rotation_deg, value_at, AnimProperty, AnimValue, Ease, Track,
-};
 use figcraft_color::Color;
+use figcraft_doc::anim::motion::{AnimProperty, AnimValue, Ease, Track, base_position, base_rotation_deg, value_at};
 use figcraft_doc::{Document, EffectKind, Node, NodeId, NodeKind};
 
 use super::num;
@@ -37,11 +35,7 @@ fn num2(v: f64) -> String {
     }
     let s = format!("{v:.2}");
     let s = s.trim_end_matches('0').trim_end_matches('.');
-    if s == "-0" || s.is_empty() {
-        "0".into()
-    } else {
-        s.to_string()
-    }
+    if s == "-0" || s.is_empty() { "0".into() } else { s.to_string() }
 }
 
 /// `Color` as a CSS colour: `#RGB` when possible, `#RRGGBB`, or `rgba(...)`. Keeps parity with
@@ -238,8 +232,7 @@ fn frames(node: &Node, p: AnimProperty, duration: u32, baked: bool) -> Vec<(u32,
     out
 }
 
-const SHADOW_PROPS: [AnimProperty; 4] =
-    [AnimProperty::ShadowX, AnimProperty::ShadowY, AnimProperty::ShadowBlur, AnimProperty::ShadowColor];
+const SHADOW_PROPS: [AnimProperty; 4] = [AnimProperty::ShadowX, AnimProperty::ShadowY, AnimProperty::ShadowBlur, AnimProperty::ShadowColor];
 
 fn is_shadow(p: AnimProperty) -> bool {
     SHADOW_PROPS.contains(&p)
@@ -249,11 +242,7 @@ fn is_shadow(p: AnimProperty) -> bool {
 /// colour separately, so the times of all animated shadow properties are merged and each frame
 /// prints the full shadow.
 fn shadow_frames(node: &Node, duration: u32) -> Vec<(u32, String, Option<Ease>)> {
-    let tracks: Vec<&Track> = SHADOW_PROPS
-        .iter()
-        .filter_map(|p| node.motion.track(*p))
-        .filter(|t| t.visible && !t.is_empty())
-        .collect();
+    let tracks: Vec<&Track> = SHADOW_PROPS.iter().filter_map(|p| node.motion.track(*p)).filter(|t| t.visible && !t.is_empty()).collect();
     let spread = match node.effects.iter().find_map(|e| match &e.kind {
         EffectKind::DropShadow(s) => Some(s.spread),
         _ => None,
@@ -277,8 +266,7 @@ fn shadow_frames(node: &Node, duration: u32) -> Vec<(u32, String, Option<Ease>)>
             num2(spread),
             css_color(&col, 1.0),
         );
-        let timing = (i + 1 < times.len())
-            .then(|| tracks.iter().find_map(|tr| tr.key_at(*t).map(|k| k.easing)).unwrap_or(Ease::Linear));
+        let timing = (i + 1 < times.len()).then(|| tracks.iter().find_map(|tr| tr.key_at(*t).map(|k| k.easing)).unwrap_or(Ease::Linear));
         out.push((*t, v, timing));
     }
     out
@@ -289,8 +277,7 @@ fn animated_properties(node: &Node) -> Vec<(AnimProperty, bool)> {
     for c in node.motion.clips.iter().filter(|c| c.visible) {
         clip_props.extend(c.kind.properties().iter().copied());
     }
-    let mut all: BTreeSet<AnimProperty> =
-        node.motion.tracks.iter().filter(|t| !t.is_empty() && t.visible).map(|t| t.property).collect();
+    let mut all: BTreeSet<AnimProperty> = node.motion.tracks.iter().filter(|t| !t.is_empty() && t.visible).map(|t| t.property).collect();
     all.extend(clip_props.iter().copied());
     all.into_iter().map(|p| (p, clip_props.contains(&p))).collect()
 }
@@ -325,9 +312,7 @@ pub fn css_animation_for(doc: &Document, node: NodeId) -> String {
             out.line(0, format!("@keyframes {name} {{"));
             for (t, v, timing) in &sh {
                 match timing.as_ref().map(timing_function) {
-                    Some(f) => {
-                        out.line(1, format!("{} {{ box-shadow: {v}; animation-timing-function: {f}; }}", pct(*t, tl.duration_ms)))
-                    }
+                    Some(f) => out.line(1, format!("{} {{ box-shadow: {v}; animation-timing-function: {f}; }}", pct(*t, tl.duration_ms))),
                     None => out.line(1, format!("{} {{ box-shadow: {v}; }}", pct(*t, tl.duration_ms))),
                 }
             }
@@ -388,8 +373,7 @@ fn channels(node: &Node, duration: u32) -> (Vec<Channel>, Vec<&'static str>) {
             continue;
         }
         let split = |f: &dyn Fn(&AnimValue) -> Option<f64>, key: &'static str, out: &mut Vec<Channel>| {
-            let vals: Vec<(u32, f64, Option<Ease>)> =
-                fr.iter().filter_map(|(t, v, e)| f(v).map(|x| (*t, x, *e))).collect();
+            let vals: Vec<(u32, f64, Option<Ease>)> = fr.iter().filter_map(|(t, v, e)| f(v).map(|x| (*t, x, *e))).collect();
             if !vals.is_empty() {
                 out.push(Channel { key, frames: vals });
             }
@@ -597,9 +581,9 @@ pub fn for_language(doc: &Document, node: NodeId, language: &str) -> Option<Stri
 #[cfg(test)]
 mod tests {
     use super::*;
-    use figcraft_doc::anim::motion::{find_preset, TimelineSettings};
-    use figcraft_doc::geom::Vec2;
     use figcraft_doc::NodeKind;
+    use figcraft_doc::anim::motion::{TimelineSettings, find_preset};
+    use figcraft_doc::geom::Vec2;
 
     /// A frame at the page root with one animated "Card" rectangle (x=10,y=20, 40x40) and the
     /// same keyframes desigma's css_anim tests use. Returns (doc, frame, card).
@@ -725,7 +709,10 @@ mod tests {
         }
         let css = css_animation_for(&d, frame);
         assert!(css.contains("@keyframes card-shadow {"), "{css}");
-        assert!(css.contains("0% { box-shadow: 0px 4px 20px 2px rgba(0, 0, 0, 0.25); animation-timing-function: cubic-bezier(0, 0, 0.58, 1); }"), "{css}");
+        assert!(
+            css.contains("0% { box-shadow: 0px 4px 20px 2px rgba(0, 0, 0, 0.25); animation-timing-function: cubic-bezier(0, 0, 0.58, 1); }"),
+            "{css}"
+        );
         assert!(css.contains("25% { box-shadow: ") && css.contains("50% { box-shadow: 10px 4px 20px 2px"), "{css}");
         assert!(css.contains("@keyframes card-layer-blur {") && css.contains("50% { filter: blur(8px); }"), "{css}");
         assert!(css.contains("card-shadow 2000ms linear both infinite"), "{css}");

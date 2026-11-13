@@ -9,19 +9,19 @@
 //! library (search field, number fields, icon buttons, text), and every action goes through the
 //! very same `CmdQueue` the right panel uses, so the engine sees the exact same commands.
 
-use figcraft_i18n::tr;
 use crate::canvas::geom::Color32;
 use crate::panels::right::data::PanelData;
 use crate::panels::right::variables::{self, VariablesData, VariablesEditor};
 use crate::panels::{Cmd, Cmds};
-use crate::widgets::popover::{self, HEADER_H, Open, Surface, WIDTH, popover_window, title_text};
-use crate::widgets::{MenuRow, dropdown};
 use crate::widgets::menu::menu_popup_in;
-use crate::widgets::{Icon, IconButton, SegItem, Segmented, Slot, TextField, number_field, pt, rgba, search_field, tokens};
+use crate::widgets::popover::{self, HEADER_H, Open, Surface, WIDTH, popover_window, title_text};
 use crate::widgets::typ_icons::TypIcon;
+use crate::widgets::{Icon, IconButton, SegItem, Segmented, Slot, TextField, number_field, pt, rgba, search_field, tokens};
+use crate::widgets::{MenuRow, dropdown};
+use figcraft_i18n::tr;
 use gpui::{
-    AnyElement, App, Bounds, Entity, IntoElement, MouseButton, MouseDownEvent, MouseMoveEvent, Pixels, Point, SharedString, Size, Window, div, point, prelude::*, px,
-    size,
+    AnyElement, App, Bounds, Entity, IntoElement, MouseButton, MouseDownEvent, MouseMoveEvent, Pixels, Point, SharedString, Size, Window, div, point,
+    prelude::*, px, size,
 };
 use serde_json::{Value, json};
 use std::cell::RefCell;
@@ -599,7 +599,8 @@ impl WindowState {
             drill_in: None,
             options: vec![
                 Opt::new(tr("Don't truncate"), "node.set", json!({ "props": { "textAutoResize": "none" } })).with_glyph(TypIcon::None),
-                Opt::new(tr("Truncate with an ellipsis"), "node.set", json!({ "props": { "textAutoResize": "truncate" } })).with_glyph(TypIcon::Truncate),
+                Opt::new(tr("Truncate with an ellipsis"), "node.set", json!({ "props": { "textAutoResize": "truncate" } }))
+                    .with_glyph(TypIcon::Truncate),
             ],
         });
         settings.push(Setting::Dropdown {
@@ -1132,13 +1133,7 @@ impl WindowState {
             WindowKind::VariablesTable => {
                 if self.editor.is_none() {
                     if let Some(data) = self.variables_data.take() {
-                        let editor = VariablesEditor::new(
-                            self.cmds.clone(),
-                            data,
-                            cx,
-                            self.var_on_full.clone(),
-                            self.var_on_close.clone(),
-                        );
+                        let editor = VariablesEditor::new(self.cmds.clone(), data, cx, self.var_on_full.clone(), self.var_on_close.clone());
                         // 把在 editor 建立之前就收到的 Full/Floating 记住值灌进去。
                         if let Some(full) = self.editor_full {
                             editor.set_full(full);
@@ -1545,19 +1540,13 @@ impl WindowState {
                 }
                 let bar = options.iter().map(|o| est_text_w(&o.label) + 16.0).sum::<f32>().max(48.0);
                 let seg = seg.fixed_bar(bar);
-                if label.is_empty() {
-                    Some(seg.into_any_element())
-                } else {
-                    Some(type_row(label, &t, seg.into_any_element()))
-                }
+                if label.is_empty() { Some(seg.into_any_element()) } else { Some(type_row(label, &t, seg.into_any_element())) }
             }
             Setting::IconOptions { tab: st, label, active, bar_w, options, drill_in } => {
                 if *st != tab {
                     return None;
                 }
-                let mut seg = Segmented::new(options.iter().map(|o| o.item()).collect())
-                    .active(*active)
-                    .fixed_bar(*bar_w);
+                let mut seg = Segmented::new(options.iter().map(|o| o.item()).collect()).active(*active).fixed_bar(*bar_w);
                 let cmds = self.cmds.clone();
                 let settings = self.settings.clone();
                 let opts = options.clone();
@@ -1580,14 +1569,12 @@ impl WindowState {
                 if let Some(flag) = drill_in {
                     let f = flag.clone();
                     let wake = self.cmds.clone();
-                    let chev = IconButton::new(Icon::ChevronRight)
-                        .size(16.0)
-                        .on_click(move |_, _, _| {
-                            let mut b = f.borrow_mut();
-                            *b = !*b;
-                            drop(b);
-                            wake.wake();
-                        });
+                    let chev = IconButton::new(Icon::ChevronRight).size(16.0).on_click(move |_, _, _| {
+                        let mut b = f.borrow_mut();
+                        *b = !*b;
+                        drop(b);
+                        wake.wake();
+                    });
                     control = div().flex().flex_row().items_center().gap(pt(4.0)).child(control).child(chev).into_any_element();
                 }
                 Some(type_row(label, &t, control))
@@ -1602,21 +1589,17 @@ impl WindowState {
                 // 不再自己拼 div。点击把按钮窗口矩形回填为菜单锚点。
                 let at = anchor.clone();
                 let wake = self.cmds.clone();
-                let trigger = dropdown(cur, 96.0, None)
-                    .menu(key)
-                    .on_click(move |rect, _window, _cx| {
-                        *at.borrow_mut() = Some(rect);
-                        wake.wake();
-                    });
+                let trigger = dropdown(cur, 96.0, None).menu(key).on_click(move |rect, _window, _cx| {
+                    *at.borrow_mut() = Some(rect);
+                    wake.wake();
+                });
 
                 // 菜单：通用 `menu_popup_in`（`Menu::show` 的菜单表面 / hover / 勾选列 / 防溢出）。
                 // 浮层占着根视图唯一的 popup 槽，故菜单由 `render()` 作为窗口级兄弟元素返回。
                 let shown = *anchor.borrow();
                 if let Some(rect) = shown {
-                    let rows: Vec<MenuRow> = options
-                        .iter()
-                        .map(|o| MenuRow::new(o.label.clone()).checked(Some(o.label == *current.borrow())))
-                        .collect();
+                    let rows: Vec<MenuRow> =
+                        options.iter().map(|o| MenuRow::new(o.label.clone()).checked(Some(o.label == *current.borrow()))).collect();
                     let opts = options.clone();
                     let cmds = self.cmds.clone();
                     let cur_state = current.clone();
@@ -1647,9 +1630,7 @@ impl WindowState {
                     return None;
                 }
                 let idx = if *on.borrow() { 1 } else { 0 };
-                let mut seg = Segmented::new(vec![SegItem::Svg(TypIcon::None), SegItem::Icon(Icon::Check)])
-                    .active(Some(idx))
-                    .fixed_bar(48.0);
+                let mut seg = Segmented::new(vec![SegItem::Svg(TypIcon::None), SegItem::Icon(Icon::Check)]).active(Some(idx)).fixed_bar(48.0);
                 if *supported {
                     let cmds = self.cmds.clone();
                     let state = on.clone();
@@ -1784,14 +1765,7 @@ fn type_row(label: &SharedString, t: &crate::theme::Tokens, control: AnyElement)
         .flex_row()
         .items_center()
         .gap(pt(6.0))
-        .child(
-            div()
-                .flex_none()
-                .min_w(px(0.0))
-                .text_size(pt(10.0))
-                .text_color(rgba(t.text))
-                .child(label.clone()),
-        )
+        .child(div().flex_none().min_w(px(0.0)).text_size(pt(10.0)).text_color(rgba(t.text)).child(label.clone()))
         .child(div().flex_1().min_w(px(0.0)))
         .child(div().flex_none().child(control))
         .into_any_element()
@@ -1894,7 +1868,11 @@ mod tests {
     #[test]
     fn variables_route_move_latches_past_dead_zone_and_relocates() {
         let wake: Rc<dyn Fn()> = Rc::new(|| {});
-        let mut w = WindowState::variables_table(Cmds::new(&wake), Point { x: px(100.0), y: px(100.0) }, VariablesData { collections: Vec::new(), libraries: Vec::new() });
+        let mut w = WindowState::variables_table(
+            Cmds::new(&wake),
+            Point { x: px(100.0), y: px(100.0) },
+            VariablesData { collections: Vec::new(), libraries: Vec::new() },
+        );
         w.viewport = size(px(1280.0), px(860.0));
         w.origin = Point { x: px(100.0), y: px(100.0) };
         // Press records the grab origin; no drag yet.
@@ -1994,10 +1972,13 @@ mod tests {
         let supported = ["liga", "tnum"].iter().map(|s| s.to_string()).collect();
         let rows = WindowState::type_feature_groups(1, &features, &supported);
         // 按命令里的 tag 定位 liga（组序里 Numbers 在 Letter forms 前，不能用索引）。
-        let liga = rows.iter().find_map(|s| match s {
-            Setting::Toggle { on_cmd, .. } if on_cmd.params["features"].get("liga").is_some() => Some(s),
-            _ => None,
-        }).expect("liga toggle must exist (it was scanned)");
+        let liga = rows
+            .iter()
+            .find_map(|s| match s {
+                Setting::Toggle { on_cmd, .. } if on_cmd.params["features"].get("liga").is_some() => Some(s),
+                _ => None,
+            })
+            .expect("liga toggle must exist (it was scanned)");
         let Setting::Toggle { on, on_cmd, off_cmd, .. } = liga else { unreachable!() };
         assert_eq!(on_cmd.cmd, "text.setFeatures");
         assert_eq!(off_cmd.cmd, "text.setFeatures");
@@ -2014,5 +1995,4 @@ mod tests {
         let Setting::Toggle { on, .. } = &rows[1] else { panic!("expected toggle after title") };
         assert!(!*on.borrow(), "文档覆盖应盖过默认开");
     }
-
 }
