@@ -166,7 +166,7 @@ pub fn passes_for(doc: &Document, page: NodeId, view: &figcraft_render::View, ti
         ex.set("time", vec![time]);
 
         let eid = crate::wgsl_material::ensure_loaded(&binding.path);
-        let (uniforms, field_band) = pack_uniforms(&eid, &binding.params, &ex, w, h, sc, (rect_px[2], rect_px[3]));
+        let (uniforms, field_band) = pack_uniforms(&eid, &binding.params, &ex, w, h, sc);
 
         let field_bytes = prepare_fields(doc, id, rect_px[2], rect_px[3], sc, origin_px);
         out.push(RunPass { effect: eid, node: id, rect_px, radii_px, node_px, origin_px, field_bytes, field_band, uniforms, dpr: sc as f32 });
@@ -187,7 +187,6 @@ pub(crate) fn pack_uniforms(
     node_w: f64,
     node_h: f64,
     sc: f64,
-    window_px: (u32, u32),
 ) -> (Vec<(String, Vec<u8>)>, f32) {
     let reg = fx::shared().lock().unwrap_or_else(|e| e.into_inner());
     let mut local = reg.clone();
@@ -213,22 +212,13 @@ pub(crate) fn pack_uniforms(
     // Small notches that already fit pass through untouched, so the panel's low end and the
     // default keep their exact old look; only "small node + high notch", which cannot
     // physically fit, is clamped. `local` is a clone, so no other node / the global registry
-    // is affected. `band` is derived from the reach that is actually uploaded, so the field stays
-    // exact everywhere the shader can look and no further.
+    // is affected. `band` keeps using the raw notch (an upper bound), which is a safe margin
+    // >= the clamped reach, leaving the region/backdrop mapping byte-identical to before.
     let reach_doc = figcraft_doc::Glass::depth_reach_doc(reach, node_w.min(node_h));
-    // **The lens can only read what was rasterized.** Its backdrop is the window (the node clipped
-    // to the canvas), and anything outside that box was culled before the shader ever runs. The
-    // bend's reach is `depth × dpr`, which at 1720% is ~1500 device px — wider than the window — so
-    // most of the band used to sample pixels that do not exist: `texel_uv` clamps to the border
-    // column and whatever the lens was pulling in (a shape's edge outside the viewport, say) is
-    // simply missing. Cap the reach at the window's own read budget so the offset can never leave
-    // the buffer; `0.35` of the short side leaves room for the dispersion smear and the bevel.
-    let read_budget_px = 0.35 * f64::from(window_px.0.min(window_px.1).max(1));
-    let reach_doc = reach_doc.min((read_budget_px / sc).max(1.0));
     if let Some(f) = depth_field.as_ref() {
         let _ = local.set_param(eid, f, reach_doc);
     }
-    let band = (reach_doc * sc + 2.0 * sc + 8.0) as f32;
+    let band = (reach.max(1.0) * sc + 2.0 * sc + 8.0) as f32;
     let vars: Vec<String> = local.scan(eid)
         .map(|s| s.uniforms.keys().cloned().collect())
         .unwrap_or_default();

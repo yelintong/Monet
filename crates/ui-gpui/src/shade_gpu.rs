@@ -104,7 +104,7 @@ fn pass_for(req: &ShadeRequest, doc: &Document) -> crate::wgsl_runner::RunPass {
     ex.set("time", vec![material_time()]);
 
     let params: &BTreeMap<String, f64> = &req.spec.params;
-    let (uniforms, field_band) = crate::wgsl_runner::pack_uniforms(&req.spec.effect_id, params, &ex, dw, dh, sc, (rw_px, rh_px));
+    let (uniforms, field_band) = crate::wgsl_runner::pack_uniforms(&req.spec.effect_id, params, &ex, dw, dh, sc);
     let field_bytes = crate::wgsl_runner::prepare_fields(doc, req.node, rw_px, rh_px, sc, req.origin_px);
     crate::wgsl_runner::RunPass {
         effect: req.spec.effect_id.clone(),
