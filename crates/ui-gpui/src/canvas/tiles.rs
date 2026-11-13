@@ -191,21 +191,26 @@ fn intersect_rect(a: PageRect, b: PageRect) -> Option<PageRect> {
 /// 每个格子的内容哈希，空格子也会得到一个值。两块哈希相同即像素相同。
 pub fn tile_hashes(ops: &[DrawOp], region: PageRect, side: u32) -> HashMap<TileCoord, u64> {
     let mut hashers: HashMap<TileCoord, DefaultHasher> = HashMap::new();
-    for c in tiles_over(region, side) {
-        hashers.insert(c, DefaultHasher::new());
+    let covered: Vec<TileCoord> = tiles_over(region, side);
+    for c in &covered {
+        hashers.insert(*c, DefaultHasher::new());
     }
+    // 图元按「被视口覆盖到的格子的完整边界」筛选，而不是精确的视口矩形：视口只盖住
+    // 格子一角时，落在该格但暂时在视口外的图元也必须进哈希，否则同一格会因为平移
+    // 视口（格子没换）而莫名变脏。
+    let bounds: Vec<(TileCoord, PageRect)> = covered.iter().map(|c| (*c, crop_rect(*c, side))).collect();
     for op in ops {
         // 路径与覆盖层不进格子：屏幕空间导数抗锯齿在奇数平移下会差一级。
         if matches!(op.kind, OpKind::Path | OpKind::Overlay) {
             continue;
         }
-        // 大图元的可见边界可能覆盖超过 MAX_TILES 个格子，直接交给 tiles_over 会被上限
-        // 判为空，整条指令就不进哈希。先裁到本轮哈希的 region 再枚举；hash_op 仍收原始
-        // 几何，格内坐标不失真。
-        let Some(visible) = intersect_rect(op.visible, region) else { continue };
-        for c in tiles_over(visible, side) {
-            if let Some(h) = hashers.get_mut(&c) {
-                hash_op(h, op, c, side);
+        // 不再拿 op.visible 去跑 tiles_over：大图元会撞 MAX_TILES 上限被整条丢掉。
+        // hash_op 仍收原始几何，格内坐标不失真。
+        for (c, b) in &bounds {
+            if intersect_rect(op.visible, *b).is_some()
+                && let Some(h) = hashers.get_mut(c)
+            {
+                hash_op(h, op, *c, side);
             }
         }
     }
@@ -411,6 +416,18 @@ mod tests {
         let old = tile_hashes(&[big], region, TILE_SIDE);
         let new = tile_hashes(&[changed], region, TILE_SIDE);
         assert_eq!(dirty_tiles(&old, &new), vec![TileCoord::new(0, 0)]);
+    }
+
+    #[test]
+    fn panning_within_a_tile_keeps_its_hash() {
+        // 视口只盖住 (0, 0) 的左半边，图元落在同一格内但暂时在视口外。
+        let ops = vec![op(OpKind::Rect, rect(300.0, 10.0, 340.0, 40.0), 1)];
+        let before = tile_hashes(&ops, rect(0.0, 0.0, 256.0, 512.0), TILE_SIDE);
+        let after = tile_hashes(&ops, rect(100.0, 0.0, 356.0, 512.0), TILE_SIDE);
+        assert_eq!(before.get(&TileCoord::new(0, 0)), after.get(&TileCoord::new(0, 0)));
+        // 图元确实进了哈希，不能靠「两边都是空格子」蒙混过关。
+        let empty = tile_hashes(&[], rect(0.0, 0.0, 256.0, 512.0), TILE_SIDE);
+        assert_ne!(before.get(&TileCoord::new(0, 0)), empty.get(&TileCoord::new(0, 0)));
     }
 }
 
