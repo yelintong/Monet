@@ -800,21 +800,28 @@ fn layered() -> bool {
 #[cfg(feature = "gpu")]
 #[track_caller]
 fn apply_wgsl_materials(mats: &mut Materials, doc: &Document, page: NodeId, done: &mut Done) {
-    if !try_apply_wgsl_materials(mats, doc, page, done) {
-        // 这一帧 GPU 没能补齐（某个 pass 的 pipeline 没就绪、读回异常等）。直接 `cpu_restore`
-        // 会把材质节点画回它的**填充色**——用户看到的就是「玻璃毫无预兆地变成一块纯色 / 突然
-        // 消失」，下一帧又回来，正是那种"轻微缩放或拖动就闪一下"的现象。宁可显示上一张合成图
-        // （几何可能差一帧，但仍是玻璃），也不要退回纯色：一帧迟滞好过一帧整块丢失。
-        if let Some(last) = mats.last_composite.as_ref().map(|l| l.image.clone()) {
-            let (want, got) = (done.image.size(0), last.size(0));
-            if want.width == got.width && want.height == got.height {
-                done.image = last;
-                return;
-            }
-        }
-        // 没有可用的上一张（首帧就失败，或画布尺寸变了）：只能 CPU 画回去，至少容器内容不缺。
-        cpu_restore_materials(doc, page, done);
+    if try_apply_wgsl_materials(mats, doc, page, done) {
+        return;
     }
+    // 一次重试。`drawn != total` 几乎总是"这一帧某个 pass 的 pipeline 刚被编译/刷新、还没就绪"
+    // ——第一次失败的同时 `ensure_pipelines` 已经把编译提交了、并把 device 推进了一轮，再走一遍
+    // 通常就成。玻璃在那一帧被纯色顶替，正是用户说的"毫无预兆地突然丢失"；重试把它从源头救回来。
+    // 老多 pass 契约失败时会改写 `done.image`（挖空+子层），不能再叠一次，故只对通用通道重试。
+    if !frame_uses_legacy_pipeline(doc, page) && try_apply_wgsl_materials(mats, doc, page, done) {
+        return;
+    }
+    // 仍然失败：绝不把材质节点画回它的填充色（那正是"玻璃突然变成一块纯色"的观感）。保住上一张
+    // 合成图——几何可能差一帧，但仍是玻璃。只有连上一张都没有（首帧就失败/画布尺寸变了）才退回 CPU。
+    if let Some(last) = mats.last_composite.as_ref().map(|l| l.image.clone()) {
+        let (want, got) = (done.image.size(0), last.size(0));
+        if want.width == got.width && want.height == got.height {
+            eprintln!("[material] COMPOSITE FAILED page={page:?}: keeping the last good raster");
+            done.image = last;
+            return;
+        }
+    }
+    eprintln!("[material] COMPOSITE FAILED page={page:?}: nothing cached, restoring from CPU");
+    cpu_restore_materials(doc, page, done);
 }
 
 /// 材质进程的单调时钟（秒）。同步合成与异步提交共用同一原点，让同一帧里 `passes_for`
