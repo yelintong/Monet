@@ -786,9 +786,14 @@ fn reuse_composite(mats: &Materials, base: &Arc<RenderImage>, key: u64) -> Optio
 #[cfg(feature = "gpu")]
 fn layered() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    // Default OFF: the whole-page **synchronous** compositor (`apply_wgsl_materials`) is the route
+    // that has never lost the material — it composites into the frame it delivers. The per-layer
+    // route only wins on speed for a container, and it cannot shade a node larger than the view
+    // (a band only sees its own slice of the page, so its window/key churns every drag/zoom frame
+    // and nothing ever cache-hits). `FIGCRAFT_SHADE_LAYERED=1` opts back in for comparison.
     *ON.get_or_init(|| match std::env::var("FIGCRAFT_SHADE_LAYERED") {
-        Ok(v) => v != "0",
-        Err(_) => true,
+        Ok(v) => v == "1",
+        Err(_) => false,
     })
 }
 
@@ -979,27 +984,12 @@ fn try_submit_wgsl_materials(
     if let Some(image) = reuse_composite(mats, &done.image, key) {
         return Submit::Reused(image);
     }
-    let Some(canvas) = done.image.as_bytes(0) else { return Submit::Sync };
-    let layers: Vec<Option<(Vec<u8>, [u32; 4])>> = passes.iter()
-        .map(|p| children_layer(doc, page, &done.view, p.node, w, h))
-        .collect();
-    if mats.runner.is_none() {
-        mats.runner = crate::wgsl_runner::WgslRunner::new();
-    }
-    let Some(runner) = mats.runner.as_mut() else { return Submit::Sync };
-    let steps = assemble_steps(&passes, &layers);
-    // 编译 + 判据：与同步 `try_apply_wgsl_materials` 的 `steps_drawn` 检查等价。必须先确保
-    // shader 齐全再占用 slot——否则一个静默跳过 glass draw 的异步帧会把「有子层没玻璃」的
-    // 错图交回 UI。`submit_async` 内部还会再走一次 `refresh_pipelines`，但那时 cache 已热，
-    // 只是 500ms 节流的 stale 检查，几乎免费。
-    let (drawn, total) = runner.ensure_pipelines(w, h, &steps);
-    if drawn != total || drawn == 0 {
-        return Submit::Sync;
-    }
-    match runner.submit_async(canvas, w, h, &steps) {
-        Some(id) => Submit::Queued { id, key },
-        None => Submit::Sync,
-    }
+    // 不再异步提交。`submit_async` 的像素要靠**之后**一轮 `collect_ready` 才收回，而静止的画布
+    // 不再有那一轮——材质于是在视图停下时整块消失（实测：`[gpu] … submit (async)` 之后没有对应
+    // 的 `[material] …` 合成行，主画布洋红=0）。同步合成只要 ~1–2 ms，这里直接做完，交付的帧
+    // 必定带着材质；这也正是整页通道（`apply_wgsl_materials` 同步）从来没出过这类问题的原因。
+    // `Reused` 短路留在上面：输入没变时仍然不碰 GPU。
+    Submit::Sync
 }
 
 /// 一帧已提交到 GPU、readback 还在飞的完整上下文。收集成功后 `done.image` 从「未合成的
