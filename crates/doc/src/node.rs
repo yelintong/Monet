@@ -802,7 +802,10 @@ impl Node {
 
     /// Maximum distance (in local units) painting can reach outside the node box.
     pub fn paint_reach(&self) -> f64 {
-        let fx = self.effects.iter().map(Effect::reach).fold(0.0, f64::max).max(self.layer_effects_reach());
+        // `grow_by_effects` 先把框按 layer blur 扩散，再从那个框叠加其它特效（含阴影偏移），
+        // 所以两类 reach 要相加而不是取最大值；LayerBlur 只通过 layer_effects_reach 计一次。
+        let other = self.effects.iter().filter(|e| !matches!(e.kind, EffectKind::LayerBlur(_))).map(Effect::reach).fold(0.0, f64::max);
+        let fx = other + self.layer_effects_reach();
         self.outline_reach() + fx + self.spread_miter_reach()
     }
 
@@ -823,24 +826,21 @@ impl Node {
             let g = self.layer_effects_reach();
             if g.is_finite() && g > 0.0 { b.inflate(g, g) } else { b }
         };
-        self.effects
-            .iter()
-            .filter(|e| e.visible && !matches!(e.kind, EffectKind::LayerBlur(_)))
-            .fold(blurred, |r, e| match &e.kind {
-                EffectKind::DropShadow(s) => {
-                    let g = s.radius.abs() * 1.5 + s.spread.max(0.0) + miter;
-                    let (dx, dy) = s.offset;
-                    if g.is_finite() && dx.is_finite() && dy.is_finite() {
-                        r.union(blurred.inflate(g, g) + figcraft_geom::kurbo::Vec2::new(dx, dy))
-                    } else {
-                        r
-                    }
+        self.effects.iter().filter(|e| e.visible && !matches!(e.kind, EffectKind::LayerBlur(_))).fold(blurred, |r, e| match &e.kind {
+            EffectKind::DropShadow(s) => {
+                let g = s.radius.abs() * 1.5 + s.spread.max(0.0) + miter;
+                let (dx, dy) = s.offset;
+                if g.is_finite() && dx.is_finite() && dy.is_finite() {
+                    r.union(blurred.inflate(g, g) + figcraft_geom::kurbo::Vec2::new(dx, dy))
+                } else {
+                    r
                 }
-                _ => {
-                    let g = e.reach();
-                    if g.is_finite() && g > 0.0 { r.union(blurred.inflate(g, g)) } else { r }
-                }
-            })
+            }
+            _ => {
+                let g = e.reach();
+                if g.is_finite() && g > 0.0 { r.union(blurred.inflate(g, g)) } else { r }
+            }
+        })
     }
 
     /// How far (local units) strokes and glyphs reach outside the box.

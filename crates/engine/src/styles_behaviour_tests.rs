@@ -419,6 +419,22 @@ fn text_styles_carry_paragraph_spacing_indent_lists_and_features() {
 }
 
 #[test]
+fn renaming_a_folder_only_touches_the_requested_style_type() {
+    let mut s = Session::new();
+    let mk = |s: &mut Session, name: &str| sid(run(s, "style.create", json!({"type": "paint", "name": name, "value": ["#FF00FF"]})));
+    mk(&mut s, "Brand/Colors/Ink");
+    mk(&mut s, "Brand/Colors/Glow");
+    // 第二个改成 effect 类型：text/paint 各有同名文件夹的场景。
+    s.doc_mut().unwrap().styles[1].kind = StyleKind::Effect { effects: vec![] };
+    let names = |s: &Session| s.doc().unwrap().styles.iter().map(|x| x.name.clone()).collect::<Vec<_>>();
+    run(&mut s, "style.renameFolder", json!({"folder": "Brand/Colors", "name": "Brand/News", "type": "paint"}));
+    assert_eq!(names(&s), ["Brand/News/Ink", "Brand/Colors/Glow"]);
+    // 不带 type 时保持旧行为，其它调用方不受影响。
+    run(&mut s, "style.renameFolder", json!({"folder": "Brand/Colors", "name": "Brand/Other"}));
+    assert_eq!(names(&s), ["Brand/News/Ink", "Brand/Other/Glow"]);
+}
+
+#[test]
 fn styles_are_organised_by_slash_names_order_and_duplicates() {
     // Documented: "/" in a name groups styles in folders; moving a style to another folder renames
     // it to match ("Brand/Teal" into Brand/Site → "Brand/Site/Teal"); dragging changes the

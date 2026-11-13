@@ -69,7 +69,7 @@ pub fn specs() -> Vec<CommandSpec> {
         spec!(
             "style.renameFolder",
             "Rename style folder",
-            "{folder (\"Brand/Blog\"), name (\"Brand/News\")} (renames the styles in it)",
+            "{folder (\"Brand/Blog\"), name (\"Brand/News\"), type? (\"paint\"; only that style type)} (renames the styles in it)",
             true,
             rename_folder
         ),
@@ -685,10 +685,17 @@ fn rename_folder(s: &mut Session, p: &Value) -> Result<Value> {
     let cmd = "style.renameFolder";
     let from = style_name(cmd, &req_string(cmd, p, "folder")?)?;
     let to = style_name(cmd, &req_string(cmd, p, "name")?)?;
+    // 传了 type 就只改该类型的样式：text 与 paint 可以各有 `Brand/Colors`，
+    // 只按名字前缀过滤会把两种样式一起改名。不传时保持旧行为（整个文件夹）。
+    let ty = string(p, "type");
     let doc = s.doc_mut()?;
     let prefix = format!("{from}/");
     let inside: Vec<usize> = (0..doc.styles.len())
-        .filter(|i| doc.styles.get(*i).is_some_and(|x| x.name.starts_with(&prefix) && !crate::library::is_remote_style(doc, &x.id)))
+        .filter(|i| {
+            doc.styles.get(*i).is_some_and(|x| {
+                x.name.starts_with(&prefix) && !crate::library::is_remote_style(doc, &x.id) && ty.as_deref().is_none_or(|t| x.kind.type_name() == t)
+            })
+        })
         .collect();
     if inside.is_empty() {
         return Err(bad(cmd, format!("no styles in folder `{from}`")));
