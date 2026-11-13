@@ -178,6 +178,7 @@
 | 19 | `crates/ui-gpui/src/panels.rs` + `lib.rs`（rail 调用点） | 左栏 rail 三项高亮互斥 | 抽纯函数 `rail_active(...)` + 4 条穷举回归测试；`left_rail` 签名收敛为 `(left_tab, variables_open, variables_full)`，未新增控件 | ✅（S 节） |
 | 20 | `crates/ui-gpui/src/layer_tree.rs` | 图层树节点多时选中高亮错位 + 24pt 规格 | 逐行 `relative()+absolute()` 绘制；**2026-11-11 18:5x 追加**：色块/图标高 24、图标格 24×24、块间距 8、每层缩进 24、每行 `flex_none()` 防压缩；`selection_runs` 已删（不再拼连块） | ✅（S / T 节；虚拟化未做） |
 | 21 | `crates/ui-gpui/src/theme.rs` | 父集/子集选中色不是深浅差异 | `selected_row_child` 改由同一品牌色派生（白 0.93 / 黑 0.90），不再写死浅绿 | ✅（T 节） |
+| 22 | `crates/ui-gpui/src/dialogs.rs` + `lib.rs` + `parity_contract.rs` | A8 批量重命名 1:1 | 照 `ui-egui/dialogs/batch_rename.rs` 逐项抄；预览走引擎 `BatchRename::new/apply`；`z_sorted` 注入 ids/names；契约 `A8` 双向核对 | ✅（Y 节） |
 
 ---
 
@@ -269,6 +270,7 @@ A7=done
 A18B4=partial
 A1=done
 A2B3A27=done
+A8=done
 -->
 
 **结论（19:1x 补全后）**：核查出的缺口已补 —— A6 预览、A7 三项、C1 全仓文案、A1 Home 全部落地；第 1 批 6 项现为 **5 项完成 + 1 项部分（B4 拖出成窗口）**。B4 是**有意不做**：引擎只有 `window.new` 请求，GPUI 侧缺 OS 多窗口的会话共享，按「不自己弄」的约束留待 A16。所有状态已回填 A/B/C/G 表，并由 J 节的契约测试自动守护。
@@ -965,7 +967,7 @@ R 节（17:0x 审计）把 R1/R2 标成「✅ 已实施」，但回源码核对�
 | 计划表条目 | 计划表旧口径 | 代码实况（2026-11-13） |
 |---|---|---|
 | A4 插件面板 | 「0 命中」 | `dialogs.rs::Kind::Plugins` 已落地：已装列表（名称/版本/简介/Remove）+ `plugin.import`，仅缺「Browse 联网拉取插件目录」后台任务 |
-| A8 批量重命名 | 「0 命中」 | `Kind::Rename` 已存在（单一 Name 字段，走 `object.rename`）；egui 的 Match/正则/预览尚未搬 |
+| A8 批量重命名 | 「0 命中」 | ✅ **本日 1:1 落地**（Y 节）：Match / 正则 / Rename to / `$& $n $N` 三按钮 / Start / 前 5 行实时预览 + 错误 + and N more，提交 `object.batchRename`；不再是单一 Name 字段 |
 | A9 分支 UI | 「0 命中」 | `Kind::Branch` 已落地：列表（Open/Archive）+ 创建；缺并排 review 窗口 |
 | A10 色彩配置 | 「仅注释提到」 | `Kind::ColorProfile` **本日已 1:1**（sRGB/Display P3 单选起始于当前配置 + Keep appearance/Keep values → `file.colorProfile`） |
 | A11 Credits | 「0 引用」 | `Kind::About` 仅版本/许可提示，**未做 egui 670 行贡献者表** |
@@ -978,7 +980,7 @@ R 节（17:0x 审计）把 R1/R2 标成「✅ 已实施」，但回源码核对�
 
 ### X.1 第 3 批真实剩余（按代码实况）
 
-- **A19 对话框深化**（已存在但需 1:1）：ColorProfile ✅本日；SampledColor（框架扩展）、ImportReport（引擎捕获）、MissingFonts（引擎缺命令，保持提示）、Rename 批量（Match/正则/预览）、Link 的 Offset/移动到页。
+- **A19 对话框深化**（已存在但需 1:1）：ColorProfile ✅本日；SampledColor ✅本日（框架扩展）；**Rename 批量 ✅本日（Y 节，Match/正则/预览全部 1:1）**；ImportReport（引擎捕获）、MissingFonts（引擎缺命令，保持提示）、Link 的 Offset/移动到页仍待做。
 - **A4 插件面板**：Browse 联网拉取（后台任务，未接）。
 - **A27 画板协作**：board.timer/board.vote/addConnected/connected_place/BoardTimer 仍 0 命中（board_bar/board_picker 只做了工具组）。
 - **A26 原型连线**：`proto_canvas` 模块完全缺失。
@@ -1002,3 +1004,44 @@ R 节（17:0x 审计）把 R1/R2 标成「✅ 已实施」，但回源码核对�
 
 - 每落地一个条目，更新本 X 节 + G 表对应行 + I 节 `PARITY_CONTRACT_STATUS` 块（后者由测试双向核对，改文档标签须同步 `parity_contract.rs`）。
 - 引擎缺命令的条目（MissingFonts）诚实保持提示窗，不假造命令；引擎不发请求的条目（ImportReport）标注为待捕获，不假装已接。
+
+## Y. 2026-11-13 晚：第 3 批 A8 批量重命名 1:1 落地
+
+> 承 X 节「继续第 3 批」。本轮只做 A8，且**严格照 `crates/ui-egui/src/dialogs/batch_rename.rs`
+> 逐项抄**，不自造控件、不发明命令。分支 `feat/batch3-dialogs`（承 A15 SampledColor）。
+
+### Y.1 改了什么
+
+| egui 原件 | GPUI 落地 |
+|---|---|
+| `open_batch_rename`：`cmd::edit::z_sorted(doc, ids)` | `CanvasView::open_dialog` 对 `Kind::Rename` 注入 `ids` / `names`（z 序、真实层名）；菜单 `object.batchRename` 由 `menu_action` 改为开对话框，不再用 `{}` 静默执行 |
+| 标题 `Rename layers`、宽 320、`{n} layers` | `Spec::new(tr("Rename layers")).width(320.0)` + `Note(trn("{n} layers", n, &[]))` |
+| Match 输入框（hint 即标签） | `Field::Text { key: "find", label: tr("Match (empty: the whole name)") }` |
+| `widgets::checkbox` Regular expression | 新增 `Field::Toggle`（冻结件 `Checkbox` 组合，运行时贡献 JSON bool），`Source::Toggle` |
+| Rename to 输入框 | `Field::Text { key: "to", label: tr("Rename to") }` |
+| 一行三按钮 `$& / $n / $N` 追加到输入框 | 新增 `Field::InsertCodes { target: "to", codes: .. }`；点击读 `TextField::value` 再 `set_value`，`wake()` 让下一帧 flush |
+| `DragValue` Start 0..=1_000_000 | `Field::Number { key: "start", value: 1.0 }`，提交时 `clamp(0,1_000_000)` |
+| 前 5 行 `old → new` 预览、非法正则红字、`and {n} more` | 新增 `Field::RenamePreview`；每帧用 `collect_sources` 读实时字段，调引擎 `BatchRename::new` / `apply(old, k, n)`；`render` 为此新增 `cx: &App` 参数 |
+| `ready` 时才能 Rename | `batch_rename_params` 返回 `None` 即禁用按钮（灰显、不注册 handler）、`resolve_derived` 返回 `false` 保持窗口不关 |
+| `batch_rename_params` → `object.batchRename` | `Action::Derived` 新增 `Kind::Rename` 分支；空 Match 写 `name`，否则写 `find` + `replace`；`derived_commands` 按 kind 返回，经契约审计为引擎真命令 |
+
+框架扩展全部落在 `dialogs.rs` 的数据模型里（新增 3 个 `Field` 变体、1 个 `Source` 变体），
+`widgets/**` 冻结件一行未改；`lib.rs` 只加一个 `match` 分支 + 把 `cx` 传给 `render`，
+用字节精确替换保持 CRLF 与 2640 处双空行不变。
+
+### Y.2 防回归
+
+- `parity_contract.rs` 新增契约 `A8`，requires 含 `object.batchRename` / `batch_rename_params` /
+  `BatchRename::new` / `InsertCodes` / `RenamePreview` / 四个字段 key；I 节状态块 `A8=done`。
+  退回「单个 Name 字段 + `object.rename`」会同时丢掉这些 token，契约测试直接失败。
+- `dialogs.rs` 新增纯函数级回归：空 Match 走 `name`、有 Match 走 `find/replace`、非法正则与空表单
+  禁用提交、预览的 `$n`/`$N` 升降序、spec 字段顺序与 `menu_action` 映射。
+
+### Y.3 诚实边界（未做）
+
+- **Enter 提交**：egui 的 `to.lost_focus() && Enter` 提交，GPUI 冻结的 `TextField` 只有 `on_commit`
+  语义，本轮未接（按钮提交已可用）；接它需要确认冻结件的焦点事件。
+- **select_all_on_focus**：egui 两个输入框聚焦时全选，冻结 `TextField` 无此钩子，未做。
+- **实机视觉验证**：像素级比对与双击打字冒烟需跑 GUI，单测不能替代。
+- ImportReport（引擎捕获导入 warnings）、Link 的 Offset/移动到页、A4 Browse 联网、
+  A27 计时器/投票、A26 原型连线仍是 X.1 的后续批次。

@@ -153,6 +153,24 @@ pub(crate) enum Field {
     Color {
         color: SharedString,
     },
+    /// A boolean field (egui `widgets::checkbox`) that contributes a JSON bool to the command.
+    /// Unlike a two-option `Choice` with commands, it runs nothing on change.
+    Toggle {
+        key: &'static str,
+        label: &'static str,
+        value: bool,
+    },
+    /// One horizontal row of small buttons that append a rename code to a text field
+    /// (`ui-egui/src/dialogs/batch_rename.rs`: Current name / Number up / Number down).
+    InsertCodes {
+        target: &'static str,
+        codes: Vec<(&'static str, &'static str)>,
+    },
+    /// The live batch-rename preview: up to five `old -> new` lines, the engine's error, and
+    /// "and N more". Computed every frame from the fields, never a stale snapshot.
+    RenamePreview {
+        names: Vec<String>,
+    },
 }
 
 impl Field {
@@ -313,10 +331,62 @@ fn parse_hex(s: &str) -> Hsla {
     Hsla::from(rgba(c))
 }
 
+/// The four live values of the Rename layers dialog (egui's `BatchRenameUi` fields).
+fn rename_state(sources: &[(String, Value)]) -> (String, String, bool, f64) {
+    let get = |k: &str| sources.iter().find(|(key, _)| key == k).map(|(_, v)| v.clone());
+    let find = match get("find") { Some(Value::String(s)) => s, _ => String::new() };
+    let to = match get("to") { Some(Value::String(s)) => s, _ => String::new() };
+    let regex = matches!(get("regex"), Some(Value::Bool(true)));
+    let start = match get("start") { Some(Value::Number(n)) => n.as_f64().unwrap_or(1.0), _ => 1.0 };
+    (find, to, regex, start)
+}
+
+/// `ui-egui/src/dialogs/batch_rename.rs::batch_rename_params`: an empty match renames the whole
+/// name (`name`); a match replaces occurrences (`find` + `replace`). `None` means egui's `ready`
+/// is false (invalid regex, or Match and Rename to both empty) and the Rename button is disabled.
+pub(crate) fn batch_rename_params(base: &Value, sources: &[(String, Value)]) -> Option<Value> {
+    let (find, to, regex, start) = rename_state(sources);
+    let find_opt = (!find.is_empty()).then_some(find.as_str());
+    // The engine's own validator: an invalid regex is a hard error, not a silent no-op.
+    figcraft_engine::rename::BatchRename::new(find_opt, regex, &to, find_opt.is_none().then_some(to.as_str()), Some(start)).ok()?;
+    if find.is_empty() && to.is_empty() {
+        return None;
+    }
+    let mut p = match base { Value::Object(m) => m.clone(), _ => Map::new() };
+    p.insert("regex".into(), json!(regex));
+    p.insert("start".into(), json!(start.clamp(0.0, 1_000_000.0).round() as u64));
+    if find.is_empty() {
+        p.insert("name".into(), json!(to));
+    } else {
+        p.insert("find".into(), json!(find));
+        p.insert("replace".into(), json!(to));
+    }
+    Some(Value::Object(p))
+}
+
+/// egui's live preview: the engine's `BatchRename` applied to the first five names, or its error.
+/// `names` are in z order (bottom first), injected by `CanvasView::open_dialog`.
+pub(crate) fn batch_rename_preview(names: &[String], sources: &[(String, Value)]) -> (Option<String>, Vec<(String, String)>) {
+    const PREVIEW_ROWS: usize = 5;
+    let (find, to, regex, start) = rename_state(sources);
+    let find_opt = (!find.is_empty()).then_some(find.as_str());
+    let r = match figcraft_engine::rename::BatchRename::new(find_opt, regex, &to, find_opt.is_none().then_some(to.as_str()), Some(start)) {
+        Ok(r) => r,
+        Err(e) => return (Some(e), Vec::new()),
+    };
+    if find.is_empty() && to.is_empty() {
+        return (None, Vec::new());
+    }
+    let n = names.len();
+    (None, names.iter().enumerate().take(PREVIEW_ROWS).map(|(k, old)| (old.clone(), r.apply(old, k, n))).collect())
+}
+
 /// Resolve the engine command for an `Action::Derived` button from the live field values. Only
 /// `SampledColor` uses it today, but the dispatch is keyed on `kind` so each dialog that needs a
 /// computed command gets its own arm — no closure, so `Action` stays `Clone` + `PartialEq`.
-fn resolve_derived(kind: Kind, sources: &[(String, Value)], base: &Value, cmds: &Cmds) {
+/// Returns whether the dialog may close. A disabled/invalid submit must keep the window open
+/// (egui's Rename button is disabled until `ready`).
+fn resolve_derived(kind: Kind, sources: &[(String, Value)], base: &Value, cmds: &Cmds) -> bool {
     match kind {
         Kind::SampledColor => {
             // 1:1 with `ui-egui/src/dialogs/sampled_color.rs::create_params`: a paint style, a
@@ -330,7 +400,7 @@ fn resolve_derived(kind: Kind, sources: &[(String, Value)], base: &Value, cmds: 
                 _ => String::new(),
             };
             if name.is_empty() {
-                return; // egui: Create is disabled until a name is entered.
+                return false; // egui: Create is disabled until a name is entered.
             }
             let variable = matches!(get("variable"), Some(Value::Bool(true)));
             let collection = get("collection");
@@ -366,8 +436,16 @@ fn resolve_derived(kind: Kind, sources: &[(String, Value)], base: &Value, cmds: 
                 }
             };
             cmds.push(Cmd { id, params: Some(params) });
+            true
         }
-        _ => {}
+        Kind::Rename => match batch_rename_params(base, sources) {
+            Some(params) => {
+                cmds.push(Cmd { id: "object.batchRename", params: Some(params) });
+                true
+            }
+            None => false,
+        },
+        _ => false,
     }
 }
 
@@ -375,9 +453,14 @@ fn resolve_derived(kind: Kind, sources: &[(String, Value)], base: &Value, cmds: 
 /// contract lists them so `every_dialog_command_is_a_real_engine_command` can verify they are real
 /// engine commands — not invented ones. Keep this in lock-step with the `resolve_derived` arms: a
 /// Derived button that pushes an id missing here would not be checked for realness.
-pub(crate) fn derived_commands(_kind: Kind) -> Vec<&'static str> {
-    // Today only `SampledColor` uses `Derived`; its arm pushes exactly these three.
-    vec!["style.create", "variable.create", "command.batch"]
+pub(crate) fn derived_commands(kind: Kind) -> Vec<&'static str> {
+    // Keep in lock-step with the `resolve_derived` arms. Each id is audited by
+    // `every_dialog_command_is_a_real_engine_command` in `parity_contract.rs`.
+    match kind {
+        Kind::SampledColor => vec!["style.create", "variable.create", "command.batch"],
+        Kind::Rename => vec!["object.batchRename"],
+        _ => Vec::new(),
+    }
 }
 
 /// Engine `ui_requests` (and a few menu commands that need input) → a dialog kind.
@@ -419,6 +502,9 @@ pub(crate) fn menu_action(cmd: &str) -> Option<Kind> {
         "file.export" | "file.exportFramesPdf" | "file.exportSvg" => Some(Kind::Export),
         // `text.link` needs a URL; the Text header's Create link button opens the same dialog.
         "text.link" => Some(Kind::Link),
+        // egui's `Object > Batch rename...` opens the dialog; executing the command with `{}`
+        // would silently rename with defaults. It is not an inline edit (R4/R5/R6 are).
+        "object.batchRename" => Some(Kind::Rename),
         _ => None,
     }
 }
@@ -541,13 +627,33 @@ pub(crate) fn spec(kind: Kind, data: &Value) -> Spec {
                 // 已经 `doc.switch` 到被关闭的标签，所以这里不需要（引擎也不接受）index。
                 .button(Button::primary(tr("Save"), "file.save", json!({})))
         }
-        Kind::Rename => Spec::new(tr("Rename"))
-            .width(360.0)
-            .field(Field::Text { key: "name", label: tr("Name"), value: str_field("name", data, "") })
-            // A batch rename carries the ids; `object.rename` needs them explicitly. A menu-driven
-            // batch rename has none and falls back to the selection (engine `req_targets`).
-            .button(Button::primary(tr("Rename"), "object.rename", json!({ "ids": data.get("ids").cloned().unwrap_or(json!([])) })))
-            .with_cancel(),
+        Kind::Rename => {
+            // 1:1 with `ui-egui/src/dialogs/batch_rename.rs::batch_rename_dialog`: the layer
+            // count, Match, Regular expression, Rename to, the three code buttons, the number
+            // start, the live preview, then Cancel / Rename. `ids`/`names` are injected by
+            // `CanvasView::open_dialog` in z order, so preview and command see the same layers.
+            let ids = data.get("ids").cloned().unwrap_or(json!([]));
+            let names: Vec<String> = data
+                .get("names")
+                .and_then(Value::as_array)
+                .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+                .unwrap_or_default();
+            let n = names.len();
+            Spec::new(tr("Rename layers"))
+                .width(320.0)
+                .field(Field::Note { text: figcraft_i18n::trn("{n} layers", n, &[]) })
+                .field(Field::Text { key: "find", label: tr("Match (empty: the whole name)"), value: String::new() })
+                .field(Field::Toggle { key: "regex", label: tr("Regular expression"), value: false })
+                .field(Field::Text { key: "to", label: tr("Rename to"), value: String::new() })
+                .field(Field::InsertCodes {
+                    target: "to",
+                    codes: vec![(tr("Current name"), "$&"), (tr("Number up"), "$n"), (tr("Number down"), "$N")],
+                })
+                .field(Field::Number { key: "start", label: tr("Start ascending from / stop descending at"), value: 1.0 })
+                .field(Field::RenamePreview { names })
+                .button(Button::close(tr("Cancel")))
+                .button(Button::derived(tr("Rename"), json!({ "ids": ids })))
+        }
         // `lizard dialogs.rs::MenuInput::Link`: 一个 URL 输入框，提交时由按钮把它作为
         // `{"url": …}` 交给 `text.link`（引擎只认这个键）。
         Kind::Link => Spec::new(tr("Create link"))
@@ -720,6 +826,7 @@ struct Rendered {
 enum Source {
     Text(&'static str, Entity<TextField>),
     Number(&'static str, Entity<TextField>),
+    Toggle(&'static str, Rc<RefCell<usize>>),
     Choice(&'static str, Vec<SharedString>, Option<Vec<Value>>, Rc<RefCell<usize>>),
     Note,
 }
@@ -734,6 +841,7 @@ fn collect_sources(sources: &[Source], cx: &App) -> Vec<(String, Value)> {
                 let value = raw.trim().parse::<f64>().ok().filter(|v| v.is_finite());
                 out.push((key.to_string(), value.map(|v| json!(v)).unwrap_or(Value::Null)));
             }
+            Source::Toggle(key, active) => out.push((key.to_string(), Value::Bool(*active.borrow() == 1))),
             Source::Choice(key, options, values, active) => {
                 let i = *active.borrow();
                 let value = match values {
@@ -780,7 +888,9 @@ impl DialogState {
                 }
                 Field::Number { value, .. } => (Some(number_field(cx, 200.0, Some(*value), "", 1.0, Slot::None)), Rc::new(RefCell::new(0usize))),
                 Field::Choice { active, .. } => (None, Rc::new(RefCell::new(*active))),
-                Field::Note { .. } | Field::Preview { .. } | Field::Section { .. } | Field::Action { .. } | Field::Color { .. } => (None, Rc::new(RefCell::new(0usize))),
+                Field::Toggle { value, .. } => (None, Rc::new(RefCell::new(if *value { 1 } else { 0 }))),
+                Field::Note { .. } | Field::Preview { .. } | Field::Section { .. } | Field::Action { .. } | Field::Color { .. }
+                | Field::InsertCodes { .. } | Field::RenamePreview { .. } => (None, Rc::new(RefCell::new(0usize))),
             };
             rendered.push(Rendered { field: f.clone(), input, active });
         }
@@ -847,6 +957,8 @@ impl DialogState {
                 Field::Preview { .. } => 80.0,
                 Field::Section { .. } => 18.0,
                 Field::Color { .. } => 32.0,
+                // Five preview rows plus the "and N more"/error line.
+                Field::RenamePreview { names } => (names.len().min(5) + 1) as f32 * 16.0,
                 _ => 0.0,
             })
             .sum();
@@ -886,17 +998,21 @@ impl DialogState {
                 Field::Text { key, .. } => r.input.clone().map(|e| Source::Text(key, e)).unwrap_or(Source::Note),
                 Field::Number { key, .. } => r.input.clone().map(|e| Source::Number(key, e)).unwrap_or(Source::Note),
                 Field::Choice { key, options, values, .. } => Source::Choice(key, options.clone(), values.clone(), r.active.clone()),
-                Field::Note { .. } | Field::Preview { .. } | Field::Section { .. } | Field::Action { .. } | Field::Color { .. } => Source::Note,
+                Field::Toggle { key, .. } => Source::Toggle(key, r.active.clone()),
+                Field::Note { .. } | Field::Preview { .. } | Field::Section { .. } | Field::Action { .. } | Field::Color { .. }
+                | Field::InsertCodes { .. } | Field::RenamePreview { .. } => Source::Note,
             })
             .collect()
     }
 
     /// Backdrop + a **movable** window. Every piece is a shared control: `Popover` (title drag,
     /// X), the `field_row` grid, `dropdown`, `text_field` / `number_field` and `dialog_button`.
-    pub(crate) fn render(&mut self, viewport: Size<Pixels>) -> Vec<AnyElement> {
+    pub(crate) fn render(&mut self, viewport: Size<Pixels>, cx: &App) -> Vec<AnyElement> {
         let t = tokens();
         let close = self.close_fn();
         let sources = self.sources();
+        // Live field values for the Rename preview / button state (recomputed every frame).
+        let values = collect_sources(&sources, cx);
         self.viewport = viewport;
         let height = self.height();
         let at = self.place.unwrap_or_else(|| centered(viewport, self.spec.width, height));
@@ -932,7 +1048,7 @@ impl DialogState {
             let label_text = match &r.field {
                 Field::Text { label, .. } | Field::Number { label, .. } | Field::Choice { label, .. } => *label,
                 Field::Preview { label } | Field::Section { title: label } | Field::Action { label, .. } => *label,
-                Field::Note { .. } | Field::Color { .. } => "",
+                Field::Note { .. } | Field::Color { .. } | Field::Toggle { .. } | Field::InsertCodes { .. } | Field::RenamePreview { .. } => "",
             };
             let label = || {
                 div()
@@ -1048,6 +1164,84 @@ impl DialogState {
                         .child(div().size(pt(24.0)).rounded(pt(4.0)).bg(parse_hex(color.as_ref())))
                         .child(div().text_size(pt(12.0)).text_color(rgba(t.text)).child(SharedString::from(color.as_ref().to_uppercase()))),
                 ),
+                Field::Toggle { label, .. } => {
+                    let active = r.active.clone();
+                    let checked = *active.borrow() == 1;
+                    let cb = Checkbox::new(SharedString::from(format!("dialog-toggle-{label}")))
+                        .label(*label)
+                        .checked(checked)
+                        .on_change(move |&next, _, _| {
+                            *active.borrow_mut() = if next { 1 } else { 0 };
+                        });
+                    field_row_full(cb)
+                }
+                Field::InsertCodes { target, codes } => {
+                    // egui's `ui.horizontal`: three buttons that append `$&` / `$n` / `$N` to
+                    // "Rename to". `TextField::set_value` is queued and flushed on the next frame.
+                    let entity = self.rendered.iter().find_map(|rr| match &rr.field {
+                        Field::Text { key, .. } if key == target => rr.input.clone(),
+                        _ => None,
+                    });
+                    let mut row = div().w_full().h(pt(24.0)).flex().items_center().gap(pt(6.0));
+                    for (label, code) in codes {
+                        let e = entity.clone();
+                        let queue = self.cmds.clone();
+                        let code = *code;
+                        row = row.child(
+                            div()
+                                .h(pt(22.0))
+                                .pl(pt(8.0))
+                                .pr(pt(8.0))
+                                .flex()
+                                .items_center()
+                                .rounded(pt(4.0))
+                                .bg(rgba(t.field))
+                                .text_size(pt(10.0))
+                                .text_color(rgba(t.text))
+                                .cursor_pointer()
+                                .hover(|s| s.bg(rgba(t.hover)))
+                                .on_mouse_down(MouseButton::Left, move |_: &MouseDownEvent, _, cx: &mut App| {
+                                    if let Some(e) = &e {
+                                        let current = e.read(cx).value(cx);
+                                        e.update(cx, |f, _| f.set_value(format!("{current}{code}")));
+                                        queue.wake();
+                                    }
+                                })
+                                .child(*label),
+                        );
+                    }
+                    field_row_full(row)
+                }
+                Field::RenamePreview { names } => {
+                    let (err, rows) = batch_rename_preview(names, &values);
+                    let mut col = div().w_full().flex().flex_col().gap(pt(2.0));
+                    if let Some(e) = err {
+                        col = col.child(div().text_size(pt(10.0)).text_color(rgba(t.danger)).child(SharedString::from(e)));
+                    } else {
+                        for (old, new) in &rows {
+                            col = col.child(
+                                div()
+                                    .w_full()
+                                    .h(pt(16.0))
+                                    .flex()
+                                    .items_center()
+                                    .gap(pt(6.0))
+                                    .child(div().text_size(pt(10.0)).text_color(rgba(t.text_secondary)).child(SharedString::from(old.clone())))
+                                    .child(div().text_size(pt(10.0)).child("->"))
+                                    .child(div().text_size(pt(10.0)).text_color(rgba(t.text)).child(SharedString::from(new.clone()))),
+                            );
+                        }
+                        if names.len() > rows.len() && !rows.is_empty() {
+                            col = col.child(
+                                div()
+                                    .text_size(pt(10.0))
+                                    .text_color(rgba(t.text_secondary))
+                                    .child(SharedString::from(figcraft_i18n::trn("and {n} more", names.len() - rows.len(), &[]))),
+                            );
+                        }
+                    }
+                    field_row_full(col)
+                }
             };
             body = body.child(row);
         }
@@ -1061,8 +1255,14 @@ impl DialogState {
                 let sources_btn = sources.clone();
                 let kind = self.kind;
                 let action = b.action.clone();
+                // egui disables Rename until `ready`. Derive it from the same pure function the
+                // submit uses, so "disabled" and "no-op" can never disagree.
+                let enabled = match &b.action {
+                    Action::Derived { .. } if kind == Kind::Rename => batch_rename_params(&json!({}), &values).is_some(),
+                    _ => true,
+                };
                 els.push(
-                    dialog_button(b.label, b.primary, move |_: &MouseDownEvent, _, cx: &mut App| {
+                    dialog_button(b.label, b.primary, enabled, move |_: &MouseDownEvent, _, cx: &mut App| {
                         match &action {
                             Action::Submit { id, base } => {
                                 let params = merge_params(base, &collect_sources(&sources_btn, cx));
@@ -1076,7 +1276,9 @@ impl DialogState {
                             }
                             Action::Run { id } => cmds_btn.push(Cmd { id, params: None }),
                             Action::Derived { base } => {
-                                resolve_derived(kind, &collect_sources(&sources_btn, cx), base, &cmds_btn);
+                                if !resolve_derived(kind, &collect_sources(&sources_btn, cx), base, &cmds_btn) {
+                                    return; // not ready: keep the dialog open, like a disabled button
+                                }
                             }
                             Action::Close => {}
                         }
@@ -1178,21 +1380,24 @@ fn dropdown_field(
 }
 
 /// A labelled button. `on_click` is the generic mouse-down handler shared by every dialog button.
-fn dialog_button(label: &'static str, primary: bool, on_click: impl Fn(&MouseDownEvent, &mut Window, &mut App) + 'static) -> Div {
+fn dialog_button(label: &'static str, primary: bool, enabled: bool, on_click: impl Fn(&MouseDownEvent, &mut Window, &mut App) + 'static) -> Div {
     let t = tokens();
-    div()
+    let d = div()
         .w_full()
         .h(pt(24.0))
         .rounded(pt(6.0))
-        .bg(rgba(if primary { t.accent } else { t.field }))
+        .bg(rgba(if primary && enabled { t.accent } else { t.field }))
         .flex()
         .items_center()
         .justify_center()
         .text_size(pt(11.0))
-        .text_color(rgba(if primary { t.accent_on } else { t.text }))
-        .cursor_pointer()
-        .on_mouse_down(MouseButton::Left, on_click)
-        .child(SharedString::from(label))
+        .text_color(rgba(if primary && enabled { t.accent_on } else { t.text_secondary }))
+        .child(SharedString::from(label));
+    if enabled {
+        d.cursor_pointer().on_mouse_down(MouseButton::Left, on_click)
+    } else {
+        d
+    }
 }
 
 #[cfg(test)]
@@ -1414,5 +1619,99 @@ mod tests {
         assert!(s.fields.iter().any(|f| matches!(f, Field::Color { color } if color.as_ref() == "#00ff00")));
         // Create resolves the command (a `Derived` button, not a static Submit).
         assert!(s.buttons.iter().any(|b| matches!(&b.action, Action::Derived { .. })), "Create is a Derived button");
+    }
+
+    // ── A8: the Rename layers dialog (1:1 with ui-egui/dialogs/batch_rename.rs) ──────────
+
+    fn rename_sources(find: &str, to: &str, regex: bool, start: f64) -> Vec<(String, Value)> {
+        vec![
+            ("find".into(), json!(find)),
+            ("to".into(), json!(to)),
+            ("regex".into(), json!(regex)),
+            ("start".into(), json!(start)),
+        ]
+    }
+
+    #[test]
+    fn rename_empty_match_uses_name_and_keeps_the_injected_ids() {
+        // egui: `if b.find.is_empty() { p["name"] = b.to }`.
+        let base = json!({ "ids": [7, 8] });
+        let p = batch_rename_params(&base, &rename_sources("", "Frame $n", false, 3.0)).expect("ready");
+        assert_eq!(p["ids"], json!([7, 8]));
+        assert_eq!(p["name"], json!("Frame $n"));
+        assert_eq!(p["regex"], json!(false));
+        assert_eq!(p["start"], json!(3));
+        assert!(p.get("find").is_none() && p.get("replace").is_none());
+    }
+
+    #[test]
+    fn rename_with_a_match_uses_find_and_replace() {
+        let p = batch_rename_params(&json!({ "ids": [1] }), &rename_sources("Frame", "Rect", false, 1.0)).expect("ready");
+        assert_eq!(p["find"], json!("Frame"));
+        assert_eq!(p["replace"], json!("Rect"));
+        assert!(p.get("name").is_none(), "a match replaces occurrences, it does not rename the whole name");
+    }
+
+    #[test]
+    fn rename_disabled_for_an_invalid_regex_or_an_empty_form() {
+        // egui's `ready = rename.is_ok() && !(find.is_empty() && to.is_empty())`.
+        assert!(batch_rename_params(&json!({}), &rename_sources("(", "x", true, 1.0)).is_none(), "invalid regex");
+        assert!(batch_rename_params(&json!({}), &rename_sources("", "", false, 1.0)).is_none(), "both fields empty");
+        assert!(batch_rename_params(&json!({}), &rename_sources("", "New name", false, 1.0)).is_some());
+    }
+
+    #[test]
+    fn rename_start_is_clamped_like_the_egui_drag_value() {
+        let p = batch_rename_params(&json!({}), &rename_sources("", "X", false, 9_999_999.0)).expect("ready");
+        assert_eq!(p["start"], json!(1_000_000));
+    }
+
+    #[test]
+    fn rename_preview_uses_the_engine_for_up_and_down_numbers() {
+        let names = vec!["A".to_string(), "B".to_string(), "C".to_string()];
+        let (err, up) = batch_rename_preview(&names, &rename_sources("", "Item $n", false, 1.0));
+        assert!(err.is_none());
+        assert_eq!(up, vec![("A".into(), "Item 1".into()), ("B".into(), "Item 2".into()), ("C".into(), "Item 3".into())]);
+        let (err, down) = batch_rename_preview(&names, &rename_sources("", "Item $N", false, 1.0));
+        assert!(err.is_none());
+        assert_eq!(down, vec![("A".into(), "Item 3".into()), ("B".into(), "Item 2".into()), ("C".into(), "Item 1".into())]);
+        // Regex errors are shown instead of a preview.
+        let (err, rows) = batch_rename_preview(&names, &rename_sources("(", "x", true, 1.0));
+        assert!(err.is_some() && rows.is_empty());
+    }
+
+    #[test]
+    fn rename_preview_shows_at_most_five_rows() {
+        let names: Vec<String> = (0..8).map(|i| format!("L{i}")).collect();
+        let (_, rows) = batch_rename_preview(&names, &rename_sources("", "R$n", false, 1.0));
+        assert_eq!(rows.len(), 5, "egui previews PREVIEW_ROWS = 5 and prints 'and N more' for the rest");
+    }
+
+    #[test]
+    fn rename_spec_keeps_the_egui_field_order_and_derived_submit() {
+        let s = spec(Kind::Rename, &json!({ "ids": [1, 2], "names": ["A", "B"] }));
+        assert_eq!(s.title, figcraft_i18n::tr("Rename layers"));
+        assert_eq!(s.width, 320.0);
+        let keys: Vec<&str> = s
+            .fields
+            .iter()
+            .filter_map(|f| match f {
+                Field::Text { key, .. } | Field::Number { key, .. } | Field::Toggle { key, .. } => Some(*key),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(keys, vec!["find", "regex", "to", "start"], "Match, regex, Rename to, Start");
+        assert!(s.fields.iter().any(|f| matches!(f, Field::InsertCodes { target, codes } if *target == "to" && codes.len() == 3)));
+        assert!(s.fields.iter().any(|f| matches!(f, Field::RenamePreview { names } if names.len() == 2)));
+        assert_eq!(s.buttons.len(), 2, "Cancel + Rename");
+        assert!(s.buttons.iter().any(|b| matches!(&b.action, Action::Derived { .. })), "Rename resolves object.batchRename");
+        assert_eq!(s.buttons.iter().filter(|b| b.action == Action::Close).count(), 1, "every dialog has a way out");
+    }
+
+    #[test]
+    fn rename_is_opened_from_the_menu_instead_of_executed_with_defaults() {
+        assert_eq!(menu_action("object.batchRename"), Some(Kind::Rename));
+        assert_eq!(derived_commands(Kind::Rename), vec!["object.batchRename"]);
+        assert_eq!(derived_commands(Kind::SampledColor), vec!["style.create", "variable.create", "command.batch"]);
     }
 }
