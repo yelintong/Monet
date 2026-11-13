@@ -13,124 +13,77 @@ const CW: u32 = 1157;
 const CH: u32 = 1666;
 
 fn main() {
-    let glass_path = concat!(env!("CARGO_MANIFEST_DIR"), "/assets/wgsl/glass.wgsl");
-    println!("glass.wgsl: {glass_path}");
+    let glass = concat!(env!("CARGO_MANIFEST_DIR"), "/assets/wgsl/glass.wgsl");
+    let scale = 30.1; // 1720%
+    let origin = (0.0_f64, 0.0_f64);
+    // The pane's left edge, 300 device px into the viewport. Its interior is to the right.
+    let pane_left_doc = 300.0 / scale;
 
-    let mut doc = Document::default();
-    let page = doc.pages[0];
+    let Some(mut runner) = WgslRunner::new() else { println!("no GPU adapter"); return };
 
-    // A distinctive backdrop: solid red, 800x600, so any copy of it is easy to recognise.
-    let red = doc
-        .create(page, NodeKind::Rectangle, "Backdrop", 0.0, 0.0, 800.0, 600.0)
-        .expect("backdrop");
-    doc.get_mut(red).expect("backdrop node").fills =
-        vec![Paint::solid(Color::from_hex("FF0000").unwrap())];
-
-    // The pane: same box, glass material, and a **green** fill so a frame that fell back to the
-    // plain fill is impossible to confuse with a frame that composited the material.
-    let pane = doc
-        .create(page, NodeKind::Rectangle, "Pane", 0.0, 0.0, 800.0, 600.0)
-        .expect("pane");
-    {
-        let n = doc.get_mut(pane).expect("pane node");
-        n.fills = vec![Paint::solid(Color::from_hex("00FF00").unwrap())];
-        let binding = format!(
-            "{{\"path\":\"{}\",\"params\":{{}}}}",
-            glass_path.replace('\\', "\\\\")
-        );
-        n.plugin_data.insert("figcraft.wgslMaterial".to_string(), binding);
-    }
-
-    let Some(mut runner) = WgslRunner::new() else {
-        println!("no GPU adapter — cannot composite");
-        return;
-    };
-
-    let cases: &[(&str, (f64, f64), f64)] = &[
-        // viewport centred in the pane: every edge is ~ (400-19)*scale px away
-        ("interior (edges far off-screen)", (390.0, 290.0), 30.1),
-        // pane's left edge on screen
-        ("left edge on screen", (0.0, 290.0), 30.1),
-        // reference: whole pane visible at 100%
-        ("whole pane at 1.75x", (0.0, 0.0), 1.75),
-    ];
-
-    for (label, (ox, oy), scale) in cases {
-        let view = View { origin: (*ox, *oy), scale: *scale, width: CW, height: CH };
-        let passes = passes_for(&doc, page, &view, 0.0);
-        println!("\n== {label} @ scale {scale} == passes={}", passes.len());
-        for p in &passes {
-            println!(
-                "   node={:?} rect_px={:?} node_px=({:.0},{:.0}) origin_px=({:.1},{:.1}) fields={}",
-                p.node,
-                p.rect_px,
-                p.node_px.0,
-                p.node_px.1,
-                p.origin_px.0,
-                p.origin_px.1,
-                p.field_bytes.is_some(),
+    // The figure being refracted sits **left of the pane's edge**, i.e. exactly the strip the lens
+    // pulls in. Two cases: the same strip, once inside the viewport canvas and once outside it.
+    // Device-pixel placement makes the two cases directly comparable: the second figure is the
+    // first one moved past the canvas' right edge, so it was never rasterized.
+    for (label, dev_x0, dev_x1) in [
+        ("figure at device x 480..540  (inside the window)", 480.0, 540.0),
+        ("figure at device x 1500..1560 (outside the window)", 1500.0, 1560.0),
+    ] {
+        let (fig_x0, fig_x1) = (dev_x0 / scale, dev_x1 / scale);
+        let mut doc = Document::default();
+        let page = doc.pages[0];
+        let fig = doc.create(page, NodeKind::Rectangle, "fig", fig_x0, 0.0, fig_x1, 4000.0).expect("fig");
+        doc.get_mut(fig).expect("fig n").fills = vec![Paint::solid(Color::from_hex("FF0000").unwrap())];
+        let pane = doc.create(page, NodeKind::Rectangle, "Pane", pane_left_doc, 0.0, 40_000.0, 40_000.0).expect("pane");
+        {
+            let n = doc.get_mut(pane).expect("pane n");
+            n.fills = vec![Paint::solid(Color::from_hex("00FF00").unwrap())];
+            let binding = format!(
+                "{{\"path\":\"{}\",\"params\":{{\"u.frost\":0,\"u.dispersion\":0,\"u.refraction\":1,\"u.depth\":50}}}}",
+                glass.replace('\\', "\\\\")
             );
-            for (var, bytes) in &p.uniforms {
-                if var == "u" && bytes.len() >= 56 {
-                    let f = |at: usize| {
-                        f32::from_le_bytes([bytes[at], bytes[at + 1], bytes[at + 2], bytes[at + 3]])
-                    };
+            n.plugin_data.insert("figcraft.wgslMaterial".to_string(), binding);
+        }
+        let view = View { origin, scale, width: CW, height: CH };
+        let passes = passes_for(&doc, page, &view, 0.0);
+        for pass in &passes {
+            for (var, bytes) in &pass.uniforms {
+                if var == "u" && bytes.len() >= 40 {
+                    let f = |at: usize| f32::from_le_bytes([bytes[at], bytes[at + 1], bytes[at + 2], bytes[at + 3]]);
                     println!(
-                        "   u: depth={:.2} disp={:.2} frost={:.2} splay={:.2} dpr={:.3} nodeSizePx=({:.0},{:.0}) origin=({:.1},{:.1})",
-                        f(20), f(24), f(28), f(32), f(36), f(40), f(44), f(48), f(52)
+                        "   u.depth={:.2} doc  dpr={:.2}  => max sample offset {:.0} px  (canvas {}x{}, window {:?})",
+                        f(20), f(36), f(20) * f(36), CW, CH, pass.rect_px
                     );
                 }
             }
         }
-        // The CPU scene the compositor reads as its backdrop: white canvas with the red rect
-        // painted where the view maps it. The pane's own fill is NOT in it (the renderer digs the
-        // hole), so a pixel that comes back red is a copy of the backdrop and a pixel that comes
-        // back green is the pane's plain fill (i.e. the material never ran).
+
+        // CPU scene exactly as the renderer builds it: the canvas **is** the viewport, so a node
+        // whose device rect lies outside 0..CW is simply not in it.
         let mut scene = vec![255u8; (CW * CH * 4) as usize];
-        {
-            let xf = view.transform();
-            let (sx0, sy0) = {
-                let p = xf * figcraft_geom::Point::new(0.0, 0.0);
-                (p.x, p.y)
-            };
-            let (sx1, sy1) = {
-                let p = xf * figcraft_geom::Point::new(800.0, 600.0);
-                (p.x, p.y)
-            };
-            let x0 = sx0.max(0.0) as i64;
-            let y0 = sy0.max(0.0) as i64;
-            let x1 = (sx1.min(f64::from(CW))) as i64;
-            let y1 = (sy1.min(f64::from(CH))) as i64;
-            for y in y0..y1 {
-                for x in x0..x1 {
-                    let i = ((y as usize) * CW as usize + x as usize) * 4;
-                    // BGRA: red
-                    scene[i] = 0;
-                    scene[i + 1] = 0;
-                    scene[i + 2] = 255;
-                    scene[i + 3] = 255;
+        for y in 0..CH as usize {
+            for x in 0..CW as usize {
+                let doc_x = origin.0 + (x as f64) / scale;
+                if doc_x >= fig_x0 && doc_x < fig_x1 {
+                    let i = (y * CW as usize + x) * 4;
+                    scene[i] = 0; scene[i + 1] = 0; scene[i + 2] = 255;
                 }
             }
         }
-        let Some(rgba) = runner.composite(&scene, CW, CH, &passes) else {
-            println!("   composite returned None");
-            continue;
-        };
-        let at = |x: usize, y: usize| {
+        let Some(out) = runner.composite(&scene, CW, CH, &passes) else { println!("{label}: failed"); continue };
+        // Scan the row just inside the pane's left edge for the pulled-in red.
+        let y = CH as usize / 2;
+        let mut red = 0usize;
+        let mut max_red = 0u8;
+        for x in 300..700 {
             let i = (y * CW as usize + x) * 4;
-            (rgba[i], rgba[i + 1], rgba[i + 2], rgba[i + 3])
-        };
-        let (cx, cy) = (CW as usize / 2, CH as usize / 2);
-        println!("   centre        = {:?}", at(cx, cy));
-        println!("   quarter in    = {:?}", at(cx / 2, cy / 2));
-        println!("   near left     = {:?}", at(20, cy));
-        let mut mn = 255u8;
-        let mut mx = 0u8;
-        for x in 0..CW as usize {
-            let (r, g, _b, _a) = at(x, cy);
-            mn = mn.min(g);
-            mx = mx.max(g);
+            let (g, r) = (i32::from(out[i + 1]), i32::from(out[i + 2]));
+            if r > 40 && r > g + 20 {
+                red += 1;
+                max_red = max_red.max(r as u8);
+            }
         }
-        println!("   centre row green range = {mn}..{mx}  (flat == it is a plain copy)");
+        println!("{label}");
+        println!("   passes={} red_pulled_inside_pane={red} px (max R={max_red})", passes.len());
     }
 }
