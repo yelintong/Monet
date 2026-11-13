@@ -626,7 +626,10 @@ impl Document {
         let Some(n) = self.node(id) else { return Affine::IDENTITY };
         let mut t = n.transform;
         let mut parent = n.parent;
-        while let Some(p) = parent.and_then(|p| self.node(p)).filter(|p| p.kind.bounds_follow_children()) {
+        // A restored snapshot can leave a parent chain that loops (a frame whose parent is its own
+        // child). Walk each node once so the chain ends instead of spinning forever.
+        let mut seen = std::collections::BTreeSet::from([id]);
+        while let Some(p) = parent.and_then(|p| self.node(p)).filter(|p| p.kind.bounds_follow_children() && seen.insert(p.id)) {
             t = p.transform * t;
             parent = p.parent;
         }
@@ -806,11 +809,20 @@ impl Document {
     /// What `n`'s visible children show, together: each mask's run within the mask's bounds.
     fn children_render_bounds(&self, n: &Node, depth: usize) -> Option<Rect> {
         let shown = |i: &NodeId| self.node(*i).is_some_and(|c| c.visible && !c.is_mask);
+        // A file can list the same child more than once (a merge, or a snapshot restored mid-write).
+        // Bounds union idempotently, so visiting each child once is both correct and what keeps a
+        // list doubled at every level from walking 2^depth paths.
+        let mut seen: std::collections::BTreeSet<NodeId> = std::collections::BTreeSet::new();
         let mut out: Option<Rect> = None;
         for run in self.paint_runs(n) {
             let ids = n.children.get(run).unwrap_or(&[]);
             let mask = ids.first().copied().filter(|m| self.node(*m).is_some_and(|c| c.is_mask && c.visible));
-            let r = ids.iter().filter(|i| shown(i)).filter_map(|i| self.render_bounds_at(*i, depth)).reduce(|a, b| a.union(b));
+            let r = ids
+                .iter()
+                .filter(|i| shown(i))
+                .filter(|i| seen.insert(**i))
+                .filter_map(|i| self.render_bounds_at(*i, depth))
+                .reduce(|a, b| a.union(b));
             let r = match mask {
                 Some(m) => r.zip(self.render_bounds_at(m, depth)).map(|(a, b)| a.intersect(b)).filter(|x| x.width() > 0.0 && x.height() > 0.0),
                 None => r,
