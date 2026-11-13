@@ -120,6 +120,31 @@ fn pass_for(req: &ShadeRequest, doc: &Document) -> crate::wgsl_runner::RunPass {
     }
 }
 
+/// 这些材质在**自己那层之外**还要读多少设备像素 —— 分带渲染靠它决定每条带多渲染多少行。
+///
+/// 材质的空间 reach 就是它的透镜带：`depth`（文档单位，已经由 [`figcraft_doc::Glass::
+/// depth_reach_doc`] 换算过）加一单位的 bevel，乘回 `scale` 变设备像素。不把它算进 overlap，
+/// 每条带就会在带边界处采到被截断的底图：每条带各画一遍自己的边缘高光，接缝处留下亮带。
+/// 材质的阅读距离完全由参数决定，与底图无关，所以这里只需要遍历绑定，不需要底图像素。
+pub fn reach_px(doc: &Document, page: NodeId, scale: f64) -> f64 {
+    let mut worst: f64 = 0.0;
+    for (id, spec) in specs(doc, page) {
+        let Some(n) = doc.node(id) else { continue };
+        let short = n.width.min(n.height).max(1.0);
+        let depth = spec
+            .params
+            .iter()
+            .find(|(k, _)| k.as_str() == "depth" || k.ends_with(".depth"))
+            .map(|(_, v)| *v)
+            .unwrap_or(20.0);
+        worst = worst.max(figcraft_doc::Glass::depth_reach_doc(depth, short));
+    }
+    if worst <= 0.0 {
+        return 0.0;
+    }
+    (worst + 1.0) * scale.max(1e-9) + 4.0
+}
+
 fn visible(doc: &Document, id: NodeId) -> bool {
     let mut cur = Some(id);
     while let Some(nid) = cur {

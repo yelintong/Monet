@@ -332,6 +332,13 @@ fn run(job: &Job, view: &View, retained: &mut Retained, coarse: bool, reuse: Opt
             }
         }
     }
+    // 逐层材质在带边界处要读到自己那层之外的底图：把它的透镜 reach 交给分带器，否则每条带
+    // 各自画一遍边缘高光，接缝就是一条条亮带（大节点被切 16 条时最刺眼）。
+    #[cfg(feature = "gpu")]
+    let shade_reach =
+        job.shade.as_ref().map_or(0.0, |_| crate::shade_gpu::reach_px(&job.doc, job.page, view.scale));
+    #[cfg(not(feature = "gpu"))]
+    let shade_reach = 0.0;
     let opts = figcraft_render::Options {
         outline_mode: job.outline,
         outline: job.outline_extras,
@@ -343,6 +350,7 @@ fn run(job: &Job, view: &View, retained: &mut Retained, coarse: bool, reuse: Opt
         dots: job.dots,
         bands: job.bands.clone(),
         shade: job.shade.clone(),
+        shade_reach,
         ..Default::default()
     };
     let (view, pix, work) = retained.render(&job.doc, job.page, view, &opts)?;
@@ -1276,6 +1284,8 @@ impl Renders {
         self.last_image = Some(done.image.clone());
         // 这一帧在 `draw_layer` 里登记的层，现在算出来装回板上：下一帧直接画，不再等。
         #[cfg(feature = "gpu")]
+        let mut produced = 0usize;
+        #[cfg(feature = "gpu")]
         if let Some(board) = job.shade.as_ref() {
             if render_log() { eprintln!("[shade] drain pending={}", board.pending()); }
             let mut mats = self.mats.lock().unwrap_or_else(|e| e.into_inner());
@@ -1283,8 +1293,23 @@ impl Renders {
                 mats.runner = crate::wgsl_runner::WgslRunner::new();
             }
             if let Some(runner) = mats.runner.as_mut() {
-                crate::shade_gpu::shade_pending(board, runner, &job.doc);
+                produced = crate::shade_gpu::shade_pending(board, runner, &job.doc);
             }
+        }
+        // 刚算出的栅格不在 `done` 里（那一帧是在栅格存在之前画的）。而 worker 算完**并不保证**
+        // 还有下一帧：画布静止时一帧都不再渲染，栅格就永远停在板上没人画——这正是「玻璃/材质
+        // 在静止画面上消失」的根因（也解释了截图里 rail 请求 ok=1/1 却洋红=0）。所以把复用缓存
+        // 丢掉、当帧再画一次：这次 `shader_layer` 正好命中刚装上去的栅格，材质就进到本帧交付的
+        // 图里。只有真的产出新栅格才重画（静止帧没产出，不付这份代价）。
+        #[cfg(feature = "gpu")]
+        if produced > 0 {
+            self.full.clear();
+            done = guarded(&mut self.full, |r| run(job, &job.view, r, false, None))?;
+            self.last = Some((job.uid, job.page, job.view.scale));
+            if done.work == Work::Full {
+                self.full_ms = done.ms;
+            }
+            self.last_image = Some(done.image.clone());
         }
         Some(done)
     }
@@ -2195,6 +2220,7 @@ mod async_refine_tests {
             dots: None,
             grab: None,
             bands: Vec::new(),
+            shade: None,
             uid: 1,
             zoom_preview: false,
             at: std::time::Instant::now(),
@@ -2328,6 +2354,7 @@ mod material_apply_tests {
             dots: None,
             grab: None,
             bands: Vec::new(),
+            shade: None,
             uid: 1,
             zoom_preview: false,
             at: std::time::Instant::now(),

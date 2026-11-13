@@ -99,6 +99,18 @@ pub struct Options {
     /// （等价于内置 Glass 在 `backdrop_layer` 里的位置），子树仍由普通递归画在其上。
     /// 见 [`shade`]。
     pub shade: Option<std::sync::Arc<shade::ShadeBoard>>,
+    /// 外置材质在自己那层之外还要读多少**设备像素**（它的透镜 reach，`depth × scale`）。
+    ///
+    /// 分带渲染时每条带只渲染自己那段画面，材质若在带边界处采样，读到的就是被截断的底图：
+    /// 每条带于是各画一遍自己的边缘高光，带与带之间留下接缝（一条条横/竖的白线与亮带）。
+    /// 这个值让每条带多渲染这么宽，材质看到的就是它在整幅画面里该看到的那片底图。
+    /// 0 = 没有材质（内置背景模糊走 [`max_backdrop_blur`] 那条路，不受影响）。
+    pub shade_reach: f64,
+    /// 这次渲染真正负责的设备像素行范围（分带时设成带自己那段；`None` = 整幅）。
+    ///
+    /// 带会多渲染一圈 overlap 供模糊/材质读上下文，那圈最后被裁掉；材质节点整块归它所在的那条
+    /// 带（见 [`band_spans`]），相邻带按行范围就不必在自己那圈里再算一遍同一个节点。
+    pub rows: Option<(f64, f64)>,
 }
 
 /// 一块提示带（不属于文档，只是画布上的辅助显示）。坐标是**页面坐标**。
@@ -201,21 +213,21 @@ fn band_pool() -> Option<&'static rayon::ThreadPool> {
     .as_ref()
 }
 
-/// Render `view` as `bands` horizontal bands in parallel. Bands overlap by what background blurs
-/// read and each keeps only its own rows, so a backdrop never ends at a band's edge. `None` when a
-/// blur reaches past a whole band (every band would render most of the view: render it in one
-/// piece instead).
+/// Render `view` as horizontal bands in parallel. Bands overlap by what background blurs read and
+/// each keeps only its own rows, so a backdrop never ends at a band's edge. `None` when a blur
+/// reaches past a whole band (every band would render most of the view: render it in one piece
+/// instead).
+///
+/// Bands are not necessarily equal: a material node is never cut (see [`band_spans`]).
 #[cfg(not(target_arch = "wasm32"))]
 fn render_bands(doc: &Document, page: NodeId, view: &View, opts: &Options, bands: u32) -> Option<Pixmap> {
     use rayon::prelude::*;
     let band_h = view.height.div_ceil(bands.max(1));
-    let overlap = band_overlap(doc, view, band_h)?;
-    let parts: Vec<(u32, Option<Pixmap>)> = (0..bands)
+    let overlap = band_overlap(doc, view, band_h, opts.shade_reach)?;
+    let spans = band_spans(doc, page, view, opts, band_h);
+    let parts: Vec<(u32, Option<Pixmap>)> = spans
         .into_par_iter()
-        .map(|i| {
-            let y0 = i * band_h;
-            (y0, render_band(doc, page, view, opts, y0, band_h, overlap))
-        })
+        .map(|(y0, h)| (y0, render_band(doc, page, view, opts, y0, h, overlap)))
         .collect();
     let mut out = new_pixmap(view.width, view.height)?;
     for (y0, part) in parts {
@@ -226,11 +238,86 @@ fn render_bands(doc: &Document, page: NodeId, view: &View, opts: &Options, bands
     Some(out)
 }
 
-/// How many rows bands of `band_h` rows of `view` overlap (what background blurs read); `None`
-/// when that is more than a band.
-pub(crate) fn band_overlap(doc: &Document, view: &View, band_h: u32) -> Option<u32> {
-    let overlap = backdrop_reach(max_backdrop_blur(doc), view.scale).ceil();
-    (overlap.is_finite() && overlap <= f64::from(band_h)).then_some(overlap as u32)
+/// The rows to render, as `(y0, height)` spans: `view` sliced into `band_h` bands, except that a
+/// material node is **never cut by a boundary**.
+///
+/// A material's lens reads its own surroundings, so a band edge through the pane would be an edge
+/// it draws a rim on (and whose frost samples a truncated backdrop); worse, its raster is cached
+/// per window, so a pane spanning N bands would cost N GPU passes — measured 47 ms for one 1100 px
+/// pane across 12 bands. A pane that spans bands becomes one taller span: it renders on one thread
+/// but once, and the rows it spans are exactly the rows it needs.
+fn band_spans(doc: &Document, page: NodeId, view: &View, opts: &Options, band_h: u32) -> Vec<(u32, u32)> {
+    let h = view.height.max(1);
+    let mut ranges: Vec<(u32, u32)> = Vec::new();
+    if let Some(board) = &opts.shade
+        && board.specs_len() > 0
+    {
+        let xf = view.transform();
+        for id in doc.subtree(page) {
+            if board.spec_for(id).is_none() {
+                continue;
+            }
+            let Some(r) = doc.bounds_of(&[id]) else { continue };
+            let a = xf * figcraft_geom::Point::new(r.x0, r.y0);
+            let b = xf * figcraft_geom::Point::new(r.x1, r.y1);
+            let (lo, hi) = (a.y.min(b.y), a.y.max(b.y));
+            let lo = lo.floor().clamp(0.0, f64::from(h)) as u32;
+            let hi = hi.ceil().clamp(0.0, f64::from(h)) as u32;
+            if hi > lo {
+                ranges.push((lo, hi));
+            }
+        }
+    }
+    if ranges.is_empty() {
+        let mut out = Vec::with_capacity(usize::try_from(h.div_ceil(band_h)).unwrap_or(1));
+        let mut y = 0;
+        while y < h {
+            let nh = band_h.min(h - y);
+            out.push((y, nh));
+            y += nh;
+        }
+        return out;
+    }
+    // Every material edge is a cut point; between two of them, a span that lies inside a material
+    // range stays whole and everything else is sliced as usual.
+    let mut cuts: Vec<u32> = vec![0, h];
+    for (a, b) in &ranges {
+        cuts.push(*a);
+        cuts.push(*b);
+    }
+    cuts.sort_unstable();
+    cuts.dedup();
+    let mut out = Vec::new();
+    for w in cuts.windows(2) {
+        let (a, b) = (w[0], w[1]);
+        if b <= a {
+            continue;
+        }
+        if ranges.iter().any(|(lo, hi)| *lo <= a && b <= *hi) {
+            out.push((a, b - a));
+            continue;
+        }
+        let mut y = a;
+        while y < b {
+            let nh = band_h.min(b - y);
+            out.push((y, nh));
+            y += nh;
+        }
+    }
+    out
+}
+
+/// How many rows bands of `band_h` rows of `view` overlap (what background blurs **and external
+/// materials** read); `None` when that is more than a band.
+///
+/// Two readers reach past their own rows: a background blur (`max_backdrop_blur`) and a material's
+/// lens, whose reach the caller measured into `shade_reach` (device pixels — it already carries the
+/// scale). Both have to fit inside the overlap, or the band's own edge becomes the pane's edge.
+pub(crate) fn band_overlap(doc: &Document, view: &View, band_h: u32, shade_reach: f64) -> Option<u32> {
+    let blur = backdrop_reach(max_backdrop_blur(doc), view.scale);
+    let reach = if shade_reach.is_finite() { blur.max(shade_reach.max(0.0)) } else { f64::INFINITY };
+    let reach = reach.ceil();
+    (reach.is_finite() && reach <= f64::from(band_h)).then_some(reach as u32)
 }
 
 /// The rows `y0 .. y0 + band_h` of `view` (fewer at the bottom), rendered with `overlap` rows
@@ -241,7 +328,11 @@ pub(crate) fn render_band(doc: &Document, page: NodeId, view: &View, opts: &Opti
     let top = y0.saturating_sub(overlap);
     let bottom = (y0 + h + overlap).min(view.height).max(y0 + h);
     let v = View { origin: (view.origin.0, view.origin.1 + f64::from(top) / s), scale: view.scale, width: view.width, height: bottom - top };
-    let part = render_one(doc, page, &v, opts);
+    // This band owns rows `y0 .. y0 + h` of the view; the `overlap` rows either side are context
+    // for blurs and materials, and get cut away below. A material node is drawn by whichever band
+    // owns its middle, so the context rows do not run the same lens again.
+    let local = Options { rows: Some(((y0 - top) as f64, (y0 - top + h) as f64)), ..opts.clone() };
+    let part = render_one(doc, page, &v, &local);
     if overlap == 0 {
         return part;
     }
@@ -301,6 +392,7 @@ fn render_one(doc: &Document, page: NodeId, view: &View, opts: &Options) -> Opti
         bounds: &bounds,
         bands: &opts.bands,
         shade: opts.shade.as_deref(),
+        rows: opts.rows,
         page_xf: view.transform(),
     };
     let xf = view.transform();
@@ -343,6 +435,7 @@ fn nodes_into(doc: &Document, ids: &[NodeId], view: &View, pix: &mut Pixmap, tim
         bounds: &bounds,
         bands: &[],
         shade: None,
+        rows: None,
         page_xf: view.transform(),
     };
     // 0, but inside an exporter's [`draw::at_layer_depth`] its depth: one cap for both (#1082).

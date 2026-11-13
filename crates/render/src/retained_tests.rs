@@ -328,7 +328,7 @@ fn a_render_drawn_band_by_band_matches_one_in_one_piece() {
 fn bands_thinner_than_a_blur_reaches_grow_to_twice_its_reach() {
     let s = scene(true);
     let v = View { origin: (-10.0, -10.0), scale: 4.0, width: 380, height: 360 };
-    let reach = crate::band_overlap(&s.doc, &v, u32::MAX).unwrap();
+    let reach = crate::band_overlap(&s.doc, &v, u32::MAX, 0.0).unwrap();
     assert!(reach > 4, "the blur reaches past the bands asked for");
     let mut r = Retained::default();
     let (shown, pix, n) = stepped(&mut r, &s.doc, s.page, &v, 4);

@@ -63,6 +63,7 @@ pub fn cell_pixmap(doc: &Document, pt: &PatternPaint, w: f64, h: f64, scale: f64
         bounds: &bounds,
         bands: &[],
         shade: None,
+        rows: None,
         page_xf: Affine::IDENTITY,
     };
     let unrotated = src.transform.inverse();

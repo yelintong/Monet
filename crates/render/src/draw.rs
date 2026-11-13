@@ -48,6 +48,12 @@ pub struct Ctx<'a, 'd> {
     pub bands: &'a [crate::Band],
     /// 外置 WGSL 材质板（`Some` 时，绑了材质的图层那层的底图由 GPU 产出，见 [`crate::shade`]）。
     pub shade: Option<&'a crate::shade::ShadeBoard>,
+    /// 这次渲染**真正负责**的设备像素行范围（分带渲染时是带自己那段；`None` 是整幅）。
+    ///
+    /// 每带会多渲染一圈 overlap 好让模糊/材质读到自己那层之外的底图，这圈像素最后会被裁掉。
+    /// 材质节点本身由「装得下它」的那一条带整块算一次（见 `crate::band_spans`），所以按行范围
+    /// 归属就不必在相邻带的 overlap 里再算一遍——否则同一节点会白跑 N 次 GPU pass。
+    pub rows: Option<(f64, f64)>,
     /// 页面 → 设备像素（提示带是页面坐标，直接用它画）。
     pub page_xf: Affine,
 }
@@ -632,6 +638,11 @@ fn draw_layer(ctx: &Ctx, pix: &mut Pixmap, n: &Node, parent_xf: Affine, depth: u
     // 外置 WGSL 材质：这一层的「底图」由 GPU 现算，落点与内置 Glass 完全相同（内容之下的
     // 那一层像素），子树仍由普通递归画在它上面。有材质时内置 backdrop 效果让位——两条路径
     // 同时画会在同一层里叠两次玻璃。
+    //
+    // 每条跨到这个节点的带都按**自己窗口**算玻璃：缓存键含窗口尺寸 / origin / 底图，所以相邻带
+    // 不会互相覆盖（早期「单一 per-node 槽」才会让所有带画成同一张、出现重复亮带）；带的
+    // overlap 又按材质透镜 reach 给了模糊足够上下文，拼接处连续。绝不能只让「一条带」认领——
+    // 那样比视口高的窗格在其余带里整块不画玻璃，放大到 235% 时整块消失。
     let shader = ctx.shade.and_then(|b| b.spec_for(id));
     let shaded = shader.as_ref().and_then(|spec| shader_layer(ctx, pix, n, spec, (lx, ly), (lw, lh), lxf));
     // Background blur and glass: the whole backdrop under the layer (every surface below this
@@ -779,7 +790,7 @@ fn shader_layer(
     });
     // 没算出来就用这一层上一张：拖动材质本身时键每帧都换，画空白会闪。第一次见到这个节点
     // 时它本来就没有上一张，那一帧仍然是空的。
-    board.latest(n.id).map(|s| s.pixmap.clone())
+    board.latest(n.id, (lw, lh)).map(|s| s.pixmap.clone())
 }
 
 /// Node `n`'s backdrop effects through its backdrop outline `sh`, for its `size` layer at `at` on
