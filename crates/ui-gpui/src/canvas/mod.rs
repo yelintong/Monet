@@ -70,6 +70,8 @@ pub struct CanvasState {
     pub tex_coarse: bool,
     /// 贴图回答的请求序号。
     pub tex_seq: u64,
+    /// 本帧视口对应的渲染单元清单（接口层接线，暂不驱动渲染）。
+    pub units: Vec<tiles::UnitKey>,
     /// 覆盖整页的低分辨率兜底图（见 [`render_worker::Overview`]），铺在清晰贴图**下面**。
     /// 平移露出新区域时，清晰贴图还没到的那一条立刻有内容，看不见"正在加载"。
     pub overview: Option<(Arc<RenderImage>, View)>,
@@ -108,6 +110,7 @@ impl Default for CanvasState {
             tex_of: None,
             tex_coarse: false,
             tex_seq: 0,
+            units: Vec::new(),
             overview: None,
             overview_of: None,
             live: None,
@@ -166,6 +169,27 @@ pub fn show(app: &mut CanvasApp, worker: &mut Worker, ppp: f32, t: &Tokens) -> C
             ds.view.cx = ox + ds.view.vw / 2.0 / z;
             ds.view.cy = oy + ds.view.vh / 2.0 / z;
         }
+    }
+
+    // 本帧渲染单元清单（接口层接线）：按页面坐标的稳定网格 + 缩放档位生成，
+    // 让「哪些单元需要重跑」在画布状态里可见；渲染路径暂不消费它。
+    let units = app.session.ds().ok().map(|ds| {
+        let (ox, oy) = ds.view.origin();
+        let z = ds.view.zoom.max(1e-9);
+        let w = f64::from(rect.width()) / z;
+        let h = f64::from(rect.height()) / z;
+        let scale = z * f64::from(ppp);
+        let input = tiles::view_units::ViewInput {
+            doc_revision: std::sync::Arc::as_ptr(&ds.doc) as u64,
+            params: 0,
+            size: (rect.width() as u32, rect.height() as u32),
+            fonts: 0,
+            side: tiles::TILE_SIDE,
+        };
+        tiles::view_units::for_view([ox, oy, ox + w, oy + h], scale, input)
+    });
+    if let Some(units) = units {
+        app.canvas.units = units;
     }
 
     // 页面底色（贴图滞后/局部时也铺在底下）。
