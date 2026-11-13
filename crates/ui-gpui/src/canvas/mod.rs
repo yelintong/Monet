@@ -405,6 +405,16 @@ mod display_doc_tests {
     }
 
     #[test]
+    fn projected_size_follows_the_current_zoom_not_the_texture_scale() {
+        // 缩放中贴图 scale 还是 2.0，当前 zoom 已是 1.25：显示尺寸必须按 zoom 换算，
+        // 否则贴图会「一半不到就停」。
+        let v = figcraft_render::View { origin: (0.0, 0.0), scale: 2.0, width: 1024, height: 768 };
+        let r = presented_image_rect(pos2(0.0, 0.0), &v, 1.25, 2.0, false);
+        assert!((r.max.x - r.min.x - 640.0).abs() < 0.01, "width {}", r.max.x - r.min.x);
+        assert!((r.max.y - r.min.y - 480.0).abs() < 0.01, "height {}", r.max.y - r.min.y);
+    }
+
+    #[test]
     fn origin_snapping_does_not_depend_on_the_texture_scale() {
         // 缩放中贴图还是旧 scale；位置吸附必须照常发生。
         assert_eq!(snap_origin(10.3, 20.7, 2.0, false), (10.5, 20.5));
