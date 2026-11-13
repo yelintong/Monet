@@ -723,7 +723,7 @@ fn plural_fallback_uses_the_language_of_its_catalog() {
 #[test]
 fn the_language_preference_takes_language_codes() {
     let mut s = figcraft_engine::Session::new();
-    assert_eq!(s.prefs.language, "system");
+    assert_eq!(s.prefs.language, "en");
     s.execute("pref.language", &serde_json::json!({"language": "es-419"})).unwrap();
     assert_eq!(s.prefs.language, "es-419");
     for bad in ["", "../es", "es--ES", "abcdefghi"] {

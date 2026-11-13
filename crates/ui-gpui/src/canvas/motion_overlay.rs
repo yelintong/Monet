@@ -96,6 +96,10 @@ pub(crate) struct Drag {
     /// 按下时的设计角 / 动画旋转增量 / 播放头。
     pub base_rot: f64,
     pub start_delta: f64,
+    /// 父级世界变换**线性部分之逆**（2×2，行主序 `[a,b,c,d]`）。屏幕位移除以 zoom 得页面
+    /// 位移，再乘它才得到节点局部（父坐标系）位移——父级旋转/缩放时 Center/Keyframe 拖动
+    /// 方向才正确。父级无变换时为单位阵，与旧行为一致（CodeRabbit）。
+    pub parent_inv: [f64; 4],
     pub time: u32,
     /// 按下时各属性的动画值（快照，避免拖动中累积漂移）。
     pub start_pos: figcraft_geom::Vec2,
@@ -596,7 +600,14 @@ fn apply(app: &mut CanvasApp, drag: &Drag, pos: Pos2) {
         Part::Center | Part::Keyframe(_) => {
             // 中心菱形 / 路径关键帧点：自由 2D 位移 → Position（不沿轴）。
             // 中心菱形写在播放头；关键帧点写回**它自己的时间**（见下面的 `time`）。
-            let p = drag.start_pos + figcraft_geom::Vec2::new(f64::from(d.x), f64::from(d.y));
+            // `d` 是页面空间位移；乘父级线性变换之逆才得到局部（父坐标系）位移，否则父级
+            // 旋转/缩放时拖拽方向会偏（90° 父级下水平拖变竖直，CodeRabbit）。父级无变换时
+            // `parent_inv` 为单位阵 → 与旧行为完全一致。
+            let [ia, ib, ic, idd] = drag.parent_inv;
+            let dx = f64::from(d.x);
+            let dy = f64::from(d.y);
+            let local = figcraft_geom::Vec2::new(ia * dx + ic * dy, ib * dx + idd * dy);
+            let p = drag.start_pos + local;
             (AnimProperty::Position, AnimValue::Vec2(p))
         }
         Part::ArrowX | Part::ArrowY => {
@@ -695,6 +706,16 @@ pub(crate) fn input(app: &mut CanvasApp, pos: Pos2, pressed: bool, down: bool, r
         let start_scale = motion::keyframed_value_at(node, AnimProperty::Scale, st.playhead_ms)
             .and_then(|v| v.vec2())
             .unwrap_or(figcraft_geom::Vec2::new(1.0, 1.0));
+        // 以下三项都读 `node` / `ds`（借用 session），必须在 `begin_interaction`（可变借用）
+        // 之前算好，否则与 `ds` 的不可变借用冲突。
+        // 旋转增量用**关键帧**值（不含 clip）：clip 求值时另加，存进关键帧会叠加两次（CodeRabbit）。
+        let start_delta = motion::keyframed_value_at(node, AnimProperty::Rotation, st.playhead_ms)
+            .and_then(|v| v.scalar())
+            .map(|r| r - g.base_rot)
+            .unwrap_or(0.0);
+        // 父级线性变换之逆：把「页面空间」位移转成节点局部（父坐标系）位移。
+        let src = st.src.clone().unwrap_or_else(|| ds.doc.clone());
+        let pc = parent_world(&src, g.node).inverse().as_coeffs();
         if app.session.begin_interaction("Transform").is_err() {
             return false;
         }
@@ -706,7 +727,8 @@ pub(crate) fn input(app: &mut CanvasApp, pos: Pos2, pressed: bool, down: bool, r
             axis_x: g.axis_x,
             axis_y: g.axis_y,
             base_rot: g.base_rot,
-            start_delta: g.delta_deg,
+            start_delta,
+            parent_inv: [pc[0], pc[1], pc[2], pc[3]],
             time,
             start_pos,
             start_scale,

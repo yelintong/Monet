@@ -309,17 +309,24 @@ fn motion_keyframe_copy(s: &mut Session, p: &Value) -> Result<Value> {
     let mut copied = 0usize;
     for id in &ids {
         let Some(n) = doc.node_mut(*id) else { continue };
-        // Snapshot (property, value, easing) of keys at `from` first — avoids borrowing the track
-        // while mutating it through set_key.
-        let keys: Vec<(AnimProperty, motion::AnimValue, Ease)> = n
+        // Snapshot the **complete** keyframe (value + easing + spatial handles): `set_key` would
+        // rebuild it with `out_handle/in_handle: None`, flattening a copied curved Position key
+        // into a straight segment (CodeRabbit).
+        let keys: Vec<(AnimProperty, motion::Keyframe)> = n
             .motion
             .tracks
             .iter()
             .filter(|tr| props.as_ref().is_none_or(|list| list.contains(&tr.property)))
-            .filter_map(|tr| tr.key_at(from).map(|k| (tr.property, k.value, k.easing)))
+            .filter_map(|tr| tr.key_at(from).map(|k| (tr.property, *k)))
             .collect();
-        for (prop, value, easing) in keys {
-            n.motion.ensure_track(prop).set_key(to, value, Some(easing));
+        for (prop, mut key) in keys {
+            key.time_ms = to;
+            let track = n.motion.ensure_track(prop);
+            // Replace-or-insert at `to` with the full keyframe (handles included).
+            match track.keys.binary_search_by_key(&to, |k| k.time_ms) {
+                Ok(i) => track.keys[i] = key,
+                Err(i) => track.keys.insert(i, key),
+            }
             copied += 1;
         }
         n.motion.normalize();
@@ -510,7 +517,9 @@ fn motion_timeline(s: &mut Session, p: &Value) -> Result<Value> {
         Some(page) => page,
         None => s.page()?,
     };
-    let mut settings = s.doc()?.timelines.get(&page).copied().unwrap_or_default();
+    // 从**生效**设置起改（帧继承页、页用自身条目，否则默认），而不是只读该节点自身的条目：
+    // 只改帧的 fps 时，其它字段应保留继承值，而非被重置成默认（CodeRabbit）。
+    let mut settings = s.doc()?.timeline_settings_for(page);
     if let Some(d) = num(p, "duration") {
         settings.duration_ms = d.max(0.0) as u32;
     }
@@ -522,7 +531,15 @@ fn motion_timeline(s: &mut Session, p: &Value) -> Result<Value> {
     }
     let settings = settings.sanitized();
     let doc = s.doc_mut()?;
-    if settings.is_default() {
+    // 只有「删掉条目后继承到的设置」正好等于请求值时，才删条目；否则保留显式条目。
+    // 否则父页设置非默认时，删掉帧的条目会让它继承到不同的值（CodeRabbit）。
+    // 页作用域没有父级（`page_of(page) == page`），继承值恒为默认。
+    let inherited = if doc.node(page).is_some_and(|n| n.is_page()) {
+        motion::TimelineSettings::default()
+    } else {
+        doc.page_of(page).and_then(|pg| doc.timelines.get(&pg)).copied().unwrap_or_default()
+    };
+    if settings == inherited {
         doc.timelines.remove(&page);
     } else {
         doc.timelines.insert(page, settings);
@@ -645,9 +662,12 @@ mod tests {
         ex(&mut s, "motion.timeline", json!({"duration": 1000, "fps": 30, "loop": false, "page": page.0}));
         assert_eq!(s.doc().unwrap().timelines.get(&page).unwrap().duration_ms, 1000);
         assert_eq!(s.doc().unwrap().timelines.get(&frame).unwrap().duration_ms, 300, "page write must not touch the frame");
-        // Writing defaults back only removes the frame's entry.
+        // 写默认值：仅当「删掉后继承到的设置」等于请求值时才删条目。此处页是 {1000,30,false}，
+        // 与默认 {2000,60,false} 不同 → 保留显式默认条目，帧才真正拿到请求值；否则会「写默认
+        // 却继承到页的非默认值」（CodeRabbit 指出，原测试只查条目删除、没查生效结果）。
         ex(&mut s, "motion.timeline", json!({"duration": 2000, "fps": 60, "loop": false, "page": frame.0}));
-        assert!(!s.doc().unwrap().timelines.contains_key(&frame), "default frame settings leave no entry");
+        assert_eq!(s.doc().unwrap().timelines.get(&frame).unwrap().duration_ms, 2000, "页设置不同 → 保留显式默认条目");
+        assert_eq!(s.doc().unwrap().timeline_settings_for(frame).duration_ms, 2000, "帧实际生效值就是请求的默认");
         assert!(s.doc().unwrap().timelines.contains_key(&page), "the page entry survives");
     }
 

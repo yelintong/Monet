@@ -464,7 +464,10 @@ pub fn swiftui_animation_for(doc: &Document, node: NodeId) -> String {
         out.line(0, format!("// {}", n.name));
         out.line(0, format!("struct {ty} {{"));
         for c in &chs {
-            out.line(1, format!("var {} = {}", c.key, num(c.frames[0].1)));
+            // Swift infers `Int` from an integer literal, but the generated keyframes feed
+            // `LinearKeyframe`/interpolation which require an animatable floating value, so the
+            // snippet would not compile. Pin the type explicitly (CodeRabbit).
+            out.line(1, format!("var {}: Double = {}", c.key, num(c.frames[0].1)));
         }
         out.line(0, "}");
         out.line(0, "");

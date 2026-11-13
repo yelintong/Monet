@@ -897,7 +897,15 @@ impl Document {
             let nid = self.alloc_id();
             map.insert(n.id, nid);
         }
-        self.paste_nodes(&src_nodes, &map, id, parent, index)
+        let new_root = self.paste_nodes(&src_nodes, &map, id, parent, index)?;
+        // A duplicated frame must keep its own per-frame timeline settings instead of silently
+        // inheriting the page's (CodeRabbit). Copy any entry from the source to its copy.
+        for (old, new) in &map {
+            if let Some(t) = self.timelines.get(old).copied() {
+                self.timelines.insert(*new, t);
+            }
+        }
+        Ok(new_root)
     }
 
     /// Deep-copy each of `ids`' subtrees to the end of `parent`, in order, returning the new root
@@ -914,7 +922,15 @@ impl Document {
             }
             trees.push((id, src_nodes));
         }
-        trees.into_iter().map(|(id, src_nodes)| self.paste_nodes(&src_nodes, &map, id, parent, None)).collect()
+        let out: Vec<NodeId> =
+            trees.into_iter().map(|(id, src_nodes)| self.paste_nodes(&src_nodes, &map, id, parent, None)).collect::<DocResult<Vec<NodeId>>>()?;
+        // Same as `duplicate_into`: carry per-frame timeline settings onto the copies.
+        for (old, new) in &map {
+            if let Some(t) = self.timelines.get(old).copied() {
+                self.timelines.insert(*new, t);
+            }
+        }
+        Ok(out)
     }
 
     /// Insert copies of `nodes` (a subtree rooted at `root`, from this or another document) with ids
@@ -1221,7 +1237,16 @@ impl Document {
         // gone or is no longer a valid scope (a plain layer can't own a timeline). Frames are kept
         // alongside pages so per-frame settings survive a load/repair cycle; a frame with no entry
         // of its own falls back to its page's settings at read time.
-        self.timelines.retain(|k, _| self.nodes.get(k).is_some_and(|n| n.is_page() || n.kind.is_frame_like()));
+        // Timeline settings belong to a page, a frame, or a **standalone top-level node**: the
+        // motion editor's `scope_of` returns a node outside any frame as its own scope, so its
+        // settings must survive a load/repair cycle instead of being dropped (CodeRabbit).
+        self.timelines.retain(|k, _| {
+            self.nodes.get(k).is_some_and(|n| {
+                n.is_page()
+                    || n.kind.is_frame_like()
+                    || n.parent.is_some_and(|p| self.nodes.get(&p).is_some_and(|pn| pn.is_page()))
+            })
+        });
         for (k, n) in self.nodes.iter() {
             if n.is_page() && !self.pages.contains(k) && Some(*k) != store {
                 self.pages.push(*k);
