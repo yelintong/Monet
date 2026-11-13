@@ -36,7 +36,7 @@ use figcraft_engine::components::default_variant;
 use figcraft_engine::keymap::{GESTURES, Group, KEYS, Platform};
 use figcraft_i18n::tr;
 use gpui::{
-    App, Bounds, ClickEvent, Div, Entity, Hsla, ImageSource, IntoElement, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point,
+    App, Bounds, ClickEvent, Div, Entity, Hsla, ImageSource, IntoElement, MouseButton, MouseDownEvent, MouseMoveEvent, Pixels, Point,
     RenderImage, SharedString, Window, canvas, div, img, prelude::*, px, rgb,
 };
 use serde_json::{Value, json};
@@ -672,10 +672,9 @@ fn versions_body(app: &CanvasApp, cmds: &Cmds, state: &ExtraState, cx: &mut App)
 // ───────────────────────────────────────────────────────────────────────────────────────────────
 
 /// 叠加分割滑块的拖动几何：`STAGE_RECT` 由 stage 内的 canvas 每帧记下 stage 的 bounds，
-/// `DRAGGING` 记是否正在拖（与 timeline 同思路：指针位置是窗口坐标，减原点得局部 x）。
+/// 指针位置是窗口坐标，减原点得局部 x。拖拽本身走共用 `drag_router::begin`（窗口级监听）。
 thread_local! {
     static STAGE_RECT: std::cell::RefCell<Option<gpui::Bounds<gpui::Pixels>>> = const { std::cell::RefCell::new(None) };
-    static DRAGGING: std::cell::RefCell<bool> = const { std::cell::RefCell::new(false) };
 }
 
 /// 节点渲染成可显示图像（与 `control.rs` 同路：`render_node` → `screen_image`）。
@@ -831,23 +830,21 @@ fn compare_body(app: &CanvasApp, cmds: &Cmds, state: &ExtraState, id: Option<fig
             let st = sstate.clone();
             let w = swake.clone();
             move |e: &MouseDownEvent, _window, _cx| {
-                DRAGGING.with(|d| *d.borrow_mut() = true);
                 update_split(&st, e.position);
                 w.wake();
+                // 共用窗口级拖拽：指针移出 compare-stage 后仍连续，窗口外松手也能收尾。
+                // 以前是元素级 down/move/up 三连 + DRAGGING 标志，指针一离开 stage 就冻结。
+                let st_move = st.clone();
+                let w_move = w.clone();
+                crate::drag_router::begin(
+                    "dev-compare-split",
+                    move |pos, _pressed, _window, _cx| {
+                        update_split(&st_move, pos);
+                        w_move.wake();
+                    },
+                    |_window, _cx| {},
+                );
             }
-        })
-        .on_mouse_move({
-            let st = sstate.clone();
-            let w = swake.clone();
-            move |e: &MouseMoveEvent, _window, _cx| {
-                if DRAGGING.with(|d| *d.borrow()) {
-                    update_split(&st, e.position);
-                    w.wake();
-                }
-            }
-        })
-        .on_mouse_up(MouseButton::Left, move |_e: &MouseUpEvent, _window, _cx| {
-            DRAGGING.with(|d| *d.borrow_mut() = false);
         })
         .child(
             canvas(
