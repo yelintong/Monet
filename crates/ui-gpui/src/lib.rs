@@ -5602,11 +5602,24 @@ impl Render for CanvasView {
 
         }
 
-        // Motion 播放头预览：本帧画布显示的文档由 `CanvasApp::display_doc` 显式给出，
-
-        // 不再临时替换 `ds.doc`；引擎 / 撤销栈 / 命中 / 右栏全程看到源文档。
+        // Motion 播放头预览：本帧让整条画布链路（渲染请求 / 当帧同步补丁 / 所有叠加层）
+        // 都读到同一份求值后的文档，画完立刻还原。只替换 `Arc<Document>` 这一份，
+        // 同一帧内还原；引擎的写操作仍走输入事件里的 `ds.doc`。
+        // 这是 main 基线「拖动/缩放/旋转正常」的关键：叠加层子模块（handles / guides /
+        // dev / selection_spacing / motion_overlay / comments）都直接读 `ds.doc`，
+        // 若不在本帧统一它们，画面、选框、手柄会变成三套坐标系。
+        let saved_doc = self.app.display_doc.clone().and_then(|preview| {
+            let ds = self.app.session.ds_mut().ok()?;
+            Some(std::mem::replace(&mut ds.doc, preview))
+        });
 
         let CanvasOutput { image, overview, live, painter, bg, in_flight, retired } = canvas::show(&mut self.app, &mut self.worker, ppp, &t);
+
+        if let Some(real) = saved_doc
+            && let Ok(ds) = self.app.session.ds_mut()
+        {
+            ds.doc = real;
+        }
 
 
 

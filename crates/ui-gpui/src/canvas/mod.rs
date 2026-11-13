@@ -41,6 +41,24 @@ use crate::theme::{Tokens, doc_c32};
 use render::JobKey;
 use render_worker::{Grab, GrabAsk, Renders, Worker};
 
+/// 拖动补丁：一张**当帧同步渲染的局部完整场景**，盖在冻结的整页贴图之上。
+///
+/// 它同时做两件事：用不透明的场景把底图里「被拖图层还停在旧位置」的那一份盖掉（不必再
+/// 异步挖空整页），并按当前文档把图层连同**所有效果**画在新位置。走的是和静态画面完全相同
+/// 的渲染管线，所以内置阴影/模糊、外置 WGSL 材质、容器的子节点与 frame 裁剪都在，不会丢、
+/// 也不会慢半帧。
+pub struct Live {
+    pub image: Arc<RenderImage>,
+    /// 这张补丁覆盖的页面矩形（`x0 y0 x1 y1`）。
+    pub page: [f64; 4],
+    /// 拖动开始时被拖图层的包围盒：每帧的补丁都要把它包进来，旧残影才擦得干净。
+    pub start: [f64; 4],
+    /// 这次拖动抓的是哪几层：中途换了选中就作废重来，别把两组图层的旧位置糊在一起。
+    pub ids: Vec<NodeId>,
+    /// 松手时提交的那张整页渲染序号：它上台之前补丁要一直留着，否则图层会闪没。
+    pub release_seq: Option<u64>,
+}
+
 /// 画布状态（对应原文的 `CanvasState`）。
 pub struct CanvasState {
     /// 画布在窗口中的矩形（逻辑像素）。
@@ -65,6 +83,8 @@ pub struct CanvasState {
     pub(crate) dragging: bool,
     /// 拖动中被拖层的透明底替身：底图跳过这些层，它按当前位置的偏移贴上去。
     pub(crate) drag_grab: Option<Grab>,
+    /// 拖动中盖在整页贴图之上的局部场景补丁（见 [`Live`]）。
+    pub live: Option<Live>,
     /// UI 线程自己的材质合成器，供当帧同步的局部渲染用（不与渲染线程抢设备）。
     /// 生产拖动走 worker 的 `GrabAsk` 替身，不占用它；只有文档里真的绑了外置材质
     /// 才会惰性创建 wgpu 设备。
@@ -100,6 +120,7 @@ impl Default for CanvasState {
             submitted: None,
             dragging: false,
             drag_grab: None,
+            live: None,
             patch_renders: None,
             want_view: None,
             render_work: None,
@@ -167,25 +188,73 @@ pub fn show(app: &mut CanvasApp, worker: &mut Worker, ppp: f32, t: &Tokens) -> C
         .unwrap_or(t.canvas);
     app.canvas.page = bg;
 
-    // 拖动**不再冻结底图**，也不再生成局部补丁：照常提交整页渲染，谁先完成谁上台
-    // （`latest wins`）。这是原工程的模型——内容最多比选框晚一两帧，但屏幕上永远没有
-    // 「必须擦掉的历史像素」，残影因此没有产生的余地。曾经的「冻结 + 当帧同步补丁」
-    // 是为了消灭那一两帧滞后，代价是把正确性押在「每帧算准覆盖范围」上：容器 Hug 变宽
-    // 又缩回、`moving` 集合中途变化、`start` 被重置，任一步算错就留下半块残影。
-    // 拖动状态只用来标记「刚松手」：底图不再冻结，松手后只需作废一次指纹，
-    // 确保最终态一定提交（拖动中更早的请求可能已被更新的覆盖）。
-    // 被拖的层：底图要跳过它们，由抓到的那张透明底替身单独提供内容。
-    let drag_ids: Vec<NodeId> = app.session.tool.live_layers().map(|(ids, _)| ids).unwrap_or_default();
-    let dragging_now = !drag_ids.is_empty();
-    let started = !app.canvas.dragging && dragging_now;
-    let released = app.canvas.dragging && !dragging_now;
-    app.canvas.dragging = dragging_now;
-    if started || released {
-        if let Some(old) = app.canvas.drag_grab.take() {
-            app.canvas.retired.push(old.image);
+    // 拖动中的图层：整页贴图冻住不动，画布当帧自己重绘那一小块完整场景（见 `patch_for`）。
+    // 平移、拉伸、旋转一律每帧重算 —— 图层像素本来就在变，位图平移那套会跟效果脱节。
+    let (mut moving, mut redraw) =
+        app.session.tool.live_layers().map(|(ids, draw)| (ids, draw == figcraft_engine::LiveDraw::Reshape)).unwrap_or_default();
+    // 复用 resize 的 live-layer reshape 路径：拖间距/边距手柄时，把受影响的图层也并进 `moving`
+    // 并置 `redraw`（间距手柄本就是 `arrange.spacing` 指令下放改文档）。这样画布走和 resize 完全
+    // 一致的「整页让位 + 当帧重抓替身」，内容贴着框走——否则整页只能异步重渲，背景跟不上框（果冻）。
+    if let Some((ids, r)) = app.selection_spacing.live_layers() {
+        for id in ids {
+            if !moving.contains(&id) {
+                moving.push(id);
+            }
         }
+        redraw |= r;
     }
-    if released {
+    // 拖自动布局的 padding / gap 手柄：和 resize 走同一条 live 路径（当帧重抓替身）。
+    // 不进 live 的话每个指针事件只能等一次整页异步渲染——带子动了、内容和背景还没跟上。
+    if let Some((ids, r)) = app.handles.live_layers() {
+        for id in ids {
+            if !moving.contains(&id) {
+                moving.push(id);
+            }
+        }
+        redraw |= r;
+    }
+    // 拉伸会重排父级与兄弟：把被拉的那一层所在的、会随它变化的框（自动布局父级、跟随子级的组）
+    // 并进 `moving`，补丁于是重绘整个受影响的框，父级 hug、兄弟位移都与选框同一帧。
+    // 旋转不重排（引擎 `live_reflows()` 只对 Resize 为真），`moving` 只含被转的几层；
+    // 每帧按当前变换重绘局部场景，不需要旧替身那套 reshape 标志与手工裁剪。
+    //
+    // 拖入/重排自动布局（Move）同样每帧 reflow 兄弟：引擎 `drag.rs` 在 live 阶段就 `reparent` 并把
+    // 被拖层插入目标容器的 `children`，auto layout 随即把兄弟推到新位置。但 Move 走
+    // `LiveDraw::Translate`、`live_reflows()` 为假，`moving` 因此只含被拖层，`moving_bounds` 只盖它
+    // 自己——被推动的兄弟「旧位置」留在冻结底图上成残影、「新位置」落在补丁外直接不显示，就是
+    // 「拖进自动布局有东西不渲染」的根因。引擎每帧把插入指示线写进 `overlay.insert_line`，它是
+    // 「正处于 auto-layout flow」的可靠信号（同容器内重排时 `drop_target` 为 None 但 insert_line 仍
+    // 为 Some，所以必须用它、不能用 drop_target）。此时和 Resize 一样提升 `affected_root`：被拖层
+    // 的 parent 已被 reparent 成目标容器（同容器重排则本就是它），沿父链爬到该容器，补丁整块重绘，
+    // 兄弟的旧/新位一次盖全，与选框同一帧。
+    let dragging_into_flow = !redraw
+        && app.session.tool.overlay.insert_line.is_some();
+    if (redraw && app.session.tool.live_reflows() || dragging_into_flow)
+        && let Ok(ds) = app.session.ds()
+    {
+        let mut roots: Vec<NodeId> = Vec::new();
+        for id in &moving {
+            let r = affected_root(&ds.doc, *id);
+            if !roots.contains(&r) {
+                roots.push(r);
+            }
+        }
+        moving = roots;
+    }
+    let moving_bounds = if moving.is_empty() { None } else { app.session.ds().ok().and_then(|ds| ds.doc.bounds_of(&moving)) };
+    // 新一次拖动：旧补丁记的「起始位置」不属于这次操作，作废重来；同一次拖动的连续帧保留
+    // `start`，旧位置的残影才一直被盖住。松手后补丁留到新的整页贴图上台（见文件末尾）。
+    let was_dragging = app.canvas.dragging;
+    let released = was_dragging && moving.is_empty();
+    if !moving.is_empty() {
+        let changed = app.canvas.live.as_ref().is_some_and(|l| l.ids != moving);
+        if !was_dragging || changed {
+            app.canvas.live = None;
+        }
+        app.canvas.dragging = true;
+    } else if released {
+        app.canvas.dragging = false;
+        // 拖动期间 `request_render` 一次都没提交过；作废指纹，强制提交一张含最终位置的整页图。
         app.canvas.submitted = None;
     }
 
@@ -194,20 +263,27 @@ pub fn show(app: &mut CanvasApp, worker: &mut Worker, ppp: f32, t: &Tokens) -> C
     handles::update_hover(app);
     let bands = handles::bands_for_render(app);
 
-    // 刚进入拖动：请 worker 顺手抓一张被拖层的**透明底**替身（只抓一次，之后复用按偏移平移）。
-    // 替身由同一次渲染顺带裁出，所以它和底图来自同一版文档，不会错位。
-    let grab_ask = started
-        .then(|| {
-            app.session.ds().ok().and_then(|ds| ds.doc.bounds_of(&drag_ids)).map(|b| {
-                // 阴影/模糊会越过包围盒：留 32 页面单位，替身才不会被切掉一圈。
-                let pad = 32.0;
-                GrabAsk { page: [b.x0 - pad, b.y0 - pad, b.x1 + pad, b.y1 + pad], at: [b.x0, b.y0], ids: drag_ids.clone() }
-            })
-        })
-        .flatten();
+    // 局部场景补丁：每帧**当帧同步**渲染「旧位置 ∪ 新位置 + 效果余量」那一块不透明的完整场景。
+    // 它和整页贴图走同一条渲染管线（内置效果、外置 WGSL 材质、容器裁剪与子节点都在），所以
+    // 效果与选框天然同一帧；底图里停在旧位置的那份被这块不透明场景直接盖掉，无需异步挖空。
+    if let Some(b) = moving_bounds {
+        let start = app.canvas.live.as_ref().map(|l| l.start).unwrap_or([b.x0, b.y0, b.x1, b.y1]);
+        if let Some((image, page)) = patch_for(app, ppp, &moving, start, b, &bands) {
+            if let Some(old) = app.canvas.live.take() {
+                app.canvas.retired.push(old.image);
+            }
+            app.canvas.live = Some(Live { image, page, start, ids: moving.clone(), release_seq: None });
+        }
+    }
 
-    // 拖动期间照常请求整页（`latest wins`）：整页跳过被拖层，替身负责它。
-    render::request_render(app, worker, ppp, MAX_TEXTURE_SIDE, &drag_ids, grab_ask, &bands);
+    // 拖动期间底图完全冻结（render::request_render 见 moving 非空直接返回）；
+    // `grab_ask` 恒为 None —— 被拖层由上面这张当帧同步补丁提供，不再抓一次性替身位图。
+    let _ = (moving_bounds, redraw);
+    render::request_render(app, worker, ppp, MAX_TEXTURE_SIDE, &moving, None, &bands);
+    // 松手这一帧刚提交的那张整页图：补丁一直留到它上台。
+    if released && let Some(l) = app.canvas.live.as_mut() {
+        l.release_seq = Some(worker.submitted());
+    }
 
     // 每张完成的图都上台（按顺序完成；拖拽时每帧都有编辑，否则永远看不到）。
     // 顺序要紧：**先**读完成计数、**再** poll。worker 先发结果再记账，所以计数相等时
@@ -285,21 +361,23 @@ pub fn show(app: &mut CanvasApp, worker: &mut Worker, ppp: f32, t: &Tokens) -> C
     // 叠加层（标尺；后续的选中框/手柄/参考线/标签也在这一层）。
     draw_overlays(app, &mut painter, t);
 
-    // 替身：底图已经跳过了被拖层，它按「当前包围盒 − 抓取时的左上角」的偏移贴上去。
-    // 拖动中只改这个偏移，不再产生任何光栅工作。
-    let live = {
-        let grab = app.canvas.drag_grab.as_ref();
-        let bounds = if dragging_now { app.session.ds().ok().and_then(|ds| ds.doc.bounds_of(&drag_ids)) } else { None };
-        match (grab, bounds) {
-            (Some(g), Some(b)) => {
-                let (dx, dy) = (b.x0 - g.at[0], b.y0 - g.at[1]);
-                let p0 = app.to_screen(g.page[0] + dx, g.page[1] + dy);
-                let p1 = app.to_screen(g.page[2] + dx, g.page[3] + dy);
-                Some((g.image.clone(), Rect::from_min_max(p0, p1).translate(-rect.min.to_vec2()), None))
-            }
-            _ => None,
-        }
-    };
+    // 拖动补丁按它这一帧覆盖的页面矩形摆放：不透明的完整场景同时擦掉旧位置、画出新位置。
+    // 裁剪不再手工套 —— 补丁本身就是渲染器按当前文档（含 frame clip）画出来的。
+    let live = app.canvas.live.as_ref().map(|l| {
+        let p0 = app.to_screen(l.page[0], l.page[1]);
+        let p1 = app.to_screen(l.page[2], l.page[3]);
+        let r = Rect::from_min_max(p0, p1).translate(-rect.min.to_vec2());
+        (l.image.clone(), r, None)
+    });
+
+    // 松手后不立刻丢掉补丁：等那张含最终位置的整页贴图真的上台再丢，否则图层会闪一下。
+    // `!in_flight()` 是兜底 —— 万一那张图被 `shows()` 拒掉，不能把补丁永远挂在画布上。
+    let release_seq = app.canvas.live.as_ref().and_then(|l| l.release_seq);
+    if let Some(seq) = release_seq
+        && (app.canvas.tex_seq >= seq || !worker.in_flight())
+    {
+        app.canvas.live = None;
+    }
 
     let retired = std::mem::take(&mut app.canvas.retired);
     CanvasOutput { image, overview, live, painter, bg, in_flight, retired }
@@ -318,6 +396,24 @@ pub(crate) fn on_screen_tex_doc(c: &CanvasState, shown: Option<(u64, NodeId)>) -
         c.tex_doc.clone()
     } else {
         None
+    }
+}
+
+/// 叠加层能采用的台上贴图文档：画面由「本帧显示文档」或「当帧同步补丁」提供时，
+/// 台上那张整页贴图是冻结 / 上一帧的旧结果，不能当几何基准。
+/// `frame_doc_active` = Motion 预览或播放（`app.display_doc` 有值）；
+/// `live` = 拖动补丁还在台上（`app.canvas.live.is_some()`，含松手后补丁未撤）。
+/// 任一为真就忽略贴图文档，改由 `overlay_doc` 取 display → source。
+pub(crate) fn overlay_texture_doc(
+    c: &CanvasState,
+    shown: Option<(u64, NodeId)>,
+    frame_doc_active: bool,
+    live: bool,
+) -> Option<Arc<Document>> {
+    if frame_doc_active || live {
+        None
+    } else {
+        on_screen_tex_doc(c, shown)
     }
 }
 
@@ -344,10 +440,20 @@ pub(crate) fn draw_overlays(app: &mut CanvasApp, painter: &mut Painter, t: &Toke
     if !painter.clip.is_positive() {
         return;
     }
-    // 选框跟台上那张贴图用同一份文档：贴图是后台某一帧的结果，叠加层若读当帧文档
-    // 就会「框在跑、内容也在跑」。没有上台贴图时退回本帧显示文档，再到源文档。
+    // 叠加层与画面必须同基准，但「画面由谁提供」分三种情况：
+    // · 静态、没有当帧补丁：画面就是台上那张整页贴图，用它的文档（与源文档同源）。
+    // · 拖动中 / 松手后补丁未撤：`request_render` 把整页贴图完全冻结，画面由 `patch_for`
+    //   每帧当帧重绘。此时若还绑 `tex_doc`，选框会钉死在拖动开始那一版，内容却每帧
+    //   在动 —— 实测「框不会动、内容会动」正是这里。
+    // · Motion 预览 / 播放：`display_doc` 每帧新建，贴图是后台上一帧，绑 `tex_doc`
+    //   会让选框慢一帧；渲染请求、补丁与其余叠加层都读本帧文档，选框必须跟它们一致。
     let shown = app.session.ds().map(|ds| (ds.uid, ds.page)).ok();
-    let tex_doc = on_screen_tex_doc(&app.canvas, shown);
+    let tex_doc = overlay_texture_doc(
+        &app.canvas,
+        shown,
+        app.display_doc.is_some(),
+        app.canvas.live.is_some(),
+    );
     let display_doc = app.display_doc.clone();
     let (doc, sel) = match app.session.ds() {
         Ok(ds) => (overlay_doc(tex_doc, display_doc, &ds.doc), ds.selection.clone()),
@@ -402,6 +508,111 @@ pub const MAX_TEXTURE_SIDE: u32 = 8_192;
 /// 一整页缓冲的像素预算（12MP ≈ 48MB/张）。超了就降渲染分辨率、显示时拉伸：
 /// 一页缓冲在链路里同时存在好几份（Retained、转换副本、GPUI 纹理），没有上限时峰值能到 GB。
 pub const MAX_CANVAS_PIXELS: u64 = 12_000_000;
+
+/// 一张拖动补丁的像素上限（4MP ≈ 16MB）。补丁每帧重建，拖得很远时矩形会接近整页，
+/// 超过就降渲染分辨率：按页面矩形贴上去只是略糊，不会错位。
+const MAX_PATCH_PIXELS: f64 = 4_000_000.0;
+
+/// 补丁要覆盖的页面矩形：起始包围盒 ∪ 当前包围盒 + 效果余量，再裁到可见视口。
+/// 两块都包住是关键 —— 少包旧位置就留下原地残影，少包新位置就把效果切掉半个。
+fn patch_rect(start: [f64; 4], now: figcraft_geom::Rect, pad: f64, visible: [f64; 4]) -> Option<[f64; 4]> {
+    let r = [
+        (start[0].min(now.x0) - pad).max(visible[0]),
+        (start[1].min(now.y0) - pad).max(visible[1]),
+        (start[2].max(now.x1) + pad).min(visible[2]),
+        (start[3].max(now.y1) + pad).min(visible[3]),
+    ];
+    (r[2] - r[0] >= 0.5 && r[3] - r[1] >= 0.5).then_some(r)
+}
+
+
+fn patch_for(
+    app: &mut CanvasApp,
+    ppp: f32,
+    moving: &[NodeId],
+    start: [f64; 4],
+    now: figcraft_geom::Rect,
+    bands: &[figcraft_render::Band],
+) -> Option<(Arc<RenderImage>, [f64; 4])> {
+    let display_doc = app.display_doc.clone();
+    let Ok(ds) = app.session.ds() else { return None };
+    let zoom = ds.view.zoom.max(1e-6);
+    // 阴影 / 模糊 / 材质折射会越过几何包围盒：按效果 reach 与屏幕像素留一圈。
+    let mut pad = 64.0 / zoom;
+    for id in moving {
+        if let Some(n) = ds.doc.node(*id) {
+            for e in &n.effects {
+                pad = pad.max(e.reach() * 1.5 + 24.0 / zoom);
+            }
+            // 外置 WGSL 材质的折射 / 霜化会越过几何边界，按屏幕像素再多留一圈。
+            if n.plugin_data.contains_key(crate::wgsl_material::BINDING_KEY) {
+                pad = pad.max(96.0 / zoom);
+            }
+        }
+    }
+    let (ox, oy) = ds.view.origin();
+    let visible = [
+        ox,
+        oy,
+        ox + f64::from(app.canvas.rect.width()) / zoom,
+        oy + f64::from(app.canvas.rect.height()) / zoom,
+    ];
+    let Some(rect) = patch_rect(start, now, pad, visible) else { return None };
+    let doc = display_doc.unwrap_or_else(|| ds.doc.clone());
+    let page = ds.page;
+    let uid = ds.uid;
+
+    let mut scale = zoom * f64::from(ppp);
+    // 单边不得超过纹理上限：先按边长收尺度，再按面积收，避免把补丁硬截断成缺一块。
+    let side = f64::from(MAX_TEXTURE_SIDE);
+    scale = scale.min(side / (rect[2] - rect[0])).min(side / (rect[3] - rect[1]));
+    let size = |k: f64| {
+        (
+            ((rect[2] - rect[0]) * k).ceil().max(1.0) as u32,
+            ((rect[3] - rect[1]) * k).ceil().max(1.0) as u32,
+        )
+    };
+    let (mut w, mut h) = size(scale);
+    let area = f64::from(w) * f64::from(h);
+    if area > MAX_PATCH_PIXELS {
+        scale *= (MAX_PATCH_PIXELS / area).sqrt();
+        (w, h) = size(scale);
+    }
+    let view = View { origin: (rect[0], rect[1]), scale, width: w, height: h };
+    let job = render_worker::patch_job(doc, page, view, bands, uid);
+    let renders = app.canvas.patch_renders.get_or_insert_with(Renders::default);
+    let done = renders.render_patch(&job)?;
+    // `Retained::render` 会把 view 吸附到整设备像素，图上台的位置要用它返回的 view 与真实图尺寸。
+    let v = &done.view;
+    let sz = done.image.size(0);
+    let (iw, ih) = (u32::from(sz.width), u32::from(sz.height));
+    let page_rect = [
+        v.origin.0,
+        v.origin.1,
+        v.origin.0 + f64::from(iw) / v.scale,
+        v.origin.1 + f64::from(ih) / v.scale,
+    ];
+    Some((done.image, page_rect))
+}
+
+/// 拉伸 `id` 时，它的父级与兄弟也会跟着变：返回**最小的那个把它们全包住**的图层——从 `id`
+/// 往上爬，只要父级是自动布局（会重排子层）或跟随子级定尺寸的组（`bounds_follow_children`）
+/// 就继续爬。补丁按这个框的包围盒重绘整块场景，父级 hug 与兄弟位移就和选框同一帧。
+/// 旋转不走这里（引擎 `live_reflows()` 只对 Resize 为真）：它只改自己的几何，
+/// `moving` 就只含这几层，补丁范围由 `start ∪ now` 决定，不必把框外内容无谓包进来。
+fn affected_root(doc: &Document, id: NodeId) -> NodeId {
+    let mut root = id;
+    let mut cur = doc.node(id).and_then(|n| n.parent);
+    while let Some(p) = cur {
+        let Some(pn) = doc.node(p) else { break };
+        if !(pn.layout.is_some() || pn.kind.bounds_follow_children()) {
+            break;
+        }
+        root = p;
+        cur = pn.parent;
+    }
+    root
+}
 
 #[cfg(test)]
 mod display_doc_tests {
@@ -460,6 +671,39 @@ mod display_doc_tests {
         // 贴图还没上台时（tex_of 为空），即使 shown 也为空也不能误判成「同一帧」。
         c.tex_of = None;
         assert!(on_screen_tex_doc(&c, None).is_none());
+    }
+
+    #[test]
+    fn overlay_texture_document_is_ignored_while_the_frame_redraws() {
+        let tex = doc("stale texture");
+        let mut c = CanvasState::default();
+        c.tex_doc = Some(tex.clone());
+        c.tex_of = Some((7, NodeId(3)));
+
+        // 静态：贴图就是画面，可以用它的文档。
+        assert!(overlay_texture_doc(&c, Some((7, NodeId(3))), false, false).is_some());
+        // Motion 预览 / 播放：本帧显示文档每帧重建，贴图是后台上一帧。
+        assert!(overlay_texture_doc(&c, Some((7, NodeId(3))), true, false).is_none());
+        // 拖动（含松手后补丁未撤）：整页贴图冻结，画面由当帧补丁提供。
+        assert!(overlay_texture_doc(&c, Some((7, NodeId(3))), false, true).is_none());
+        // 两者同时成立也不能回退到旧贴图。
+        assert!(overlay_texture_doc(&c, Some((7, NodeId(3))), true, true).is_none());
+
+        // 忽略贴图后，叠加层必须落到本帧显示文档 / 源文档，而不是那张冻结贴图。
+        let display = doc("display");
+        let source = doc("source");
+        let chosen = overlay_doc(
+            overlay_texture_doc(&c, Some((7, NodeId(3))), true, true),
+            Some(display.clone()),
+            &source,
+        );
+        assert!(Arc::ptr_eq(&chosen, &display));
+        let chosen_static = overlay_doc(
+            overlay_texture_doc(&c, Some((7, NodeId(3))), false, false),
+            None,
+            &source,
+        );
+        assert!(Arc::ptr_eq(&chosen_static, &tex));
     }
 
     /// P0-6′ 组合矩阵（纯函数层）：状态 × 特效 × 旋转 × 视口缩放 × 贴图 scale。

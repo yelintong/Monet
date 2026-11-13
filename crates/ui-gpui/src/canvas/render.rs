@@ -120,6 +120,12 @@ pub(super) fn request_render(
     bands: &[figcraft_render::Band],
 ) {
     let display_doc = app.display_doc.clone();
+    // 拖动期间底图完全冻结：被拖层由画布每帧当帧同步渲染的局部完整场景补丁提供
+    // （见 canvas/mod.rs 的 patch_for）。提交异步整页图会让内容比选框晚一两帧，
+    // 且旧位置会留下残影；这里一张都不提交，松手后再由 submitted=None 强制补一张。
+    if !skip.is_empty() {
+        return;
+    }
     let Ok(ds) = app.session.ds() else { return };
     let rect = app.canvas.rect;
     let (mut ox, mut oy) = ds.view.origin();
