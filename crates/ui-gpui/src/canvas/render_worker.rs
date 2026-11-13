@@ -801,8 +801,18 @@ fn layered() -> bool {
 #[track_caller]
 fn apply_wgsl_materials(mats: &mut Materials, doc: &Document, page: NodeId, done: &mut Done) {
     if !try_apply_wgsl_materials(mats, doc, page, done) {
-        // `run` 在 cfg!(gpu) 下把材质节点连子树一起挖空了。GPU 这一帧没能补回，必须用 CPU 画
-        // 回去，否则就是「容器不闪、里面的图不见了」。无 adapter 的设备上这是常事，不是意外。
+        // 这一帧 GPU 没能补齐（某个 pass 的 pipeline 没就绪、读回异常等）。直接 `cpu_restore`
+        // 会把材质节点画回它的**填充色**——用户看到的就是「玻璃毫无预兆地变成一块纯色 / 突然
+        // 消失」，下一帧又回来，正是那种"轻微缩放或拖动就闪一下"的现象。宁可显示上一张合成图
+        // （几何可能差一帧，但仍是玻璃），也不要退回纯色：一帧迟滞好过一帧整块丢失。
+        if let Some(last) = mats.last_composite.as_ref().map(|l| l.image.clone()) {
+            let (want, got) = (done.image.size(0), last.size(0));
+            if want.width == got.width && want.height == got.height {
+                done.image = last;
+                return;
+            }
+        }
+        // 没有可用的上一张（首帧就失败，或画布尺寸变了）：只能 CPU 画回去，至少容器内容不缺。
         cpu_restore_materials(doc, page, done);
     }
 }
