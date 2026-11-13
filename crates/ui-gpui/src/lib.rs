@@ -1670,6 +1670,20 @@ impl CanvasView {
                     .unwrap_or_else(|| "srgb".to_string());
                 std::borrow::Cow::Owned(serde_json::json!({ "current": current }))
             }
+            dialogs::Kind::SampledColor => {
+                // A15: 1:1 with `ui-egui/.../sampled_color.rs::request`: the sampled colour comes
+                // from the eyedropper request, the default name is the next free "Color N" style,
+                // and the collection dropdown lists the document's local collections (so the user
+                // can pick one or "New collection").
+                let color = data.get("color").and_then(serde_json::Value::as_str).unwrap_or("#000000").to_string();
+                let doc = self.app.session.doc().ok().cloned();
+                let collections: Vec<serde_json::Value> = doc
+                    .as_ref()
+                    .map(|d| figcraft_engine::library::local_collections(d).map(|c| serde_json::json!({ "id": c.id, "name": c.name })).collect())
+                    .unwrap_or_default();
+                let name = doc.as_ref().map(|d| d.next_name("Color")).unwrap_or_else(|| "Color 1".to_string());
+                std::borrow::Cow::Owned(serde_json::json!({ "color": color, "variable": false, "name": name, "collections": collections }))
+            }
             _ => std::borrow::Cow::Borrowed(data),
         };
 

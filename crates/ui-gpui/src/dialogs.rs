@@ -29,7 +29,7 @@ use crate::widgets::popover::{Open, clamp, popover_window, title_text};
 use crate::widgets::{Checkbox, MenuRow, Slot, TextField, field_row, field_row_full, number_field, pt, rgba, text_field, tokens};
 use figcraft_i18n::tr;
 use gpui::{
-    AnyElement, App, Bounds, Div, Entity, ImageSource, MouseButton, MouseDownEvent, MouseMoveEvent, Pixels, Point, RenderImage, SharedString, Size,
+    AnyElement, App, Bounds, Div, Entity, Hsla, ImageSource, MouseButton, MouseDownEvent, MouseMoveEvent, Pixels, Point, RenderImage, SharedString, Size,
     Window, div, img, prelude::*, px, size,
 };
 use serde_json::{Map, Value, json};
@@ -114,7 +114,9 @@ pub(crate) enum Field {
     Choice {
         key: &'static str,
         label: &'static str,
-        options: Vec<&'static str>,
+        /// Owned, so a dialog can list dynamic options (e.g. the document's variable
+        /// collections). Static dialogs build these from `&'static str` via [`Field::choice`].
+        options: Vec<SharedString>,
         /// Optional JSON values sent instead of the label (numeric scale, lower-case format, …).
         values: Option<Vec<Value>>,
         /// Optional engine command per option; picking one runs it immediately.
@@ -146,12 +148,26 @@ pub(crate) enum Field {
         id: &'static str,
         params: Value,
     },
+    /// A solid colour swatch with its hex label (SampledColor). Reuses the shared row grid — no
+    /// new control, just a `div().bg(..)` inside `field_row_full`.
+    Color {
+        color: SharedString,
+    },
 }
 
 impl Field {
-    /// A plain choice whose label is its value.
+    /// A plain choice whose label is its value. Static `&'static str` options are stored as
+    /// owned `SharedString` so dynamic options (e.g. the document's collections) use the same variant.
     fn choice(key: &'static str, label: &'static str, options: Vec<&'static str>, active: usize) -> Self {
-        Self::Choice { key, label, options, values: None, commands: None, command_params: None, active }
+        Self::Choice {
+            key,
+            label,
+            options: options.into_iter().map(SharedString::from).collect(),
+            values: None,
+            commands: None,
+            command_params: None,
+            active,
+        }
     }
     /// Give the choice engine values (numbers, ids, …) instead of the labels.
     fn values(mut self, v: Vec<Value>) -> Self {
@@ -197,6 +213,12 @@ pub(crate) enum Action {
     Run {
         id: &'static str,
     },
+    /// Resolve the engine command from the collected field values (e.g. SampledColor: style vs
+    /// variable vs new-collection → different commands). `base` carries fixed values the fields do
+    /// not (here, the sampled colour). No closure, so `Action` stays `Clone` + `PartialEq`.
+    Derived {
+        base: Value,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -225,6 +247,10 @@ impl Button {
     }
     fn run(label: &'static str, id: &'static str) -> Self {
         Self { label, primary: false, action: Action::Run { id } }
+    }
+    /// A primary button whose command is resolved from the field values (`Action::Derived`).
+    fn derived(label: &'static str, base: Value) -> Self {
+        Self { label, primary: true, action: Action::Derived { base } }
     }
 }
 
@@ -277,6 +303,81 @@ pub(crate) fn merge_params(base: &Value, values: &[(String, Value)]) -> Value {
         out.insert(key.clone(), value.clone());
     }
     Value::Object(out)
+}
+
+/// `#rrggbb` / `#rgb` → GPUI `Hsla` for `bg()`, matching the egui swatch. Invalid input falls back
+/// to black (the swatch still draws; the colour the engine actually receives is the unchanged
+/// sampled hex carried in the button's `base`, not this display fallback).
+fn parse_hex(s: &str) -> Hsla {
+    let c = crate::canvas::geom::Color32::from_hex(s).unwrap_or(crate::canvas::geom::Color32::BLACK);
+    Hsla::from(rgba(c))
+}
+
+/// Resolve the engine command for an `Action::Derived` button from the live field values. Only
+/// `SampledColor` uses it today, but the dispatch is keyed on `kind` so each dialog that needs a
+/// computed command gets its own arm — no closure, so `Action` stays `Clone` + `PartialEq`.
+fn resolve_derived(kind: Kind, sources: &[(String, Value)], base: &Value, cmds: &Cmds) {
+    match kind {
+        Kind::SampledColor => {
+            // 1:1 with `ui-egui/src/dialogs/sampled_color.rs::create_params`: a paint style, a
+            // colour variable in its collection, or (no collection) a new collection and the
+            // variable in it — one undo step.
+            let get = |k: &str| sources.iter().find(|(key, _)| key == k).map(|(_, v)| v.clone());
+            let color = base.get("color").and_then(Value::as_str).unwrap_or("#000000").to_string();
+            // Read owned copies out of the field values (no borrowing out of the `Value`).
+            let name = match get("name") {
+                Some(Value::String(s)) => s.trim().to_string(),
+                _ => String::new(),
+            };
+            if name.is_empty() {
+                return; // egui: Create is disabled until a name is entered.
+            }
+            let variable = matches!(get("variable"), Some(Value::Bool(true)));
+            let collection = get("collection");
+            let (id, params) = if !variable {
+                ("style.create", json!({ "type": "paint", "name": name, "value": color }))
+            } else {
+                let variable_params = |collection: Value| json!({ "collection": collection, "name": name, "type": "color", "value": color });
+                match collection {
+                    Some(Value::String(c)) if !c.is_empty() => ("variable.create", variable_params(json!(c))),
+                    _ => {
+                        // No collection chosen: make a uniquely-named one, then the variable in it.
+                        let existing: Vec<String> = base
+                            .get("existing")
+                            .and_then(Value::as_array)
+                            .map(|a| a.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
+                            .unwrap_or_default();
+                        let mut collection_name = "Collection".to_string();
+                        if existing.iter().any(|n| n == &collection_name) {
+                            let mut i = 1;
+                            loop {
+                                let cand = format!("Collection {i}");
+                                if !existing.iter().any(|n| n == &cand) {
+                                    collection_name = cand;
+                                    break;
+                                }
+                                i += 1;
+                            }
+                        }
+                        let new = json!({ "command": "variable.createCollection", "params": { "name": collection_name, "modes": ["Mode 1"] }, "as": "collection" });
+                        let add = json!({ "command": "variable.create", "params": variable_params(json!({ "$ref": "collection" })) });
+                        ("command.batch", json!({ "label": "Create variable", "commands": [new, add] }))
+                    }
+                }
+            };
+            cmds.push(Cmd { id, params: Some(params) });
+        }
+        _ => {}
+    }
+}
+
+/// The engine commands a `Derived` button could push, derived from `resolve_derived`. The parity
+/// contract lists them so `every_dialog_command_is_a_real_engine_command` can verify they are real
+/// engine commands — not invented ones. Keep this in lock-step with the `resolve_derived` arms: a
+/// Derived button that pushes an id missing here would not be checked for realness.
+pub(crate) fn derived_commands(_kind: Kind) -> Vec<&'static str> {
+    // Today only `SampledColor` uses `Derived`; its arm pushes exactly these three.
+    vec!["style.create", "variable.create", "command.batch"]
 }
 
 /// Engine `ui_requests` (and a few menu commands that need input) → a dialog kind.
@@ -488,11 +589,56 @@ pub(crate) fn spec(kind: Kind, data: &Value) -> Spec {
             .message(str_field("message", data, "The file was imported. Review the warnings below."))
             .field(Field::Note { text: str_field("warnings", data, "No warnings.") })
             .button(Button::close(tr("Close"))),
-        Kind::SampledColor => Spec::new(tr("Sampled colour"))
-            .width(360.0)
-            .message(tr("The eyedropper sampled this colour. Creating a style from it is not wired yet."))
-            .field(Field::Note { text: str_field("color", data, "#000000") })
-            .button(Button::close(tr("Close"))),
+        Kind::SampledColor => {
+            // 1:1 with `ui-egui/src/dialogs/sampled_color.rs`: a swatch of the sampled colour, a
+            // Style/Variable selector, the new style's name, and (a variable) the collection to put
+            // it in. Cancel + Create resolve the engine command from the field values
+            // (`resolve_derived`): a paint style, a colour variable in its collection, or (no
+            // collection) a new collection and the variable in it — one undo step, like the original.
+            let color = str_field("color", data, "#000000");
+            let name = str_field("name", data, "Color 1");
+            let variable = data.get("variable").and_then(Value::as_bool).unwrap_or(false);
+            let collections: Vec<(String, String)> = data
+                .get("collections")
+                .and_then(Value::as_array)
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|c| {
+                            let id = c.get("id").and_then(Value::as_str)?.to_string();
+                            let n = c.get("name").and_then(Value::as_str)?.to_string();
+                            Some((id, n))
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            // The collection dropdown mirrors egui: every local collection, then "New collection"
+            // (value `null`). Shown only for variables (hidden for Style, like egui).
+            let mut coll_opts: Vec<SharedString> = collections.iter().map(|(_, n)| SharedString::from(n.clone())).collect();
+            coll_opts.push(SharedString::from(tr("New collection")));
+            let mut coll_vals: Vec<Value> = collections.iter().map(|(id, _)| json!(id.clone())).collect();
+            coll_vals.push(Value::Null);
+            let coll_active = if collections.is_empty() { coll_opts.len() - 1 } else { 0 };
+            let existing: Vec<Value> = collections.iter().map(|(_, n)| json!(n.clone())).collect();
+            Spec::new(tr("Create from color"))
+                .width(300.0)
+                .field(Field::Color { color: SharedString::from(color.clone()) })
+                .field(
+                    Field::choice("variable", tr("Type"), vec![tr("Style"), tr("Variable")], if variable { 1 } else { 0 })
+                        .values(vec![json!(false), json!(true)]),
+                )
+                .field(Field::Text { key: "name", label: tr("Name"), value: name })
+                .field(Field::Choice {
+                    key: "collection",
+                    label: tr("Collection"),
+                    options: coll_opts,
+                    values: Some(coll_vals),
+                    commands: None,
+                    command_params: None,
+                    active: coll_active,
+                })
+                .button(Button::close(tr("Cancel")))
+                .button(Button::derived(tr("Create"), json!({ "color": color, "existing": existing })))
+        }
         Kind::Plugins => {
             // 1:1 with `ui-egui/src/dialogs/plugins_ui.rs::installed_tab`: the installed plugins
             // (name + summary + Remove), then "Import plugin from manifest…". The Browse tab fetches
@@ -574,7 +720,7 @@ struct Rendered {
 enum Source {
     Text(&'static str, Entity<TextField>),
     Number(&'static str, Entity<TextField>),
-    Choice(&'static str, Vec<&'static str>, Option<Vec<Value>>, Rc<RefCell<usize>>),
+    Choice(&'static str, Vec<SharedString>, Option<Vec<Value>>, Rc<RefCell<usize>>),
     Note,
 }
 
@@ -592,7 +738,7 @@ fn collect_sources(sources: &[Source], cx: &App) -> Vec<(String, Value)> {
                 let i = *active.borrow();
                 let value = match values {
                     Some(v) => v.get(i).cloned().unwrap_or(Value::Null),
-                    None => Value::String(options.get(i).copied().unwrap_or("").to_string()),
+                    None => Value::String(options.get(i).cloned().unwrap_or_default().to_string()),
                 };
                 out.push((key.to_string(), value));
             }
@@ -605,6 +751,7 @@ fn collect_sources(sources: &[Source], cx: &App) -> Vec<(String, Value)> {
 /// One open dialog. The root view holds `Option<DialogState>` and rebuilds only the element tree.
 pub(crate) struct DialogState {
     spec: Spec,
+    kind: Kind,
     rendered: Vec<Rendered>,
     cmds: Cmds,
     dismiss: Rc<RefCell<bool>>,
@@ -633,12 +780,13 @@ impl DialogState {
                 }
                 Field::Number { value, .. } => (Some(number_field(cx, 200.0, Some(*value), "", 1.0, Slot::None)), Rc::new(RefCell::new(0usize))),
                 Field::Choice { active, .. } => (None, Rc::new(RefCell::new(*active))),
-                Field::Note { .. } | Field::Preview { .. } | Field::Section { .. } | Field::Action { .. } => (None, Rc::new(RefCell::new(0usize))),
+                Field::Note { .. } | Field::Preview { .. } | Field::Section { .. } | Field::Action { .. } | Field::Color { .. } => (None, Rc::new(RefCell::new(0usize))),
             };
             rendered.push(Rendered { field: f.clone(), input, active });
         }
         Self {
             spec,
+            kind,
             rendered,
             cmds: cmds.clone(),
             dismiss: Rc::new(RefCell::new(false)),
@@ -679,6 +827,18 @@ impl DialogState {
     }
 
     fn height(&self) -> f32 {
+        let variable_active = self
+            .rendered
+            .iter()
+            .find_map(|r| {
+                if let Field::Choice { key, .. } = &r.field {
+                    if *key == "variable" {
+                        return Some(*r.active.borrow());
+                    }
+                }
+                None
+            })
+            .unwrap_or(0);
         let extra: f32 = self
             .spec
             .fields
@@ -686,12 +846,19 @@ impl DialogState {
             .map(|f| match f {
                 Field::Preview { .. } => 80.0,
                 Field::Section { .. } => 18.0,
+                Field::Color { .. } => 32.0,
                 _ => 0.0,
             })
             .sum();
+        // egui hides the collection picker for a Style: count it out of the row total.
+        let visible_fields = if variable_active == 0 {
+            self.spec.fields.iter().filter(|f| !matches!(f, Field::Choice { key, .. } if *key == "collection")).count()
+        } else {
+            self.spec.fields.len()
+        };
         40.0 + 32.0
             + self.spec.message.as_ref().map(|_| 32.0).unwrap_or(0.0)
-            + self.spec.fields.len() as f32 * 32.0
+            + visible_fields as f32 * 32.0
             + extra
             + self.spec.buttons.len().div_ceil(2) as f32 * 32.0
     }
@@ -719,7 +886,7 @@ impl DialogState {
                 Field::Text { key, .. } => r.input.clone().map(|e| Source::Text(key, e)).unwrap_or(Source::Note),
                 Field::Number { key, .. } => r.input.clone().map(|e| Source::Number(key, e)).unwrap_or(Source::Note),
                 Field::Choice { key, options, values, .. } => Source::Choice(key, options.clone(), values.clone(), r.active.clone()),
-                Field::Note { .. } | Field::Preview { .. } | Field::Section { .. } | Field::Action { .. } => Source::Note,
+                Field::Note { .. } | Field::Preview { .. } | Field::Section { .. } | Field::Action { .. } | Field::Color { .. } => Source::Note,
             })
             .collect()
     }
@@ -740,11 +907,32 @@ impl DialogState {
             body = body.child(div().w_full().text_size(pt(11.0)).text_color(rgba(t.text)).child(SharedString::from(msg.clone())));
         }
 
+        // egui hides the collection picker unless the "Variable" radio is on: mirror that. Read
+        // the live `Rendered.active` (updated by the dropdown), not the spec's initial value.
+        let variable_active = self
+            .rendered
+            .iter()
+            .find_map(|r| {
+                if let Field::Choice { key, .. } = &r.field {
+                    if *key == "variable" {
+                        return Some(*r.active.borrow());
+                    }
+                }
+                None
+            })
+            .unwrap_or(0);
+
         for r in &self.rendered {
+            // egui hides the collection picker for a Style; skip its row like egui.
+            if let Field::Choice { key, .. } = &r.field {
+                if *key == "collection" && variable_active == 0 {
+                    continue;
+                }
+            }
             let label_text = match &r.field {
                 Field::Text { label, .. } | Field::Number { label, .. } | Field::Choice { label, .. } => *label,
                 Field::Preview { label } | Field::Section { title: label } | Field::Action { label, .. } => *label,
-                Field::Note { .. } => "",
+                Field::Note { .. } | Field::Color { .. } => "",
             };
             let label = || {
                 div()
@@ -761,9 +949,11 @@ impl DialogState {
                     let control = r.input.clone().map(|e| e.into_any_element()).unwrap_or_else(|| div().into_any_element());
                     field_row(vec![label(), control], Vec::<AnyElement>::new())
                 }
-                // A two-option choice is a binary choice: draw the kit Checkbox, not a dropdown
-                // (egui uses `widgets::checkbox` for on/off preferences).
-                Field::Choice { label, options, commands, command_params, .. } if options.len() == 2 => {
+                // A two-option choice *with a command* is a binary on/off preference: draw the kit
+                // Checkbox (egui uses `widgets::checkbox` for on/off preferences). A two-option
+                // choice *without* a command (e.g. Style/Variable, sRGB/Display P3) is a selection,
+                // not a boolean, so it falls through to the dropdown below — like egui's radios.
+                Field::Choice { label, options, commands, command_params, .. } if options.len() == 2 && commands.is_some() => {
                     let active = r.active.clone();
                     let checked = *active.borrow() == 0;
                     let cmds = self.cmds.clone();
@@ -848,6 +1038,16 @@ impl DialogState {
                         .text_color(rgba(t.text_secondary))
                         .child(SharedString::from(text.clone())),
                 ),
+                Field::Color { color } => field_row_full(
+                    div()
+                        .w_full()
+                        .h(pt(30.0))
+                        .flex()
+                        .items_center()
+                        .gap(pt(8.0))
+                        .child(div().size(pt(24.0)).rounded(pt(4.0)).bg(parse_hex(color.as_ref())))
+                        .child(div().text_size(pt(12.0)).text_color(rgba(t.text)).child(SharedString::from(color.as_ref().to_uppercase()))),
+                ),
             };
             body = body.child(row);
         }
@@ -859,6 +1059,7 @@ impl DialogState {
                 let flag = self.dismiss.clone();
                 let cmds_btn = self.cmds.clone();
                 let sources_btn = sources.clone();
+                let kind = self.kind;
                 let action = b.action.clone();
                 els.push(
                     dialog_button(b.label, b.primary, move |_: &MouseDownEvent, _, cx: &mut App| {
@@ -874,6 +1075,9 @@ impl DialogState {
                                 cmds_btn.push(Cmd { id, params: Some(params) });
                             }
                             Action::Run { id } => cmds_btn.push(Cmd { id, params: None }),
+                            Action::Derived { base } => {
+                                resolve_derived(kind, &collect_sources(&sources_btn, cx), base, &cmds_btn);
+                            }
                             Action::Close => {}
                         }
                         *flag.borrow_mut() = true;
@@ -934,21 +1138,25 @@ impl DialogState {
 /// engine commands) runs that option's command with its own params. 1:1 with
 /// `ui-egui/src/dialogs.rs`'s `widgets::dropdown` + `right::menu_popup`.
 fn dropdown_field(
-    options: &[&'static str],
+    options: &[SharedString],
     commands: Option<&[&'static str]>,
     params: Option<&[Value]>,
     active: Rc<RefCell<usize>>,
     root: Entity<CanvasView>,
     queue: Cmds,
 ) -> AnyElement {
-    let current = options.get(*active.borrow()).copied().unwrap_or("");
+    let current = options.get(*active.borrow()).cloned().unwrap_or_default();
     let opts = options.to_vec();
     let cmd_list = commands.map(|c| c.to_vec());
     let param_list = params.map(|p| p.to_vec());
-    dropdown(SharedString::from(current), 0.0, None)
+    dropdown(current, 0.0, None)
         .fill()
         .on_click(move |anchor: Bounds<Pixels>, _w: &mut Window, cx: &mut App| {
-            let rows: Vec<MenuRow> = opts.iter().enumerate().map(|(i, o)| MenuRow::new(*o).checked(Some(i == *active.borrow()))).collect();
+            let rows: Vec<MenuRow> = opts
+                .iter()
+                .enumerate()
+                .map(|(i, o)| MenuRow::new(o.clone()).checked(Some(i == *active.borrow())))
+                .collect();
             let act = active.clone();
             let opts = opts.clone();
             let cmd_list = cmd_list.clone();
@@ -956,7 +1164,7 @@ fn dropdown_field(
             let q = queue.clone();
             let root = root.clone();
             let on_pick = Rc::new(move |picked: &str, _w: &mut Window, _cx: &mut App| {
-                let Some(i) = opts.iter().position(|o| *o == picked) else { return };
+                let Some(i) = opts.iter().position(|o| o.as_str() == picked) else { return };
                 *act.borrow_mut() = i;
                 if let Some(id) = cmd_list.as_ref().and_then(|c| c.get(i)) {
                     q.push(Cmd { id, params: param_list.as_ref().and_then(|p| p.get(i)).cloned() });
@@ -990,6 +1198,7 @@ fn dialog_button(label: &'static str, primary: bool, on_click: impl Fn(&MouseDow
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::panels::CmdQueue;
 
     #[test]
     fn every_request_kind_maps_to_a_dialog() {
@@ -1117,5 +1326,93 @@ mod tests {
         assert_eq!(merged["scale"], json!(2.0), "field values win");
         assert_eq!(merged["path"], json!("out.png"));
         assert_eq!(merge_params(&Value::Null, &[]), json!({}), "a non-object base becomes an empty object");
+    }
+
+    /// Drive `resolve_derived` for `SampledColor` through a real queue and return what it queued.
+    fn resolve_sampled(sources: &[(String, Value)], base: &Value) -> Vec<Cmd> {
+        let wake: std::rc::Rc<dyn Fn()> = std::rc::Rc::new(|| {});
+        let q = CmdQueue::new(&wake);
+        resolve_derived(Kind::SampledColor, sources, base, &q);
+        q.drain()
+    }
+
+    #[test]
+    fn sampled_color_resolves_the_right_engine_command() {
+        // A15: 1:1 with `ui-egui/.../sampled_color.rs::create_params` — a paint style, a colour
+        // variable in its collection, or (no collection) a new collection and the variable in it.
+        // Style → style.create (a paint).
+        let style = resolve_sampled(
+            &[
+                ("name".to_string(), json!("Accent")),
+                ("variable".to_string(), json!(false)),
+                ("collection".to_string(), Value::Null),
+            ],
+            &json!({ "color": "#ff0000", "existing": [] }),
+        );
+        assert_eq!(style.len(), 1);
+        assert_eq!(style[0].id, "style.create");
+        assert_eq!(style[0].params, Some(json!({ "type": "paint", "name": "Accent", "value": "#ff0000" })));
+
+        // Variable in an existing collection → variable.create.
+        let var = resolve_sampled(
+            &[
+                ("name".to_string(), json!("Accent")),
+                ("variable".to_string(), json!(true)),
+                ("collection".to_string(), json!("col-1")),
+            ],
+            &json!({ "color": "#ff0000", "existing": [] }),
+        );
+        assert_eq!(var.len(), 1);
+        assert_eq!(var[0].id, "variable.create");
+        assert_eq!(var[0].params, Some(json!({ "collection": "col-1", "name": "Accent", "type": "color", "value": "#ff0000" })));
+
+        // Variable, no collection → command.batch (new collection + variable, $ref), one undo step.
+        let batch = resolve_sampled(
+            &[
+                ("name".to_string(), json!("Accent")),
+                ("variable".to_string(), json!(true)),
+                ("collection".to_string(), Value::Null),
+            ],
+            &json!({ "color": "#ff0000", "existing": [] }),
+        );
+        assert_eq!(batch.len(), 1);
+        assert_eq!(batch[0].id, "command.batch");
+        let cmds = batch[0].params.as_ref().unwrap().get("commands").and_then(Value::as_array).expect("a batch");
+        assert_eq!(cmds.len(), 2);
+        assert_eq!(cmds[0]["command"], json!("variable.createCollection"));
+        assert_eq!(cmds[0]["params"]["modes"], json!(["Mode 1"]));
+        assert_eq!(cmds[1]["command"], json!("variable.create"));
+        assert_eq!(cmds[1]["params"]["collection"], json!({ "$ref": "collection" }));
+
+        // Empty name → nothing queued (egui disables Create until a name is entered).
+        let none = resolve_sampled(
+            &[
+                ("name".to_string(), json!("")),
+                ("variable".to_string(), json!(false)),
+                ("collection".to_string(), Value::Null),
+            ],
+            &json!({ "color": "#ff0000", "existing": [] }),
+        );
+        assert!(none.is_empty(), "nothing is queued without a name");
+    }
+
+    #[test]
+    fn sampled_color_spec_lists_collections_and_hides_them_for_a_style() {
+        // 1:1 with the egui window: every local collection plus "New collection" (value `null`).
+        let s = spec(
+            Kind::SampledColor,
+            &json!({ "color": "#00ff00", "name": "Color 2", "variable": false, "collections": [{"id": "c1", "name": "Brand"}, {"id": "c2", "name": "Theme"}] }),
+        );
+        let collection = s.fields.iter().find_map(|f| match f {
+            Field::Choice { key, options, values, .. } if *key == "collection" => Some((options.clone(), values.clone())),
+            _ => None,
+        });
+        let (options, values) = collection.expect("the collection dropdown is present");
+        assert_eq!(options, vec![SharedString::from("Brand"), SharedString::from("Theme"), SharedString::from("New collection")]);
+        assert_eq!(values, Some(vec![json!("c1"), json!("c2"), Value::Null]));
+        // The colour swatch field carries the sampled hex.
+        assert!(s.fields.iter().any(|f| matches!(f, Field::Color { color } if color.as_ref() == "#00ff00")));
+        // Create resolves the command (a `Derived` button, not a static Submit).
+        assert!(s.buttons.iter().any(|b| matches!(&b.action, Action::Derived { .. })), "Create is a Derived button");
     }
 }

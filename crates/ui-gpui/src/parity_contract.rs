@@ -73,6 +73,9 @@ fn dialog_commands() -> Vec<&'static str> {
         for b in &spec.buttons {
             match &b.action {
                 dialogs::Action::Submit { id, .. } | dialogs::Action::Run { id } | dialogs::Action::SubmitFields { id, .. } => out.push(*id),
+                // A `Derived` button resolves to real engine commands at click time; list those so
+                // `every_dialog_command_is_a_real_engine_command` still audits them.
+                dialogs::Action::Derived { .. } => out.extend(dialogs::derived_commands(kind)),
                 dialogs::Action::Close => {}
             }
         }
@@ -101,6 +104,7 @@ fn capabilities() -> BTreeSet<String> {
                     out.insert((*label).to_string());
                     out.insert((*id).to_string());
                 }
+                dialogs::Field::Color { .. } => {}
                 dialogs::Field::Note { .. } => {}
             }
             if let dialogs::Field::Choice { commands: Some(c), .. } = f {
@@ -112,6 +116,11 @@ fn capabilities() -> BTreeSet<String> {
             match &b.action {
                 dialogs::Action::Submit { id, .. } | dialogs::Action::Run { id } | dialogs::Action::SubmitFields { id, .. } => {
                     out.insert((*id).to_string());
+                }
+                dialogs::Action::Derived { .. } => {
+                    for id in dialogs::derived_commands(kind) {
+                        out.insert(id.to_string());
+                    }
                 }
                 dialogs::Action::Close => {}
             }
