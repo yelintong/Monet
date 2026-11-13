@@ -77,6 +77,13 @@ pub struct RunPass {
     pub field_band: f32,
     /// Packed uniform buffers, one per `var<uniform>` declaration: `(var_name, bytes)`.
     pub uniforms: Vec<(String, Vec<u8>)>,
+    /// Device pixels per document unit for the frame this pass belongs to (the view's scale).
+    ///
+    /// The compositor needs it to size the backdrop's frost pyramid: a material's blur radius is in
+    /// **document** units, so the mip level it asks for is `log2(radius × dpr)` — a level budget
+    /// fixed at "8" is only enough while `dpr ≈ 1` and silently truncates the frost at every zoom
+    /// above that.
+    pub dpr: f32,
 }
 
 /// Compute the universal material passes for a rendered page: enumerate bound + visible nodes,
@@ -162,7 +169,7 @@ pub fn passes_for(doc: &Document, page: NodeId, view: &figcraft_render::View, ti
         let (uniforms, field_band) = pack_uniforms(&eid, &binding.params, &ex, w, h, sc);
 
         let field_bytes = prepare_fields(doc, id, rect_px[2], rect_px[3], sc, origin_px);
-        out.push(RunPass { effect: eid, node: id, rect_px, radii_px, node_px, origin_px, field_bytes, field_band, uniforms });
+        out.push(RunPass { effect: eid, node: id, rect_px, radii_px, node_px, origin_px, field_bytes, field_band, uniforms, dpr: sc as f32 });
     }
     out
 }
@@ -579,6 +586,21 @@ fn mip_levels(w: u32, h: u32) -> u32 {
     (w.max(h).max(1) as f32).log2().floor() as u32 + 1
 }
 
+/// The largest frost radius any shader can ask for, in **document** units — `glass.wgsl` clamps its
+/// `frost` control to this and `@fx param u.frost` declares the same ceiling.
+const MAX_FROST_DOC: f64 = 100.0;
+
+/// How many backdrop mip levels a frame at `dpr` device pixels per document unit can reach.
+///
+/// The blur radius is a **document** length, so the shader asks for `log2(frost × dpr)`: the level
+/// budget follows the zoom, not the texture. Past the level that is one texel wide the blur is
+/// already "the average of the whole window", so the texture's own chain is the hard ceiling.
+fn backdrop_levels(w: u32, h: u32, dpr: f32) -> u32 {
+    let radius_px = (MAX_FROST_DOC * f64::from(dpr.max(1e-6))).max(1.0);
+    let need = radius_px.log2().ceil() as u32 + 1;
+    mip_levels(w, h).min(need.max(1))
+}
+
 /// The 2×2 box reduction that builds one backdrop mip level. A `textureLoad` block average (rather
 /// than a bilinear tap) keeps every level exactly aligned to the one above it: destination pixel
 /// `i` always reads source pixels `2i` and `2i+1`, so the blur's centre cannot drift by half a pixel
@@ -859,13 +881,18 @@ impl WgslRunner {
         OverlayTex { w, h, texture, view }
     }
 
-    /// One node's backdrop: its window plus a full mip chain, kept while the window keeps its size.
-    fn ensure_backdrop(&mut self, node: u64, w: u32, h: u32) {
-        if self.backdrop.get(&node).is_some_and(|t| t.w == w && t.h == h) { return; }
-        // Frost tops out at 100 document px, so eight levels (a 256-px reduction) already cover every
-        // radius at any sane zoom; the whole chain of a 1080p window would be four more full-surface
-        // reduction passes for levels nothing can ask for.
-        let count = mip_levels(w, h).min(8);
+    /// One node's backdrop: its window plus the mip chain its frost can actually reach, kept while
+    /// the window keeps its size.
+    fn ensure_backdrop(&mut self, node: u64, w: u32, h: u32, dpr: f32) {
+        let count = backdrop_levels(w, h, dpr);
+        if self.backdrop.get(&node).is_some_and(|t| t.w == w && t.h == h && t.levels.len() as u32 == count) { return; }
+        // The chain has to cover `log2(frost × dpr)`, and `dpr` is the zoom: a budget fixed at eight
+        // levels covers every radius only while `dpr ≈ 1`. Above that the shader's `frost` silently
+        // clamped to level 7 (a 128-px blur) no matter how far you zoomed in — the pane's interior
+        // stopped being frosted and became a 1:1 copy of the backdrop, which reads as "the glass
+        // vanished" as soon as the pane's own edge was off-screen. Deeper levels are 4× cheaper per
+        // level than the one above, so following `dpr` to the texture's own chain costs almost
+        // nothing.
         let texture = self.device.create_texture(&wgpu::TextureDescriptor {
             label: Some("universal backdrop"), size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
             mip_level_count: count, sample_count: 1, dimension: wgpu::TextureDimension::D2, format: FORMAT,
@@ -1019,7 +1046,7 @@ impl WgslRunner {
         for step in steps {
             let Step::Pass(p) = step else { continue };
             let Some([_, _, rw, rh]) = clip_rect(p.rect_px, w, h) else { continue };
-            self.ensure_backdrop(p.node.0, rw, rh);
+            self.ensure_backdrop(p.node.0, rw, rh, p.dpr);
             let key = field_key(p, rw, rh);
             let changed = self.ensure_field(p.node.0, rw, rh, key);
             // A rect's field is analytic and its key is exact, so an unchanged rect can skip. A real

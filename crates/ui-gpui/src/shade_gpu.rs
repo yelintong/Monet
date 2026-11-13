@@ -117,6 +117,7 @@ fn pass_for(req: &ShadeRequest, doc: &Document) -> crate::wgsl_runner::RunPass {
         field_bytes,
         field_band,
         uniforms,
+        dpr: sc as f32,
     }
 }
 
