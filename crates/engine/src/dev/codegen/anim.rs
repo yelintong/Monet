@@ -241,6 +241,10 @@ fn is_shadow(p: AnimProperty) -> bool {
 /// Keyframes of the `box-shadow` of the first drop shadow: CSS cannot animate offset, blur and
 /// colour separately, so the times of all animated shadow properties are merged and each frame
 /// prints the full shadow.
+/// 阴影各通道 easing 不一致时，按约一帧（16ms）采样成 linear 分段，最多 60 段。
+const SHADOW_SAMPLE_MS: u32 = 16;
+const SHADOW_MAX_SAMPLES: u32 = 60;
+
 fn shadow_frames(node: &Node, duration: u32) -> Vec<(u32, String, Option<Ease>)> {
     let tracks: Vec<&Track> = SHADOW_PROPS.iter().filter_map(|p| node.motion.track(*p)).filter(|t| t.visible && !t.is_empty()).collect();
     let spread = match node.effects.iter().find_map(|e| match &e.kind {
@@ -254,20 +258,58 @@ fn shadow_frames(node: &Node, duration: u32) -> Vec<(u32, String, Option<Ease>)>
     times.insert(0);
     times.insert(duration);
     let times: Vec<u32> = times.into_iter().collect();
-    let mut out = Vec::new();
-    for (i, t) in times.iter().enumerate() {
-        let num_at = |p| value_at(node, p, *t as f64).and_then(|v| v.scalar()).unwrap_or(0.0);
-        let col = value_at(node, AnimProperty::ShadowColor, *t as f64).and_then(|v| v.color()).unwrap_or(Color::BLACK);
-        let v = format!(
+
+    // 某一时刻的完整 `box-shadow` 值（各通道取各自的求值结果）。
+    let value_at_t = |t: u32| -> String {
+        let num_at = |p| value_at(node, p, t as f64).and_then(|v| v.scalar()).unwrap_or(0.0);
+        let col = value_at(node, AnimProperty::ShadowColor, t as f64).and_then(|v| v.color()).unwrap_or(Color::BLACK);
+        format!(
             "{}px {}px {}px {}px {}",
             num2(num_at(AnimProperty::ShadowX)),
             num2(num_at(AnimProperty::ShadowY)),
             num2(num_at(AnimProperty::ShadowBlur)),
             num2(spread),
             css_color(&col, 1.0),
-        );
-        let timing = (i + 1 < times.len()).then(|| tracks.iter().find_map(|tr| tr.key_at(*t).map(|k| k.easing)).unwrap_or(Ease::Linear));
-        out.push((*t, v, timing));
+        )
+    };
+
+    let mut out: Vec<(u32, String, Option<Ease>)> = Vec::new();
+    let n = times.len();
+    for (i, &a) in times.iter().enumerate() {
+        if i + 1 == n {
+            // 最后一个关键帧之后没有过渡，不带 timing。
+            out.push((a, value_at_t(a), None));
+            break;
+        }
+        let b = times[i + 1];
+        // 该时刻各通道关键帧的 easing。CSS 的 `box-shadow` 只能带**一个** timing function，
+        // 若各通道 easing 不同（例如 X 用 Linear、Y 用 Hold），取任意一个都会让别的通道失真。
+        // 此时按采样细分、每步用 linear，把各通道自己的曲线保留下来（CodeRabbit 指出）。
+        let mut distinct: Vec<Ease> = Vec::new();
+        for tr in &tracks {
+            if let Some(k) = tr.key_at(a)
+                && !distinct.contains(&k.easing)
+            {
+                distinct.push(k.easing);
+            }
+        }
+        if distinct.len() <= 1 {
+            let ease = distinct.first().copied().unwrap_or(Ease::Linear);
+            out.push((a, value_at_t(a), Some(ease)));
+        } else {
+            let span = b.saturating_sub(a).max(1);
+            let steps = span.div_ceil(SHADOW_SAMPLE_MS).max(2).min(SHADOW_MAX_SAMPLES);
+            let mut prev = a;
+            for s in 1..steps {
+                let t = a + ((span as u64 * s as u64) / steps as u64) as u32;
+                if t <= prev || t >= b {
+                    continue;
+                }
+                out.push((prev, value_at_t(prev), Some(Ease::Linear)));
+                prev = t;
+            }
+            out.push((prev, value_at_t(prev), Some(Ease::Linear)));
+        }
     }
     out
 }
@@ -726,5 +768,32 @@ mod tests {
         let css = css_animation_for(&d, frame);
         assert!(!css.contains("card-opacity") && !css.contains("card-shadow"), "{css}");
         assert!(css.contains("card-position"), "{css}");
+    }
+
+    /// CodeRabbit：`box-shadow` 只能带**一个** timing function。当各阴影通道在同一段里
+    /// easing 不同（X=Linear、Y=Hold）时，不能只取某一个通道的曲线（会让别的通道失真），
+    /// 而应按采样细分、每步用 linear，保留各通道自己的曲线。
+    #[test]
+    fn shadow_channels_with_different_easing_are_sampled_not_flattened() {
+        use figcraft_doc::{Effect, EffectKind, Shadow};
+        let (mut d, _frame, id) = doc(true);
+        {
+            let n = d.node_mut(id).unwrap();
+            n.effects = vec![Effect { kind: EffectKind::DropShadow(Shadow { spread: 2.0, ..Shadow::default() }), visible: true }];
+            let sx = n.motion.ensure_track(AnimProperty::ShadowX);
+            sx.set_key(0, AnimValue::Scalar(0.0), Some(Ease::Linear));
+            sx.set_key(1000, AnimValue::Scalar(10.0), Some(Ease::Linear));
+            let sy = n.motion.ensure_track(AnimProperty::ShadowY);
+            sy.set_key(0, AnimValue::Scalar(0.0), Some(Ease::Hold));
+            sy.set_key(1000, AnimValue::Scalar(20.0), Some(Ease::Linear));
+        }
+        let sh = shadow_frames(d.node(id).unwrap(), 2000);
+        // 0..1000 段两通道 easing 不同 → 必须细分采样，远多于「两个端点」。
+        let mid: Vec<_> = sh.iter().filter(|(t, _, _)| *t > 0 && *t < 1000).collect();
+        assert!(mid.len() > 2, "不同 easing 必须采样成多段，实得 {} 段", mid.len());
+        assert!(mid.iter().all(|(_, _, timing)| matches!(timing, Some(Ease::Linear))), "采样段必须是 linear，不能借用某一通道的曲线");
+        // 单一 easing 的段保持原样（不被无谓细分）：1000..2000 两通道都是显式 Linear。
+        let tail: Vec<_> = sh.iter().filter(|(t, _, _)| *t > 1000 && *t < 2000).collect();
+        assert!(tail.is_empty(), "相同 easing 的段不应被细分，实得 {} 段", tail.len());
     }
 }

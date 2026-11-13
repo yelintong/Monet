@@ -467,13 +467,20 @@ pub fn toggle_key(app: &mut CanvasApp, ui: &MotionUi, node: NodeId, property: An
 /// 收敛到 engine 命令 `motion.keyframeMove`（PR#1624）：命令把目标时刻夹在相邻 key 之间，
 /// 保证两个 key 永不共享同一时刻（本地旧版无夹紧，会拖出编辑器无法按时寻址的重叠 key）。
 /// 拖拽手势的 undo 边界仍由 `Act::BeginEdit`/`EndEdit` 的 interaction 拥有，故用 execute 直发。
-pub fn move_key(app: &mut CanvasApp, key: SelectedKey, time: u32) {
-    let _ = app.session.execute(
-        "motion.keyframeMove",
-        &serde_json::json!({
-            "node": key.node.0, "property": key.property.name(), "time": key.time_ms, "to": time,
-        }),
-    );
+/// 返回命令**落地后的真实时间**（引擎会把 `to` 夹在相邻 key 之间，例如 500 → 399），
+/// 命令失败时返回 `None`。调用方必须用这个返回值更新选中 / 抓取状态，否则会指向一个
+/// 不存在的键（CodeRabbit：MoveKey 丢弃返回值 → 后续拖动 / 缓动编辑寻址到错误 key）。
+pub fn move_key(app: &mut CanvasApp, key: SelectedKey, time: u32) -> Option<u32> {
+    app.session
+        .execute(
+            "motion.keyframeMove",
+            &serde_json::json!({
+                "node": key.node.0, "property": key.property.name(), "time": key.time_ms, "to": time,
+            }),
+        )
+        .ok()
+        .and_then(|v| v.get("time").and_then(|t| t.as_u64()))
+        .map(|t| t as u32)
 }
 
 /// Writes a typed value into `property` at the playhead (the inspector's number fields).
@@ -807,17 +814,24 @@ pub fn apply(app: &mut CanvasApp, ui: &mut MotionUi, acts: Vec<Act>) -> bool {
                 }
             }
             Act::MoveKey(k, t) => {
-                move_key(app, k, t);
-                // 选中项跟着关键帧一起搬。否则拖完以后高亮留在旧时间上、缓动面板指向一个
-                // 已经不存在的键（`ui.selected` 是 inspector / easing 的唯一来源）。
-                if ui.selection.remove(&SelItem::Key(k.node, k.property, k.time_ms)) {
-                    ui.selection.insert(SelItem::Key(k.node, k.property, t));
-                }
-                if ui.selection.remove(&SelItem::Segment(k.node, k.property, k.time_ms)) {
-                    ui.selection.insert(SelItem::Segment(k.node, k.property, t));
-                }
-                if ui.selected == Some(k) {
-                    ui.selected = Some(crate::motion::SelectedKey { time_ms: t, ..k });
+                // 只有命令成功落地才更新选中：用引擎返回的**落地时间**（可能被夹紧），而不是
+                // 请求的 `t`；否则选中会指向一个不存在的键（CodeRabbit 指出）。
+                if let Some(landed) = move_key(app, k, t) {
+                    // 选中项跟着关键帧一起搬。否则拖完以后高亮留在旧时间上、缓动面板指向一个
+                    // 已经不存在的键（`ui.selected` 是 inspector / easing 的唯一来源）。
+                    if ui.selection.remove(&SelItem::Key(k.node, k.property, k.time_ms)) {
+                        ui.selection.insert(SelItem::Key(k.node, k.property, landed));
+                    }
+                    if ui.selection.remove(&SelItem::Segment(k.node, k.property, k.time_ms)) {
+                        ui.selection.insert(SelItem::Segment(k.node, k.property, landed));
+                    }
+                    if ui.selected == Some(k) {
+                        ui.selected = Some(crate::motion::SelectedKey { time_ms: landed, ..k });
+                    }
+                    // 拖拽抓取状态也要跟到**真实**时间：时间轴在输入时先乐观地写成请求时间，
+                    // 若被夹紧（例如 500 → 399），下一帧仍按请求时间找键会落空，表现为
+                    // 「拖到邻居边界后怎么拖都不动」。`apply` 在输入之后运行，这里以落地时间纠正。
+                    crate::motion::timeline::set_grabbed(Some(crate::motion::SelectedKey { time_ms: landed, ..k }));
                 }
             }
             Act::ToggleKey(n, p) => toggle_key(app, ui, n, p),
@@ -1150,6 +1164,34 @@ mod tests {
 
         apply(&mut app, &mut ui, vec![Act::CloseSegmentEase]);
         assert_eq!(ui.segment_ease, None, "Close 收尾幂等");
+    }
+
+    /// CodeRabbit：拖关键帧越过邻居时，引擎把目标时间夹到邻居之前（500 → 399）。
+    /// `move_key` 必须返回**落地时间**，选中 / 抓取状态也要用它，否则指向一个不存在的键
+    /// （后续拖动 / 缓动编辑会寻址错误）。
+    #[test]
+    fn move_key_uses_the_landed_time_when_clamped_by_a_neighbor() {
+        let (mut app, node) = app_with_node();
+        let p = AnimProperty::Position;
+        add_key(&mut app, node, p, 0);
+        add_key(&mut app, node, p, 200);
+        add_key(&mut app, node, p, 400);
+
+        let mut ui = MotionUi::default();
+        let k = SelectedKey { node, property: p, time_ms: 200 };
+        ui.selected = Some(k);
+        ui.selection.insert(SelItem::Key(node, p, 200));
+
+        // 请求把 200 挪到 500：被 400 的邻居夹到 399。
+        apply(&mut app, &mut ui, vec![Act::MoveKey(k, 500)]);
+
+        let doc = app.session.doc().unwrap();
+        let tr = doc.node(node).unwrap().motion.track(p).unwrap();
+        assert!(tr.key_at(399).is_some(), "引擎把键落在夹紧后的 399");
+        assert!(tr.key_at(200).is_none(), "旧位置不再有键");
+        assert_eq!(ui.selected.map(|s| s.time_ms), Some(399), "选中跟落地时间，不是请求的 500");
+        assert!(ui.selection.contains(&SelItem::Key(node, p, 399)), "选区用落地时间");
+        assert!(!ui.selection.contains(&SelItem::Key(node, p, 500)), "不能指向不存在的键");
     }
 
     /// 整条轨道有任意帧 → `has_any_key` 为真（右侧插针空心常亮），与播放头位置无关；

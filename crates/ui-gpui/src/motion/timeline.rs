@@ -267,6 +267,12 @@ thread_local! {
         const { std::cell::RefCell::new((1.0, 0.0, 9999.0, 1000.0 / 60.0, 2000)) };
 }
 
+/// 设置拖拽抓取的关键帧。`apply` 在 `MoveKey` 落地后用它按**真实**时间纠正时间轴的乐观值
+/// （时间轴在输入时先写成请求时间，被夹紧时与真实时间不同）。
+pub fn set_grabbed(k: Option<crate::motion::SelectedKey>) {
+    GRABBED.with(|g| *g.borrow_mut() = k);
+}
+
 /// Push a text label with the same anchoring the canvas painter uses.
 fn text(labels: &mut Vec<Label>, at: Pos2, align: Align2, s: impl Into<String>, font: FontId, color: Color32) {
     let s = s.into();
