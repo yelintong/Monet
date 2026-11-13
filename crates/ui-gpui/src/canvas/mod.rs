@@ -173,23 +173,29 @@ pub fn show(app: &mut CanvasApp, worker: &mut Worker, ppp: f32, t: &Tokens) -> C
 
     // 本帧渲染单元清单（接口层接线）：按页面坐标的稳定网格 + 缩放档位生成，
     // 让「哪些单元需要重跑」在画布状态里可见；渲染路径暂不消费它。
-    let units = app.session.ds().ok().map(|ds| {
+    // 复用 CanvasState.units 的 Vec：每帧 clear + extend，不再整表重新分配。
+    // 身份里带当前页面，同一文档不同页的相同视口不会共用单元。
+    let units_input = app.session.ds().ok().map(|ds| {
         let (ox, oy) = ds.view.origin();
         let z = ds.view.zoom.max(1e-9);
         let w = f64::from(rect.width()) / z;
         let h = f64::from(rect.height()) / z;
         let scale = z * f64::from(ppp);
+        // 这里传的是 Arc 身份，不是内容版本：doc_mut 在同一个手势里原地改文档时指针不变。
+        // 当前渲染路径不消费 units，所以不会漏刷新；接线前必须换成 Document 暴露的
+        // 内容 revision（见 docs/canvas-pipeline-plan.md §7.2）。
         let input = tiles::view_units::ViewInput {
-            doc_revision: std::sync::Arc::as_ptr(&ds.doc) as u64,
+            doc_identity: std::sync::Arc::as_ptr(&ds.doc) as u64,
+            page: ds.page.0,
             params: 0,
             size: (rect.width() as u32, rect.height() as u32),
             fonts: 0,
             side: tiles::TILE_SIDE,
         };
-        tiles::view_units::for_view([ox, oy, ox + w, oy + h], scale, input)
+        ([ox, oy, ox + w, oy + h], scale, input)
     });
-    if let Some(units) = units {
-        app.canvas.units = units;
+    if let Some((view, scale, input)) = units_input {
+        tiles::view_units::for_view_into(view, scale, input, &mut app.canvas.units);
     }
 
     // 页面底色（贴图滞后/局部时也铺在底下）。

@@ -56,10 +56,17 @@ impl TileCoord {
 pub struct UnitKey {
     pub tile: TileCoord,
     pub zoom_bucket: i32,
-    pub doc_revision: u64,
+    /// 文档**身份**（`Arc` 指针），不是内容版本：同一个手势里原地改文档时它不变。
+    /// 当前渲染路径不消费单元，所以不会漏刷新；接线到真实渲染前必须换成
+    /// `Document` 暴露的内容 revision，否则格子会一直判「没变」。
+    pub doc_identity: u64,
+    /// 当前页面：同一文档的不同页可以有完全相同的视口与缩放档位。
+    pub page: u64,
     pub params: u64,
     pub size: (u32, u32),
     pub fonts: u64,
+    /// 格子边长进身份：边长变了，同一个 (x, y) 代表的是不同的页面范围。
+    pub side: u32,
 }
 
 /// 缩放档位按 2 的幂划分。跨档时几何要重新展平，必须渐进迁移，别在手势里卡住。
@@ -164,10 +171,21 @@ fn hash_op(h: &mut DefaultHasher, op: &DrawOp, c: TileCoord, side: u32) {
     op.fields.hash(h);
     let origin = tile_origin(c, side);
     hash_rect(h, [op.visible[0] - origin.0, op.visible[1] - origin.1, op.visible[2] - origin.0, op.visible[3] - origin.1]);
+    // 有没有遮罩本身要先哈希：空交集与「没有遮罩」是两回事，
+    // 否则撤掉一个不相交的遮罩会让图元变可见而格哈希不变。
     match op.clip {
-        Some(r) => hash_rect(h, clipped_to_tile(r, origin, side)),
-        None => hash_rect(h, [0.0, 0.0, -1.0, -1.0]),
+        Some(r) => {
+            1u8.hash(h);
+            hash_rect(h, clipped_to_tile(r, origin, side));
+        }
+        None => 0u8.hash(h),
     }
+}
+
+/// 两个页面矩形的交集；没有重叠返回 None。
+fn intersect_rect(a: PageRect, b: PageRect) -> Option<PageRect> {
+    let r = [a[0].max(b[0]), a[1].max(b[1]), a[2].min(b[2]), a[3].min(b[3])];
+    (r[2] > r[0] && r[3] > r[1]).then_some(r)
 }
 
 /// 每个格子的内容哈希，空格子也会得到一个值。两块哈希相同即像素相同。
@@ -181,7 +199,11 @@ pub fn tile_hashes(ops: &[DrawOp], region: PageRect, side: u32) -> HashMap<TileC
         if matches!(op.kind, OpKind::Path | OpKind::Overlay) {
             continue;
         }
-        for c in tiles_over(op.visible, side) {
+        // 大图元的可见边界可能覆盖超过 MAX_TILES 个格子，直接交给 tiles_over 会被上限
+        // 判为空，整条指令就不进哈希。先裁到本轮哈希的 region 再枚举；hash_op 仍收原始
+        // 几何，格内坐标不失真。
+        let Some(visible) = intersect_rect(op.visible, region) else { continue };
+        for c in tiles_over(visible, side) {
             if let Some(h) = hashers.get_mut(&c) {
                 hash_op(h, op, c, side);
             }
@@ -361,6 +383,35 @@ mod tests {
         assert!(tiles_over(rect(0.0, 0.0, 0.0, 0.0), TILE_SIDE).is_empty());
         assert!(tiles_over(rect(0.0, 0.0, 1.0, 1.0), 0).is_empty());
     }
+
+    #[test]
+    fn absent_clip_differs_from_a_disjoint_clip() {
+        let region = rect(0.0, 0.0, 512.0, 512.0);
+        let no_clip = op(OpKind::Rect, rect(10.0, 10.0, 40.0, 40.0), 1);
+        let mut disjoint = no_clip.clone();
+        disjoint.clip = Some(rect(2000.0, 2000.0, 2100.0, 2100.0));
+        let mut outside = no_clip.clone();
+        outside.clip = Some(rect(-100.0, -100.0, -10.0, -10.0));
+        let h0 = tile_hashes(&[no_clip], region, TILE_SIDE);
+        let h1 = tile_hashes(&[disjoint], region, TILE_SIDE);
+        let h2 = tile_hashes(&[outside], region, TILE_SIDE);
+        assert_ne!(h0.get(&TileCoord::new(0, 0)), h1.get(&TileCoord::new(0, 0)));
+        assert_ne!(h0.get(&TileCoord::new(0, 0)), h2.get(&TileCoord::new(0, 0)));
+        // 两个不相交的遮罩裁进同一格后都是空交集，哈希仍应一致（平移不弄脏所有格）。
+        assert_eq!(h1.get(&TileCoord::new(0, 0)), h2.get(&TileCoord::new(0, 0)));
+    }
+
+    #[test]
+    fn a_large_operation_is_hashed_within_a_small_region() {
+        let region = rect(0.0, 0.0, 512.0, 512.0);
+        // 16384x16384 覆盖的格子数远超 MAX_TILES，不能被 tiles_over 直接丢掉。
+        let big = op(OpKind::Rect, rect(0.0, 0.0, 16384.0, 16384.0), 1);
+        let mut changed = big.clone();
+        changed.fields = 2;
+        let old = tile_hashes(&[big], region, TILE_SIDE);
+        let new = tile_hashes(&[changed], region, TILE_SIDE);
+        assert_eq!(dirty_tiles(&old, &new), vec![TileCoord::new(0, 0)]);
+    }
 }
 
 /// 视口 → 渲染单元清单（第 2 批：接口层，仍未接线）。
@@ -373,7 +424,11 @@ pub mod view_units {
     /// 生成单元键所需的、与格子位置无关的输入。
     #[derive(Clone, Copy, Debug)]
     pub struct ViewInput {
-        pub doc_revision: u64,
+        /// 文档**身份**（`Arc` 指针），不是内容版本：同一手势内原地编辑不会改变它。
+        /// 接线到真实渲染前必须换成内容 revision（见 UnitKey::doc_identity）。
+        pub doc_identity: u64,
+        /// 当前页面（NodeId 的数值）：不同页的同一视口不能共用单元。
+        pub page: u64,
         pub params: u64,
         pub size: (u32, u32),
         pub fonts: u64,
@@ -382,24 +437,32 @@ pub mod view_units {
 
     impl Default for ViewInput {
         fn default() -> Self {
-            Self { doc_revision: 0, params: 0, size: (0, 0), fonts: 0, side: TILE_SIDE }
+            Self { doc_identity: 0, page: 0, params: 0, size: (0, 0), fonts: 0, side: TILE_SIDE }
         }
     }
 
     /// 视口覆盖到的每个格子生成一个身份键，缩放档位对所有格子一致。
     pub fn for_view(view: PageRect, scale: f64, input: ViewInput) -> Vec<UnitKey> {
+        let mut out = Vec::new();
+        for_view_into(view, scale, input, &mut out);
+        out
+    }
+
+    /// 与 `for_view` 相同，但写入调用方持有的 Vec：画布每帧复用 `CanvasState.units`，
+    /// 不为每帧重新分配一整张表。
+    pub fn for_view_into(view: PageRect, scale: f64, input: ViewInput, out: &mut Vec<UnitKey>) {
+        out.clear();
         let bucket = zoom_bucket(scale);
-        tiles_over(view, input.side)
-            .into_iter()
-            .map(|tile| UnitKey {
-                tile,
-                zoom_bucket: bucket,
-                doc_revision: input.doc_revision,
-                params: input.params,
-                size: input.size,
-                fonts: input.fonts,
-            })
-            .collect()
+        out.extend(tiles_over(view, input.side).into_iter().map(|tile| UnitKey {
+            tile,
+            zoom_bucket: bucket,
+            doc_identity: input.doc_identity,
+            page: input.page,
+            params: input.params,
+            size: input.size,
+            fonts: input.fonts,
+            side: input.side,
+        }));
     }
 
     /// 下一帧需要重跑的格子：身份键变了或新出现的格。
@@ -410,7 +473,7 @@ pub mod view_units {
 
 #[cfg(test)]
 mod view_unit_tests {
-    use super::view_units::{ViewInput, changed, for_view};
+    use super::view_units::{ViewInput, changed, for_view, for_view_into};
     use super::{TILE_SIDE, TileCoord};
 
     fn view(x0: f64, x1: f64) -> [f64; 4] {
@@ -438,8 +501,8 @@ mod view_unit_tests {
 
     #[test]
     fn a_document_change_invalidates_every_unit() {
-        let first = for_view(view(0.0, 1024.0), 1.0, ViewInput { doc_revision: 1, ..ViewInput::default() });
-        let second = for_view(view(0.0, 1024.0), 1.0, ViewInput { doc_revision: 2, ..ViewInput::default() });
+        let first = for_view(view(0.0, 1024.0), 1.0, ViewInput { doc_identity: 1, ..ViewInput::default() });
+        let second = for_view(view(0.0, 1024.0), 1.0, ViewInput { doc_identity: 2, ..ViewInput::default() });
         assert_eq!(changed(&first, &second).len(), first.len());
     }
 
@@ -449,5 +512,33 @@ mod view_unit_tests {
         assert!(units.is_empty());
         assert_eq!(TILE_SIDE, 512);
         assert_eq!(TileCoord::new(0, 0).x, 0);
+    }
+
+    #[test]
+    fn a_page_switch_invalidates_every_unit() {
+        let first = for_view(view(0.0, 1024.0), 1.0, ViewInput { page: 1, ..ViewInput::default() });
+        let second = for_view(view(0.0, 1024.0), 1.0, ViewInput { page: 2, ..ViewInput::default() });
+        assert_eq!(changed(&first, &second).len(), first.len());
+    }
+
+    #[test]
+    fn a_tile_side_change_invalidates_units_with_the_same_coordinate() {
+        // side 从 512 改成 1024 后，(0, 0) 代表的页面范围变了；若 side 不进键，
+        // changed 会把这一格误判成「没变」。
+        let first = for_view(view(0.0, 1024.0), 1.0, ViewInput::default());
+        let second = for_view(view(0.0, 1024.0), 1.0, ViewInput { side: 1024, ..ViewInput::default() });
+        assert_eq!(changed(&first, &second), vec![TileCoord::new(0, 0)]);
+    }
+
+    #[test]
+    fn for_view_into_reuses_the_buffer_and_clears_stale_units() {
+        let mut out = for_view(view(0.0, 1024.0), 1.0, ViewInput::default());
+        let capacity = out.capacity();
+        for_view_into(view(0.0, 512.0), 1.0, ViewInput::default(), &mut out);
+        assert_eq!(out.len(), 2);
+        assert_eq!(out.capacity(), capacity);
+        for_view_into([0.0, 0.0, 1.0e9, 1.0e9], 1.0, ViewInput::default(), &mut out);
+        assert!(out.is_empty());
+        assert_eq!(out.capacity(), capacity);
     }
 }
