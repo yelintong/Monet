@@ -2493,4 +2493,39 @@ mod material_apply_tests {
         );
         assert!(u64::from(v.width) * u64::from(v.height) <= OVERVIEW_PIXELS as u64 * 2, "within the pixel budget: {v:?}");
     }
+
+}
+
+#[cfg(test)]
+mod overlay_admission_tests {
+    use super::*;
+
+    #[test]
+    fn a_coarse_preview_never_covers_a_refined_image_of_the_same_view() {
+        use crate::canvas::render::shows;
+        let page = figcraft_doc::Document::default().pages[0];
+        let view = View { origin: (0.0, 0.0), scale: 1.0, width: 100, height: 100 };
+        let mut c = crate::canvas::CanvasState::default();
+        c.tex_of = Some((7, page));
+        c.tex_seq = 10;
+        c.tex_view = Some(view.clone());
+        c.want_view = Some(view.clone());
+        let done = Done {
+            doc: Arc::new(figcraft_doc::Document::default()),
+            image: wrap_bgra(2, 2, vec![0u8; 16]),
+            view: view.clone(),
+            skip: Vec::new(),
+            grab: None,
+            ms: 0.0,
+            work: Work::Full,
+            uid: 7,
+            page,
+            coarse: true,
+            at: std::time::Instant::now(),
+            seq: 11,
+        };
+        assert!(!shows(&c, &done, Some((7, page))), "same view: a coarse preview must not cover the refined image");
+        c.want_view = Some(View { scale: 2.0, ..view });
+        assert!(shows(&c, &done, Some((7, page))), "after a zoom the coarse preview may show");
+    }
 }
