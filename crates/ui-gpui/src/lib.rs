@@ -1657,6 +1657,19 @@ impl CanvasView {
                     self.app.session.execute("branch.list", &serde_json::json!({})).ok().and_then(|v| v.as_array().cloned()).unwrap_or_default();
                 std::borrow::Cow::Owned(serde_json::json!({ "branches": branches }))
             }
+            dialogs::Kind::ColorProfile => {
+                // A10: the engine reports the current profile for `{}` (save.rs returns
+                // `{profile, changed}` without changing anything), so `data["current"]` is the
+                // live one and the radio starts on it — 1:1 with `ui-egui/.../color_profile.rs`.
+                let current = self
+                    .app
+                    .session
+                    .execute("file.colorProfile", &serde_json::json!({}))
+                    .ok()
+                    .and_then(|v| v.get("profile").and_then(serde_json::Value::as_str).map(String::from))
+                    .unwrap_or_else(|| "srgb".to_string());
+                std::borrow::Cow::Owned(serde_json::json!({ "current": current }))
+            }
             _ => std::borrow::Cow::Borrowed(data),
         };
 

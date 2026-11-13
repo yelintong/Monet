@@ -454,15 +454,30 @@ pub(crate) fn spec(kind: Kind, data: &Value) -> Spec {
             .field(Field::Text { key: "url", label: tr("URL"), value: str_field("url", data, "https://") })
             .button(Button::primary(tr("Create link"), "text.link", json!({})))
             .with_cancel(),
-        Kind::ColorProfile => Spec::new(tr("Color profile"))
-            .width(380.0)
-            .message(tr("Choose the colour space used for display and export."))
-            .field(
-                Field::choice("profile", tr("Profile"), vec!["sRGB", "Display P3"], 0)
-                    .values(vec![json!("srgb"), json!("displayP3")]),
-            )
-            .button(Button::primary(tr("Apply"), "file.colorProfile", json!({})))
-            .with_cancel(),
+        Kind::ColorProfile => {
+            // 1:1 with `ui-egui/src/dialogs/color_profile.rs`: the sRGB / Display P3 radio, then
+            // "Keep appearance" / "Keep values" run `file.colorProfile {profile, convert}`. The
+            // radio starts on the live current profile (`data["current"]`, injected by
+            // `CanvasView::open_dialog`). egui hides the buttons while the chosen profile already
+            // is the current one; here they are always shown — picking the current and applying is
+            // a no-op (the engine returns `changed: false`), so nothing is faked.
+            let current = data.get("current").and_then(Value::as_str).unwrap_or("srgb");
+            let active = ["srgb", "displayP3"].iter().position(|p| p == &current).unwrap_or(0);
+            Spec::new(tr("Color profile"))
+                .width(380.0)
+                .message(tr("Color values in this file are in this color space."))
+                .field(
+                    Field::choice("profile", tr("Profile"), vec!["sRGB", "Display P3"], active)
+                        .values(vec![json!("srgb"), json!("displayP3")]),
+                )
+                .field(Field::Note {
+                    text: tr("Keep appearance converts every color value to the new profile so colors look the same. Keep values leaves the numbers as they are, so colors shift.")
+                        .to_string(),
+                })
+                .button(Button::primary(tr("Keep appearance"), "file.colorProfile", json!({ "convert": true })))
+                .button(Button::submit(tr("Keep values"), "file.colorProfile", json!({ "convert": false })))
+                .with_cancel()
+        }
         Kind::MissingFonts => Spec::new(tr("Missing fonts"))
             .width(400.0)
             .message(tr("This file uses fonts that are not installed. Font substitution has no engine command yet, so this is a notice rather than a fake control."))
@@ -1064,6 +1079,35 @@ mod tests {
         assert_eq!(unsaved.buttons.len(), 3, "Don't Save / Cancel / Save");
         assert!(unsaved.buttons.iter().any(|b| b.label == "Cancel" && b.action == Action::Close));
         assert!(unsaved.message.as_deref().unwrap_or("").contains('3'));
+    }
+
+    #[test]
+    fn color_profile_radio_starts_on_current_and_offers_both_converts() {
+        // A10: 1:1 with `ui-egui/.../color_profile.rs` — the radio starts on the live current
+        // profile and both "Keep appearance" / "Keep values" run `file.colorProfile`.
+        let srgb = spec(Kind::ColorProfile, &json!({ "current": "srgb" }));
+        let p3 = spec(Kind::ColorProfile, &json!({ "current": "displayP3" }));
+        let srgb_active = srgb.fields.iter().find_map(|f| match f {
+            Field::Choice { key, active, .. } if *key == "profile" => Some(*active),
+            _ => None,
+        });
+        assert_eq!(srgb_active, Some(0), "sRGB is the current profile");
+        let p3_active = p3.fields.iter().find_map(|f| match f {
+            Field::Choice { key, active, .. } if *key == "profile" => Some(*active),
+            _ => None,
+        });
+        assert_eq!(p3_active, Some(1), "Display P3 is the current profile");
+        let converts: Vec<(String, Value)> = srgb
+            .buttons
+            .iter()
+            .filter_map(|b| match &b.action {
+                Action::Submit { id, base } if id == &"file.colorProfile" => Some((b.label.to_string(), base.clone())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(converts.len(), 2, "Keep appearance + Keep values");
+        assert!(converts.iter().any(|(_, p)| p.get("convert") == Some(&json!(true))));
+        assert!(converts.iter().any(|(_, p)| p.get("convert") == Some(&json!(false))));
     }
 
     #[test]

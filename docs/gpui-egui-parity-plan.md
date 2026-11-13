@@ -951,3 +951,54 @@ R 节（17:0x 审计）把 R1/R2 标成「✅ 已实施」，但回源码核对�
 4. `ExtraKind` 现在只剩 `Shortcuts / Versions / DevCompare / Home` 四个变体。
 5. **本轮改动未提交、未推送**：工作区有用户在制的 WGSL 等 4900 行 WIP，整文件 `git add`
    会夹带（18:4x 的教训）；按用户「等 WGSL 做完一起提交」的决定，保持工作区原样。
+
+---
+
+## X. 2026-11-13 审计：计划表已滞后于代码 + 第 3/4 批推进
+
+> 用户要求「继续第 3 批、第 3 批做完做第 4 批」。先核对了 `crates/ui-gpui/src` 与 `crates/ui-egui/src`
+> 的真实状态，结论：**A/B/C/G 表严重滞后**——大量条目在代码里已经做成对话框 `Kind`、模块或空壳，
+> 但计划表仍写着「0 命中 / 完全缺失」。下面按代码实况重审，作为后续推进的基线。
+
+### X.0 代码实况（与计划表逐项对账）
+
+| 计划表条目 | 计划表旧口径 | 代码实况（2026-11-13） |
+|---|---|---|
+| A4 插件面板 | 「0 命中」 | `dialogs.rs::Kind::Plugins` 已落地：已装列表（名称/版本/简介/Remove）+ `plugin.import`，仅缺「Browse 联网拉取插件目录」后台任务 |
+| A8 批量重命名 | 「0 命中」 | `Kind::Rename` 已存在（单一 Name 字段，走 `object.rename`）；egui 的 Match/正则/预览尚未搬 |
+| A9 分支 UI | 「0 命中」 | `Kind::Branch` 已落地：列表（Open/Archive）+ 创建；缺并排 review 窗口 |
+| A10 色彩配置 | 「仅注释提到」 | `Kind::ColorProfile` **本日已 1:1**（sRGB/Display P3 单选起始于当前配置 + Keep appearance/Keep values → `file.colorProfile`） |
+| A11 Credits | 「0 引用」 | `Kind::About` 仅版本/许可提示，**未做 egui 670 行贡献者表** |
+| A11/A13 缺失字体 | 「0 命中」 | `Kind::MissingFonts` 已存在，但**引擎无 `file.missingFonts` 命令**（grep 无命中）→ 只能做提示窗，不能假造修复按钮 |
+| A12 导入报告 | 「0 引用」 | `Kind::ImportReport` 已映射，但**引擎根本不发 `dialog.importReport` 请求**（grep 仅在 GPUI 映射里出现）→ 孤儿对话框，完整移植需在命令执行路径捕获导入 `warnings` |
+| A15 取色器 | 「0 命中」 | `Kind::SampledColor` 已存在（提示窗）；egui 的 Style/Variable+集合+Create 未搬（需为 `Action` 加「按字段选命令」变体） |
+| A17 菜单取值 | 「无对应实现」 | `Kind::Link` 已 1:1（URL 输入 → `text.link`）；egui 的 Offset/移动到页两类未搬 |
+| B8 Present | 「约 1/6」 | `present.rs` 存在，规模仍远小于 egui 的 10 个子模块 |
+| 模块存在性 | — | `present.rs / comments.rs / icons_panel.rs / board_bar.rs / board_picker.rs / palette.rs` 均已存在；`plugins.rs / a11y.rs / bidi.rs / services.rs / proto_canvas.rs / live.rs / field_math.rs` 仍不存在 |
+
+### X.1 第 3 批真实剩余（按代码实况）
+
+- **A19 对话框深化**（已存在但需 1:1）：ColorProfile ✅本日；SampledColor（框架扩展）、ImportReport（引擎捕获）、MissingFonts（引擎缺命令，保持提示）、Rename 批量（Match/正则/预览）、Link 的 Offset/移动到页。
+- **A4 插件面板**：Browse 联网拉取（后台任务，未接）。
+- **A27 画板协作**：board.timer/board.vote/addConnected/connected_place/BoardTimer 仍 0 命中（board_bar/board_picker 只做了工具组）。
+- **A26 原型连线**：`proto_canvas` 模块完全缺失。
+- **A2/A3/A5/A16 等**：A5 图标、A3 评论、A2 工具组已部分落地，细节见各节。
+
+### X.2 第 4 批真实剩余（架构级，需单独立项，非一次移植）
+
+| 条目 | 规模（egui） | 现状 | 处置 |
+|---|---|---|---|
+| B8 Present 子模块 | ~2731 行 / 10 子模块 | `present.rs` ~488 行 | 逐项补全多页/链接/响应式/退出 |
+| A21 a11y | 1071 行 | 不存在 | 移植 AccessKit/F6/焦点环/方向键 |
+| A22 bidi/ui_scale | ~244 行 | 不存在 | 移植 UAX#9/RTL/pref.uiScale |
+| A23 services | — | 不存在 | 原生文件对话框/剪贴板/OPEN_EXTENSIONS/IME |
+| A24 field_math | — | 不存在（冻结件，改前须确认） | 数字框相对运算/字体预览/实时提示/图层选择菜单 |
+| A16 多窗口 | — | 弹层非 OS 多窗口 | 需重构 `Session` 所有权共享（J 节已记） |
+| A14 更新器 | 依赖 craft-update 升版 | 提示窗 | 等 C2 升版 |
+| A28 Live | 1672 行 | 完全缺失 | 光标/聊天/spotlight/共享/加入/断连，最大块 |
+| B6/B7/B10 | — | 部分 | 变量表列行为/导出、属性面板 fill_rule 反向环、光标逐工具核对 |
+
+### X.3 推进纪律
+
+- 每落地一个条目，更新本 X 节 + G 表对应行 + I 节 `PARITY_CONTRACT_STATUS` 块（后者由测试双向核对，改文档标签须同步 `parity_contract.rs`）。
+- 引擎缺命令的条目（MissingFonts）诚实保持提示窗，不假造命令；引擎不发请求的条目（ImportReport）标注为待捕获，不假装已接。
