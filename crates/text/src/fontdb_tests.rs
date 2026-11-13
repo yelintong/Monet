@@ -3,8 +3,10 @@ use figcraft_geom::Shape;
 
 fn pending(styles: &[&str]) -> FontDb {
     let mut db = FontDb::default();
-    let entries =
-        styles.iter().map(|s| Pending { path: format!("no-such-dir/{s}.ttf").into(), index: 0, style: (*s).into(), postscript: None }).collect();
+    let entries = styles
+        .iter()
+        .map(|s| Pending { path: format!("no-such-dir/{s}.ttf").into(), index: 0, style: (*s).into(), postscript: None, local: None })
+        .collect();
     db.pending.insert("cjk ui".into(), ("CJK UI".into(), entries));
     db
 }
@@ -257,10 +259,10 @@ fn replacing_a_family_takes_effect_rather_than_being_shadowed() {
     // `best` takes the *first* face matching a style: a re-added family would otherwise keep the
     // outline it had before (icon fonts are regenerated whenever their icons change).
     let mut db = FontDb::default();
-    assert_eq!(db.set_family_bytes("Icons", icon_font("Icons", 300.0)), 1);
+    assert_eq!(db.add_bytes(icon_font("Icons", 300.0)).len(), 1);
     let before = db.find("Icons", "Regular").expect("found");
     assert!((glyph_width(&before) - 200.0).abs() < 2.0);
-    assert_eq!(db.set_family_bytes("Icons", icon_font("Icons", 900.0)), 1);
+    assert_eq!(db.add_bytes(icon_font("Icons", 900.0)).len(), 1);
     let after = db.find("Icons", "Regular").expect("found");
     assert!((glyph_width(&after) - 800.0).abs() < 2.0, "the new outline wins");
     assert_eq!(db.face_count(), 1, "the replaced face is gone");
@@ -269,11 +271,11 @@ fn replacing_a_family_takes_effect_rather_than_being_shadowed() {
 #[test]
 fn removing_a_family_leaves_the_others_reachable() {
     let mut db = FontDb::default();
-    db.set_family_bytes("Icons A", icon_font("Icons A", 300.0));
-    db.set_family_bytes("Icons B", icon_font("Icons B", 500.0));
+    db.add_bytes(icon_font("Icons A", 300.0));
+    db.add_bytes(icon_font("Icons B", 500.0));
     assert_eq!(db.face_count(), 2);
-    assert!(db.remove_family("Icons A"));
-    assert!(!db.remove_family("Icons A"), "already gone");
+    db.remove_family("Icons A");
+    db.remove_family("Icons A");
     assert!(db.find("Icons A", "Regular").is_none());
     assert!(!db.has_family("Icons A"));
     // The faces after the removed one moved down: the other family is still found.
@@ -291,7 +293,10 @@ fn apple_system_font_names_find_the_system_font() {
     let mut db = FontDb::default();
     db.pending.insert(
         "system font".into(),
-        ("System Font".into(), vec![Pending { path: "no-such-dir/SFNS.ttf".into(), index: 0, style: "Regular".into(), postscript: None }]),
+        (
+            "System Font".into(),
+            vec![Pending { path: "no-such-dir/SFNS.ttf".into(), index: 0, style: "Regular".into(), postscript: None, local: None }],
+        ),
     );
     for name in ["SF Pro", "SF Pro Text", "SF Pro Display", "SF UI Text", "SF UI Display", ".SF NS Text", "San Francisco"] {
         assert!(db.has_family(name), "{name}");
@@ -358,7 +363,13 @@ fn faces_by_postscript_name() {
         "brand sans".into(),
         (
             "Brand Sans".into(),
-            vec![Pending { path: "no-such-dir/b.ttf".into(), index: 0, style: "Bold".into(), postscript: Some("BrandSans-Bold".into()) }],
+            vec![Pending {
+                path: "no-such-dir/b.ttf".into(),
+                index: 0,
+                style: "Bold".into(),
+                postscript: Some("BrandSans-Bold".into()),
+                local: None,
+            }],
         ),
     );
     assert_eq!(db.postscript_face("brandsans-bold"), Some(("Brand Sans".to_string(), "Bold".to_string())));
