@@ -79,6 +79,8 @@ pub struct Grab {
 }
 
 pub struct Done {
+    /// 这张图对应的文档：上台时叠加层读它，保证选框与画面同帧同基准。
+    pub doc: Arc<Document>,
     /// 可直接上传为纹理的整页图像。
     pub image: Arc<RenderImage>,
     /// 该图显示的视图（请求视图向外吸附到整设备像素后的结果）。
@@ -348,6 +350,7 @@ fn run(job: &Job, view: &View, retained: &mut Retained, coarse: bool, reuse: Opt
         && let Some(prev) = reuse
     {
         return Some(Done {
+            doc: job.doc.clone(),
             image: prev.clone(),
             grab: None,
             view,
@@ -392,7 +395,7 @@ fn run(job: &Job, view: &View, retained: &mut Retained, coarse: bool, reuse: Opt
             grab.is_some(),
         );
     }
-    Some(Done { image, grab, view, skip: job.skip.clone(), ms, work, uid: job.uid, page: job.page, coarse, at: job.at, seq: 0 })
+    Some(Done { doc: job.doc.clone(), image, grab, view, skip: job.skip.clone(), ms, work, uid: job.uid, page: job.page, coarse, at: job.at, seq: 0 })
 }
 
 /// `view` 每边少 [`PREVIEW_FACTOR`] 倍像素，至少显示同样大的区域。
@@ -1744,6 +1747,7 @@ fn run_gpu(job: &Job, view: &View, gpu: &mut crate::gpu::Gpu) -> Option<Done> {
         eprintln!("[render] {}x{} {ms:.1}ms gpu rects={}", view.width, view.height, scene.rects.len());
     }
     Some(Done {
+        doc: job.doc.clone(),
         image,
         grab: None,
         view: view.clone(),
@@ -1887,6 +1891,7 @@ mod material_foreground_tests {
 
         let (w, h) = (200u32, 200u32);
         let mut done = Done {
+            doc: Arc::new(doc.clone()),
             image: wrap_bgra(w, h, vec![0u8; (w * h * 4) as usize]),
             view: View { origin: (0.0, 0.0), scale: 1.0, width: w, height: h },
             skip: Vec::new(), grab: None, ms: 0.0, work: figcraft_render::Work::Full,
@@ -1926,6 +1931,7 @@ mod material_foreground_tests {
         let _gpu = crate::wgsl_runner::GPU_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let (doc, page) = glass_container();
         let mut done = crate::canvas::render_worker::Done {
+            doc: Arc::new(doc.clone()),
             image: wrap_bgra(100, 100, vec![0u8; 100 * 100 * 4]),
             view: view(),
             skip: Vec::new(), grab: None, ms: 0.0, work: figcraft_render::Work::Full,
@@ -1952,6 +1958,7 @@ mod material_foreground_tests {
         let (doc, page) = glass_container();
         // 一张「已被挖空」的画布：材质节点连子树都不在里面，全透明。
         let mut done = Done {
+            doc: Arc::new(doc.clone()),
             image: wrap_bgra(100, 100, vec![0u8; 100 * 100 * 4]),
             view: view(),
             skip: Vec::new(), grab: None, ms: 0.0, work: figcraft_render::Work::Full,
@@ -2001,6 +2008,7 @@ mod async_refine_tests {
     fn done_with_seq(seq: u64) -> Done {
         let page = figcraft_doc::Document::default().pages[0];
         Done {
+            doc: Arc::new(figcraft_doc::Document::default()),
             image: wrap_bgra(2, 2, vec![0u8; 2 * 2 * 4]),
             view: View { origin: (0.0, 0.0), scale: 1.0, width: 2, height: 2 },
             skip: Vec::new(),

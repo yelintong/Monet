@@ -53,6 +53,8 @@ pub struct CanvasState {
     pub tex_coarse: bool,
     /// 贴图回答的请求序号。
     pub tex_seq: u64,
+    /// 台上这张贴图对应的文档：叠加层用它，选框才与画面同帧。
+    pub tex_doc: Option<Arc<Document>>,
     /// 覆盖整页的低分辨率兜底图（见 [`render_worker::Overview`]），铺在清晰贴图**下面**。
     /// 平移露出新区域时，清晰贴图还没到的那一条立刻有内容，看不见"正在加载"。
     pub overview: Option<(Arc<RenderImage>, View)>,
@@ -92,6 +94,7 @@ impl Default for CanvasState {
             tex_of: None,
             tex_coarse: false,
             tex_seq: 0,
+            tex_doc: None,
             overview: None,
             overview_of: None,
             submitted: None,
@@ -247,6 +250,7 @@ pub fn show(app: &mut CanvasApp, worker: &mut Worker, ppp: f32, t: &Tokens) -> C
         app.canvas.tex_of = Some((done.uid, done.page));
         app.canvas.tex_coarse = done.coarse;
         app.canvas.tex_seq = done.seq;
+        app.canvas.tex_doc = Some(done.doc.clone());
     }
     if let Some(o) = worker.poll_overview() {
         if let Some(old) = app.canvas.overview.replace((o.image, o.view)) {
@@ -314,9 +318,12 @@ pub(crate) fn draw_overlays(app: &mut CanvasApp, painter: &mut Painter, t: &Toke
     if !painter.clip.is_positive() {
         return;
     }
+    // 选框跟台上那张贴图用同一份文档：贴图是后台某一帧的结果，叠加层若读当帧文档
+    // 就会「框在跑、内容也在跑」。没有上台贴图时退回本帧显示文档，再到源文档。
+    let tex_doc = app.canvas.tex_doc.clone();
     let display_doc = app.display_doc.clone();
     let (doc, sel) = match app.session.ds() {
-        Ok(ds) => (display_doc.unwrap_or_else(|| ds.doc.clone()), ds.selection.clone()),
+        Ok(ds) => (tex_doc.or(display_doc).unwrap_or_else(|| ds.doc.clone()), ds.selection.clone()),
         Err(_) => (Arc::new(Document::new("empty")), Vec::new()),
     };
     // 叠加层（选中框/手柄/尺寸/框选/参考线）——与原实现同一份画法。
@@ -344,14 +351,15 @@ pub(crate) fn draw_overlays(app: &mut CanvasApp, painter: &mut Painter, t: &Toke
 pub(crate) fn presented_image_rect(tl: Pos2, view: &View, zoom: f64, ppp: f32, pixel_preview: bool) -> Rect {
     let w = (f64::from(view.width) / view.scale * zoom) as f32;
     let h = (f64::from(view.height) / view.scale * zoom) as f32;
-    let native_density = !pixel_preview
+    // 位置始终吸附设备像素：缩放过程中贴图自带的 view.scale 还是旧值，若把对齐
+    // 绑在「view.scale == zoom * ppp」上，整个手势期间都会退化成半像素定位，表现为
+    // 贴图边缘抖动、内容跟不上选框。原生密度只影响清晰度，不影响位置对齐。
+    let align = !pixel_preview
         && ppp.is_finite()
         && ppp > 0.0
-        && zoom.is_finite()
-        && view.scale.is_finite()
-        && view.scale > 0.0
-        && (view.scale - zoom * f64::from(ppp)).abs() <= view.scale.abs().max(1.0) * 1e-9;
-    let min = if native_density { pos2((tl.x * ppp).round() / ppp, (tl.y * ppp).round() / ppp) } else { tl };
+        && tl.x.is_finite()
+        && tl.y.is_finite();
+    let min = if align { pos2((tl.x * ppp).round() / ppp, (tl.y * ppp).round() / ppp) } else { tl };
     Rect::from_min_size(min, vec2(w, h))
 }
 
