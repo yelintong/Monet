@@ -32,6 +32,15 @@ use gpui::{Bounds, Pixels, Point};
 
 use crate::app::CanvasApp;
 
+thread_local! {
+    /// 当前跨帧手势（clip/layer/keyframe 拖拽、easing 手柄）是否因文档只读 / 预览而被拒。
+    /// `Act::BeginEdit` / `Act::EaseBegin` 时按 `begin_interaction` 结果设置，
+    /// `EndEdit` / `EaseEnd` 清除；`edit_open` 据此丢弃该手势的每一笔写入。
+    /// 与 `timeline.rs` 的 `GRABBED` / `BAR_ORIGIN` 同款单指针 thread_local 约定。
+    /// PR#1624 gate #3：只读文档的拖拽编辑也必须整段丢弃、不记 undo。
+    static GESTURE_BLOCKED: RefCell<bool> = const { RefCell::new(false) };
+}
+
 /// Height of the docked timeline (egui `timeline::HEIGHT`).
 pub const HEIGHT: f32 = 309.0;
 /// The smallest the docked timeline may be dragged to (egui `timeline::MIN_H`).
@@ -144,6 +153,12 @@ pub struct MotionUi {
     pub clip_anchor: Option<Bounds<Pixels>>,
     /// A dragged settings window keeps its own top-left.
     pub clip_at: Option<Point<Pixels>>,
+    /// 帧间线（segment）的独立缓动浮窗：编辑**这一段**的曲线（`EaseTarget::Key`），
+    /// 与 clip 预设窗完全分开（用户 2026-11-12：帧间线设置是「单独的」，不与动画 clip 联动）。
+    pub segment_ease: Option<SelectedKey>,
+    /// clip 预设窗里 Easing 行的眼睛：折叠/展开**下方曲线编辑器**（不是 clip 本身的显隐）。
+    /// 在集合里 = 该 clip 的曲线被折叠；默认（不在集合）= 展开。按 clip 记住各自状态。
+    pub easing_collapsed: BTreeSet<(NodeId, u32)>,
     pub easing_target: bool,
     pub preview: Option<(Preview, Arc<Document>)>,
     pub preview_doc: Option<Arc<Document>>,
@@ -207,6 +222,11 @@ pub enum Act {
     Play,
     Seek(u32),
     SetDuration(u32),
+    /// 整帧复制（右键时间轴某一时刻）：把 `from` 时刻所有 track 的真实 key（含 easing）
+    /// 复制到播放头。走 engine `motion.keyframeCopy`，一个 undo 步。用户 2026-11-12 D2。
+    CopyFrame {
+        from: u32,
+    },
     /// 总时长手柄拖动中：实时把快照写进 `drag_duration`（带 snap + 滚动区），落点才真正写文档。
     SetDragDuration(Option<u32>),
     /// 总时长手柄抬起：把 `drag_duration` 提交为真正时长（一次 undo 步），并清掉滚动/快照。
@@ -218,6 +238,13 @@ pub enum Act {
     SelectClip(NodeId, u32),
     OpenClipPopover(NodeId, u32),
     CloseClipPopover,
+    /// 打开帧间线的**独立缓动浮窗**（只 Curve/Spring 曲线，不带 clip 的 preset 字段）。
+    OpenSegmentEase(SelectedKey),
+    CloseSegmentEase,
+    /// Easing 行的眼睛：折叠/展开该 clip 下方的曲线编辑器（纯 UI，不写文档）。
+    ToggleClipEasingFold(NodeId, u32),
+    /// 打开时记下触发行的顶边 y（窗口坐标），卡片据此与按钮上边对齐（egui `clip_anchor`）。
+    SetClipAnchorY(f32),
     MoveClipPopover(Point<Pixels>),
     SetPresetsOpen(bool),
     AddClip(NodeId, ClipKind),
@@ -230,7 +257,12 @@ pub enum Act {
     EaseLive(EaseTarget, Ease),
     EaseEnd,
     SetEasingTarget(bool),
-    CommitValue { node: NodeId, property: AnimProperty, idx: usize, value: f64 },
+    CommitValue {
+        node: NodeId,
+        property: AnimProperty,
+        idx: usize,
+        value: f64,
+    },
     SetClip(NodeId, u32, Box<Clip>),
     ScrollY(f32),
     ScrollX(f32),
@@ -242,10 +274,26 @@ pub enum Act {
     SetScrubbing(bool),
     /// A press on a clip bar / layer summary starts a drag; `orig` is the untouched model, so
     /// every move recomputes from it (never accumulate drift, egui `ClipDrag` / `LayerDrag`).
-    BeginClipDrag { node: NodeId, id: u32, edge: ClipEdge, origin_x: f32, orig: Box<Clip> },
-    BeginLayerDrag { node: NodeId, edge: ClipEdge, origin_x: f32, lo: u32, hi: u32, orig: Box<motion::NodeMotion> },
+    BeginClipDrag {
+        node: NodeId,
+        id: u32,
+        edge: ClipEdge,
+        origin_x: f32,
+        orig: Box<Clip>,
+    },
+    BeginLayerDrag {
+        node: NodeId,
+        edge: ClipEdge,
+        origin_x: f32,
+        lo: u32,
+        hi: u32,
+        orig: Box<motion::NodeMotion>,
+    },
     /// A pointer move while a drag is in progress; `pxms` is the timeline's px↔ms scale.
-    DragMove { x: f32, pxms: f32 },
+    DragMove {
+        x: f32,
+        pxms: f32,
+    },
     EndDrag,
     BeginEdit(&'static str),
     EndEdit,
@@ -299,16 +347,39 @@ pub fn set_open(ui: &mut MotionUi, right_w: &mut f32, saved: &mut Option<f32>, o
 
 // ---------------------------------------------------------------- 文档读取
 
-/// The page's timeline settings (clamped).
-pub fn settings_of(doc: &Document, page: NodeId) -> TimelineSettings {
-    doc.timelines.get(&page).copied().unwrap_or_default().sanitized()
+/// The animation scope of the current selection: its top-level frame, or the page when nothing
+/// is selected (or the selection isn't inside a frame). One frame = one animation group: every
+/// component under it shares this scope's timeline, playhead and duration (用户 2026-11-12).
+/// Falls back to the page so page-level motion keeps working unchanged.
+pub fn scope_of(doc: &Document, selection: &[NodeId], page: NodeId) -> NodeId {
+    // 选中节点在画框里 → 那个顶层画框（框内共用一条时间轴）；**不在任何画框里 → 它自己**
+    // （用户 2026-11-12：把组件拖出画框后，动画要跟着它单独出来，不能再并进原来那一坨）。
+    // 只有没有选中时才回退到页面。
+    match selection.first() {
+        Some(id) if doc.node(*id).is_some() => doc.top_level_frame(*id).unwrap_or(*id),
+        _ => page,
+    }
+}
+
+/// The selected scope's timeline settings, clamped. A frame with no entry of its own inherits
+/// its page's (the lookup lives in `Document::timeline_settings_for`, shared with export).
+pub fn settings_of(doc: &Document, scope: NodeId) -> TimelineSettings {
+    doc.timeline_settings_for(scope).sanitized()
 }
 
 /// The displayed value of `property` at the playhead (`None` = Mixed / colour).
+///
+/// Rotation 以 **0 为基准**（相对设计态的增量）：引擎的 Rotation 轨道存的是绝对角，
+/// 无轨道时 `value_at` 回退到 `base_rotation_deg`（设计画布里转过的角度）。若直接显示，
+/// 一打开动画就会看到设计角而不是 0（用户 2026-11-12）。这里减去设计角；写回由
+/// [`commit_value`] 成对加回，引擎语义不变。
 pub fn value_of(doc: &Document, node: NodeId, property: AnimProperty, idx: usize, time_ms: f64) -> Option<f64> {
     let v = doc.node(node).and_then(|n| motion::value_at(n, property, time_ms))?;
     match v {
-        AnimValue::Scalar(x) => Some(x * property.display_factor()),
+        AnimValue::Scalar(x) => {
+            let base = if matches!(property, AnimProperty::Rotation) { doc.node(node).map(motion::base_rotation_deg).unwrap_or(0.0) } else { 0.0 };
+            Some((x - base) * property.display_factor())
+        }
         AnimValue::Vec2(p) => Some(if idx == 0 { p.x } else { p.y }),
         AnimValue::Color(_) => None,
     }
@@ -319,6 +390,12 @@ pub fn has_key(doc: &Document, node: NodeId, property: AnimProperty, time: u32) 
     doc.node(node).and_then(|n| n.motion.track(property)).is_some_and(|tr| tr.key_at(time).is_some())
 }
 
+/// 整条属性轨道上是否**存在任意关键帧**（与播放头位置无关）。右侧字段的插针菱形据此常亮
+/// （空心），只有播放头正好停在某个帧上时才变实心（用户 2026-11-12「轨道加了帧就亮起」）。
+pub fn has_any_key(doc: &Document, node: NodeId, property: AnimProperty) -> bool {
+    doc.node(node).and_then(|n| n.motion.track(property)).is_some_and(|tr| !tr.keys.is_empty())
+}
+
 /// The nodes on this page that carry any animation (egui `motion::animated_nodes`).
 pub fn animated_nodes(doc: &Document, page: NodeId) -> Vec<NodeId> {
     motion::animated_nodes(doc, page)
@@ -326,63 +403,54 @@ pub fn animated_nodes(doc: &Document, page: NodeId) -> Vec<NodeId> {
 
 // ---------------------------------------------------------------- 文档写入
 
-/// One undoable document edit. Every Motion write goes through here so the engine's undo
-/// stack and dirty tracking stay correct.
-fn edit<F>(app: &mut CanvasApp, label: &str, ids: &[NodeId], f: F)
-where
-    F: FnOnce(&mut Document),
-{
-    let _ = app.session.begin_interaction(label);
-    edit_open(app, ids, f);
+/// 一条 motion 命令 = 一个 undo step，且走 engine 命令注册表（architecture.md「one path」）。
+/// `begin_interaction` 定义 undo 边界并做只读 / 预览门控（gate #3），`execute` 执行文档修改，
+/// `commit` 压栈。`EditCtx` 的直写 helper 逐步收敛到这里。
+fn run_cmd(app: &mut CanvasApp, label: &str, cmd: &str, params: serde_json::Value) -> Option<serde_json::Value> {
+    if app.session.begin_interaction(label).is_err() {
+        return None;
+    }
+    GESTURE_BLOCKED.with(|b| *b.borrow_mut() = false);
+    let out = app.session.execute(cmd, &params).ok();
     let _ = app.session.commit_interaction();
+    out
 }
 
-/// Write into an **already open** gesture (a drag): no `begin`/`commit` here, so the whole
-/// drag stays one undo step. `Act::BeginEdit` / `Act::EndEdit` own its lifetime.
-fn edit_open<F>(app: &mut CanvasApp, ids: &[NodeId], f: F)
-where
-    F: FnOnce(&mut Document),
-{
-    if let Ok(doc) = app.session.doc_mut() {
-        f(doc);
-    }
-    if let Ok(doc) = app.session.doc_mut() {
-        doc.mark_dirty(ids.to_vec());
-    }
+fn set_duration(app: &mut CanvasApp, scope: NodeId, duration: u32) {
+    let _ = app.session.execute("motion.timeline", &serde_json::json!({ "page": scope.0, "duration": duration }));
 }
 
-fn set_duration(app: &mut CanvasApp, page: NodeId, duration: u32) {
-    let _ = app.session.execute("motion.timeline", &serde_json::json!({ "duration": duration }));
-    let _ = page;
+fn set_loop(app: &mut CanvasApp, scope: NodeId, looping: bool) {
+    let _ = app.session.execute("motion.timeline", &serde_json::json!({ "page": scope.0, "loop": looping }));
 }
 
-fn set_loop(app: &mut CanvasApp, looping: bool) {
-    let _ = app.session.execute("motion.timeline", &serde_json::json!({ "loop": looping }));
+/// 写当前作用域（画框）的 fps（引擎 `motion.timeline {fps}`，影响逐帧步长与吸附）。
+fn set_fps(app: &mut CanvasApp, scope: NodeId, fps: u32) {
+    let _ = app.session.execute("motion.timeline", &serde_json::json!({ "page": scope.0, "fps": fps }));
 }
 
-/// 写当前页的 fps（引擎 `motion.timeline {fps}`，影响逐帧步长与吸附）。
-fn set_fps(app: &mut CanvasApp, fps: u32) {
-    let _ = app.session.execute("motion.timeline", &serde_json::json!({ "fps": fps }));
-}
-
+/// 收敛到 engine 命令 `motion.keyframe`（PR#1624）：命令内部取 `keyframed_value_at`
+/// 作为新 key 的值，与本地旧闭包等价，且统一了 undo 边界与只读门控。
 pub fn add_key(app: &mut CanvasApp, node: NodeId, property: AnimProperty, time: u32) {
-    edit(app, "Add keyframe", &[node], |doc| {
-        let value = doc.node(node).and_then(|n| motion::keyframed_value_at(n, property, time as f64));
-        if let (Some(value), Some(n)) = (value, doc.node_mut(node)) {
-            n.motion.ensure_track(property).set_key(time, value, None);
-        }
-    });
+    run_cmd(
+        app,
+        "Add keyframe",
+        "motion.keyframe",
+        serde_json::json!({
+            "ids": [node.0], "property": property.name(), "time": time,
+        }),
+    );
 }
 
 pub fn remove_key(app: &mut CanvasApp, node: NodeId, property: AnimProperty, time: u32) {
-    edit(app, "Delete keyframe", &[node], |doc| {
-        if let Some(n) = doc.node_mut(node) {
-            if let Some(tr) = n.motion.track_mut(property) {
-                tr.remove_key(time);
-            }
-            n.motion.normalize();
-        }
-    });
+    run_cmd(
+        app,
+        "Delete keyframe",
+        "motion.keyframeDelete",
+        serde_json::json!({
+            "node": node.0, "property": property.name(), "time": time,
+        }),
+    );
 }
 
 pub fn toggle_key(app: &mut CanvasApp, ui: &MotionUi, node: NodeId, property: AnimProperty) {
@@ -396,55 +464,67 @@ pub fn toggle_key(app: &mut CanvasApp, ui: &MotionUi, node: NodeId, property: An
     }
 }
 
-pub fn move_key(app: &mut CanvasApp, key: SelectedKey, time: u32) {
-    edit_open(app, &[key.node], |doc| {
-        if let Some(n) = doc.node_mut(key.node) {
-            let mut m = n.motion.clone();
-            let value = m.track(key.property).and_then(|tr| tr.key_at(key.time_ms)).map(|k| k.value);
-            let ease = m.track(key.property).and_then(|tr| tr.key_at(key.time_ms)).map(|k| k.easing);
-            if let Some(v) = value {
-                if let Some(tr) = m.track_mut(key.property) {
-                    tr.remove_key(key.time_ms);
-                }
-                m.ensure_track(key.property).set_key(time, v, ease);
-                m.normalize();
-                n.motion = m;
-            }
-        }
-    });
+/// 收敛到 engine 命令 `motion.keyframeMove`（PR#1624）：命令把目标时刻夹在相邻 key 之间，
+/// 保证两个 key 永不共享同一时刻（本地旧版无夹紧，会拖出编辑器无法按时寻址的重叠 key）。
+/// 拖拽手势的 undo 边界仍由 `Act::BeginEdit`/`EndEdit` 的 interaction 拥有，故用 execute 直发。
+/// 返回命令**落地后的真实时间**（引擎会把 `to` 夹在相邻 key 之间，例如 500 → 399），
+/// 命令失败时返回 `None`。调用方必须用这个返回值更新选中 / 抓取状态，否则会指向一个
+/// 不存在的键（CodeRabbit：MoveKey 丢弃返回值 → 后续拖动 / 缓动编辑寻址到错误 key）。
+pub fn move_key(app: &mut CanvasApp, key: SelectedKey, time: u32) -> Option<u32> {
+    app.session
+        .execute(
+            "motion.keyframeMove",
+            &serde_json::json!({
+                "node": key.node.0, "property": key.property.name(), "time": key.time_ms, "to": time,
+            }),
+        )
+        .ok()
+        .and_then(|v| v.get("time").and_then(|t| t.as_u64()))
+        .map(|t| t as u32)
 }
 
 /// Writes a typed value into `property` at the playhead (the inspector's number fields).
+/// Goes through `motion.autoKey` (Figma/desigma semantics): if the property already has a track,
+/// a key is set at the playhead; otherwise the node's static property changes and no animation is
+/// invented. The current value (key at playhead, else the static base) seeds `next` so a static
+/// edit is an absolute value, not relative to zero. `value` shape is validated by the command.
 pub fn commit_value(app: &mut CanvasApp, ui: &MotionUi, node: NodeId, property: AnimProperty, idx: usize, value: f64) {
     let time = ui.playhead_ms.max(0.0) as u32;
-    edit(app, "Edit animation value", &[node], |doc| {
-        // Read the current value BEFORE taking `&mut node`: `doc_node_value` needs an immutable
-        // borrow of `doc`, which cannot coexist with the mutable one below.
-        let current = doc
-            .node(node)
-            .and_then(|n| n.motion.track(property))
-            .and_then(|tr| tr.key_at(time))
-            .map(|k| k.value)
-            .or_else(|| doc_node_value(doc, node, property, time as f64));
-        let Some(n) = doc.node_mut(node) else { return };
-        let mut m = n.motion.clone();
-        let next = match current {
-            Some(AnimValue::Vec2(p)) => AnimValue::Vec2(if idx == 0 {
-                figcraft_geom::Vec2::new(value, p.y)
-            } else {
-                figcraft_geom::Vec2::new(p.x, value)
-            }),
-            Some(AnimValue::Color(c)) => AnimValue::Color(c),
-            None if matches!(property, AnimProperty::Position | AnimProperty::Scale) => AnimValue::Vec2(figcraft_geom::Vec2::new(
-                if idx == 0 { value } else { 0.0 },
-                if idx == 1 { value } else { 0.0 },
-            )),
-            _ => AnimValue::Scalar(value / property.display_factor().max(1e-6)),
-        };
-        m.ensure_track(property).set_key(time, next, None);
-        m.normalize();
-        n.motion = m;
-    });
+    let current = app
+        .session
+        .doc()
+        .ok()
+        .and_then(|doc| doc.node(node))
+        .and_then(|n| n.motion.track(property))
+        .and_then(|tr| tr.key_at(time))
+        .map(|k| k.value)
+        .or_else(|| app.session.doc().ok().and_then(|doc| doc_node_value(doc, node, property, time as f64)));
+    // 与 `value_of` 成对：右栏 Rotation 显示的是"相对设计角的增量、0 基准"，
+    // 而引擎轨道 / `motion.autoKey` 收的是绝对角，写回时必须加回设计角。
+    let base_rot = if matches!(property, AnimProperty::Rotation) {
+        app.session.doc().ok().and_then(|doc| doc.node(node)).map(motion::base_rotation_deg).unwrap_or(0.0)
+    } else {
+        0.0
+    };
+    let next = match current {
+        Some(AnimValue::Vec2(p)) => {
+            AnimValue::Vec2(if idx == 0 { figcraft_geom::Vec2::new(value, p.y) } else { figcraft_geom::Vec2::new(p.x, value) })
+        }
+        Some(AnimValue::Color(c)) => AnimValue::Color(c),
+        None if matches!(property, AnimProperty::Position | AnimProperty::Scale) => {
+            AnimValue::Vec2(figcraft_geom::Vec2::new(if idx == 0 { value } else { 0.0 }, if idx == 1 { value } else { 0.0 }))
+        }
+        _ => AnimValue::Scalar((value / property.display_factor().max(1e-6)) + base_rot),
+    };
+    let Ok(value) = serde_json::to_value(next) else { return };
+    run_cmd(
+        app,
+        "Edit animation value",
+        "motion.autoKey",
+        serde_json::json!({
+            "ids": [node.0], "property": property.name(), "time": time, "value": value,
+        }),
+    );
 }
 
 /// Borrow-safe helper: `commit_value` already holds `&mut Document`, so re-read through the node
@@ -453,103 +533,100 @@ fn doc_node_value(doc: &Document, node: NodeId, prop: AnimProperty, time: f64) -
     doc.node(node).and_then(|n| motion::keyframed_value_at(n, prop, time))
 }
 
-/// 把 ease 写进关键帧段或 clip（不碰 undo 栈，由调用方决定）。
-fn write_ease(doc: &mut Document, target: EaseTarget, ease: Ease) {
-    match target {
+/// 把 ease 写进关键帧段或 clip，走 engine 命令（PR#1624）：
+///   - Key 目标 → `motion.keyframeEase {node, property, time, ease}`；
+///   - Clip 目标 → 读整条 clip、改 easing、发 `motion.clipUpdate`。
+/// `in_gesture=true`（EaseLive 拖拽跨帧）时不 begin/commit，undo 由外层 interaction 拥有，
+/// 并受 `GESTURE_BLOCKED` 门控；`false`（EaseSet 一次性）走 `run_cmd` 自带 undo 边界。
+fn write_ease(app: &mut CanvasApp, target: EaseTarget, ease: Ease, in_gesture: bool) {
+    if in_gesture && GESTURE_BLOCKED.with(|b| *b.borrow()) {
+        return;
+    }
+    let Ok(ease_json) = serde_json::to_value(ease) else { return };
+    let (cmd, params) = match target {
         EaseTarget::Key(k) => {
-            if let Some(n) = doc.node_mut(k.node)
-                && let Some(tr) = n.motion.track_mut(k.property)
-                && let Some(i) = tr.key_index(k.time_ms)
-            {
-                tr.keys[i].easing = ease;
-            }
+            ("motion.keyframeEase", serde_json::json!({"node": k.node.0, "property": k.property.name(), "time": k.time_ms, "ease": ease_json}))
         }
         EaseTarget::Clip(node, id) => {
-            if let Some(n) = doc.node_mut(node)
-                && let Some(c) = n.motion.clips.iter_mut().find(|c| c.id == id)
-            {
-                c.easing = ease;
-                c.sanitize();
-            }
+            let Some(mut clip) = app.session.doc().ok().and_then(|d| d.node(node)).and_then(|n| n.motion.clip(id)).cloned() else { return };
+            clip.easing = ease;
+            let Ok(clip) = serde_json::to_value(clip) else { return };
+            ("motion.clipUpdate", serde_json::json!({"node": node.0, "id": id, "clip": clip}))
         }
+    };
+    if in_gesture {
+        let _ = app.session.execute(cmd, &params);
+    } else {
+        run_cmd(app, "Ease curve", cmd, params);
     }
 }
 
-fn ease_ids(target: EaseTarget) -> Vec<NodeId> {
-    vec![match target {
-        EaseTarget::Key(k) => k.node,
-        EaseTarget::Clip(n, _) => n,
-    }]
-}
-
+/// 收敛到 engine 命令 `motion.keyframeEase`（PR#1624）：设置段起点帧的缓动。
 pub fn set_ease(app: &mut CanvasApp, key: SelectedKey, ease: Ease) {
-    edit(app, "Ease curve", &[key.node], |doc| {
-        if let Some(n) = doc.node_mut(key.node)
-            && let Some(tr) = n.motion.track_mut(key.property)
-            && let Some(i) = tr.key_index(key.time_ms)
-        {
-            tr.keys[i].easing = ease;
-        }
-    });
+    let Ok(ease) = serde_json::to_value(ease) else { return };
+    run_cmd(
+        app,
+        "Ease curve",
+        "motion.keyframeEase",
+        serde_json::json!({
+            "node": key.node.0, "property": key.property.name(), "time": key.time_ms, "ease": ease,
+        }),
+    );
 }
 
+/// 收敛到 engine 命令 `motion.clip`（PR#1624）：命令内部取 next_clip_id 并 normalize。
 pub fn add_clip(app: &mut CanvasApp, ui: &MotionUi, node: NodeId, kind: ClipKind) {
     let start = ui.playhead_ms.max(0.0) as u32;
-    edit(app, "Add animation", &[node], |doc| {
-        if let Some(n) = doc.node_mut(node) {
-            let mut c = Clip::new(kind, ClipMode::In);
-            c.id = n.motion.next_clip_id();
-            c.delay_ms = start;
-            n.motion.clips.push(c);
-            n.motion.normalize();
-        }
-    });
+    run_cmd(
+        app,
+        "Add animation",
+        "motion.clip",
+        serde_json::json!({
+            "kind": kind.name(), "mode": "In", "time": start, "ids": [node.0],
+        }),
+    );
 }
 
+/// 收敛到 engine 命令 `motion.preset`（本地已有；PR#1624 的同名命令内部就是这段逻辑）。
 pub fn add_preset(app: &mut CanvasApp, ui: &MotionUi, node: NodeId, name: &str) {
     let start = ui.playhead_ms.max(0.0) as u32;
-    let Some(preset) = motion::find_preset(name) else { return };
-    edit(app, "Add animation preset", &[node], |doc| {
-        if let Some(n) = doc.node_mut(node) {
-            let first = n.motion.next_clip_id();
-            n.motion.clips.extend(preset.instantiate(start, first));
-            n.motion.normalize();
-        }
-    });
+    run_cmd(
+        app,
+        "Add animation preset",
+        "motion.preset",
+        serde_json::json!({
+            "preset": name, "at": start, "ids": [node.0],
+        }),
+    );
 }
 
+/// 收敛到 `motion.clipDelete`（PR#1624）。
 pub fn remove_clip(app: &mut CanvasApp, node: NodeId, id: u32) {
-    edit(app, "Remove animation", &[node], |doc| {
-        if let Some(n) = doc.node_mut(node) {
-            n.motion.clips.retain(|c| c.id != id);
-            n.motion.normalize();
-        }
-    });
+    run_cmd(app, "Remove animation", "motion.clipDelete", serde_json::json!({"node": node.0, "id": id}));
 }
 
+/// 收敛到 `motion.clipUpdate`（PR#1624 inspector::toggle_clip_visible）：读整条 clip、
+/// 翻转 visible、序列化整条发命令（命令侧 sanitize + normalize）。
 pub fn toggle_clip_visible(app: &mut CanvasApp, node: NodeId, id: u32) {
-    edit(app, "Show/hide animation", &[node], |doc| {
-        if let Some(c) = doc.node_mut(node).and_then(|n| n.motion.clips.iter_mut().find(|c| c.id == id)) {
-            c.visible = !c.visible;
-        }
-    });
+    let Some(mut clip) = app.session.doc().ok().and_then(|d| d.node(node)).and_then(|n| n.motion.clip(id)).cloned() else { return };
+    clip.visible = !clip.visible;
+    let Ok(clip) = serde_json::to_value(clip) else { return };
+    run_cmd(app, "Show/hide animation", "motion.clipUpdate", serde_json::json!({"node": node.0, "id": id, "clip": clip}));
 }
 
+/// 收敛到 `motion.clipUpdate`（PR#1624 clip_popover 的唯一写入口）。
 pub fn set_clip(app: &mut CanvasApp, node: NodeId, id: u32, clip: Clip) {
-    edit(app, "Edit animation clip", &[node], |doc| write_clip(doc, node, id, clip));
+    let Ok(clip) = serde_json::to_value(clip) else { return };
+    run_cmd(app, "Edit animation clip", "motion.clipUpdate", serde_json::json!({"node": node.0, "id": id, "clip": clip}));
 }
 
-/// Write one clip into the document. Shared by the settings window (its own undo step) and
-/// by the live clip drag (inside the gesture opened by `Act::BeginEdit`).
-fn write_clip(doc: &mut Document, node: NodeId, id: u32, clip: Clip) {
-    if let Some(c) = doc.node_mut(node).and_then(|n| n.motion.clips.iter_mut().find(|c| c.id == id)) {
-        let mut next = clip;
-        next.sanitize();
-        *c = next;
-    }
-}
-
+/// 拖拽跨帧把整条 clip 写回：走 `motion.clipUpdate` 命令（PR#1624），但**不** begin/commit——
+/// undo 边界由 `Act::BeginEdit`/`EndEdit` 的 interaction 拥有，整段拖拽仍是一步。
+/// `GESTURE_BLOCKED`（gate #3）为真时（只读 / 预览）丢弃这一笔。
 fn clip_dragged(app: &mut CanvasApp, ui: &mut MotionUi, node: NodeId, id: u32, edge: ClipEdge, dx_ms: i64) {
+    if GESTURE_BLOCKED.with(|b| *b.borrow()) {
+        return;
+    }
     let Some(drag) = ui.clip_drag.clone() else { return };
     let orig = &drag.orig;
     let mut c = orig.clone();
@@ -563,51 +640,57 @@ fn clip_dragged(app: &mut CanvasApp, ui: &mut MotionUi, node: NodeId, id: u32, e
         }
         ClipEdge::TrimEnd => c.duration_ms = (orig.duration_ms as i64 + dx_ms).max(1) as u32,
     }
+    c.id = id;
     c.sanitize();
-    edit_open(app, &[node], |doc| write_clip(doc, node, id, c));
+    let Ok(clip) = serde_json::to_value(c) else { return };
+    let _ = app.session.execute("motion.clipUpdate", &serde_json::json!({"node": node.0, "id": id, "clip": clip}));
 }
 
 fn layer_dragged(app: &mut CanvasApp, ui: &mut MotionUi, node: NodeId, edge: ClipEdge, dx_ms: i64) {
+    if GESTURE_BLOCKED.with(|b| *b.borrow()) {
+        return;
+    }
     let Some(drag) = ui.layer_drag.clone() else { return };
     let (lo, hi) = (drag.lo as f64, drag.hi.max(drag.lo + 1) as f64);
-    edit_open(app, &[node], |doc| {
-        if let Some(n) = doc.node_mut(node) {
-            let mut m = drag.orig.clone();
-            match edge {
-                ClipEdge::Move => {
-                    for tr in &mut m.tracks {
-                        for k in &mut tr.keys {
-                            k.time_ms = (k.time_ms as i64 + dx_ms).max(0) as u32;
-                        }
-                    }
-                    for c in &mut m.clips {
-                        c.delay_ms = (c.delay_ms as i64 + dx_ms).max(0) as u32;
+    // 算出整条 motion（纯计算，不碰 doc），收敛到 `motion.replace` 命令（PR#1624）。
+    // undo 边界由 BeginEdit/EndEdit 的 interaction 拥有，故直发 execute 不 begin/commit。
+    let mut m = drag.orig.clone();
+    {
+        match edge {
+            ClipEdge::Move => {
+                for tr in &mut m.tracks {
+                    for k in &mut tr.keys {
+                        k.time_ms = (k.time_ms as i64 + dx_ms).max(0) as u32;
                     }
                 }
-                ClipEdge::TrimStart | ClipEdge::TrimEnd => {
-                    let denom = (hi - lo).max(1.0);
-                    let (anchor, scale) = if edge == ClipEdge::TrimEnd {
-                        let new_hi = (hi + dx_ms as f64).max(lo + 1.0);
-                        (lo, (new_hi - lo) / denom)
-                    } else {
-                        let new_lo = (lo + dx_ms as f64).clamp(0.0, hi - 1.0);
-                        (hi, (hi - new_lo) / denom)
-                    };
-                    for tr in &mut m.tracks {
-                        for k in &mut tr.keys {
-                            k.time_ms = (anchor + (k.time_ms as f64 - anchor) * scale).max(0.0) as u32;
-                        }
-                    }
-                    for c in &mut m.clips {
-                        c.delay_ms = (anchor + (c.delay_ms as f64 - anchor) * scale).max(0.0) as u32;
-                        c.duration_ms = ((c.duration_ms as f64) * scale).max(1.0) as u32;
-                    }
+                for c in &mut m.clips {
+                    c.delay_ms = (c.delay_ms as i64 + dx_ms).max(0) as u32;
                 }
             }
-            m.normalize();
-            n.motion = m;
+            ClipEdge::TrimStart | ClipEdge::TrimEnd => {
+                let denom = (hi - lo).max(1.0);
+                let (anchor, scale) = if edge == ClipEdge::TrimEnd {
+                    let new_hi = (hi + dx_ms as f64).max(lo + 1.0);
+                    (lo, (new_hi - lo) / denom)
+                } else {
+                    let new_lo = (lo + dx_ms as f64).clamp(0.0, hi - 1.0);
+                    (hi, (hi - new_lo) / denom)
+                };
+                for tr in &mut m.tracks {
+                    for k in &mut tr.keys {
+                        k.time_ms = (anchor + (k.time_ms as f64 - anchor) * scale).max(0.0) as u32;
+                    }
+                }
+                for c in &mut m.clips {
+                    c.delay_ms = (anchor + (c.delay_ms as f64 - anchor) * scale).max(0.0) as u32;
+                    c.duration_ms = ((c.duration_ms as f64) * scale).max(1.0) as u32;
+                }
+            }
         }
-    });
+        m.normalize();
+        let Ok(motion) = serde_json::to_value(m) else { return };
+        let _ = app.session.execute("motion.replace", &serde_json::json!({"node": node.0, "motion": motion}));
+    }
 }
 
 // ---------------------------------------------------------------- 动作落地
@@ -634,8 +717,10 @@ pub fn apply(app: &mut CanvasApp, ui: &mut MotionUi, acts: Vec<Act>) -> bool {
     if acts.is_empty() {
         return false;
     }
-    let page = app.session.ds().ok().map(|d| d.page);
     let doc = app.session.doc().ok().cloned();
+    // One animation group = one frame. All timeline settings writes and the FoldAll scope go to
+    // the selected component's top-level frame, falling back to the page when none is selected.
+    let page = doc.as_ref().map(|d| scope_of(d, &app.session.selection(), app.session.ds().ok().map(|s| s.page).unwrap_or(figcraft_doc::NodeId(0))));
     for act in acts {
         match act {
             Act::Fold(n) => {
@@ -697,6 +782,23 @@ pub fn apply(app: &mut CanvasApp, ui: &mut MotionUi, acts: Vec<Act>) -> bool {
                 ui.easing_target = false;
             }
             Act::AddKey(n, p, t) => add_key(app, n, p, t),
+            Act::CopyFrame { from } => {
+                // Copy every real key at `from` onto the playhead, for the selected layers.
+                // `motion.keyframeCopy` handles value+easing fidelity and one-step undo; `run_cmd`
+                // wraps it in a single interaction (consistent with the other keyframe edits).
+                let ids = app.session.selection();
+                if !ids.is_empty() {
+                    let to = ui.playhead_ms.max(0.0) as u32;
+                    run_cmd(
+                        app,
+                        "Copy frame",
+                        "motion.keyframeCopy",
+                        serde_json::json!({
+                            "from": from, "to": to, "ids": ids.iter().map(|id| id.0).collect::<Vec<_>>(),
+                        }),
+                    );
+                }
+            }
             Act::AddKeyAtPlayhead => {
                 let t = ui.playhead_ms.max(0.0) as u32;
                 let ids = app.session.selection();
@@ -712,25 +814,46 @@ pub fn apply(app: &mut CanvasApp, ui: &mut MotionUi, acts: Vec<Act>) -> bool {
                 }
             }
             Act::MoveKey(k, t) => {
-                move_key(app, k, t);
-                // 选中项跟着关键帧一起搬。否则拖完以后高亮留在旧时间上、缓动面板指向一个
-                // 已经不存在的键（`ui.selected` 是 inspector / easing 的唯一来源）。
-                if ui.selection.remove(&SelItem::Key(k.node, k.property, k.time_ms)) {
-                    ui.selection.insert(SelItem::Key(k.node, k.property, t));
-                }
-                if ui.selection.remove(&SelItem::Segment(k.node, k.property, k.time_ms)) {
-                    ui.selection.insert(SelItem::Segment(k.node, k.property, t));
-                }
-                if ui.selected == Some(k) {
-                    ui.selected = Some(crate::motion::SelectedKey { time_ms: t, ..k });
+                // 只有命令成功落地才更新选中：用引擎返回的**落地时间**（可能被夹紧），而不是
+                // 请求的 `t`；否则选中会指向一个不存在的键（CodeRabbit 指出）。
+                if let Some(landed) = move_key(app, k, t) {
+                    // 选中项跟着关键帧一起搬。否则拖完以后高亮留在旧时间上、缓动面板指向一个
+                    // 已经不存在的键（`ui.selected` 是 inspector / easing 的唯一来源）。
+                    if ui.selection.remove(&SelItem::Key(k.node, k.property, k.time_ms)) {
+                        ui.selection.insert(SelItem::Key(k.node, k.property, landed));
+                    }
+                    if ui.selection.remove(&SelItem::Segment(k.node, k.property, k.time_ms)) {
+                        ui.selection.insert(SelItem::Segment(k.node, k.property, landed));
+                    }
+                    if ui.selected == Some(k) {
+                        ui.selected = Some(crate::motion::SelectedKey { time_ms: landed, ..k });
+                    }
+                    // 拖拽抓取状态也要跟到**真实**时间：时间轴在输入时先乐观地写成请求时间，
+                    // 若被夹紧（例如 500 → 399），下一帧仍按请求时间找键会落空，表现为
+                    // 「拖到邻居边界后怎么拖都不动」。`apply` 在输入之后运行，这里以落地时间纠正。
+                    crate::motion::timeline::set_grabbed(Some(crate::motion::SelectedKey { time_ms: landed, ..k }));
                 }
             }
             Act::ToggleKey(n, p) => toggle_key(app, ui, n, p),
-            Act::SetLoop(on) => set_loop(app, on),
+            Act::SetLoop(on) => {
+                if let Some(pg) = page {
+                    set_loop(app, pg, on);
+                }
+            }
             Act::SetFps(v) => {
-                let cur = app.session.ds().ok().map(|ds| settings_of(&ds.doc, ds.page).fps).unwrap_or(60);
-                let next = if v == 0 { match cur { 24 => 30, 30 => 60, _ => 24 } } else { v.clamp(1, figcraft_doc::anim::motion::TimelineSettings::MAX_FPS) };
-                set_fps(app, next);
+                let cur = doc.as_ref().and_then(|d| page.map(|pg| settings_of(d, pg).fps)).unwrap_or(60);
+                let next = if v == 0 {
+                    match cur {
+                        24 => 30,
+                        30 => 60,
+                        _ => 24,
+                    }
+                } else {
+                    v.clamp(1, figcraft_doc::anim::motion::TimelineSettings::MAX_FPS)
+                };
+                if let Some(pg) = page {
+                    set_fps(app, pg, next);
+                }
             }
             Act::Play => {
                 ui.playing = !ui.playing;
@@ -765,20 +888,12 @@ pub fn apply(app: &mut CanvasApp, ui: &mut MotionUi, acts: Vec<Act>) -> bool {
                 ui.scroll_x = 0.0;
             }
             Act::ToggleVisible(n) => {
-                edit(app, "Show/hide layer", &[n], |doc| {
-                    if let Some(node) = doc.node_mut(n) {
-                        node.visible = !node.visible;
-                    }
-                });
+                // 层显隐走通用命令 `object.toggleVisible`（与 layer_tree 一致），不再闭包直写。
+                run_cmd(app, "Show/hide layer", "object.toggleVisible", serde_json::json!({"ids": [n.0]}));
             }
             Act::ToggleTrackVisible(n, p) => {
-                edit(app, "Show/hide track", &[n], |doc| {
-                    if let Some(node) = doc.node_mut(n)
-                        && let Some(tr) = node.motion.track_mut(p)
-                    {
-                        tr.visible = !tr.visible;
-                    }
-                });
+                // 收敛到 `motion.track`（PR#1624）：不带 visible 参数 = 翻转。
+                run_cmd(app, "Show/hide track", "motion.track", serde_json::json!({"node": n.0, "property": p.name()}));
             }
             Act::DeleteClip(n, c) => {
                 remove_clip(app, n, c);
@@ -798,8 +913,40 @@ pub fn apply(app: &mut CanvasApp, ui: &mut MotionUi, acts: Vec<Act>) -> bool {
                 ui.clip_popover = if open { None } else { Some((n, c)) };
                 ui.selected_clip = Some((n, c));
                 ui.easing_target = false;
+                // 与帧间线浮窗互斥：开 clip 窗就关段窗。
+                ui.segment_ease = None;
+                // 每次**重新打开**都回到锚点：顶边与触发的那一条动画行齐高、右缘贴右栏左缘。
+                // 不清的话上次的拖动落点 `clip_at` 会让 `Open::At` 盖掉 `Open::Anchor`。
+                if !open {
+                    ui.clip_at = None;
+                }
             }
             Act::CloseClipPopover => ui.clip_popover = None,
+            Act::OpenSegmentEase(k) => {
+                // 段缓动窗是**独立**的：同一时刻只开一个浮窗，开段窗就关 clip 窗。
+                let open = ui.segment_ease == Some(k);
+                ui.segment_ease = if open { None } else { Some(k) };
+                ui.clip_popover = None;
+                ui.clip_at = None;
+                // 浮窗编辑，不切右栏 Easing 页（那是没有浮窗时的旧路径）。
+                ui.easing_target = false;
+                // 锚点沿用「右栏左缘 − 8 / 触发点上方」：SetClipAnchorY 由 timeline 点击前 push。
+            }
+            Act::CloseSegmentEase => ui.segment_ease = None,
+            Act::ToggleClipEasingFold(n, c) => {
+                // 眼睛折叠/展开该 clip 的曲线编辑器：纯 UI 状态，不碰 clip.visible。
+                if !ui.easing_collapsed.remove(&(n, c)) {
+                    ui.easing_collapsed.insert((n, c));
+                }
+            }
+            Act::SetClipAnchorY(y) => {
+                // egui `inspector.rs:156`: 记下触发行的 rect；这里只需要顶边 y，
+                // x 由 `clip_popover::panel` 按「右栏左缘 − 8」给出。清除上次的拖动落点，
+                // 否则 `Open::At` 会盖掉锚点、把卡片停在时间轴的点击处。
+                ui.clip_anchor =
+                    Some(gpui::Bounds { origin: gpui::Point { x: gpui::px(0.0), y: gpui::px(y) }, size: gpui::size(gpui::px(0.0), gpui::px(0.0)) });
+                ui.clip_at = None;
+            }
             Act::MoveClipPopover(p) => ui.clip_at = Some(p),
             Act::SetPresetsOpen(on) => ui.presets_open = on,
             Act::AddClip(n, kind) => {
@@ -828,18 +975,21 @@ pub fn apply(app: &mut CanvasApp, ui: &mut MotionUi, acts: Vec<Act>) -> bool {
                 }
             }
             Act::EaseSet(target, ease) => {
-                let ids = ease_ids(target);
-                edit(app, "Ease curve", &ids, |doc| write_ease(doc, target, ease));
+                write_ease(app, target, ease, false);
             }
             Act::EaseBegin => {
-                let _ = app.session.begin_interaction("Ease curve");
+                // gate #3：只读 / 预览下 begin 失败 → 标记本手势被拒，后续 EaseLive 全部丢弃。
+                let blocked = app.session.begin_interaction("Ease curve").is_err();
+                GESTURE_BLOCKED.with(|b| *b.borrow_mut() = blocked);
             }
             Act::EaseLive(target, ease) => {
-                let ids = ease_ids(target);
-                edit_open(app, &ids, |doc| write_ease(doc, target, ease));
+                write_ease(app, target, ease, true);
             }
             Act::EaseEnd => {
-                let _ = app.session.commit_interaction();
+                if !GESTURE_BLOCKED.with(|b| *b.borrow()) {
+                    let _ = app.session.commit_interaction();
+                }
+                GESTURE_BLOCKED.with(|b| *b.borrow_mut() = false);
             }
             Act::SetEasingTarget(on) => ui.easing_target = on,
             Act::CommitValue { node, property, idx, value } => commit_value(app, ui, node, property, idx, value),
@@ -876,10 +1026,15 @@ pub fn apply(app: &mut CanvasApp, ui: &mut MotionUi, acts: Vec<Act>) -> bool {
                 ui.scrubbing = false;
             }
             Act::BeginEdit(label) => {
-                let _ = app.session.begin_interaction(label);
+                // gate #3：begin 失败（read-only / preview）→ 本手势所有 edit_open 都丢弃。
+                let blocked = app.session.begin_interaction(label).is_err();
+                GESTURE_BLOCKED.with(|b| *b.borrow_mut() = blocked);
             }
             Act::EndEdit => {
-                let _ = app.session.commit_interaction();
+                if !GESTURE_BLOCKED.with(|b| *b.borrow()) {
+                    let _ = app.session.commit_interaction();
+                }
+                GESTURE_BLOCKED.with(|b| *b.borrow_mut() = false);
             }
             // The root view handles it in `sync_motion` (it owns the panel width).
             Act::CloseMotion => {}
@@ -902,13 +1057,172 @@ mod tests {
     }
 
     fn key_at(app: &CanvasApp, node: NodeId, prop: AnimProperty, time: u32) -> Option<AnimValue> {
-        app.session
-            .doc()
-            .ok()
-            .and_then(|d| d.node(node))
-            .and_then(|n| n.motion.track(prop))
-            .and_then(|tr| tr.key_at(time))
-            .map(|k| k.value)
+        app.session.doc().ok().and_then(|d| d.node(node)).and_then(|n| n.motion.track(prop)).and_then(|tr| tr.key_at(time)).map(|k| k.value)
+    }
+
+    /// 用户 2026-11-12 的动画模型：画框 = 一个动画单位，框内所有组件共用一条时间轴。
+    /// `scope_of` 把当前选中解析成作用域：框内组件/框本身 → 那个顶层画框；**画框外的组件 →
+    /// 它自己**（拖出画框后动画跟着它独立，不再并进整页/原画框那一组）；只有空选 → 页面。
+    #[test]
+    fn scope_of_resolves_the_selected_frame_or_the_node_itself() {
+        let mut doc = Document::new("scope");
+        let page = doc.first_page().unwrap();
+        let frame = doc.create(page, NodeKind::Frame, "Card", 0.0, 0.0, 100.0, 100.0).unwrap();
+        let inside = doc.create(frame, NodeKind::Rectangle, "Dot", 2.0, 2.0, 8.0, 8.0).unwrap();
+        let nested = doc.create(frame, NodeKind::Frame, "Inner", 4.0, 4.0, 40.0, 40.0).unwrap();
+        let deep = doc.create(nested, NodeKind::Rectangle, "Deep", 6.0, 6.0, 8.0, 8.0).unwrap();
+        let on_page = doc.create(page, NodeKind::Rectangle, "Loose", 120.0, 0.0, 8.0, 8.0).unwrap();
+        // Selecting a component, a nested frame's child, or the frame itself → the top frame.
+        assert_eq!(scope_of(&doc, &[inside], page), frame, "component → its top frame");
+        assert_eq!(scope_of(&doc, &[deep], page), frame, "nested child → outermost frame");
+        assert_eq!(scope_of(&doc, &[frame], page), frame, "frame → itself");
+        // A component directly on the page is its own unit (dragged out of a frame), not the page.
+        assert_eq!(scope_of(&doc, &[on_page], page), on_page, "page-level component → itself");
+        assert_eq!(scope_of(&doc, &[], page), page, "empty selection → page");
+    }
+
+    /// 拖出画框后，时间轴只列这个组件自己的动画（不再拉进整页的其它动画）。
+    #[test]
+    fn a_component_dragged_out_of_a_frame_animates_on_its_own() {
+        let mut doc = Document::new("scope");
+        let page = doc.first_page().unwrap();
+        let frame = doc.create(page, NodeKind::Frame, "Card", 0.0, 0.0, 100.0, 100.0).unwrap();
+        let inside = doc.create(frame, NodeKind::Rectangle, "Inner", 2.0, 2.0, 8.0, 8.0).unwrap();
+        let sibling = doc.create(frame, NodeKind::Rectangle, "Sibling", 20.0, 2.0, 8.0, 8.0).unwrap();
+        for id in [frame, inside, sibling] {
+            let tr = doc.node_mut(id).unwrap().motion.ensure_track(AnimProperty::Position);
+            tr.set_key(0, AnimValue::Vec2(figcraft_geom::Vec2::new(0.0, 0.0)), None);
+            tr.set_key(500, AnimValue::Vec2(figcraft_geom::Vec2::new(10.0, 0.0)), None);
+        }
+        // 画框里时：三条轨道共用画框的时间轴。
+        assert_eq!(scope_of(&doc, &[inside], page), frame);
+        assert_eq!(animated_nodes(&doc, scope_of(&doc, &[inside], page)), vec![frame, inside, sibling]);
+        // 把它拖到页面上（reparent），动画跟着它自己走，不再和原来那一坨同组。
+        doc.reparent(inside, page, None).unwrap();
+        assert_eq!(scope_of(&doc, &[inside], page), inside, "dragged-out layer is its own scope");
+        assert_eq!(animated_nodes(&doc, scope_of(&doc, &[inside], page)), vec![inside], "only itself on its timeline");
+        assert_eq!(animated_nodes(&doc, scope_of(&doc, &[sibling], page)), vec![frame, sibling], "the frame keeps its own group");
+    }
+
+    /// 选中画框内组件时，时间轴设置取该画框自己的；画框没单独设就继承页面。
+    #[test]
+    fn settings_of_follows_the_frame_scope() {
+        use figcraft_doc::anim::motion::TimelineSettings;
+        let mut doc = Document::new("scope");
+        let page = doc.first_page().unwrap();
+        let frame = doc.create(page, NodeKind::Frame, "Card", 0.0, 0.0, 100.0, 100.0).unwrap();
+        let inside = doc.create(frame, NodeKind::Rectangle, "Dot", 2.0, 2.0, 8.0, 8.0).unwrap();
+        let page_tl = TimelineSettings { duration_ms: 1000, fps: 30, looping: false };
+        let frame_tl = TimelineSettings { duration_ms: 300, fps: 60, looping: true };
+        doc.timelines.insert(page, page_tl);
+        let scope = scope_of(&doc, &[inside], page);
+        assert_eq!(settings_of(&doc, scope), page_tl, "frame with no entry inherits the page");
+        doc.timelines.insert(frame, frame_tl);
+        assert_eq!(settings_of(&doc, scope), frame_tl, "frame's own entry wins");
+    }
+
+    /// PR#1624 gate #3：只读 / 版本预览文档下，inspector / easing / clip 的写入必须整笔丢弃，
+    /// 既不写文档也不留 undo step。以前 `edit()` 忽略 `begin_interaction` 的 Err 照样写。
+    #[test]
+    fn a_refusing_document_drops_motion_edits() {
+        let (mut app, node) = app_with_node();
+        // 造一个版本并进入只读预览（version.preview 会把 DocState 置为只读）。
+        app.session.execute("file.saveVersion", &serde_json::json!({"name": "v1"})).unwrap();
+        app.session.execute("version.preview", &serde_json::json!({"index": 0})).unwrap();
+
+        let before = app.session.doc().unwrap().clone();
+        apply(&mut app, &mut MotionUi::default(), vec![Act::AddKey(node, AnimProperty::Opacity, 0)]);
+        apply(&mut app, &mut MotionUi::default(), vec![Act::ToggleKey(node, AnimProperty::Position)]);
+        let after = app.session.doc().unwrap().clone();
+        assert_eq!(before, after, "只读预览下 apply 不改变文档（连一个 undo step 都不留）");
+        assert!(after.node(node).unwrap().motion.track(AnimProperty::Opacity).is_none());
+    }
+
+    /// 帧间线的独立缓动窗与 clip 预设窗**互斥**：同一时刻只开一个，且开段窗不切右栏
+    /// Easing 页（`easing_target` 必须保持 false，否则又串回 preset 面板）。回归用户
+    /// 2026-11-12「点两帧之间的线弹不出曲线窗」的修复。
+    #[test]
+    fn segment_ease_and_clip_popover_are_mutually_exclusive() {
+        let (mut app, node) = app_with_node();
+        let mut ui = MotionUi::default();
+        let k = SelectedKey { node, property: AnimProperty::Position, time_ms: 0 };
+
+        apply(&mut app, &mut ui, vec![Act::OpenSegmentEase(k)]);
+        assert_eq!(ui.segment_ease, Some(k), "段窗打开");
+        assert_eq!(ui.clip_popover, None, "开段窗必须关 clip 窗");
+        assert!(!ui.easing_target, "浮窗编辑，不切右栏 Easing 页");
+
+        // 开 clip 窗要反过来关段窗（同一时刻只一个浮窗）。
+        apply(&mut app, &mut ui, vec![Act::OpenClipPopover(node, 1)]);
+        assert_eq!(ui.clip_popover, Some((node, 1)), "clip 窗打开");
+        assert_eq!(ui.segment_ease, None, "开 clip 窗必须关段窗");
+
+        // 再点同一个段 = 切换关闭。
+        apply(&mut app, &mut ui, vec![Act::OpenSegmentEase(k)]);
+        apply(&mut app, &mut ui, vec![Act::OpenSegmentEase(k)]);
+        assert_eq!(ui.segment_ease, None, "再点同一段关闭段窗");
+
+        apply(&mut app, &mut ui, vec![Act::CloseSegmentEase]);
+        assert_eq!(ui.segment_ease, None, "Close 收尾幂等");
+    }
+
+    /// CodeRabbit：拖关键帧越过邻居时，引擎把目标时间夹到邻居之前（500 → 399）。
+    /// `move_key` 必须返回**落地时间**，选中 / 抓取状态也要用它，否则指向一个不存在的键
+    /// （后续拖动 / 缓动编辑会寻址错误）。
+    #[test]
+    fn move_key_uses_the_landed_time_when_clamped_by_a_neighbor() {
+        let (mut app, node) = app_with_node();
+        let p = AnimProperty::Position;
+        add_key(&mut app, node, p, 0);
+        add_key(&mut app, node, p, 200);
+        add_key(&mut app, node, p, 400);
+
+        let mut ui = MotionUi::default();
+        let k = SelectedKey { node, property: p, time_ms: 200 };
+        ui.selected = Some(k);
+        ui.selection.insert(SelItem::Key(node, p, 200));
+
+        // 请求把 200 挪到 500：被 400 的邻居夹到 399。
+        apply(&mut app, &mut ui, vec![Act::MoveKey(k, 500)]);
+
+        let doc = app.session.doc().unwrap();
+        let tr = doc.node(node).unwrap().motion.track(p).unwrap();
+        assert!(tr.key_at(399).is_some(), "引擎把键落在夹紧后的 399");
+        assert!(tr.key_at(200).is_none(), "旧位置不再有键");
+        assert_eq!(ui.selected.map(|s| s.time_ms), Some(399), "选中跟落地时间，不是请求的 500");
+        assert!(ui.selection.contains(&SelItem::Key(node, p, 399)), "选区用落地时间");
+        assert!(!ui.selection.contains(&SelItem::Key(node, p, 500)), "不能指向不存在的键");
+    }
+
+    /// 整条轨道有任意帧 → `has_any_key` 为真（右侧插针空心常亮），与播放头位置无关；
+    /// `has_key` 仍只在播放头正停在帧上为真（→ 实心）。这是两个独立状态。
+    #[test]
+    fn has_any_key_is_independent_of_playhead() {
+        let (mut app, node) = app_with_node();
+        add_key(&mut app, node, AnimProperty::Position, 200);
+        let doc = app.session.doc().unwrap();
+        assert!(has_any_key(doc, node, AnimProperty::Position), "轨道有帧就为真");
+        assert!(!has_key(doc, node, AnimProperty::Position, 0), "播放头在 t=0 不在帧上");
+        assert!(has_key(doc, node, AnimProperty::Position, 200), "播放头停在帧上才为真");
+        assert!(!has_any_key(doc, node, AnimProperty::Scale), "另一条轨道无帧");
+    }
+
+    /// Easing 行的眼睛只切 `easing_collapsed`（曲线区折叠），绝不写 `clip.visible`。
+    #[test]
+    fn easing_eye_folds_curve_without_touching_clip_visible() {
+        let (mut app, node) = app_with_node();
+        let mut ui = MotionUi::default();
+        let mut c = Clip::new(ClipKind::Position, ClipMode::In);
+        c.id = 9;
+        app.session.doc_mut().unwrap().node_mut(node).unwrap().motion.clips.push(c.clone());
+
+        assert!(!ui.easing_collapsed.contains(&(node, 9)), "默认展开");
+        apply(&mut app, &mut ui, vec![Act::ToggleClipEasingFold(node, 9)]);
+        assert!(ui.easing_collapsed.contains(&(node, 9)), "点眼睛折叠");
+        apply(&mut app, &mut ui, vec![Act::ToggleClipEasingFold(node, 9)]);
+        assert!(!ui.easing_collapsed.contains(&(node, 9)), "再点展开");
+        // clip.visible 始终未被这个 act 改动。
+        assert!(app.session.doc().unwrap().node(node).unwrap().motion.clips[0].visible, "眼睛不碰 clip.visible");
     }
 
     /// Adding / removing / toggling a keyframe writes the document through the engine's undo
@@ -932,14 +1246,57 @@ mod tests {
         assert!(!has_key(app.session.doc().unwrap(), node, AnimProperty::Opacity, 0), "toggle removes when present");
     }
 
-    /// The inspector's number field commits at the playhead, not at t=0.
+    /// Figma/desigma auto-key semantics: editing a property that has NO track changes its static
+    /// value and must NOT invent an animation.
     #[test]
-    fn commit_value_writes_key_at_playhead() {
+    fn commit_value_edits_static_value_when_no_track() {
         let (mut app, node) = app_with_node();
         let ui = MotionUi { playhead_ms: 750.0, ..Default::default() };
         commit_value(&mut app, &ui, node, AnimProperty::Width, 0, 240.0);
+        assert!((app.session.doc().unwrap().node(node).unwrap().width - 240.0).abs() < 1e-9, "static width written");
+        assert!(app.session.doc().unwrap().node(node).unwrap().motion.track(AnimProperty::Width).is_none(), "no animation created");
+    }
+
+    /// With a track already present, the inspector's number field commits a key at the playhead,
+    /// not at t=0 (PR#1624 behaviour preserved for animated properties).
+    #[test]
+    fn commit_value_writes_key_at_playhead() {
+        let (mut app, node) = app_with_node();
+        // Establish a Width track (one key at 0) so auto-key takes the animated branch.
+        {
+            let doc = app.session.doc_mut().unwrap();
+            doc.node_mut(node).unwrap().motion.ensure_track(AnimProperty::Width).set_key(0, AnimValue::Scalar(100.0), None);
+        }
+        let ui = MotionUi { playhead_ms: 750.0, ..Default::default() };
+        commit_value(&mut app, &ui, node, AnimProperty::Width, 0, 240.0);
         assert!(matches!(key_at(&app, node, AnimProperty::Width, 750), Some(AnimValue::Scalar(v)) if (v - 240.0).abs() < 1e-9));
-        assert!(key_at(&app, node, AnimProperty::Width, 0).is_none(), "no stray keyframe at t=0");
+        assert!(key_at(&app, node, AnimProperty::Width, 0).is_some(), "the seed key at t=0 survives");
+        assert!((app.session.doc().unwrap().node(node).unwrap().width - 100.0).abs() < 1e-9, "static value untouched for animated property");
+    }
+
+    /// 整帧复制（用户 2026-11-12 D2）：Act::CopyFrame 把右键时刻所有 track 的真实 key
+    /// （含 easing）复制到播放头，写的是选中层，一个 undo 步。
+    #[test]
+    fn copy_frame_duplicates_keys_at_playhead() {
+        let (mut app, node) = app_with_node();
+        let ease = Ease::bezier(0.1, 0.2, 0.3, 0.4);
+        {
+            let doc = app.session.doc_mut().unwrap();
+            let n = doc.node_mut(node).unwrap();
+            n.motion.ensure_track(AnimProperty::Opacity).set_key(0, AnimValue::Scalar(0.3), Some(ease));
+            n.motion.ensure_track(AnimProperty::Width).set_key(0, AnimValue::Scalar(80.0), None);
+        }
+        app.session.set_selection(vec![node]);
+        let mut ui = MotionUi { playhead_ms: 500.0, ..Default::default() };
+        apply(&mut app, &mut ui, vec![Act::CopyFrame { from: 0 }]);
+        let doc = app.session.doc().unwrap();
+        let n = doc.node(node).unwrap();
+        let op = n.motion.track(AnimProperty::Opacity).unwrap();
+        let copied = op.key_at(500).expect("Opacity key copied to playhead");
+        assert!((copied.value.scalar().unwrap() - 0.3).abs() < 1e-9, "value copied");
+        assert_eq!(copied.easing, ease, "easing round-trips");
+        assert!(n.motion.track(AnimProperty::Width).unwrap().key_at(500).is_some(), "every track copied");
+        assert!((op.key_at(0).unwrap().value.scalar().unwrap() - 0.3).abs() < 1e-9, "source frame untouched");
     }
 
     /// A clip drag recomputes from the untouched `orig` on every move: two moves with the same
@@ -1009,4 +1366,3 @@ mod tests {
         assert!(ui.preview_doc.is_some());
     }
 }
-

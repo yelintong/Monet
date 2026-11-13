@@ -59,3 +59,19 @@ fn json_keeps_the_anchor_and_old_actions_stay_on_the_screen() {
     assert!(matches!(old, Action::OpenOverlay { anchor: OverlayAnchor::Screen, .. }));
     assert!(serde_json::to_value(&old).unwrap().get("anchor").is_none());
 }
+
+/// D3 Control：`Action::Animation` 的 wire 形状。op 缺省即 resume，四态都能 roundtrip——
+/// `proto.action.add/set` 走通用 `Action` 反序列化，靠这个契约就能创建控制动画动作，无需新命令。
+#[test]
+fn animation_action_serde_defaults_to_resume_and_roundtrips() {
+    let a: Action = serde_json::from_value(json!({"type": "animation", "dest": 9})).unwrap();
+    assert_eq!(a, Action::Animation { dest: NodeId(9), op: AnimationOp::RESUME }, "op 缺省 = resume");
+
+    for op in [AnimationOp::RESUME, AnimationOp::Play { from_start: true }, AnimationOp::Pause, AnimationOp::Restart, AnimationOp::TogglePlay] {
+        let a = Action::Animation { dest: NodeId(9), op };
+        let v = serde_json::to_value(&a).unwrap();
+        assert_eq!(v["type"], "animation");
+        assert_eq!(v["dest"], 9);
+        assert_eq!(serde_json::from_value::<Action>(v).unwrap(), a, "{op:?} roundtrip");
+    }
+}

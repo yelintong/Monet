@@ -186,14 +186,7 @@ pub const RENDER_STACK: usize = 8 << 20;
 #[cfg(not(target_arch = "wasm32"))]
 fn band_pool() -> Option<&'static rayon::ThreadPool> {
     static POOL: std::sync::OnceLock<Option<rayon::ThreadPool>> = std::sync::OnceLock::new();
-    POOL.get_or_init(|| {
-        rayon::ThreadPoolBuilder::new()
-            .thread_name(|i| format!("figcraft-band-{i}"))
-            .stack_size(RENDER_STACK)
-            .build()
-            .ok()
-    })
-    .as_ref()
+    POOL.get_or_init(|| rayon::ThreadPoolBuilder::new().thread_name(|i| format!("figcraft-band-{i}")).stack_size(RENDER_STACK).build().ok()).as_ref()
 }
 
 /// Render `view` as `bands` horizontal bands in parallel. Bands overlap by what background blurs
@@ -617,7 +610,7 @@ mod lod_tests;
 #[cfg(test)]
 mod magnified_image_tests;
 #[cfg(test)]
-mod seam_tests;
+mod only_tests;
 #[cfg(test)]
 mod paint_behaviour_tests;
 #[cfg(test)]
@@ -629,7 +622,7 @@ mod retained_tests;
 #[cfg(test)]
 mod rtl_list_tests;
 #[cfg(test)]
-mod only_tests;
+mod seam_tests;
 #[cfg(test)]
 mod solo_tests;
 #[cfg(test)]

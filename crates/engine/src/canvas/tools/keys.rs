@@ -58,6 +58,9 @@ impl Session {
     /// frame's. Boolean groups are hit by their results ([`crate::booleans::result_outline`]); in
     /// outline mode shapes only on their outlines.
     pub fn hit(&self, doc: &Document, page: NodeId, p: Point, tol: f64) -> Option<NodeId> {
+        // 动画模式：命中按「画面上显示的那份」（`display_doc`）算，而不是未求值的 `ds.doc`，
+        // 否则播放头停在中间时看到的物体在动画位置、命中却在静态位置（用户 2026-11-12）。
+        let doc = self.display_doc.as_deref().unwrap_or(doc);
         let sel = self.selection();
         let result = crate::booleans::result_outline(doc, &sel);
         let focus = self.ds().ok().and_then(crate::DocState::focused);

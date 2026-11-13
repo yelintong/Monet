@@ -173,6 +173,11 @@ impl TextEdit {
         self.input.set_dim(d);
     }
     /// `text_field_edit`'s inset: `0` after a lead, `8` when the field has none.
+    /// The glyph size; the inline rename editor matches the row label's size with it.
+    pub fn set_font_size(&mut self, size: gpui::Pixels) {
+        self.input.set_font_size(size);
+    }
+
     pub fn set_inset_left(&mut self, px: f32) {
         self.inset_left = px;
     }

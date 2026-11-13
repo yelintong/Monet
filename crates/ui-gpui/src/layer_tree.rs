@@ -19,16 +19,16 @@ use figcraft_engine::booleans::distinct_op;
 use figcraft_engine::components::is_slot;
 use gpui::prelude::*;
 use gpui::{
-    AnyElement, App, Bounds, Context, Div, ElementId, Entity, Modifiers, MouseButton, MouseDownEvent,
-    Pixels, Point, Render, SharedString, Size, Stateful, StatefulInteractiveElement, Window, div, px,
+    AnyElement, App, Bounds, Context, Div, ElementId, Entity, Modifiers, MouseButton, MouseDownEvent, Pixels, Point, Render, SharedString, Size,
+    Stateful, StatefulInteractiveElement, Window, div, px,
 };
 use serde_json::json;
 
+use crate::CanvasView;
 use crate::drag;
 use crate::panels::right::virtual_list::{VirtualList, VirtualListScrollHandle, v_virtual_list};
 use crate::widgets::icon::paint as paint_icon;
 use crate::widgets::{Icon, IconButton, SectionHeader, SectionHeaderVariant, pt, rgba, tokens};
-use crate::CanvasView;
 
 /// Ordinary ink: a theme token (the light theme's `icon` is 90% black), not a hand-made rgba.
 /// Component purple, icon amber, selection and the hidden grey keep their own colours.
@@ -85,7 +85,11 @@ pub struct LayerRow {
 
 /// Selection marks: the selected row, its descendants, and everything else.
 #[derive(Clone, Copy, PartialEq)]
-enum Mark { None, Child, Selected }
+enum Mark {
+    None,
+    Child,
+    Selected,
+}
 
 /// Selected / descendant / none, which decides each row's band colour.
 /// One contiguous run (`Mark != None`) is a **single block**: the light fill joins up, the
@@ -94,10 +98,17 @@ fn marks(rows: &[LayerRow]) -> Vec<Mark> {
     let mut open: Vec<usize> = Vec::new();
     let mut out = Vec::with_capacity(rows.len());
     for r in rows {
-        while open.last().is_some_and(|d| *d >= r.depth) { open.pop(); }
-        if r.selected { open.push(r.depth); out.push(Mark::Selected); }
-        else if open.is_empty() { out.push(Mark::None); }
-        else { out.push(Mark::Child); }
+        while open.last().is_some_and(|d| *d >= r.depth) {
+            open.pop();
+        }
+        if r.selected {
+            open.push(r.depth);
+            out.push(Mark::Selected);
+        } else if open.is_empty() {
+            out.push(Mark::None);
+        } else {
+            out.push(Mark::Child);
+        }
     }
     out
 }
@@ -113,10 +124,17 @@ fn selection_runs(m: &[Mark]) -> (Vec<usize>, Vec<usize>) {
     while i < n {
         if m[i] != Mark::None {
             let start = i;
-            while i < n && m[i] != Mark::None { i += 1; }
+            while i < n && m[i] != Mark::None {
+                i += 1;
+            }
             let end = i - 1;
-            for j in start..=end { first[j] = start; last[j] = end; }
-        } else { i += 1; }
+            for j in start..=end {
+                first[j] = start;
+                last[j] = end;
+            }
+        } else {
+            i += 1;
+        }
     }
     (first, last)
 }
@@ -128,9 +146,13 @@ fn run_color(rows: &[LayerRow], from: usize, to: usize) -> gpui::Rgba {
     let t = tokens();
     let all_icon = rows[from..=to].iter().all(|r| r.mark_kind == 2);
     let all_comp = rows[from..=to].iter().all(|r| r.mark_kind == 1);
-    if all_icon { rgba(t.icon_layer_row) }
-    else if all_comp { rgba(t.component_row) }
-    else { rgba(t.selected_row) }
+    if all_icon {
+        rgba(t.icon_layer_row)
+    } else if all_comp {
+        rgba(t.component_row)
+    } else {
+        rgba(t.selected_row)
+    }
 }
 
 /// Drag and expansion state for the tree, kept on `CanvasView` across frames.
@@ -184,8 +206,8 @@ impl CanvasView {
     /// The line turns into the accent colour while hovered or dragged.
     pub(crate) fn render_left_panel(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> Stateful<Div> {
         let t = tokens();
-        let divider_hot = crate::resize_drag::hovered(crate::resize_drag::Edge::Left)
-            || crate::resize_drag::drag_active(crate::resize_drag::Handle::LeftPanel);
+        let divider_hot =
+            crate::resize_drag::hovered(crate::resize_drag::Edge::Left) || crate::resize_drag::drag_active(crate::resize_drag::Handle::LeftPanel);
         // The name committed by the file header's rename field (`file.rename`).
         // Take it out first: the `RefMut` temporary lives to the end of the statement and cannot wrap a `&mut self` call.
         let renamed = self.file_rename.borrow_mut().take();
@@ -282,20 +304,14 @@ impl CanvasView {
             .pt(pt(12.0))
             .border_b_1()
             .border_color(rgba(t.border))
-            .child(
-                div()
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .gap(pt(6.0))
-                    .child(div().flex_1().min_w(px(0.0)).child(field))
-                    .child(IconButton::new(Icon::Panels).size(24.0).on_click(move |_e, _w, cx| {
-                        me.update(cx, |cv, cx| {
-                            cv.left_collapsed = true;
-                            cx.notify();
-                        });
-                    })),
-            )
+            .child(div().flex().flex_row().items_center().gap(pt(6.0)).child(div().flex_1().min_w(px(0.0)).child(field)).child(
+                IconButton::new(Icon::Panels).size(24.0).on_click(move |_e, _w, cx| {
+                    me.update(cx, |cv, cx| {
+                        cv.left_collapsed = true;
+                        cx.notify();
+                    });
+                }),
+            ))
             .child(div().mt(pt(2.0)).text_size(pt(11.0)).text_color(rgba(t.text_secondary)).child(tr("Drafts")))
     }
 
@@ -313,19 +329,38 @@ impl CanvasView {
         let me = cx.entity();
 
         // ── 40 pt header row ────────────────────────────────────────────────────────────────
+        // 用与 Layers/Assets/Icons **同一个**通用 `SectionHeader`（TITLE_PT=13 / MEDIUM /
+        // HEADER_H=40 / pl PAD=16 / pr PAD_RIGHT=8）。以前这里是手写 `h(40)+pl(16)+pr(8)` +
+        // `text_size(11).SEMIBOLD`，字号 11 vs 13、字重 SEMIBOLD vs MEDIUM，和 Layers 明显不一致
+        // （用户 2026-11-12 指出 Pages/Layers 字体大小不同）。折叠点击绑外层，搜索/加号进 trail
+        // 并各自 stop_propagation，避免点按钮误触发折叠。
         let open_slot = self.pages_open.clone();
         let search_slot = self.page_search.clone();
         let filter_slot = self.page_filter.clone();
         let me_add = me.clone();
+        let trail = div()
+            .flex()
+            .flex_row()
+            .gap(pt(4.0))
+            .child(IconButton::new(Icon::Search).size(24.0).active(searching).on_click({
+                let me = me.clone();
+                move |_e, _, cx: &mut App| {
+                    cx.stop_propagation();
+                    let next = !*search_slot.borrow();
+                    *search_slot.borrow_mut() = next;
+                    if next {
+                        filter_slot.borrow_mut().clear();
+                    }
+                    me.update(cx, |_, cx| cx.notify());
+                }
+            }))
+            .child(IconButton::new(Icon::Plus).size(24.0).on_click(move |_e, _, cx: &mut App| {
+                cx.stop_propagation();
+                me_add.update(cx, |cv, cx| cv.run_command("page.add", serde_json::json!({}), cx));
+            }));
         let head = div()
             .flex_none()
             .w_full()
-            .h(pt(40.0))
-            .flex()
-            .flex_row()
-            .items_center()
-            .pl(pt(16.0))
-            .pr(pt(8.0))
             .cursor_pointer()
             .on_mouse_down(MouseButton::Left, {
                 let me = me.clone();
@@ -335,21 +370,7 @@ impl CanvasView {
                     me.update(cx, |_, cx| cx.notify());
                 }
             })
-            .child(div().flex_1().text_size(pt(11.0)).font_weight(gpui::FontWeight::SEMIBOLD).text_color(ink()).child(tr("Pages")))
-            .child(IconButton::new(Icon::Search).size(24.0).active(searching).on_click({
-                let me = me.clone();
-                move |_e, _, cx| {
-                    let next = !*search_slot.borrow();
-                    *search_slot.borrow_mut() = next;
-                    if next {
-                        filter_slot.borrow_mut().clear();
-                    }
-                    me.update(cx, |_, cx| cx.notify());
-                }
-            }))
-            .child(IconButton::new(Icon::Plus).size(24.0).on_click(move |_e, _, cx| {
-                me_add.update(cx, |cv, cx| cv.run_command("page.add", serde_json::json!({}), cx));
-            }));
+            .child(SectionHeader::new(tr("Pages")).variant(SectionHeaderVariant::Normal).trail(trail));
 
         let mut sec = div().id("pages-section").flex_none().w_full().flex().flex_col().child(head);
         if !open {
@@ -366,12 +387,12 @@ impl CanvasView {
                     me_field.update(cx, |_, cx| cx.notify());
                 });
             });
-            sec = sec.child(div().px(pt(8.0)).pb(pt(4.0)).child(field));
+            // A height is what makes the field's `items_center` do anything: without one the
+            // box is as tall as its content and the glyphs drift to the bottom.
+            sec = sec.child(div().px(pt(8.0)).pb(pt(4.0)).h(pt(24.0)).child(field));
         }
         // lizard `pages()`: `resp.double_clicked()` starts an inline rename of that page row.
-        let renaming_page = self.inline_rename.as_ref()
-            .filter(|r| r.target == crate::InlineRenameTarget::Page)
-            .and_then(|r| r.ids.first().copied());
+        let renaming_page = self.inline_rename.as_ref().filter(|r| r.target == crate::InlineRenameTarget::Page).and_then(|r| r.ids.first().copied());
         let rename_editor = self.inline_rename_field.clone();
         let mut list = div().id("pages-list").w_full().flex().flex_col().max_h(px(220.0)).overflow_y_scroll();
         for (id, name, divider) in pages {
@@ -448,16 +469,26 @@ impl CanvasView {
         let mut band: Vec<Option<gpui::Rgba>> = vec![None; rows.len()];
         let mut k = 0;
         while k < rows.len() {
-            if marked[k] != Mark::Selected { k += 1; continue; }
+            if marked[k] != Mark::Selected {
+                k += 1;
+                continue;
+            }
             let start = k;
-            while k < rows.len() && marked[k] == Mark::Selected { k += 1; }
+            while k < rows.len() && marked[k] == Mark::Selected {
+                k += 1;
+            }
             let end = k - 1;
             let color = run_color(&rows, start, end);
-            for j in start..=end { band[j] = Some(color); }
+            for j in start..=end {
+                band[j] = Some(color);
+            }
         }
         // The per-row render snapshot (`'static` closures only get `&mut App`).
         let view: Rc<Vec<(LayerRow, Mark, Option<gpui::Rgba>, bool, bool)>> = Rc::new(
-            rows.into_iter().zip(marked).zip(band).enumerate()
+            rows.into_iter()
+                .zip(marked)
+                .zip(band)
+                .enumerate()
                 .map(|(i, ((r, m), b))| {
                     let in_run = m != Mark::None;
                     (r, m, b, in_run && i == first[i], in_run && i == last[i])
@@ -466,12 +497,13 @@ impl CanvasView {
         );
         let n = view.len();
         let row_w = px(self.left_w + crate::panels::HANDLE_W);
-        let item_sizes: Rc<Vec<Size<Pixels>>> =
-            Rc::new((0..n).map(|_| Size::new(row_w, px(ROW_H))).collect());
+        let item_sizes: Rc<Vec<Size<Pixels>>> = Rc::new((0..n).map(|_| Size::new(row_w, px(ROW_H))).collect());
         // R5: the one row being renamed renders the shared inline field instead of its name.
         // The virtual list's render closure only gets `&mut App`, so the (id, field) pair has
         // to be captured here, alongside the `Entity<CanvasView>` the row callbacks use.
-        let rename: Option<(NodeId, Entity<crate::widgets::TextEdit>)> = self.inline_rename.as_ref()
+        let rename: Option<(NodeId, Entity<crate::widgets::TextEdit>)> = self
+            .inline_rename
+            .as_ref()
             .filter(|r| r.target == crate::InlineRenameTarget::Layer)
             .and_then(|r| r.ids.first().copied())
             .map(|id| (id, self.inline_rename_field.clone()));
@@ -482,10 +514,7 @@ impl CanvasView {
             for ix in range {
                 let Some((r, mark, band_color, run_top, run_bottom)) = view.get(ix) else { continue };
                 let field = rename.as_ref().and_then(|(id, f)| (*id == r.id).then(|| f.clone()));
-                out.push(
-                    Self::layer_row(&entity, ix, r, drag, *mark, band_color.clone(), *run_top, *run_bottom, field)
-                        .into_any_element(),
-                );
+                out.push(Self::layer_row(&entity, ix, r, drag, *mark, band_color.clone(), *run_top, *run_bottom, field).into_any_element());
             }
             out
         })
@@ -575,17 +604,14 @@ impl CanvasView {
                 .flex()
                 .items_center()
                 .justify_center()
-                .on_mouse_down(
-                    MouseButton::Left,
-                    {
-                        let me = me.clone();
-                        move |_e: &MouseDownEvent, _w: &mut Window, app: &mut App| {
-                            me.update(app, |this: &mut CanvasView, cx: &mut Context<CanvasView>| {
-                                this.layer_toggle_expand(id, cx);
-                            });
-                        }
-                    },
-                )
+                .on_mouse_down(MouseButton::Left, {
+                    let me = me.clone();
+                    move |_e: &MouseDownEvent, _w: &mut Window, app: &mut App| {
+                        me.update(app, |this: &mut CanvasView, cx: &mut Context<CanvasView>| {
+                            this.layer_toggle_expand(id, cx);
+                        });
+                    }
+                })
                 .child(paint_icon(if expanded { Icon::ChevronDown } else { Icon::ChevronRight }, ink(), ICON_GLYPH))
         } else {
             div().w(px(ICON_BOX))
@@ -599,17 +625,14 @@ impl CanvasView {
             .justify_center()
             // lizard `show_eye = over || hidden`: a visible layer's eye appears on hover only.
             .when(visible, |d| d.opacity(0.0).group_hover(group.clone(), |s| s.opacity(1.0)))
-            .on_mouse_down(
-                MouseButton::Left,
-                {
-                    let me = me.clone();
-                    move |_e: &MouseDownEvent, _w: &mut Window, app: &mut App| {
-                        me.update(app, |this: &mut CanvasView, cx: &mut Context<CanvasView>| {
-                            this.layer_toggle_visible(id, cx);
-                        });
-                    }
-                },
-            )
+            .on_mouse_down(MouseButton::Left, {
+                let me = me.clone();
+                move |_e: &MouseDownEvent, _w: &mut Window, app: &mut App| {
+                    me.update(app, |this: &mut CanvasView, cx: &mut Context<CanvasView>| {
+                        this.layer_toggle_visible(id, cx);
+                    });
+                }
+            })
             .child(paint_icon(if visible { Icon::Eye } else { Icon::EyeOff }, ink(), ICON_GLYPH));
 
         let lock = div()
@@ -620,17 +643,14 @@ impl CanvasView {
             .justify_center()
             // lizard `show_lock = over || locked`: an unlocked layer's padlock appears on hover only.
             .when(!locked, |d| d.opacity(0.0).group_hover(group.clone(), |s| s.opacity(1.0)))
-            .on_mouse_down(
-                MouseButton::Left,
-                {
-                    let me = me.clone();
-                    move |_e: &MouseDownEvent, _w: &mut Window, app: &mut App| {
-                        me.update(app, |this: &mut CanvasView, cx: &mut Context<CanvasView>| {
-                            this.layer_toggle_lock(id, cx);
-                        });
-                    }
-                },
-            )
+            .on_mouse_down(MouseButton::Left, {
+                let me = me.clone();
+                move |_e: &MouseDownEvent, _w: &mut Window, app: &mut App| {
+                    me.update(app, |this: &mut CanvasView, cx: &mut Context<CanvasView>| {
+                        this.layer_toggle_lock(id, cx);
+                    });
+                }
+            })
             .child(paint_icon(if locked { Icon::Lock } else { Icon::Unlock }, ink(), ICON_GLYPH));
 
         // Drag start: set the state immediately and remember the group and its label.
@@ -652,8 +672,12 @@ impl CanvasView {
             div().size_full().rounded(pt(5.0)).group_hover(group.clone(), |s| s.bg(rgba(t.selected_row_child)))
         } else {
             let mut h = div().size_full().bg(band_color.unwrap_or(rgba(t.selected_row_child)));
-            if run_top { h = h.rounded_t(pt(5.0)); }
-            if run_bottom { h = h.rounded_b(pt(5.0)); }
+            if run_top {
+                h = h.rounded_t(pt(5.0));
+            }
+            if run_bottom {
+                h = h.rounded_b(pt(5.0));
+            }
             h
         };
 
@@ -664,9 +688,10 @@ impl CanvasView {
             div()
                 .flex_1()
                 .min_w(px(0.0))
-                // Same 24 pt box as the page-name editor: the glyphs then sit on the row's
-                // centre line, exactly where the label sat before the edit started.
-                .h(pt(24.0))
+                // Full row height, exactly like the label it replaces: a 24 pt box inside a 32 pt
+                // row only lines up if the row centres it, and one extra box is one more place
+                // for the text to drift. Same box, same size, same centre.
+                .h_full()
                 .flex()
                 .items_center()
                 .on_mouse_down(MouseButton::Left, |_e, _w, cx| cx.stop_propagation())
@@ -678,25 +703,22 @@ impl CanvasView {
                 .h_full()
                 .flex()
                 .items_center()
-                .on_mouse_down(
-                    MouseButton::Left,
-                    {
-                        let me = me.clone();
-                        move |e: &MouseDownEvent, _w: &mut Window, app: &mut App| {
-                            me.update(app, |this: &mut CanvasView, cx: &mut Context<CanvasView>| {
-                                // lizard `layers.rs:1142`: a double click starts an inline rename
-                                // of this row; a single click still goes through the selection logic.
-                                if e.click_count >= 2 {
-                                    this.begin_inline_rename(vec![id], crate::InlineRenameTarget::Layer, cx);
-                                    // Same as above: this press opens the rename, it is not a click elsewhere.
-                                    cx.stop_propagation();
-                                } else {
-                                    this.layer_on_row_mouse_down(id, e);
-                                }
-                            });
-                        }
-                    },
-                )
+                .on_mouse_down(MouseButton::Left, {
+                    let me = me.clone();
+                    move |e: &MouseDownEvent, _w: &mut Window, app: &mut App| {
+                        me.update(app, |this: &mut CanvasView, cx: &mut Context<CanvasView>| {
+                            // lizard `layers.rs:1142`: a double click starts an inline rename
+                            // of this row; a single click still goes through the selection logic.
+                            if e.click_count >= 2 {
+                                this.begin_inline_rename(vec![id], crate::InlineRenameTarget::Layer, cx);
+                                // Same as above: this press opens the rename, it is not a click elsewhere.
+                                cx.stop_propagation();
+                            } else {
+                                this.layer_on_row_mouse_down(id, e);
+                            }
+                        });
+                    }
+                })
                 .child(div().child(name).text_size(px(11.0)).text_color(name_color).truncate())
         };
 
@@ -712,17 +734,7 @@ impl CanvasView {
             .gap(px(2.0))
             .px(px(4.0))
             // The inset layer: an overlay the size of the row whose padding squeezes the highlight into an 8/4 inset block.
-            .child(
-                div()
-                    .absolute()
-                    .top_0()
-                    .left_0()
-                    .size_full()
-                    .px(pt(ROW_INSET))
-                    .pt(pt(inset_top))
-                    .pb(pt(inset_bottom))
-                    .child(highlight),
-            )
+            .child(div().absolute().top_0().left_0().size_full().px(pt(ROW_INSET)).pt(pt(inset_top)).pb(pt(inset_bottom)).child(highlight))
             .when(is_dragging, |d| d.opacity(0.5))
             .on_drag(LayerDrag(id), move |_val, _offset, _window, app| {
                 me_start.update(app, |this: &mut CanvasView, cx: &mut Context<CanvasView>| {
@@ -772,7 +784,9 @@ impl CanvasView {
                 2
             } else if matches!(n.kind, NodeKind::Component { .. } | NodeKind::ComponentSet { .. } | NodeKind::Instance { .. }) {
                 1
-            } else { 0 };
+            } else {
+                0
+            };
             let icon = Self::node_icon(doc, id);
             visual.push(LayerRow {
                 id,
@@ -794,10 +808,7 @@ impl CanvasView {
                 path: path.clone(),
                 can_into,
                 collapsed: has_children && !expanded,
-                rect: Bounds {
-                    origin: Point::new(px(0.0), px(0.0)),
-                    size: Size::new(px(240.0), px(ROW_H)),
-                },
+                rect: Bounds { origin: Point::new(px(0.0), px(0.0)), size: Size::new(px(240.0), px(ROW_H)) },
             });
             if has_children && expanded {
                 // Push in natural order: `pop` takes the last child (highest z) first.
@@ -827,10 +838,8 @@ impl CanvasView {
     fn layer_glyph(doc: &Document, id: NodeId, icon: Icon) -> (Option<crate::widgets::layer_icons::LayerIcon>, bool) {
         use crate::widgets::layer_icons::LayerIcon as L;
         let Some(n) = doc.node(id) else { return (None, false) };
-        let absolute = n.child_layout.absolute
-            && n.parent.and_then(|p| doc.node(p)).is_some_and(|p| p.layout.is_some());
-        let mask_group = matches!(n.kind, NodeKind::Group)
-            && n.children.iter().any(|c| doc.node(*c).is_some_and(|node| node.is_mask));
+        let absolute = n.child_layout.absolute && n.parent.and_then(|p| doc.node(p)).is_some_and(|p| p.layout.is_some());
+        let mask_group = matches!(n.kind, NodeKind::Group) && n.children.iter().any(|c| doc.node(*c).is_some_and(|node| node.is_mask));
         let glyph = if mask_group {
             Some(L::Mask)
         } else if n.is_mask && icon == Icon::Ellipse {
@@ -901,7 +910,11 @@ impl CanvasView {
             NodeKind::Polygon { .. } => Icon::Polygon,
             NodeKind::Star { .. } => Icon::Star,
             NodeKind::Line => {
-                if n.stroke.cap_end.is_arrow() { Icon::Arrow } else { Icon::Line }
+                if n.stroke.cap_end.is_arrow() {
+                    Icon::Arrow
+                } else {
+                    Icon::Line
+                }
             }
             NodeKind::Vector { .. } => Icon::Vector,
             NodeKind::Text(_) => Icon::Text,
@@ -925,16 +938,9 @@ impl CanvasView {
     /// `on_drag`: drag the whole selection, with the name or "N layers" as the label.
     fn begin_layer_drag(&mut self, id: NodeId, index: usize, cx: &mut Context<Self>) {
         let Ok(ds) = self.app.session.ds() else { return };
-        let moving: Vec<NodeId> = if ds.selection.contains(&id) && ds.selection.len() > 1 {
-            ds.selection.iter().copied().collect()
-        } else {
-            vec![id]
-        };
-        let label = if moving.len() == 1 {
-            ds.doc.node(id).map(|n| n.name.clone()).unwrap_or_default()
-        } else {
-            format!("{} layers", moving.len())
-        };
+        let moving: Vec<NodeId> =
+            if ds.selection.contains(&id) && ds.selection.len() > 1 { ds.selection.iter().copied().collect() } else { vec![id] };
+        let label = if moving.len() == 1 { ds.doc.node(id).map(|n| n.name.clone()).unwrap_or_default() } else { format!("{} layers", moving.len()) };
         self.layer_tree.drag = Some(drag::Drag::start(index, id.0, label));
         // Once a drag starts it is no longer a click.
         self.layer_tree.candidate = None;
@@ -942,14 +948,7 @@ impl CanvasView {
     }
 
     /// `on_drag_move`: GPUI only reports the hit row's rect; the kit calibrates the column.
-    fn on_layer_drag_move(
-        &mut self,
-        dragging: NodeId,
-        index: usize,
-        bounds: Bounds<Pixels>,
-        pointer: Point<Pixels>,
-        cx: &mut Context<Self>,
-    ) {
+    fn on_layer_drag_move(&mut self, dragging: NodeId, index: usize, bounds: Bounds<Pixels>, pointer: Point<Pixels>, cx: &mut Context<Self>) {
         if self.layer_tree.drag.as_ref().map(|d| d.from_id) != Some(dragging.0) {
             return;
         }
@@ -1115,11 +1114,8 @@ impl CanvasView {
         let Ok(ds) = self.app.session.ds() else { return };
         let doc = &ds.doc;
         let page = ds.page;
-        let moving: Vec<NodeId> = if ds.selection.contains(&dragging) && ds.selection.len() > 1 {
-            ds.selection.iter().copied().collect()
-        } else {
-            vec![dragging]
-        };
+        let moving: Vec<NodeId> =
+            if ds.selection.contains(&dragging) && ds.selection.len() > 1 { ds.selection.iter().copied().collect() } else { vec![dragging] };
         // Look the row up by id instead of by index: if a hover-expand fired on the release
         // frame, the visible rows were reordered and the index no longer matches.
         let Some(anchor_row) = self.layer_tree.drag_rows.iter().find(|r| r.id == target.anchor_id) else { return };
@@ -1128,10 +1124,7 @@ impl CanvasView {
         if target.zone == drag::Zone::Into {
             // Into passes only `ids` + `parent`, with **no index**: the engine puts an index-less
             // reparent on top. Passing 0 would drop it to the bottom of the siblings instead.
-            let _ = self
-                .app
-                .session
-                .execute("node.reparent", &json!({ "ids": moving, "parent": NodeId(target.anchor_id) }));
+            let _ = self.app.session.execute("node.reparent", &json!({ "ids": moving, "parent": NodeId(target.anchor_id) }));
             cx.notify();
             return;
         }
@@ -1150,10 +1143,7 @@ impl CanvasView {
         // A dragged row that sat before the gap frees its slot as it leaves.
         let below = parent_n.children.iter().take(gap).filter(|c| moving.contains(c)).count();
         let index = gap.saturating_sub(below);
-        let _ = self
-            .app
-            .session
-            .execute("node.reparent", &json!({ "ids": moving, "parent": parent, "index": index }));
+        let _ = self.app.session.execute("node.reparent", &json!({ "ids": moving, "parent": parent, "index": index }));
         cx.notify();
     }
 }

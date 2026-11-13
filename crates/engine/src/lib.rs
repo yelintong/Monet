@@ -111,7 +111,9 @@ mod view_state;
 pub use derived::{changed_nodes, normalize};
 pub use doc_state::{DocState, History, HistoryEntry, Interaction, PREVIEW_READ_ONLY, Preedit, TextEdit, VersionPreview};
 pub use error::{EngineError, Result, bad};
-pub use prefs::{Clipboard, DefaultProps, MAX_RECENT_ACTIONS, Prefs, UI_SCALE_MAX, UI_SCALE_MIN, UI_SCALE_SIZES, UiRequest, VariablesLayout, clamp_ui_scale};
+pub use prefs::{
+    Clipboard, DefaultProps, MAX_RECENT_ACTIONS, Prefs, UI_SCALE_MAX, UI_SCALE_MIN, UI_SCALE_SIZES, UiRequest, VariablesLayout, clamp_ui_scale,
+};
 pub use session::Forward;
 pub use view_state::ViewState;
 
@@ -163,6 +165,11 @@ pub struct Session {
     pub agent: Option<String>,
     /// Where an attached AI agent last worked ([`Session::agent_presence_at`]): display only.
     pub agent_presence: Option<agent::AgentPresence>,
+    /// **显示文档**（可选）：画布上「看到的」那份文档。动画模式播放头停在中间时，界面画的
+    /// 是求值后的文档，而命中/悬停若读 `ds.doc`（未求值）就会点不中、热区偏。界面把它设为
+    /// 当前显示的那份，引擎的命中一律改读它；**写操作仍走 `ds.doc`**，所以不会把编辑写进副本。
+    /// `None` = 与 `ds.doc` 相同（非动画模式的常态）。
+    pub display_doc: Option<Arc<Document>>,
 }
 
 impl Default for Session {
@@ -296,6 +303,8 @@ mod devmode_behaviour_tests;
 #[cfg(test)]
 mod devmode_tail_tests;
 #[cfg(test)]
+mod display_doc_tests;
+#[cfg(test)]
 mod doc_list_paths_tests;
 #[cfg(test)]
 mod doc_urls_tests;
@@ -364,9 +373,9 @@ mod html_codegen_tests;
 #[cfg(test)]
 mod huge_stroke_tests;
 #[cfg(test)]
-mod id_params_behaviour_tests;
-#[cfg(test)]
 mod icon_tests;
+#[cfg(test)]
+mod id_params_behaviour_tests;
 #[cfg(test)]
 mod image_crop_tests;
 #[cfg(test)]

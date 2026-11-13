@@ -768,7 +768,9 @@ impl WgslEffects {
         // The HTML demo's sliders are bounded (`min`/`max` on `<input type=range>`); keep the
         // stored UI value inside the same bounds so a typed/scrubbed value can never leave the
         // declared 0..100 (or 1..100) scale.
-        let clamped = param_specs(&l.scan).into_iter().find(|p| p.field == field)
+        let clamped = param_specs(&l.scan)
+            .into_iter()
+            .find(|p| p.field == field)
             .map_or(value, |p| if p.min <= p.max { value.clamp(p.min, p.max) } else { value });
         l.params.insert(field.to_string(), clamped);
         Ok(())
@@ -778,8 +780,7 @@ impl WgslEffects {
     /// what a CPU renderer should use so the visible effect stays in step with the shader.
     pub fn param_uniform_value(&self, id: &str, field: &str) -> Result<f64, Error> {
         let l = self.effects.get(id).ok_or_else(|| Error::NotLoaded(id.to_string()))?;
-        let spec = param_specs(&l.scan).into_iter().find(|p| p.field == field)
-            .ok_or_else(|| Error::Parse(format!("unknown parameter: {field}")))?;
+        let spec = param_specs(&l.scan).into_iter().find(|p| p.field == field).ok_or_else(|| Error::Parse(format!("unknown parameter: {field}")))?;
         let v = l.params.get(field).copied().unwrap_or(spec.default);
         eval_expr(&spec.map, v, &self.exports)
     }
@@ -812,8 +813,7 @@ impl WgslEffects {
         }
         // A field with an explicit `@fx param`/`@fx host` declaration owns its value: the engine's
         // generic export must not overwrite what the control's `map` expression just wrote.
-        let declared: Vec<String> = param_specs(&l.scan).into_iter().filter(|p| !p.auto)
-            .map(|p| p.field).collect();
+        let declared: Vec<String> = param_specs(&l.scan).into_iter().filter(|p| !p.auto).map(|p| p.field).collect();
         // Generic fields whose name matches an engine export are filled automatically.
         for f in &layout.fields {
             let path = if layout.bare { var.to_string() } else { format!("{var}.{}", f.name) };
@@ -961,7 +961,11 @@ fn param_specs(scan: &Scan) -> Vec<ParamSpec> {
         specs.push(ParamSpec {
             field: path.clone(),
             label: path.clone(),
-            min, max, step, default, map,
+            min,
+            max,
+            step,
+            default,
+            map,
             group: scan.meta.groups.get(path).cloned().unwrap_or_else(|| "default".into()),
             auto: true,
             host: false,

@@ -120,13 +120,7 @@ impl Segmented {
     /// Build the element (`Div` so callers can `.flex_none()` / `.w(...)` it like any row child).
     pub fn build(self) -> Div {
         let t = tokens();
-        let mut bar = div()
-            .h(pt(self.height))
-            .rounded(pt(RADIUS))
-            .bg(rgba(t.field))
-            .flex()
-            .flex_row()
-            .items_center();
+        let mut bar = div().h(pt(self.height)).rounded(pt(RADIUS)).bg(rgba(t.field)).flex().flex_row().items_center();
         if let Some(w) = self.fixed_w {
             bar = bar.w(pt(w)).flex_none();
         } else if self.fill {
@@ -147,10 +141,9 @@ impl Segmented {
             // 激活格「抬起」：白底 + 1 pt 内侧描边（设计里两种状态的图标同色，靠这块白底示意）。
             if chosen {
                 cell = cell.bg(rgba(t.panel)).border_1().border_color(rgba(t.border));
-            } else if self.on_pick.is_some() {
-                // 设计没有 hover 变体；用 pressed 做一层极浅的水洗，让可点的格子有反馈。
-                cell = cell.hover(|s| s.bg(rgba(t.pressed)));
             }
+            // 未选中格**没有 hover 变体**（用户 2026-11-12：通用多选择器悬停不要有样式）。
+            // 设计里只有「选中抬起」一种状态，光标已经是 pointer，够了；不再加 hover 水洗。
             let content: AnyElement = match item {
                 SegItem::Icon(icon) => {
                     let glyph = if self.height <= 21.0 { 12.0 } else { crate::widgets::ICON };

@@ -14,6 +14,13 @@ pub struct Keyframe {
     /// Easing of the segment from this keyframe to the next.
     #[serde(default, skip_serializing_if = "Ease::is_linear")]
     pub easing: Ease,
+    /// 空间**出手柄**（相对本帧位置，仅 Position 用）：这一段离开本帧时的切线方向。
+    /// `None` = 直线。旧文件没有这个字段 → `None` → 行为与以前完全一致（用户 2026-11-12）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub out_handle: Option<[f64; 2]>,
+    /// 空间**入手柄**（相对本帧位置）：这一段进入本帧时的切线方向。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub in_handle: Option<[f64; 2]>,
 }
 
 /// All keyframes of one property of one node, sorted by time with unique times.
@@ -85,7 +92,7 @@ impl Track {
             }
             Err(i) => {
                 let inherited = if i > 0 { self.keys[i - 1].easing } else { Ease::Linear };
-                self.keys.insert(i, Keyframe { time_ms, value, easing: easing.unwrap_or(inherited) });
+                self.keys.insert(i, Keyframe { time_ms, value, easing: easing.unwrap_or(inherited), out_handle: None, in_handle: None });
             }
         }
     }
@@ -129,16 +136,41 @@ impl Track {
         // two keys on one time. Saturate instead of letting the subtraction overflow, and hold the
         // first key's value when the two sit on the same time instead of dividing by zero.
         let span = b.time_ms.saturating_sub(a.time_ms) as f32;
-        if !(span > 0.0) {
+        if span <= 0.0 {
             return Some(a.value);
         }
-        let p = a.easing.ease((t_ms - a.time_ms as f64) as f32 / span);
-        Some(AnimValue::lerp(&a.value, &b.value, p as f64))
+        let p = a.easing.ease((t_ms - a.time_ms as f64) as f32 / span) as f64;
+        // Position 且**至少一端有非零**空间手柄 → 三次贝塞尔；否则保持线性（直线）。
+        //
+        // ⚠️ 零手柄不能当贝塞尔：`p1=p0、p2=p3` 的三次贝塞尔**不等于线性插值**
+        // （t=0.25 时进度只有 0.156），会画出一条莫名弯曲的线（用户 2026-11-12）。
+        // 照抄矢量路径的 `Segment::is_straight`：手柄精确为 (0,0) 就是直线。
+        let nz = |h: Option<[f64; 2]>| h.filter(|h| h[0] != 0.0 || h[1] != 0.0);
+        let (ho, hi) = (nz(a.out_handle), nz(b.in_handle));
+        if let (AnimValue::Vec2(v0), AnimValue::Vec2(v3)) = (&a.value, &b.value)
+            && (ho.is_some() || hi.is_some())
+        {
+            let h1 = ho.unwrap_or([0.0, 0.0]);
+            let h2 = hi.unwrap_or([0.0, 0.0]);
+            let (x0, y0, x3, y3) = (v0.x, v0.y, v3.x, v3.y);
+            let (x1, y1) = (x0 + h1[0], y0 + h1[1]);
+            let (x2, y2) = (x3 + h2[0], y3 + h2[1]);
+            let (t, u) = (p, 1.0 - p);
+            let (w0, w1, w2, w3) = (u * u * u, 3.0 * u * u * t, 3.0 * u * t * t, t * t * t);
+            let x = x0 * w0 + x1 * w1 + x2 * w2 + x3 * w3;
+            let y = y0 * w0 + y1 * w1 + y2 * w2 + y3 * w3;
+            return Some(AnimValue::Vec2(figcraft_geom::Vec2::new(x, y)));
+        }
+        Some(AnimValue::lerp(&a.value, &b.value, p))
     }
 }
 
 /// Animation data of one node: keyframe tracks plus clips. Empty for most nodes.
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+// 注意：`Deserialize` 是手写的（见下），不是 derive——反序列化后必须立刻 `normalize()`，
+// 让「文件 load / collab 变更 / 整节点读」三条路径都拿到不变量成立的 motion
+// （PR#1624 的架构 gate）。本地 format 层不碰本字段、Node 靠 serde 派生读写，
+// collab 的 `Json::read::<T>` 也走 `T::deserialize`，所以这里覆盖所有入口。
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct NodeMotion {
     /// One track per property at most, in creation order.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -146,6 +178,26 @@ pub struct NodeMotion {
     /// Clips (animation presets), in creation order; composition is order independent.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub clips: Vec<Clip>,
+}
+
+/// 每条读取 motion 的路径都在这里落地：反序列化后 `normalize()`，于是手改过的文件、
+/// 协作端写入的脏数据、整节点读取，都会恢复成「同 property 只一条轨道 / key 排序去重 /
+/// clip id 唯一」的不变量，而不必依赖每个写命令记得调 normalize（本地原先只在
+/// `engine/cmd/animation.rs` 写命令时调，load / collab 路径有缺口）。
+impl<'de> Deserialize<'de> for NodeMotion {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        struct Repr {
+            #[serde(default)]
+            tracks: Vec<Track>,
+            #[serde(default)]
+            clips: Vec<Clip>,
+        }
+        let r = Repr::deserialize(d)?;
+        let mut m = NodeMotion { tracks: r.tracks, clips: r.clips };
+        m.normalize();
+        Ok(m)
+    }
 }
 
 impl NodeMotion {
@@ -178,8 +230,15 @@ impl NodeMotion {
     }
 
     /// A clip id not used by any clip of this node.
+    /// PR#1624 加固：`max + 1` 用 `saturating_add` 防 `u32::MAX` 溢出，并 while 跳过任何
+    /// 已占用的 id（本地原来 `map(|c| c.id + 1).max()` 在 id=MAX 时溢出、且可能撞上空洞里
+    /// 已用的 id）。
     pub fn next_clip_id(&self) -> u32 {
-        self.clips.iter().map(|c| c.id + 1).max().unwrap_or(0)
+        let mut id = self.clips.iter().map(|c| c.id).max().map_or(0, |m| m.saturating_add(1));
+        while id != u32::MAX && self.clips.iter().any(|c| c.id == id) {
+            id += 1;
+        }
+        id
     }
 
     /// Restores invariants after loading or bulk edits.
@@ -200,11 +259,16 @@ impl NodeMotion {
         merged.retain(|t| !t.is_empty());
         self.tracks = merged;
         let mut seen = std::collections::BTreeSet::new();
-        let mut next = self.clips.iter().map(|c| c.id + 1).max().unwrap_or(0);
+        // 同 `next_clip_id` 的加固：saturating + while 跳过已用 id，避免重复 id 重分配时
+        // 又撞进另一个已用 id，或 `next += 1` 在 u32::MAX 处溢出。
+        let mut next = self.clips.iter().map(|c| c.id).max().map_or(0, |m| m.saturating_add(1));
         for c in &mut self.clips {
             if !seen.insert(c.id) {
+                while next != u32::MAX && seen.contains(&next) {
+                    next += 1;
+                }
                 c.id = next;
-                next += 1;
+                next = next.saturating_add(1);
                 seen.insert(c.id);
             }
             c.sanitize();
@@ -263,6 +327,7 @@ impl NodeMotion {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::anim::motion::{ClipKind, ClipMode};
 
     fn s(v: f64) -> AnimValue {
         AnimValue::Scalar(v)
@@ -309,10 +374,10 @@ mod tests {
         m.tracks.push(Track {
             property: AnimProperty::Opacity,
             keys: vec![
-                Keyframe { time_ms: 500, value: s(1.0), easing: Ease::Linear },
-                Keyframe { time_ms: 0, value: s(0.0), easing: Ease::Linear },
-                Keyframe { time_ms: 500, value: s(0.5), easing: Ease::Linear },
-                Keyframe { time_ms: 700, value: AnimValue::Vec2(figcraft_geom::Vec2::ZERO), easing: Ease::Linear },
+                Keyframe { time_ms: 500, value: s(1.0), easing: Ease::Linear, out_handle: None, in_handle: None },
+                Keyframe { time_ms: 0, value: s(0.0), easing: Ease::Linear, out_handle: None, in_handle: None },
+                Keyframe { time_ms: 500, value: s(0.5), easing: Ease::Linear, out_handle: None, in_handle: None },
+                Keyframe { time_ms: 700, value: AnimValue::Vec2(figcraft_geom::Vec2::ZERO), easing: Ease::Linear, out_handle: None, in_handle: None },
             ],
             visible: true,
         });
@@ -322,5 +387,61 @@ mod tests {
         let times: Vec<u32> = m.tracks[0].keys.iter().map(|k| k.time_ms).collect();
         assert_eq!(times, vec![0, 500]);
         assert_eq!(m.tracks[0].key_at(500).unwrap().value, s(0.5));
+    }
+
+    /// PR#1624 gate：反序列化即 normalize。文件 load / collab 读取一条脏 JSON（同 property
+    /// 两条轨道、key 未排序且重复、clip id 重复），`from_str` 回来的 `NodeMotion` 必须已经
+    /// 是不变量成立的状态——不需要调用方记得调 `normalize()`。
+    #[test]
+    fn deserialize_normalizes_dirty_motion() {
+        // 先手工构造脏 motion，序列化成字符串（Serialize 不会 normalize）。
+        let mut dirty = NodeMotion::default();
+        dirty.tracks.push(Track {
+            property: AnimProperty::Opacity,
+            keys: vec![
+                Keyframe { time_ms: 500, value: s(0.5), easing: Ease::Linear, out_handle: None, in_handle: None },
+                Keyframe { time_ms: 0, value: s(0.0), easing: Ease::Linear, out_handle: None, in_handle: None },
+            ],
+            visible: true,
+        });
+        // 同 property 再来一条（load 后应合并）
+        dirty.tracks.push(Track {
+            property: AnimProperty::Opacity,
+            keys: vec![Keyframe { time_ms: 500, value: s(0.9), easing: Ease::Linear, out_handle: None, in_handle: None }],
+            visible: true,
+        });
+        let json = serde_json::to_string(&dirty).unwrap();
+        let loaded: NodeMotion = serde_json::from_str(&json).unwrap();
+        assert_eq!(loaded.tracks.len(), 1, "同 property 的两条轨道合并成一条");
+        let times: Vec<u32> = loaded.tracks[0].keys.iter().map(|k| k.time_ms).collect();
+        assert_eq!(times, vec![0, 500], "key 排序去重");
+        assert_eq!(loaded.tracks[0].key_at(500).unwrap().value, s(0.9), "后写的同 time key 胜出");
+    }
+
+    /// `next_clip_id` 在 id 触顶（u32::MAX）时不能溢出/回绕，且要跳过已占用的 id。
+    #[test]
+    fn next_clip_id_never_overflows_or_collides() {
+        let mut m = NodeMotion::default();
+        let mut c = Clip::new(ClipKind::Position, ClipMode::In);
+        c.id = u32::MAX;
+        m.clips.push(c);
+        // id=MAX 触顶：saturating 后停在 MAX（PR 的 while 条件 `id != u32::MAX` 此时不再找空位）。
+        // 关键是**不 panic**（本地旧式 `c.id + 1` 在 debug 下会溢出 panic）、**不回绕成 0**。
+        assert_eq!(m.next_clip_id(), u32::MAX, "触顶停在 MAX，不溢出回绕");
+
+        let mut m2 = NodeMotion::default();
+        for id in [0u32, 2, 3] {
+            let mut c = Clip::new(ClipKind::Position, ClipMode::In);
+            c.id = id;
+            m2.clips.push(c);
+        }
+        assert_eq!(m2.next_clip_id(), 4, "取 max+1");
+        let mut m3 = NodeMotion::default();
+        for id in [0u32, 1, 2] {
+            let mut c = Clip::new(ClipKind::Position, ClipMode::In);
+            c.id = id;
+            m3.clips.push(c);
+        }
+        assert!(!m3.clips.iter().any(|c| c.id == m3.next_clip_id()), "连续 id 时取 max+1 不撞");
     }
 }

@@ -630,8 +630,7 @@ fn fill_children_whose_tiny_clampings_add_up_past_the_tolerance_still_settle() {
     let p = d.first_page().unwrap();
     let f = d.create(p, NodeKind::Frame, "F", 0.0, 0.0, 300.0, 100.0).unwrap();
     d.get_mut(f).unwrap().layout = Some(AutoLayout { mode: LayoutMode::Horizontal, gap: 0.0, padding: [0.0; 4], ..Default::default() });
-    let kids: Vec<NodeId> =
-        (0..3).map(|i| d.create(f, NodeKind::Rectangle, "K", 0.0, 0.0, 10.0, 20.0 + i as f64).unwrap()).collect();
+    let kids: Vec<NodeId> = (0..3).map(|i| d.create(f, NodeKind::Rectangle, "K", 0.0, 0.0, 10.0, 20.0 + i as f64).unwrap()).collect();
     for k in &kids {
         let n = d.get_mut(*k).unwrap();
         n.child_layout.sizing_h = Sizing::Fill;

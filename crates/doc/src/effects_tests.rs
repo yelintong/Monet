@@ -159,6 +159,19 @@ fn stacked_layer_effects_reach_together_and_shadows_from_there() {
 }
 
 #[test]
+fn paint_reach_covers_layer_blur_plus_the_other_effects() {
+    let mut n = Node::new(NodeId(1), NodeKind::Rectangle, "R", 10.0, 10.0);
+    let blur = |r: f64| Effect { kind: EffectKind::LayerBlur(Blur::uniform(r)), visible: true };
+    let shadow =
+        Effect { kind: EffectKind::DropShadow(Shadow { radius: 0.0, offset: (0.0, 50.0), spread: 0.0, ..Shadow::default() }), visible: true };
+    n.effects = vec![blur(10.0), shadow];
+    let b = figcraft_geom::Rect::new(0.0, 0.0, 10.0, 10.0);
+    let grown = n.grow_by_effects(b);
+    // grow_by_effects 先按 blur(15) 扩散，再叠加 50 的阴影偏移；取 max 会少算那 15。
+    assert!(n.paint_reach() >= grown.y1 - b.y1 - 1e-9, "paint_reach={} vs {grown:?}", n.paint_reach());
+}
+
+#[test]
 fn reaches_too_large_to_add_stay_finite() {
     let mut n = Node::new(NodeId(1), NodeKind::Rectangle, "R", 10.0, 10.0);
     let t = Texture { radius: 1e308, ..Default::default() };

@@ -18,6 +18,7 @@ use crate::component_codegen::{Component, Param};
 use crate::params::{get, id_of, num_or, string, targets};
 use crate::{bad, spec};
 
+mod anim;
 mod arkui;
 mod compose;
 mod css;
@@ -38,48 +39,72 @@ pub(crate) use html::{Markup, Names, class_name};
 pub(crate) use swift::swift;
 
 pub fn specs() -> Vec<CommandSpec> {
-    vec![spec!(
-        "inspect.code",
-        "Code for layer",
-        "{id?, language?: css|html|react|leptos|vue|tailwind|swiftui|compose|arkui|flutter (default css; html, react, leptos and vue are the whole layer tree; components take their properties as parameters, instances pass their values; a component connected to code (codeConnect.set) gives its import and snippet instead; tailwind is React with Tailwind CSS v4 utilities for pages: fluid auto layout boxes, instances inlined with their overrides, bound variables as theme utilities), mobile? (tailwind: a mobile frame with the same layer names; the code is mobile first with the desktop layer's classes behind lg:), unit?: px|rem (CSS, HTML, React, Leptos and Vue; default px), rootFontSize? (rem: pixels per rem, default 16)} → {code, language, connected}",
-        false,
-        |s, p| {
-            let cmd = "inspect.code";
-            let id = targets(s, p).first().copied().ok_or_else(|| bad(cmd, "select a layer"))?;
-            let lang = match string(p, "language") {
-                Some(l) => {
-                    CodeLang::from_id(&l).ok_or_else(|| bad(cmd, "language: css|html|react|leptos|vue|tailwind|swiftui|compose|arkui|flutter"))?
+    vec![
+        spec!(
+            "inspect.code",
+            "Code for layer",
+            "{id?, language?: css|html|react|leptos|vue|tailwind|swiftui|compose|arkui|flutter (default css; html, react, leptos and vue are the whole layer tree; components take their properties as parameters, instances pass their values; a component connected to code (codeConnect.set) gives its import and snippet instead; tailwind is React with Tailwind CSS v4 utilities for pages: fluid auto layout boxes, instances inlined with their overrides, bound variables as theme utilities), mobile? (tailwind: a mobile frame with the same layer names; the code is mobile first with the desktop layer's classes behind lg:), unit?: px|rem (CSS, HTML, React, Leptos and Vue; default px), rootFontSize? (rem: pixels per rem, default 16)} → {code, language, connected}",
+            false,
+            |s, p| {
+                let cmd = "inspect.code";
+                let id = targets(s, p).first().copied().ok_or_else(|| bad(cmd, "select a layer"))?;
+                let lang = match string(p, "language") {
+                    Some(l) => {
+                        CodeLang::from_id(&l).ok_or_else(|| bad(cmd, "language: css|html|react|leptos|vue|tailwind|swiftui|compose|arkui|flutter"))?
+                    }
+                    None => CodeLang::Css,
+                };
+                let rem = match string(p, "unit").map(|u| u.to_ascii_lowercase()).as_deref() {
+                    None | Some("px") => None,
+                    Some("rem") => Some(num_or(p, "rootFontSize", 16.0)).filter(|r| r.is_finite() && *r > 0.0 && *r <= 1000.0),
+                    Some(_) => return Err(bad(cmd, "unit: px|rem")),
+                };
+                if string(p, "unit").is_some_and(|u| u.eq_ignore_ascii_case("rem")) && rem.is_none() {
+                    return Err(bad(cmd, "rootFontSize: a positive number of pixels (up to 1000)"));
                 }
-                None => CodeLang::Css,
-            };
-            let rem = match string(p, "unit").map(|u| u.to_ascii_lowercase()).as_deref() {
-                None | Some("px") => None,
-                Some("rem") => Some(num_or(p, "rootFontSize", 16.0)).filter(|r| r.is_finite() && *r > 0.0 && *r <= 1000.0),
-                Some(_) => return Err(bad(cmd, "unit: px|rem")),
-            };
-            if string(p, "unit").is_some_and(|u| u.eq_ignore_ascii_case("rem")) && rem.is_none() {
-                return Err(bad(cmd, "rootFontSize: a positive number of pixels (up to 1000)"));
+                let doc = s.doc()?;
+                if !doc.contains(id) {
+                    return Err(bad(cmd, "no such layer"));
+                }
+                let connected = crate::code_connect::link(doc, id, lang).is_some();
+                let mobile = match get(p, "mobile") {
+                    None | Some(serde_json::Value::Null) => None,
+                    Some(v) => Some(id_of(v).filter(|m| doc.contains(*m)).ok_or_else(|| bad(cmd, "mobile: the id of a mobile frame"))?),
+                };
+                let code = match (lang, mobile) {
+                    (CodeLang::Tailwind, Some(m)) => crate::tailwind::code(doc, id, Some(m)),
+                    _ => code_for(doc, id, lang),
+                };
+                let code = match rem {
+                    Some(root) if lang.is_web() => px_to_rem(&code, root),
+                    _ => code,
+                };
+                Ok(json!({"code": code, "language": lang.id(), "connected": connected}))
             }
-            let doc = s.doc()?;
-            if !doc.contains(id) {
-                return Err(bad(cmd, "no such layer"));
+        ),
+        spec!(
+            "inspect.motionCode",
+            "Motion animation code",
+            "{id?, language?: css|swiftui|compose (default css)} → {code, language}. Dev Mode code for the Motion animations of a layer and everything below it: CSS @keyframes, SwiftUI keyframeAnimator or Compose keyframes. Static styling stays in `inspect.code`; this is the animation layer that goes on top. Empty code when nothing animates.",
+            false,
+            |s, p| {
+                let cmd = "inspect.motionCode";
+                let id = targets(s, p).first().copied().ok_or_else(|| bad(cmd, "select a layer"))?;
+                let lang = match string(p, "language").map(|l| l.to_ascii_lowercase()).as_deref() {
+                    None | Some("css") => "css",
+                    Some("swiftui") => "swiftui",
+                    Some("compose") => "compose",
+                    _ => return Err(bad(cmd, "language: css|swiftui|compose")),
+                };
+                let doc = s.doc()?;
+                if !doc.contains(id) {
+                    return Err(bad(cmd, "no such layer"));
+                }
+                let code = anim::for_language(doc, id, lang).unwrap_or_default();
+                Ok(json!({"code": code, "language": lang}))
             }
-            let connected = crate::code_connect::link(doc, id, lang).is_some();
-            let mobile = match get(p, "mobile") {
-                None | Some(serde_json::Value::Null) => None,
-                Some(v) => Some(id_of(v).filter(|m| doc.contains(*m)).ok_or_else(|| bad(cmd, "mobile: the id of a mobile frame"))?),
-            };
-            let code = match (lang, mobile) {
-                (CodeLang::Tailwind, Some(m)) => crate::tailwind::code(doc, id, Some(m)),
-                _ => code_for(doc, id, lang),
-            };
-            let code = match rem {
-                Some(root) if lang.is_web() => px_to_rem(&code, root),
-                _ => code,
-            };
-            Ok(json!({"code": code, "language": lang.id(), "connected": connected}))
-        }
-    )]
+        ),
+    ]
 }
 
 /// Languages the Inspect panel offers.
@@ -764,5 +789,34 @@ mod tests {
                 assert!(!t.starts_with("evil()") && !t.starts_with("more()"), "layer name leaked as code:\n{code}");
             }
         }
+    }
+
+    /// `inspect.motionCode` is the single command-path for Motion Dev Mode code (docs/architecture.md
+    /// "one path for every surface"): it dispatches css | swiftui | compose and returns empty code
+    /// when nothing on the layer animates. Static styling stays in `inspect.code`.
+    #[test]
+    fn motion_code_command_dispatches_languages_and_handles_no_animation() {
+        let mut s = Session::new();
+        let f = id_of(&s.execute("frame.create", &json!({"x": 0, "y": 0, "width": 100, "height": 40, "name": "Card"})).unwrap()["id"]).unwrap();
+        // No animation yet: empty code, but the language echoes back for every target.
+        for lang in ["css", "swiftui", "compose"] {
+            let v = s.execute("inspect.motionCode", &json!({"id": f, "language": lang})).unwrap();
+            assert_eq!(v["language"], lang);
+            assert_eq!(v["code"].as_str().unwrap(), "");
+        }
+        // Add two opacity keyframes through the engine command, then the same path yields CSS.
+        // AnimValue is an externally-tagged enum: Scalar(0.0) serialises as {"Scalar": 0.0}.
+        s.execute("motion.keyframe", &json!({"property": "Opacity", "time": 0, "value": {"Scalar": 0.0}, "ids": [f.0]})).unwrap();
+        s.execute("motion.keyframe", &json!({"property": "Opacity", "time": 1000, "value": {"Scalar": 1.0}, "ids": [f.0]})).unwrap();
+        let css = s.execute("inspect.motionCode", &json!({"id": f, "language": "css"})).unwrap();
+        assert_eq!(css["language"], "css");
+        assert!(css["code"].as_str().unwrap().contains("@keyframes card-opacity {"), "{css}");
+        assert!(css["code"].as_str().unwrap().contains("animation: card-opacity"), "{css}");
+        let sw = s.execute("inspect.motionCode", &json!({"id": f, "language": "swiftui"})).unwrap();
+        assert!(sw["code"].as_str().unwrap().contains(".keyframeAnimator("), "{sw}");
+        let kt = s.execute("inspect.motionCode", &json!({"id": f, "language": "compose"})).unwrap();
+        assert!(kt["code"].as_str().unwrap().contains("keyframes {"), "{kt}");
+        // unknown language is refused at the command boundary
+        assert!(s.execute("inspect.motionCode", &json!({"id": f, "language": "flutter"})).is_err());
     }
 }

@@ -437,6 +437,13 @@ fn patch(last: Frame, doc: &Arc<Document>, page: NodeId, view: &View, px: (i64, 
     if !Arc::ptr_eq(&last.doc, doc) {
         let mut areas = Vec::new();
         for id in doc.changed_ids(&last.doc, MAX_CHANGED)? {
+            // A layer the editor draws itself (`opts.skip`) is not in the image — and `prepare`,
+            // having found the same skip list and view, kept a frame it was missing from too. So
+            // where it was and where it went are both blank: a drag is no damage to the page.
+            // Under a skip in one document only, it was (or is) drawn, and does need a patch.
+            if opts.skip.iter().any(|s| doc.is_ancestor(*s, id) && last.doc.is_ancestor(*s, id)) {
+                continue;
+            }
             // shortcut: an edited pattern source redraws the whole view; patch the patterned layers' areas when that shows up in profiles.
             if in_pattern_source(doc, s, id) || in_pattern_source(&last.doc, &last.sensitive, id) {
                 return None;

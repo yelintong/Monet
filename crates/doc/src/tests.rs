@@ -326,6 +326,50 @@ fn serde_roundtrip_and_repair() {
 }
 
 #[test]
+fn timeline_settings_for_falls_back_from_frame_to_page() {
+    use crate::anim::motion::TimelineSettings;
+    let mut d = Document::new("x");
+    let p = page(&d);
+    let f = d.create(p, NodeKind::Frame, "F", 0.0, 0.0, 100.0, 100.0).unwrap();
+    let page_tl = TimelineSettings { duration_ms: 900, fps: 30, looping: false };
+    let frame_tl = TimelineSettings { duration_ms: 320, fps: 24, looping: true };
+    // Nothing set: both the page and its frame read the default.
+    assert_eq!(d.timeline_settings_for(p), TimelineSettings::default());
+    assert_eq!(d.timeline_settings_for(f), TimelineSettings::default());
+    // Page has settings, frame has none: the frame inherits the page (same container = one group).
+    d.timelines.insert(p, page_tl);
+    assert_eq!(d.timeline_settings_for(p), page_tl);
+    assert_eq!(d.timeline_settings_for(f), page_tl, "frame with no entry falls back to its page");
+    // Frame gets its own settings: it wins for that frame, the page keeps its own.
+    d.timelines.insert(f, frame_tl);
+    assert_eq!(d.timeline_settings_for(f), frame_tl, "frame's own entry wins");
+    assert_eq!(d.timeline_settings_for(p), page_tl, "page entry is untouched");
+}
+
+#[test]
+fn repair_keeps_frame_timelines_and_drops_only_invalid_scopes() {
+    use crate::anim::motion::TimelineSettings;
+    let mut d = Document::new("x");
+    let p = page(&d);
+    let f = d.create(p, NodeKind::Frame, "F", 0.0, 0.0, 100.0, 100.0).unwrap();
+    let rect = d.create(f, NodeKind::Rectangle, "R", 0.0, 0.0, 10.0, 10.0).unwrap();
+    let frame_tl = TimelineSettings { duration_ms: 320, fps: 24, looping: true };
+    let page_tl = TimelineSettings { duration_ms: 900, fps: 30, looping: false };
+    d.timelines.insert(p, page_tl);
+    d.timelines.insert(f, frame_tl);
+    // A plain layer can't own a timeline, and a dangling id must be dropped.
+    d.timelines.insert(rect, page_tl);
+    d.timelines.insert(NodeId(999), page_tl);
+    // Round-trip through JSON mirrors a real load, then repair must not eat frame settings.
+    let mut back: Document = serde_json::from_str(&serde_json::to_string(&d).unwrap()).unwrap();
+    back.repair();
+    assert_eq!(back.timelines.get(&p), Some(&page_tl), "page timeline survives repair");
+    assert_eq!(back.timelines.get(&f), Some(&frame_tl), "frame timeline survives repair");
+    assert!(!back.timelines.contains_key(&rect), "non-scope layer entry dropped");
+    assert!(!back.timelines.contains_key(&NodeId(999)), "dangling entry dropped");
+}
+
+#[test]
 fn repair_drops_cycles_and_repeated_children() {
     let mut d = Document::new("x");
     let p = page(&d);

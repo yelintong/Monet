@@ -15,12 +15,12 @@
 //! The docked Motion timeline: ruler, layer rows, property tracks, keyframe diamonds,
 //! segments, clip bars and the playhead.
 
-use figcraft_i18n::tr;
 use figcraft_doc::anim::motion::{AnimProperty, TimelineSettings};
 use figcraft_doc::{Document, NodeId};
+use figcraft_i18n::tr;
 use gpui::{
-    AnyElement, App, CursorStyle, Div, MouseButton, MouseDownEvent, MouseMoveEvent, Pixels, Point, ScrollDelta, ScrollWheelEvent, SharedString, Stateful, Window, canvas, div,
-    prelude::*, px,
+    AnyElement, App, CursorStyle, Div, MouseButton, MouseDownEvent, MouseMoveEvent, Pixels, Point, ScrollDelta, ScrollWheelEvent, SharedString,
+    Stateful, Window, canvas, div, prelude::*, px,
 };
 
 use crate::canvas::geom::{Align2, Color32, CornerRadius, FontId, Pos2, Rect, Stroke, pos2, regular, semibold, vec2};
@@ -128,18 +128,28 @@ fn prop_of(row: &Row) -> AnimProperty {
     }
 }
 
-/// egui `build_rows` (L141-176): **the selected layers**, clips first, then non-empty tracks.
-fn build_rows(doc: &Document, selection: &[NodeId], ui: &MotionUi, page: NodeId, settings: TimelineSettings) -> Vec<Row> {
+/// Build one group's rows: **every animated layer under `scope`**, clips first, then non-empty
+/// tracks. 一个画框 = 一个动画组（用户 2026-11-12）：框内所有组件共用同一条时间轴、播放头和
+/// 总时长，必须**一起显示**在各自的行上 —— 所以行列表取 `scope` 子树里有动画的节点，而不是
+/// 只看画布选中的那一个。`scope` 由 `scope_of` 算出（选画框内子元素或画框本身 → 最外层画框；
+/// 页级/空选 → 页），已由 host 透传进这里；之前被 `let _ = page` 丢弃，导致只列选中节点。
+///
+/// 并上 `selection` 是刻意的：无动画的选中层也要出现，用户才能在时间轴上给它加第一个
+/// key/clip（inspector::selected_layer 的既有语义，别让空白文档无处下手）。
+fn build_rows(doc: &Document, selection: &[NodeId], ui: &MotionUi, scope: NodeId, settings: TimelineSettings) -> Vec<Row> {
     let dur = settings.duration_ms;
+    // 空选 → 整条时间轴不列任何轨道（用户 2026-11-12）。此前 scope 回退到页面时会把整页所有
+    // 有动画的层都列出来，看着像「什么都没选还满屏动画轨道」。选中任意层/画框才聚合该 scope。
+    if selection.is_empty() {
+        return Vec::new();
+    }
+    // paint order：整棵 scope 子树里，有动画的节点 + 当前选中节点。
+    let animated = crate::motion::animated_nodes(doc, scope);
+    let nodes = doc.subtree(scope).into_iter().filter(|id| animated.contains(id) || selection.contains(id));
     let mut rows = Vec::new();
-    for id in selection.iter().copied().filter(|n| doc.node(*n).is_some()) {
+    for id in nodes {
         let Some(n) = doc.node(id) else { continue };
-        rows.push(Row {
-            node: id,
-            kind: RowKind::Layer,
-            label: n.name.clone(),
-            data: RowData::Layer { span: n.motion.span_ms(dur) },
-        });
+        rows.push(Row { node: id, kind: RowKind::Layer, label: n.name.clone(), data: RowData::Layer { span: n.motion.span_ms(dur) } });
         if ui.folded.contains(&id) {
             continue;
         }
@@ -161,7 +171,6 @@ fn build_rows(doc: &Document, selection: &[NodeId], ui: &MotionUi, page: NodeId,
             });
         }
     }
-    let _ = page;
     rows
 }
 
@@ -258,6 +267,12 @@ thread_local! {
         const { std::cell::RefCell::new((1.0, 0.0, 9999.0, 1000.0 / 60.0, 2000)) };
 }
 
+/// 设置拖拽抓取的关键帧。`apply` 在 `MoveKey` 落地后用它按**真实**时间纠正时间轴的乐观值
+/// （时间轴在输入时先写成请求时间，被夹紧时与真实时间不同）。
+pub fn set_grabbed(k: Option<crate::motion::SelectedKey>) {
+    GRABBED.with(|g| *g.borrow_mut() = k);
+}
+
 /// Push a text label with the same anchoring the canvas painter uses.
 fn text(labels: &mut Vec<Label>, at: Pos2, align: Align2, s: impl Into<String>, font: FontId, color: Color32) {
     let s = s.into();
@@ -285,7 +300,15 @@ fn tick_step(duration_ms: f64) -> f64 {
     let raw = (duration_ms / 6.0).max(1.0);
     let p = 10f64.powf(raw.log10().floor());
     let n = raw / p;
-    let m = if n <= 1.0 { 1.0 } else if n <= 2.0 { 2.0 } else if n <= 5.0 { 5.0 } else { 10.0 };
+    let m = if n <= 1.0 {
+        1.0
+    } else if n <= 2.0 {
+        2.0
+    } else if n <= 5.0 {
+        5.0
+    } else {
+        10.0
+    };
     (m * p).max(10.0)
 }
 
@@ -333,10 +356,7 @@ fn build(
     let rows_top = body_top + 8.0 - ui.scroll_y;
 
     // egui L374-377: a press on the empty lane clears the selection; registered before rows.
-    hits.push(Hit {
-        rect: Rect::from_min_max(pos2(track_x, body_top), pos2(track_right, height)),
-        kind: HitKind::Clear,
-    });
+    hits.push(Hit { rect: Rect::from_min_max(pos2(track_x, body_top), pos2(track_right, height)), kind: HitKind::Clear });
 
     // egui only makes the TOP ruler band seekable (L352), but the drawn playhead line runs the full
     // height of the panel — so the user sees a line but can only grab its top 47px. Make the visible
@@ -345,10 +365,7 @@ fn build(
     // lane around the line. Guarded to the on-screen track so it never steals clicks from the
     // left-column row controls when the playhead is scrolled out of view.
     if playhead_x >= track_x && playhead_x <= track_right {
-        hits.push(Hit {
-            rect: Rect::from_min_max(pos2(playhead_x - 6.0, playhead_top), pos2(playhead_x + 6.0, height)),
-            kind: HitKind::Seek,
-        });
+        hits.push(Hit { rect: Rect::from_min_max(pos2(playhead_x - 6.0, playhead_top), pos2(playhead_x + 6.0, height)), kind: HitKind::Seek });
     }
 
     // egui L429-436: past the duration the track area is shaded.
@@ -374,8 +391,7 @@ fn build(
         let row_hovered = hover.is_some_and(|p| rect.contains(p));
         // egui L450-491: selected layer = deep block, its children = lighter block.
         let layer_sel = ui.selection.contains(&SelItem::Layer(row.node));
-        let track_sel = matches!(row.data, RowData::Property { .. })
-            && ui.selection.contains(&SelItem::Track(row.node, prop_of(row)));
+        let track_sel = matches!(row.data, RowData::Property { .. }) && ui.selection.contains(&SelItem::Track(row.node, prop_of(row)));
         let clip_sel = match &row.data {
             RowData::Clip { id, .. } => ui.selection.contains(&SelItem::Clip(row.node, *id)),
             _ => false,
@@ -383,10 +399,18 @@ fn build(
         let bg = match &row.data {
             RowData::Layer { .. } => layer_sel.then_some(t.selected_row),
             RowData::Property { .. } => {
-                if layer_sel { Some(t.selected_row_child) } else { track_sel.then_some(t.selected_row) }
+                if layer_sel {
+                    Some(t.selected_row_child)
+                } else {
+                    track_sel.then_some(t.selected_row)
+                }
             }
             RowData::Clip { .. } => {
-                if layer_sel { Some(t.selected_row_child) } else { clip_sel.then_some(t.selected_row) }
+                if layer_sel {
+                    Some(t.selected_row_child)
+                } else {
+                    clip_sel.then_some(t.selected_row)
+                }
             }
         };
         if let Some(bg) = bg {
@@ -408,18 +432,8 @@ fn build(
                 ));
                 hits.push(Hit { rect: Rect::from_center_size(c, vec2(ROW_ICON, ROW_ICON)), kind: HitKind::Fold(row.node) });
                 // egui L507-510: the row click covers the LEFT column only.
-                hits.push(Hit {
-                    rect: Rect::from_min_max(pos2(0.0, y), pos2(LEFT_W, y + ROW_H)),
-                    kind: HitKind::Layer(row.node),
-                });
-                text(
-                    &mut labels,
-                    pos2(name_x, cy),
-                    Align2::LEFT_CENTER,
-                    elide(&row.label, 28),
-                    semibold(10.5),
-                    t.text,
-                );
+                hits.push(Hit { rect: Rect::from_min_max(pos2(0.0, y), pos2(LEFT_W, y + ROW_H)), kind: HitKind::Layer(row.node) });
+                text(&mut labels, pos2(name_x, cy), Align2::LEFT_CENTER, elide(&row.label, 28), semibold(10.5), t.text);
                 // egui L636-641: the eye only shows while the row is hovered（悬停才出现）。
                 if row_hovered {
                     icons.push((eye, if doc.node(row.node).is_some_and(|n| n.visible) { Icon::Eye } else { Icon::EyeOff }, t.text_secondary));
@@ -439,20 +453,30 @@ fn build(
                     }
                     let edge = EDGE_HIT.min((x1 - x0).max(1.0) / 2.0);
                     hits.push(Hit { rect: bar, kind: HitKind::LayerEdge(row.node, ClipEdge::Move) });
-                    hits.push(Hit { rect: Rect::from_min_max(pos2(x0, bar.min.y), pos2(x0 + edge, bar.max.y)), kind: HitKind::LayerEdge(row.node, ClipEdge::TrimStart) });
-                    hits.push(Hit { rect: Rect::from_min_max(pos2(x1 - edge, bar.min.y), pos2(x1, bar.max.y)), kind: HitKind::LayerEdge(row.node, ClipEdge::TrimEnd) });
+                    hits.push(Hit {
+                        rect: Rect::from_min_max(pos2(x0, bar.min.y), pos2(x0 + edge, bar.max.y)),
+                        kind: HitKind::LayerEdge(row.node, ClipEdge::TrimStart),
+                    });
+                    hits.push(Hit {
+                        rect: Rect::from_min_max(pos2(x1 - edge, bar.min.y), pos2(x1, bar.max.y)),
+                        kind: HitKind::LayerEdge(row.node, ClipEdge::TrimEnd),
+                    });
                 }
             }
             RowData::Property { keys, visible } => {
                 // 命中优先级：整行「选轨道 / 清空」必须**先**入表（`hit_at` 取最后一个匹配），
                 // 否则它会把后面更具体的关键帧、segment 命中全遮住 —— 那正是「菱形拖不动、
                 // 两帧之间的线选不中」的根因。egui 里 `rresp` 也是先创建、seg/key 后创建。
-                hits.push(Hit {
-                    rect: Rect::from_min_max(pos2(0.0, y), pos2(LEFT_W, y + ROW_H)),
-                    kind: HitKind::Track(row.node, prop_of(row)),
-                });
+                hits.push(Hit { rect: Rect::from_min_max(pos2(0.0, y), pos2(LEFT_W, y + ROW_H)), kind: HitKind::Track(row.node, prop_of(row)) });
                 hits.push(Hit { rect, kind: HitKind::Track(row.node, prop_of(row)) });
-                text(&mut labels, pos2(name_x, cy), Align2::LEFT_CENTER, elide(&row.label, 9), regular(10.0), if *visible { t.text_secondary } else { t.text_tertiary });
+                text(
+                    &mut labels,
+                    pos2(name_x, cy),
+                    Align2::LEFT_CENTER,
+                    elide(&row.label, 9),
+                    regular(10.0),
+                    if *visible { t.text_secondary } else { t.text_tertiary },
+                );
                 // egui L600-631: prev / diamond / next at +95 / +109 / +123.
                 let pr = Rect::from_center_size(pos2(95.0, cy), vec2(14.0, ROW_H));
                 let dr = Rect::from_center_size(pos2(109.0, cy), vec2(14.0, ROW_H));
@@ -464,13 +488,23 @@ fn build(
                 let next_col = if next.is_some() { t.text_secondary } else { t.text_tertiary };
                 icons.push((Rect::from_center_size(pr.center(), vec2(10.0, 10.0)), Icon::ChevronLeft, prev_col));
                 icons.push((Rect::from_center_size(nr.center(), vec2(10.0, 10.0)), Icon::ChevronRight, next_col));
-                if let Some(v) = prev { hits.push(Hit { rect: pr, kind: HitKind::SeekKey(v) }); }
-                if let Some(v) = next { hits.push(Hit { rect: nr, kind: HitKind::SeekKey(v) }); }
+                if let Some(v) = prev {
+                    hits.push(Hit { rect: pr, kind: HitKind::SeekKey(v) });
+                }
+                if let Some(v) = next {
+                    hits.push(Hit { rect: nr, kind: HitKind::SeekKey(v) });
+                }
                 hits.push(Hit { rect: dr, kind: HitKind::ToggleKey(row.node, prop_of(row)) });
                 let has_keys = !keys.is_empty();
                 // egui L617：没打过关键帧的轨道，鼠标悬到菱形上变亮（表示可点）。
                 let d_hover = hover.is_some_and(|p| dr.contains(p));
-                let dcol = if has_keys { t.accent } else if d_hover { t.icon } else { t.text_secondary };
+                let dcol = if has_keys {
+                    t.accent
+                } else if d_hover {
+                    t.icon
+                } else {
+                    t.text_secondary
+                };
                 let on_key = keys.contains(&now);
                 let dc = dr.center();
                 p.add_shape(
@@ -504,9 +538,7 @@ fn build(
                     let seg_sel = ui.selection.contains(&SelItem::Segment(row.node, prop, w[0]));
                     // 悬停到两帧之间那条线：加粗并提亮（egui 没有这层反馈，但这里明显更需要，
                     // 否则那条细线看起来不可选）。
-                    let seg_hover = hover.is_some_and(|p| {
-                        p.x >= xa - 2.0 && p.x <= xb + 2.0 && (p.y - cy).abs() <= 6.0
-                    });
+                    let seg_hover = hover.is_some_and(|p| p.x >= xa - 2.0 && p.x <= xb + 2.0 && (p.y - cy).abs() <= 6.0);
                     let line = if seg_sel {
                         stroke(t.accent, 2.0)
                     } else if seg_hover {
@@ -521,33 +553,28 @@ fn build(
                         p.rect_filled(gr, CornerRadius::same(3), t.panel);
                         p.rect_stroke(gr, CornerRadius::same(3), stroke(t.accent, 1.0), crate::canvas::geom::StrokeKind::Inside);
                         // egui L687-688 / mini_curve: 该段的 easing 采样折线画在徽标里。
-                        if let Some(ease) = doc.node(row.node)
-                            .and_then(|n| n.motion.track(prop))
-                            .and_then(|tr| tr.key_at(w[0]))
-                            .map(|k| k.easing)
-                        {
+                        if let Some(ease) = doc.node(row.node).and_then(|n| n.motion.track(prop)).and_then(|tr| tr.key_at(w[0])).map(|k| k.easing) {
                             let (lo, hi) = ease.value_range();
                             let span = (hi - lo).abs().max(1e-6);
-                            let pts: Vec<Pos2> = ease.sample(10).iter().map(|q| {
-                                let x = gr.min.x + 2.0 + q[0].clamp(0.0, 1.0) * (gr.width() - 4.0);
-                                let y = gr.max.y - 2.0 - ((q[1] - lo) / span).clamp(0.0, 1.0) * (gr.height() - 4.0);
-                                pos2(x, y)
-                            }).collect();
+                            let pts: Vec<Pos2> = ease
+                                .sample(10)
+                                .iter()
+                                .map(|q| {
+                                    let x = gr.min.x + 2.0 + q[0].clamp(0.0, 1.0) * (gr.width() - 4.0);
+                                    let y = gr.max.y - 2.0 - ((q[1] - lo) / span).clamp(0.0, 1.0) * (gr.height() - 4.0);
+                                    pos2(x, y)
+                                })
+                                .collect();
                             p.add_shape(pts, false, Color32::TRANSPARENT, stroke(t.text, 1.0));
                         }
                     }
-                    hits.push(Hit {
-                        rect: Rect::from_min_max(pos2(xa, cy - 5.0), pos2(xb, cy + 5.0)),
-                        kind: HitKind::Segment(row.node, prop, w[0]),
-                    });
+                    hits.push(Hit { rect: Rect::from_min_max(pos2(xa, cy - 5.0), pos2(xb, cy + 5.0)), kind: HitKind::Segment(row.node, prop, w[0]) });
                 }
                 // egui L697-730: keyframe diamonds, hollow unless selected.
                 for (ki, &time) in keys.iter().enumerate() {
                     let c = pos2(x_of(time as f64), cy);
                     let picked = ui.selection.contains(&SelItem::Key(row.node, prop, time));
-                    let k_hover = hover.is_some_and(|p| {
-                        (p.x - c.x).abs() <= KF_R + 3.0 && (p.y - cy).abs() <= KF_R + 3.0
-                    });
+                    let k_hover = hover.is_some_and(|p| (p.x - c.x).abs() <= KF_R + 3.0 && (p.y - cy).abs() <= KF_R + 3.0);
                     let fill = if picked {
                         t.accent.gamma_multiply(alpha)
                     } else if k_hover {
@@ -591,8 +618,14 @@ fn build(
                 text(&mut labels, bar.center(), Align2::CENTER_CENTER, elide(kind, 8), regular(9.0), t.accent_on);
                 let edge = EDGE_HIT.min((b - a).max(1.0) / 2.0);
                 hits.push(Hit { rect: bar, kind: HitKind::ClipEdge(row.node, *id, ClipEdge::Move) });
-                hits.push(Hit { rect: Rect::from_min_max(pos2(a, bar.min.y), pos2(a + edge, bar.max.y)), kind: HitKind::ClipEdge(row.node, *id, ClipEdge::TrimStart) });
-                hits.push(Hit { rect: Rect::from_min_max(pos2(b - edge, bar.min.y), pos2(b, bar.max.y)), kind: HitKind::ClipEdge(row.node, *id, ClipEdge::TrimEnd) });
+                hits.push(Hit {
+                    rect: Rect::from_min_max(pos2(a, bar.min.y), pos2(a + edge, bar.max.y)),
+                    kind: HitKind::ClipEdge(row.node, *id, ClipEdge::TrimStart),
+                });
+                hits.push(Hit {
+                    rect: Rect::from_min_max(pos2(b - edge, bar.min.y), pos2(b, bar.max.y)),
+                    kind: HitKind::ClipEdge(row.node, *id, ClipEdge::TrimEnd),
+                });
             }
         }
     }
@@ -601,10 +634,7 @@ fn build(
     // spans the WHOLE body — this is the "line" the user drags to retime the timeline.
     // Registered after the rows so it wins over a row's own press inside that band.
     let grab_x = x_of(settings.duration_ms as f64);
-    hits.push(Hit {
-        rect: Rect::from_min_max(pos2(grab_x - 8.0, body_top), pos2(grab_x + 8.0, height)),
-        kind: HitKind::Duration,
-    });
+    hits.push(Hit { rect: Rect::from_min_max(pos2(grab_x - 8.0, body_top), pos2(grab_x + 8.0, height)), kind: HitKind::Duration });
 
     // egui L825: vertical divider after the left column, over the whole body.
     p.line_segment([pos2(track_x, body_top), pos2(track_x, height)], stroke(t.border, 1.0));
@@ -676,7 +706,13 @@ fn build(
     let dur_ms = settings.duration_ms.max(1) as f64;
     let step = tick_step(dur_ms).max(1.0);
     let step_u = step as u32;
-    let minor = if step_u % 5 == 0 { step_u / 5 } else if step_u % 2 == 0 { step_u / 2 } else { step_u };
+    let minor = if step_u % 5 == 0 {
+        step_u / 5
+    } else if step_u % 2 == 0 {
+        step_u / 2
+    } else {
+        step_u
+    };
     let base = ruler.max.y;
     let mut tick = 0u32;
     let end = dur_ms + step + (scroll_x.max(0.0) / scale) as f64;
@@ -795,46 +831,40 @@ pub fn bar(
     let cursor_hits = hits.clone();
     let cursor_w = width;
     let cursor_h = h;
-    let shapes: AnyElement = canvas(
-        |_, _, _| (),
-        {
-            let bar_origin = bar_origin.clone();
-            let ch = cursor_hits;
-            let cw = cursor_w;
-            let chh = cursor_h;
-            move |b, _, window, _cx| {
-                *bar_origin.borrow_mut() = b.origin;
-                BAR_ORIGIN.with(|o| *o.borrow_mut() = b.origin);
-                // Cursor feedback (egui L391-393 / L549-552 / L782-785 set `set_cursor_icon` for the
-                // draggable bits). GPUI has no per-element cursor, so resolve it per frame from the
-                // live pointer against the hit table during paint. Only when the pointer is actually
-                // over the bar — when it leaves, we push nothing so the rest of the window keeps its
-                // own cursors (e.g. the editable time boxes' text cursor).
-                if drag_active() {
-                    window.set_window_cursor_style(CursorStyle::ClosedHand);
-                } else {
-                    let mp = window.mouse_position();
-                    let local = pos2(
-                        f32::from(mp.x) - f32::from(b.origin.x),
-                        f32::from(mp.y) - f32::from(b.origin.y),
-                    );
-                    if local.x >= 0.0 && local.x <= cw && local.y >= 0.0 && local.y <= chh {
-                        // 顶边 4px 高度手柄的命中覆盖条落在 local y ∈ [0, 1.5]（其余 1.5px
-                        // 溢出到画布侧）。覆盖条用 hitbox 级 ResizeUpDown，但整窗级 cursor
-                        // 优先级更高，会把 hint 盖成 seek / clip 的光标 —— 这里在热区带内
-                        // 也显式登记 ResizeUpDown，保证与上方的覆盖条一致。
-                        if local.y <= crate::panels::HANDLE_HIT_W / 2.0 - crate::panels::HANDLE_W / 2.0 {
-                            window.set_window_cursor_style(CursorStyle::ResizeUpDown);
-                        } else if let Some(hit) = hit_at(&ch, local) {
-                            window.set_window_cursor_style(cursor_for(hit.kind));
-                        }
+    let shapes: AnyElement = canvas(|_, _, _| (), {
+        let bar_origin = bar_origin.clone();
+        let ch = cursor_hits;
+        let cw = cursor_w;
+        let chh = cursor_h;
+        move |b, _, window, _cx| {
+            *bar_origin.borrow_mut() = b.origin;
+            BAR_ORIGIN.with(|o| *o.borrow_mut() = b.origin);
+            // Cursor feedback (egui L391-393 / L549-552 / L782-785 set `set_cursor_icon` for the
+            // draggable bits). GPUI has no per-element cursor, so resolve it per frame from the
+            // live pointer against the hit table during paint. Only when the pointer is actually
+            // over the bar — when it leaves, we push nothing so the rest of the window keeps its
+            // own cursors (e.g. the editable time boxes' text cursor).
+            if drag_active() {
+                window.set_window_cursor_style(CursorStyle::ClosedHand);
+            } else {
+                let mp = window.mouse_position();
+                let local = pos2(f32::from(mp.x) - f32::from(b.origin.x), f32::from(mp.y) - f32::from(b.origin.y));
+                if local.x >= 0.0 && local.x <= cw && local.y >= 0.0 && local.y <= chh {
+                    // 顶边 4px 高度手柄的命中覆盖条落在 local y ∈ [0, 1.5]（其余 1.5px
+                    // 溢出到画布侧）。覆盖条用 hitbox 级 ResizeUpDown，但整窗级 cursor
+                    // 优先级更高，会把 hint 盖成 seek / clip 的光标 —— 这里在热区带内
+                    // 也显式登记 ResizeUpDown，保证与上方的覆盖条一致。
+                    if local.y <= crate::panels::HANDLE_HIT_W / 2.0 - crate::panels::HANDLE_W / 2.0 {
+                        window.set_window_cursor_style(CursorStyle::ResizeUpDown);
+                    } else if let Some(hit) = hit_at(&ch, local) {
+                        window.set_window_cursor_style(cursor_for(hit.kind));
                     }
                 }
-                let p = Painter { clip: Rect::NOTHING, ops: ops.clone(), labels: Vec::new() };
-                p.paint(window, pos2(f32::from(b.origin.x), f32::from(b.origin.y)));
             }
-        },
-    )
+            let p = Painter { clip: Rect::NOTHING, ops: ops.clone(), labels: Vec::new() };
+            p.paint(window, pos2(f32::from(b.origin.x), f32::from(b.origin.y)));
+        }
+    })
     .absolute()
     .size_full()
     .into_any_element();
@@ -860,33 +890,21 @@ pub fn bar(
         // `border_r_1`/`border_l_1` 同一套做法）。hover 或拖拽中变强调色，状态由顶边 4px
         // 覆盖条的 on_hover 写入 `resize_drag::hovered`。
         .border_t_1()
-        .border_color(rgba(if crate::resize_drag::hovered(crate::resize_drag::Edge::Bottom)
-            || crate::resize_drag::drag_active(crate::resize_drag::Handle::BottomTimeline)
-        {
-            t.accent
-        } else {
-            t.border
-        }))
+        .border_color(rgba(
+            if crate::resize_drag::hovered(crate::resize_drag::Edge::Bottom)
+                || crate::resize_drag::drag_active(crate::resize_drag::Handle::BottomTimeline)
+            {
+                t.accent
+            } else {
+                t.border
+            },
+        ))
         .child(shapes)
         .children(icon_layers(&icons))
         .children(text_layers(&labels))
         // The two editable time boxes (egui `time_field`), absolutely placed in the header.
-        .child(
-            div()
-                .absolute()
-                .left(px(49.0))
-                .top(px(11.5))
-                .w(px(38.0))
-                .child(times.cur.clone()),
-        )
-        .child(
-            div()
-                .absolute()
-                .left(px(89.0))
-                .top(px(11.5))
-                .w(px(38.0))
-                .child(times.dur.clone()),
-        )
+        .child(div().absolute().left(px(49.0)).top(px(11.5)).w(px(38.0)).child(times.cur.clone()))
+        .child(div().absolute().left(px(89.0)).top(px(11.5)).w(px(38.0)).child(times.dur.clone()))
         // 顶边高度手柄：4px 命中覆盖条（顶边描边为中心，上下各 1.5px），absolute 且
         // 后绘制，才能压住上方画布那 1.5px。latch 进与左面板共用的 `resize_drag` 状态机；
         // 整窗 move/up 由根视图 + 窗口级接管，指针移出 bar 仍连续。
@@ -950,6 +968,21 @@ pub fn bar(
                 // 顶边高度手柄已移到 bar div 上那条 4px GPUI 覆盖条（latch 进 resize_drag），
                 // 不再走这条 canvas 命中表。`double` 仍传给 `begin_drag` 供关键帧等双击用。
                 begin_drag(&q_down, hit, pos, scale, looping, scrolling_x, &drag_doc, drag_duration, e.modifiers.shift, double);
+            }
+        })
+        // 整帧复制（用户 2026-11-12 D2）：右键时间轴某一时刻，把该时刻所有 track 的真实 key
+        // （含 easing）复制到播放头。走 engine `motion.keyframeCopy`（单步 undo、只读门控）。
+        // 只响应轨道/刻度区（x ≥ LEFT_W），左侧图层列的右键不碰。
+        .on_mouse_down(MouseButton::Right, {
+            let q = queue.clone();
+            let bo = bar_origin.clone();
+            move |e: &MouseDownEvent, _window, cx: &mut App| {
+                cx.stop_propagation();
+                let o = *bo.borrow();
+                let local_x = f32::from(e.position.x) - f32::from(o.x);
+                if local_x >= LEFT_W {
+                    q.push(Act::CopyFrame { from: time_at(local_x, scale, scrolling_x) });
+                }
             }
         })
         // 只在指针于时间轴内移动时请求一帧（悬停反馈按实时指针位置绘制）。拖拽本身仍由根视图
@@ -1097,23 +1130,21 @@ fn dispatch_down(
             GRABBED.with(|g| *g.borrow_mut() = Some(crate::motion::SelectedKey { node: n, property: p, time_ms: t }));
         }
         HitKind::Segment(n, p, t) => {
-            // egui L700-702：点中两帧之间的线就是「选中这一段」——不再顺带把起点关键帧也选上。
+            // 点中两帧之间的线 = 选中这一段，并弹出**独立的缓动浮窗**（只 Curve/Spring 曲线，
+            // 编辑 `EaseTarget::Key`（段起点帧的 easing），不碰 clip 的 preset 字段）。
+            // 用户 2026-11-12：帧间线的设置是「单独的」，但**必须能弹窗**——前一版误把整段删掉、
+            // 导致曲线没法设，这里用独立状态 `segment_ease` 恢复，且与 clip 窗互斥。
             let item = SelItem::Segment(n, p, t);
             if shift {
                 q.push(Act::Click(item, true));
             } else {
                 q.push(Act::EnsureSelected(item));
             }
-            // The segment is also the clip's own span: pressing it opens that clip's settings in
-            // the same popover the clip's edges use, so the animation can be edited from the line
-            // between two keyframes instead of only from its handles.
-            if let Some(clip) = doc.node(n).and_then(|node| {
-                node.motion.clips.iter().find(|c| {
-                    c.kind.properties().contains(&p) && t >= c.delay_ms && t <= c.delay_ms + c.duration_ms
-                })
-            }) {
-                q.push(Act::OpenClipPopover(n, clip.id));
-            }
+            // 锚点：卡片顶边与点击处齐高、右缘贴右栏左缘（x 由 panel 算）。`pos` 是 bar 局部
+            // 坐标，转成窗口 y 再记，否则卡片会跑到时间轴上方。
+            let bo = BAR_ORIGIN.with(|o| *o.borrow());
+            q.push(Act::SetClipAnchorY(pos.y + f32::from(bo.y)));
+            q.push(Act::OpenSegmentEase(crate::motion::SelectedKey { node: n, property: p, time_ms: t }));
         }
         HitKind::ClipEdge(node, id, edge) => {
             q.push(Act::Click(SelItem::Clip(node, id), shift));
@@ -1340,6 +1371,28 @@ mod tests {
         sample_doc()
     }
 
+    /// 空选 → 时间轴不列任何动画轨道（用户 2026-11-12）。此前空选时 scope 回退到页面，
+    /// `animated_nodes` 会把整页所有有动画的层都列出来，看着像「什么都没选还满屏轨道」。
+    #[test]
+    fn empty_selection_lists_no_tracks() {
+        use figcraft_doc::NodeKind;
+        use figcraft_doc::anim::motion::{AnimProperty, AnimValue};
+
+        let mut d = Document::new("empty-selection-tracks");
+        let page = d.first_page().unwrap();
+        let frame = d.create(page, NodeKind::Frame, "Card", 0.0, 0.0, 100.0, 100.0).unwrap();
+        let dot = d.create(frame, NodeKind::Rectangle, "Dot", 2.0, 2.0, 8.0, 8.0).unwrap();
+        if let Some(n) = d.node_mut(dot) {
+            let tr = n.motion.ensure_track(AnimProperty::Position);
+            tr.set_key(0, AnimValue::Vec2(figcraft_geom::Vec2::new(0.0, 0.0)), None);
+            tr.set_key(500, AnimValue::Vec2(figcraft_geom::Vec2::new(10.0, 0.0)), None);
+        }
+        let page_scope = page; // 空选时 scope_of 回退到页面。
+        let settings = TimelineSettings { duration_ms: 1000, fps: 30, looping: false };
+        assert!(build_rows(&d, &[], &MotionUi::default(), page_scope, settings).is_empty(), "空选不列轨道");
+        assert!(!build_rows(&d, &[dot], &MotionUi::default(), frame, settings).is_empty(), "选中层仍要列出轨道");
+    }
+
     /// Regression test for the "handles won't drag at all" bug. The root cause was that the
     /// drag state (`DRAG`/`GRABBED`) was stored in a `Rc<RefCell<_>>` created fresh inside
     /// `bar()` every frame. `q.push` triggers a wake → re-render → `bar()` runs again → a brand
@@ -1371,14 +1424,8 @@ mod tests {
         let q_move = Queue::new(Rc::new(|| {}));
         route_drag_move(&q_move, 1.0, 0.0, pos2(360.0, 10.0));
         let acts = q_move.drain();
-        assert!(
-            acts.iter().any(|a| matches!(a, Act::Seek(_))),
-            "a move must actually push an Act::Seek, otherwise it is the 'won't drag' bug"
-        );
-        assert!(
-            acts.iter().any(|a| matches!(a, Act::SetScrubbing(true))),
-            "拖播放头要把 scrubbing 打开（画布要跟着预览）"
-        );
+        assert!(acts.iter().any(|a| matches!(a, Act::Seek(_))), "a move must actually push an Act::Seek, otherwise it is the 'won't drag' bug");
+        assert!(acts.iter().any(|a| matches!(a, Act::SetScrubbing(true))), "拖播放头要把 scrubbing 打开（画布要跟着预览）");
     }
 
     /// The duration handle is a drag (latches DRAG = Duration) and, after a simulated per-frame
@@ -1423,10 +1470,7 @@ mod tests {
         BAR_ORIGIN.with(|o| *o.borrow_mut() = Point::new(px(0.0), px(600.0)));
         GEOM.with(|g| *g.borrow_mut() = (1.0, 0.0, 1000.0, 1000.0 / 60.0, 2000));
         let q = Queue::new(Rc::new(|| {}));
-        let hits = vec![Hit {
-            rect: Rect { min: pos2(-9999.0, -9999.0), max: pos2(9999.0, 9999.0) },
-            kind: HitKind::Duration,
-        }];
+        let hits = vec![Hit { rect: Rect { min: pos2(-9999.0, -9999.0), max: pos2(9999.0, 9999.0) }, kind: HitKind::Duration }];
         // Press at window (420, 610) → bar-local (420, 10): latches DRAG = Duration.
         begin_drag(&q, hit_at(&hits, pos2(420.0, 10.0)), pos2(420.0, 10.0), 1.0, false, 0.0, &doc(), 2000, false, false);
         assert!(drag_active(), "a duration press must latch a drag");
@@ -1435,24 +1479,18 @@ mod tests {
         let qm = Queue::new(Rc::new(|| {}));
         route_global_move(&qm, Point::new(px(450.0), px(540.0)));
         let acts = qm.drain();
-        assert!(
-            matches!(acts.first(), Some(Act::SetDragDuration(_))),
-            "a duration drag must keep routing even when the pointer leaves the bar"
-        );
+        assert!(matches!(acts.first(), Some(Act::SetDragDuration(_))), "a duration drag must keep routing even when the pointer leaves the bar");
     }
 
     /// 一份带 Position 轨道、两个关键帧（0ms / 500ms）的文档。
     fn doc_with_keys() -> (Document, NodeId) {
         use figcraft_engine::Session;
         let mut s = Session::with_document(Document::new("timeline-test"));
-        let v = s
-            .execute("shape.rectangle", &serde_json::json!({ "x": 0.0, "y": 0.0, "width": 100.0, "height": 100.0 }))
-            .expect("rect");
+        let v = s.execute("shape.rectangle", &serde_json::json!({ "x": 0.0, "y": 0.0, "width": 100.0, "height": 100.0 })).expect("rect");
         let id: NodeId = serde_json::from_value(v["id"].clone()).expect("id");
         s.execute("select.set", &serde_json::json!({ "ids": [id] })).expect("select");
         for t in [0u32, 500] {
-            s.execute("motion.keyframe", &serde_json::json!({ "property": tr("Position"), "time": t }))
-                .expect("keyframe");
+            s.execute("motion.keyframe", &serde_json::json!({ "property": tr("Position"), "time": t })).expect("keyframe");
         }
         let doc = s.doc().expect("doc").clone();
         assert!(doc.node(id).is_some_and(|n| !n.motion.tracks.is_empty()), "测试文档应有轨道");
@@ -1565,10 +1603,13 @@ mod tests {
             _ => None,
         });
         assert!(scrolled.is_some_and(|x| x >= 200.0), "向右拖必须继续推进滚动");
-        let ms = acts.iter().find_map(|a| match a {
-            Act::SetDragDuration(v) => *v,
-            _ => None,
-        }).expect("必须推 SetDragDuration");
+        let ms = acts
+            .iter()
+            .find_map(|a| match a {
+                Act::SetDragDuration(v) => *v,
+                _ => None,
+            })
+            .expect("必须推 SetDragDuration");
         let expect = ((g.width - LEFT_W - TIME_PAD + 200.0) / g.scale) as f32;
         assert!((ms as f32 - expect).abs() < g.settings.frame_ms() * 2.0, "时长要按同一个 scroll 换算：期望≈{expect:.0}ms，实得 {ms}ms");
         assert!(ms > g.settings.duration_ms, "在右端往外拖应该变长");
@@ -1592,10 +1633,14 @@ mod tests {
         for dx in [700.0f32, 600.0, 500.0] {
             let qm = Queue::new(Rc::new(|| {}));
             route_drag_move(&qm, g.scale, 0.0, pos2(dx, g.key_y));
-            let ms = qm.drain().into_iter().find_map(|a| match a {
-                Act::SetDragDuration(v) => v,
-                _ => None,
-            }).expect("向左也要推时长");
+            let ms = qm
+                .drain()
+                .into_iter()
+                .find_map(|a| match a {
+                    Act::SetDragDuration(v) => v,
+                    _ => None,
+                })
+                .expect("向左也要推时长");
             assert!((ms as f32) < prev, "指针左移时长要变短（{prev} → {ms}）");
             prev = ms as f32;
         }
@@ -1616,7 +1661,76 @@ mod tests {
         let eye = hit_at(&with_hover, pos2(LEFT_W - 15.0, layer_y)).map(|h| h.kind);
         assert!(matches!(eye, Some(HitKind::Visible(id)) if id == g.id), "图层行的眼睛命中区要一直在，实得 {eye:?}");
         let track_eye = hit_at(&with_hover, pos2(LEFT_W - 15.0, g.key_y)).map(|h| h.kind);
-        assert!(matches!(track_eye, Some(HitKind::TrackVisible(id, AnimProperty::Position)) if id == g.id), "轨道的眼睛命中区也要在，实得 {track_eye:?}");
+        assert!(
+            matches!(track_eye, Some(HitKind::TrackVisible(id, AnimProperty::Position)) if id == g.id),
+            "轨道的眼睛命中区也要在，实得 {track_eye:?}"
+        );
+    }
+
+    // ---- 画框 = 一个动画组：选中框内任意层/框本身，都要列出整框所有有动画节点的轨道 ----
+
+    /// 造一份测试文档：Frame 1 内含 Blue / Red，页级另有 Seam Left。
+    /// 给 Blue、Red、Seam Left 各加一条带关键帧的 Opacity 轨道；Frame 1 自身与页级容器无动画。
+    fn framed_doc_with_three_animated() -> (Document, NodeId, NodeId, NodeId, NodeId, NodeId) {
+        use figcraft_doc::anim::motion::{AnimValue, Ease};
+        let mut doc = sample_doc();
+        let page = doc.pages[0];
+        let find = |doc: &Document, name: &str| -> NodeId {
+            doc.subtree(page).into_iter().find(|id| doc.node(*id).is_some_and(|n| n.name == name)).unwrap()
+        };
+        let frame = find(&doc, "Frame 1");
+        let blue = find(&doc, "Blue");
+        let red = find(&doc, "Red");
+        let seam = find(&doc, "Seam Left");
+        for id in [blue, red, seam] {
+            let tr = doc.node_mut(id).unwrap().motion.ensure_track(AnimProperty::Opacity);
+            tr.set_key(0, AnimValue::Scalar(1.0), Some(Ease::Linear));
+            tr.set_key(500, AnimValue::Scalar(0.3), None);
+        }
+        (doc, page, frame, blue, red, seam)
+    }
+
+    /// Layer 行 = 顶层节点行（RowKind::Layer），每个有动画节点恰好一行。
+    fn layer_nodes(rows: &[Row]) -> Vec<NodeId> {
+        rows.iter().filter(|r| matches!(r.kind, RowKind::Layer)).map(|r| r.node).collect()
+    }
+
+    #[test]
+    fn selecting_a_child_lists_every_animated_layer_in_the_frame() {
+        let (doc, _page, _frame, blue, red, seam) = framed_doc_with_three_animated();
+        let ui = MotionUi::default();
+        let settings = settings_of(&doc, _frame);
+        // 只选中 Blue（框内一个子元素），作用域 = Frame 1。
+        let rows = build_rows(&doc, &[blue], &ui, _frame, settings);
+        let layers = layer_nodes(&rows);
+        assert!(layers.contains(&blue), "选中的 Blue 必须在");
+        assert!(layers.contains(&red), "同框另一个有动画的 Red 必须一起显示（bug 修复点）");
+        assert!(!layers.contains(&seam), "框外的 Seam Left 不属于这个动画组");
+        assert_eq!(layers.iter().filter(|id| **id == blue || **id == red).count(), 2, "每个节点恰好一行");
+    }
+
+    #[test]
+    fn selecting_the_frame_itself_lists_all_its_animated_children() {
+        let (doc, _page, frame, blue, red, seam) = framed_doc_with_three_animated();
+        let ui = MotionUi::default();
+        let settings = settings_of(&doc, frame);
+        // 直接选中画框本身 → 同样列出框内所有有动画子节点。
+        let layers = layer_nodes(&build_rows(&doc, &[frame], &ui, frame, settings));
+        assert!(layers.contains(&blue) && layers.contains(&red), "选画框本身也要一起显示框内所有动画层");
+        assert!(!layers.contains(&seam), "框外节点仍不混入");
+    }
+
+    #[test]
+    fn a_plain_selected_layer_joins_the_animated_group_without_losing_others() {
+        use figcraft_doc::NodeKind;
+        let (mut doc, _page, frame, blue, red, _seam) = framed_doc_with_three_animated();
+        // 在框内再造一个**没有动画**的层并选中它：它要出现（好加第一个 key），
+        // 同时不能挤掉 Blue / Red 的轨道。
+        let plain = doc.create(frame, NodeKind::Rectangle, "Plain", 0.0, 0.0, 10.0, 10.0).unwrap();
+        let ui = MotionUi::default();
+        let settings = settings_of(&doc, frame);
+        let layers = layer_nodes(&build_rows(&doc, &[plain], &ui, frame, settings));
+        assert!(layers.contains(&blue) && layers.contains(&red), "无动画层被选中时，其它动画层仍要一起显示");
+        assert!(layers.contains(&plain), "被选中的无动画层也要出现，才能加第一个关键帧");
     }
 }
-

@@ -1,19 +1,19 @@
 // ============================================================================
 // Motion inspector（右栏）——`ui-egui/src/motion/inspector.rs` 的 GPUI 移植。
 //
-// ⛔ 统一网格：每一行都只用 `field_row` / `field_row_full` / `sublabel_row` 构造，交给
-//    `PanelSection::child`。本文件**没有**任何 `div().flex().flex_row()` 手排的行，也不手算列宽。
-//    列宽由 `widgets/panel_section.rs` 独占决定（`1fr | 1fr | 24`，只有一列 24）。
+// ⛔ 统一网格：每一行都只用 `field_row` / `field_row_full_trailing` / `sublabel_row` 构造，交给
+//    `PanelSection::child`（含 clip 列表行）。本文件**没有**任何 `div().flex().flex_row()` 手排的行，
+//    也不手算列宽。列宽由 `widgets/panel_section.rs` 独占决定（`1fr | 1fr | 24`，只有一列 24）。
 // 窗口：clip 的设置浮窗在 `clip_popover.rs`，复用 `Popover` 窗口外壳。
 // ============================================================================
 //! The right panel while Motion is open. Sections follow the Design panel: Animation,
 //! Transform, Layout, Appearance — every animatable value is a [`KeyframeField`] (one
 //! `Input` template whose trailing slot carries the add/remove-keyframe diamond).
 
-use figcraft_i18n::tr;
 use figcraft_doc::anim::motion::ClipKind;
 use figcraft_doc::anim::motion::PresetGroup;
 use figcraft_doc::{Document, NodeId};
+use figcraft_i18n::tr;
 use gpui::{AnyElement, App, Div, MouseButton, SharedString, Stateful, Window, div, prelude::*, px};
 
 use crate::motion::keyframe_field::{FIELDS, KeyframeField, KeyframeFields};
@@ -21,7 +21,7 @@ use crate::motion::{Act, MotionUi, Queue};
 use crate::widgets::icon::Icon;
 use crate::widgets::icon_button::IconButton;
 use crate::widgets::menu::MenuRow;
-use crate::widgets::panel_section::{field_row, field_row_full, panel_section, sublabel_row, sublabel_row2};
+use crate::widgets::panel_section::{FieldRow, field_row, field_row_full_trailing, panel_section, sublabel_row, sublabel_row2};
 use crate::widgets::{pt, rgba, tokens};
 
 /// Empty trailing column of a grid row (`field_row`'s generics need a concrete element type).
@@ -58,32 +58,17 @@ pub fn panel(
         div().id("motion-inspector").flex_none().h_full().w_full().flex().flex_col().bg(rgba(t.panel)).child(body)
     };
 
-    if ui.easing_target {
-        body = body.child(super::easing::panel(cx, doc, ui, queue, _window));
-        return wrap(body);
-    }
+    // Easing is edited in the clip card that opens from the segment (or the clip's handles).
+    // The inspector used to swap its whole body for an Easing page here, which is the panel the
+    // user kept pointing at; the card is the one place that edits it now.
 
     let Some(layer) = selected_layer(doc, ui, selection) else {
-        body = body.child(
-            div().px(pt(16.0)).py(pt(12.0)).text_size(pt(11.0)).text_color(rgba(t.text_secondary)).child(tr("Select a layer")),
-        );
+        body = body.child(div().px(pt(16.0)).py(pt(12.0)).text_size(pt(11.0)).text_color(rgba(t.text_secondary)).child(tr("Select a layer")));
         return wrap(body);
     };
 
-    // ── Layer name header (40 pt) ──────────────────────────────────────────────
-    let name = doc.node(layer).map(|n| n.name.clone()).unwrap_or_default();
-    body = body.child(
-        div()
-            .h(pt(40.0))
-            .w_full()
-            .flex()
-            .items_center()
-            .pl(pt(16.0))
-            .text_size(pt(13.0))
-            .font_weight(gpui::FontWeight::SEMIBOLD)
-            .text_color(rgba(t.text))
-            .child(SharedString::from(name)),
-    );
+    // 右栏顶部不显示图层名（用户 2026-11-12：动画栏目上面不该有 "Hello"）。
+    // egui 参考里那一行是 Design 面板的图层头部，Motion 模式不需要重复一遍。
 
     // ── Animation section: presets toggle + "+" menu ──────────────────────────
     // egui L62-89: the "+" opens a menu of the FIVE `ClipKind`s (the library button beside it
@@ -103,17 +88,23 @@ pub fn panel(
         });
         plus_root.update(cx, |cv, cx| cv.open_menu(anchor, None, rows, on_pick, cx));
     });
-    let anim_section = panel_section(tr("Animation"))
-        .header_trail(
-            div()
-                .flex()
-                .flex_row()
-                .gap(pt(4.0))
-                .child(IconButton::new(Icon::ComponentSet).active(presets_open).on_click(move |_, _, _| q.push(Act::SetPresetsOpen(!presets_open))))
-                .child(plus),
-        )
-        .child(clips_rows(doc, ui, queue, layer));
+    let mut anim_section = panel_section(tr("Animation")).header_trail(
+        div()
+            .flex()
+            .flex_row()
+            .gap(pt(4.0))
+            .child(IconButton::new(Icon::ComponentSet).active(presets_open).on_click(move |_, _, _| q.push(Act::SetPresetsOpen(!presets_open))))
+            .child(plus),
+    );
 
+    // clip 行**就是统一网格的行**（egui `row(ui, ROW_H)`）：每条一个 `field_row_full_trailing`，
+    // 和 Transform/Layout 各行共用 `1fr | 1fr | 24×2` 列轨道。这样左右 PAD=16、行高 ROW_H=32、
+    // header→首行 gap(0)、section 底 SECTION_BOTTOM=12 **全由 PanelSection 统一给**——用户
+    // 2026-11-12 指的「条条没左右边距 / 跟标题间距不对 / 没底边距」就都解决了。之前走 free 野
+    // div 一条都没沾。N 行 = N×32pt 逐行撑开，不会挤（早期是把整个列表塞进单行才挤）。
+    for row in clips_rows(doc, ui, queue, layer) {
+        anim_section = anim_section.child(row);
+    }
     body = body.child(anim_section);
     if presets_open {
         body = body.child(presets_rows(queue, layer));
@@ -134,14 +125,10 @@ pub fn panel(
 
     // ── Layout: W | H + proportions lock as the trailing 24 pt control ─────────
     let locked = doc.node(layer).is_some_and(|n| n.constrain_proportions);
-    body = body.child(
-        panel_section(tr("Layout"))
-            .child(sublabel_row2(tr("Width"), tr("Height")))
-            .child(field_row(
-                vec![field(fields, 5).into_any_element(), field(fields, 6).into_any_element()],
-                vec![IconButton::new(if locked { Icon::LinkOn } else { Icon::LinkOff }).active(locked).into_any_element()],
-            )),
-    );
+    body = body.child(panel_section(tr("Layout")).child(sublabel_row2(tr("Width"), tr("Height"))).child(field_row(
+        vec![field(fields, 5).into_any_element(), field(fields, 6).into_any_element()],
+        vec![IconButton::new(if locked { Icon::LinkOn } else { Icon::LinkOff }).active(locked).into_any_element()],
+    )));
     body = body.child(separator());
 
     // ── Appearance ────────────────────────────────────────────────────────────
@@ -186,40 +173,49 @@ fn selected_layer(doc: &Document, ui: &MotionUi, selection: &[NodeId]) -> Option
     from_canvas.or(from_timeline)
 }
 
-/// The clips list, all as full-width grid rows.
-fn clips_rows(doc: &Document, ui: &MotionUi, queue: &Queue, layer: NodeId) -> crate::widgets::panel_section::FieldRow {
+/// clip 行 = 统一网格的行（egui `animations_body` 里 `for c { row(ui, ROW_H) }`），每条一个
+/// `field_row_full_trailing`：span-2 字段是整条选中/悬停背景 + 名称，trailing 是眼睛 + 减号。
+/// 由 `PanelSection` 统一给左右 PAD、 ROW_H 行高、header 间距、SECTION_BOTTOM 底边距。
+/// 没有动画时**不渲染任何占位文字**（用户 2026-11-12）。
+fn clips_rows(doc: &Document, ui: &MotionUi, queue: &Queue, layer: NodeId) -> Vec<FieldRow> {
     let t = tokens();
     let clips: Vec<_> = doc.node(layer).map(|n| n.motion.clips.clone()).unwrap_or_default();
-    let mut col = div().flex().flex_col().w_full();
-    if clips.is_empty() {
-        col = col.child(div().py(pt(4.0)).pl(pt(16.0)).text_size(pt(9.0)).text_color(rgba(t.text_tertiary)).child(tr("None")));
-    }
+    let mut rows = Vec::with_capacity(clips.len());
     for c in clips {
         let selected = ui.selected_clip == Some((layer, c.id));
         let q = queue.clone();
         let q2 = queue.clone();
         let q3 = queue.clone();
-        let label = format!("{} · {}", c.kind.name(), c.mode.label(c.kind));
-        let row = div()
-            .h(pt(24.0))
+        let label = SharedString::from(format!("{} · {}", c.kind.name(), c.mode.label(c.kind)));
+        // span-2 字段：整条铺满（w_full）+ 24pt 高、圆角，选中/悬停/常态三态背景。
+        // 高度用 FIELD_H(24)，由网格的 ROW_H(32) 行 items_center 垂直居中 → egui 的
+        // `row(ui, ROW_H)` 里 `shrink2(vec2(PAD, (ROW_H-24)/2))` 同一效果。
+        let block = div()
             .w_full()
+            .h(pt(crate::widgets::FIELD_H))
             .flex()
             .flex_row()
             .items_center()
-            .rounded(pt(5.0))
+            .rounded(pt(crate::widgets::RADIUS))
             .pl(pt(8.0))
             .bg(rgba(if selected { t.selected_row } else { t.field }))
+            .when(!selected, |d| d.hover(|s| s.bg(rgba(t.hover))))
             .cursor_pointer()
-            .on_mouse_down(MouseButton::Left, move |_, _, _| {
+            .on_mouse_down(MouseButton::Left, move |e, _, _| {
+                // egui `inspector.rs:156`：记下这一行的顶边，卡片上边与它对齐。
+                crate::motion::clip_popover::set_anchor_y(f32::from(e.position.y) - 12.0);
+                q.push(Act::SetClipAnchorY(f32::from(e.position.y) - 12.0));
                 q.push(Act::SelectClip(layer, c.id));
                 q.push(Act::OpenClipPopover(layer, c.id));
             })
-            .child(div().flex_1().min_w(px(0.0)).text_size(pt(11.0)).text_color(rgba(t.text)).child(SharedString::from(label)))
-            .child(IconButton::new(if c.visible { Icon::Eye } else { Icon::EyeOff }).size(20.0).on_click(move |_, _, _| q2.push(Act::ToggleClipVisible(layer, c.id))))
-            .child(IconButton::new(Icon::Minus).size(20.0).on_click(move |_, _, _| q3.push(Act::DeleteClip(layer, c.id))));
-        col = col.child(row);
+            .child(div().flex_1().min_w(px(0.0)).text_size(pt(11.0)).text_color(rgba(t.text)).child(label));
+        let eye = IconButton::new(if c.visible { Icon::Eye } else { Icon::EyeOff })
+            .size(20.0)
+            .on_click(move |_, _, _| q2.push(Act::ToggleClipVisible(layer, c.id)));
+        let minus = IconButton::new(Icon::Minus).size(20.0).on_click(move |_, _, _| q3.push(Act::DeleteClip(layer, c.id)));
+        rows.push(field_row_full_trailing(block, vec![eye, minus]));
     }
-    field_row_full(col)
+    rows
 }
 
 fn presets_rows(queue: &Queue, layer: NodeId) -> Div {

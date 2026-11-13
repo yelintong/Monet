@@ -10,15 +10,13 @@
 //! - egui 的分类色是 8 格**色板弹窗**，`MenuRow` 只画文字，子菜单又画不了色块 → 8 个 hex 下拉项。
 //! - 图标：measure 用 `Line`，ready 的「在专注视图打开」用 `Frame`，link 用 `LinkOn`。
 
-use figcraft_i18n::tr_noop;
-use figcraft_i18n::tr;
 use super::data::{AnnotationRow, DevResourceRow, InspectRow, MeasurementRow, PanelData, ReadyRow};
 use super::inspect::local_dropdown;
 use super::sections::{icon_cmd, icon_row, pick_dropdown, slot};
 use crate::panels::{Cmd, RightFields, RowEditCtx};
-use crate::widgets::{
-    Dropdown, Icon, IconButton, MenuRow, PanelSection, SectionHeaderVariant, field_row, field_row_full, pt, rgba, tokens,
-};
+use crate::widgets::{Dropdown, Icon, IconButton, MenuRow, PanelSection, SectionHeaderVariant, field_row, field_row_full, pt, rgba, tokens};
+use figcraft_i18n::tr;
+use figcraft_i18n::tr_noop;
 use gpui::{App, Div, IntoElement, SharedString, div, prelude::*, px};
 use serde_json::{Value, json};
 use std::rc::Rc;
@@ -36,8 +34,8 @@ pub(crate) fn ready_list(f: &RightFields, d: &PanelData) -> PanelSection {
     // （与 `inspect.readyForDev {status}` 命令同源），这里只负责画。
     let filter = d.dev.ready_filter.min(3);
     let rows: Vec<&ReadyRow> = d.dev.ready.iter().collect();
-    let mut sec = PanelSection::new(tr("Ready for dev"))
-        .variant(if rows.is_empty() { SectionHeaderVariant::Dim } else { SectionHeaderVariant::Normal });
+    let mut sec =
+        PanelSection::new(tr("Ready for dev")).variant(if rows.is_empty() { SectionHeaderVariant::Dim } else { SectionHeaderVariant::Normal });
     let picks: Vec<(String, usize)> = READY_FILTERS.iter().enumerate().map(|(i, l)| (l.to_string(), i)).collect();
     sec = sec.child(field_row_full(local_dropdown(f, READY_FILTERS[filter.min(3)].into(), 0.0, picks, f.dev_filter.clone())));
     if rows.is_empty() {
@@ -53,12 +51,7 @@ pub(crate) fn ready_list(f: &RightFields, d: &PanelData) -> PanelSection {
 fn ready_line(f: &RightFields, r: &ReadyRow, i: usize) -> gpui::Stateful<Div> {
     let t = tokens();
     let (cr, cg, cb) = r.color;
-    let dot = div()
-        .flex_none()
-        .w(px(8.0))
-        .h(px(8.0))
-        .rounded(px(4.0))
-        .bg(gpui::rgb(((cr as u32) << 16 | (cg as u32) << 8 | cb as u32).into()));
+    let dot = div().flex_none().w(px(8.0)).h(px(8.0)).rounded(px(4.0)).bg(gpui::rgb(((cr as u32) << 16 | (cg as u32) << 8 | cb as u32).into()));
     let focus = icon_cmd(Icon::Frame, "dev.focus", json!({ "id": r.id }), f, false);
     let cmds = f.cmds.clone();
     let id = r.id;
@@ -100,13 +93,7 @@ pub(crate) fn categories(f: &RightFields, d: &PanelData, cx: &mut App, n: &mut u
     let filter = (*f.dev_cat_filter.borrow()).min(d.dev.categories.len() + 1);
     let mut picks: Vec<(String, usize)> = vec![(tr("All categories").into(), 0), (tr("No category").into(), 1)];
     picks.extend(d.dev.categories.iter().enumerate().map(|(i, c)| (c.name.clone(), i + 2)));
-    sec = sec.child(field_row_full(local_dropdown(
-        f,
-        picks[filter].0.clone().into(),
-        0.0,
-        picks,
-        f.dev_cat_filter.clone(),
-    )));
+    sec = sec.child(field_row_full(local_dropdown(f, picks[filter].0.clone().into(), 0.0, picks, f.dev_cat_filter.clone())));
 
     if d.dev.categories.is_empty() {
         return sec.child(field_row_full(note("No categories yet. Add one to group annotations.")));
@@ -120,13 +107,7 @@ pub(crate) fn categories(f: &RightFields, d: &PanelData, cx: &mut App, n: &mut u
         };
         let colors: Vec<(String, &'static str, Value)> = figcraft_doc::AnnotationCategory::COLORS
             .iter()
-            .map(|col| {
-                (
-                    col.to_hex(),
-                    "annotation.editCategory",
-                    json!({ "id": c.id, "color": col.to_hex() }),
-                )
-            })
+            .map(|col| (col.to_hex(), "annotation.editCategory", json!({ "id": c.id, "color": col.to_hex() })))
             .collect();
         let pick_color = pick_dropdown(f, c.color.clone(), 76.0, colors);
         let name = f.row_field(
@@ -171,8 +152,7 @@ fn category_name(existing: &[super::data::CategoryRow]) -> String {
 pub(crate) fn annotations(f: &RightFields, d: &PanelData, cx: &mut App, n: &mut usize) -> Option<PanelSection> {
     let node = d.dev.node?;
     let empty = d.dev.annotations.is_empty();
-    let mut sec = PanelSection::new(tr("Annotations"))
-        .variant(if empty { SectionHeaderVariant::Dim } else { SectionHeaderVariant::Normal });
+    let mut sec = PanelSection::new(tr("Annotations")).variant(if empty { SectionHeaderVariant::Dim } else { SectionHeaderVariant::Normal });
     for a in &d.dev.annotations {
         sec = sec.child(field_row_full(annotation_head(f, a, node)));
         // 便签本体（egui 是 2 行 multiline，GPUI 只有单行框）。
@@ -231,8 +211,7 @@ pub(crate) fn annotations(f: &RightFields, d: &PanelData, cx: &mut App, n: &mut 
 /// 一条注解的抬头：`Note N`（半粗）+ 分类下拉 + 删除。
 fn annotation_head(f: &RightFields, a: &AnnotationRow, node: figcraft_doc::NodeId) -> Div {
     let t = tokens();
-    let cats: Vec<(String, &'static str, Value)> =
-        a.category_menu.iter().map(|(l, _, p)| (l.clone(), "annotation.edit", p.clone())).collect();
+    let cats: Vec<(String, &'static str, Value)> = a.category_menu.iter().map(|(l, _, p)| (l.clone(), "annotation.edit", p.clone())).collect();
     let label = a.category.as_ref().map(|c| c.0.clone()).unwrap_or_else(|| tr("No category").into());
     let dd = pick_dropdown(f, label, 116.0, cats);
     let del = icon_cmd(Icon::Minus, "annotation.remove", json!({ "id": node, "index": a.index }), f, false);
@@ -271,14 +250,7 @@ fn pin_row(p: &InspectRow) -> Div {
         .items_center()
         .gap(pt(6.0))
         .w_full()
-        .child(
-            div()
-                .w(px(88.0))
-                .flex_none()
-                .text_size(pt(11.0))
-                .text_color(rgba(t.text_secondary))
-                .child(SharedString::from(p.label.clone())),
-        )
+        .child(div().w(px(88.0)).flex_none().text_size(pt(11.0)).text_color(rgba(t.text_secondary)).child(SharedString::from(p.label.clone())))
         .child(value)
 }
 
@@ -409,13 +381,7 @@ fn resource_line(f: &RightFields, r: &DevResourceRow, node: figcraft_doc::NodeId
                 cx.open_url(&url_open);
             }
         })
-        .child(
-            div()
-                .text_size(pt(11.0))
-                .font_weight(gpui::FontWeight::SEMIBOLD)
-                .text_color(rgba(t.accent))
-                .child(SharedString::from(r.name.clone())),
-        )
+        .child(div().text_size(pt(11.0)).font_weight(gpui::FontWeight::SEMIBOLD).text_color(rgba(t.accent)).child(SharedString::from(r.name.clone())))
         .child(div().text_size(pt(10.0)).text_color(rgba(t.text_secondary)).child(SharedString::from(below)));
     let mut row = div().flex().flex_row().items_center().gap(pt(6.0)).w_full().child(link);
     if let Some(i) = r.index {
@@ -443,8 +409,7 @@ pub(crate) fn measurements(f: &RightFields, d: &PanelData) -> Option<PanelSectio
         return None;
     }
     let empty = dev.measurements.is_empty();
-    let mut sec = PanelSection::new(tr("Measurements"))
-        .variant(if empty { SectionHeaderVariant::Dim } else { SectionHeaderVariant::Normal });
+    let mut sec = PanelSection::new(tr("Measurements")).variant(if empty { SectionHeaderVariant::Dim } else { SectionHeaderVariant::Normal });
     for m in &dev.measurements {
         sec = sec.child(field_row_full(measure_line(f, m)));
     }
@@ -459,12 +424,9 @@ pub(crate) fn measurements(f: &RightFields, d: &PanelData) -> Option<PanelSectio
     if dev.can_measure_around {
         rows.push((tr("To the layer around it").into(), "devMode.addMeasurement", json!({ "from": node })));
     }
-    for (label, side) in [
-        (tr("Along the top"), "top"),
-        (tr("Along the right"), "right"),
-        (tr("Along the bottom"), "bottom"),
-        (tr("Along the left"), "left"),
-    ] {
+    for (label, side) in
+        [(tr("Along the top"), "top"), (tr("Along the right"), "right"), (tr("Along the bottom"), "bottom"), (tr("Along the left"), "left")]
+    {
         rows.push((label.into(), "devMode.addMeasurement", json!({ "from": node, "side": side })));
     }
     Some(sec.child(field_row(vec![pick_dropdown(f, tr("Add measurement"), 0.0, rows).into_any_element()], Vec::<IconButton>::new())))

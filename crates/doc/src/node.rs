@@ -2,7 +2,10 @@
 
 use crate::NodeId;
 use crate::anim::motion::NodeMotion;
-use crate::props::*;
+use crate::props::{
+    AutoLayout, ChildLayout, Constraints, Corners, Effect, EffectKind, ExportSetting, LayoutGrid, SPREAD_MITER_LIMIT, StrokeAlign, StrokeCap,
+    StrokeProps,
+};
 use crate::proto::{Interaction, Overflow, ScrollPosition};
 use crate::styles::{CollectionId, ModeId, StyleRefs, VariableId};
 use crate::text::TextData;
@@ -783,9 +786,26 @@ impl Node {
         self.strokes.iter().any(|p| p.visible) && self.stroke.weight > 0.0
     }
 
+    /// How far (local units) this node's visible **layer blurs** spread its own pixels. Blurs stack
+    /// on the same pixels, so their variances add: four 10-radius blurs reach as far as one 20-radius
+    /// blur (`sqrt(4 · 15²) = 30`), not four times as far.
+    pub fn layer_effects_reach(&self) -> f64 {
+        let variance = self
+            .effects
+            .iter()
+            .filter(|e| e.visible && matches!(e.kind, EffectKind::LayerBlur(_)))
+            .map(Effect::reach)
+            .filter(|r| r.is_finite() && *r > 0.0)
+            .fold(0.0, |sum, r| sum + r * r);
+        variance.sqrt()
+    }
+
     /// Maximum distance (in local units) painting can reach outside the node box.
     pub fn paint_reach(&self) -> f64 {
-        let fx = self.effects.iter().map(Effect::reach).fold(0.0, f64::max);
+        // `grow_by_effects` 先把框按 layer blur 扩散，再从那个框叠加其它特效（含阴影偏移），
+        // 所以两类 reach 要相加而不是取最大值；LayerBlur 只通过 layer_effects_reach 计一次。
+        let other = self.effects.iter().filter(|e| !matches!(e.kind, EffectKind::LayerBlur(_))).map(Effect::reach).fold(0.0, f64::max);
+        let fx = other + self.layer_effects_reach();
         self.outline_reach() + fx + self.spread_miter_reach()
     }
 
@@ -798,18 +818,27 @@ impl Node {
 
     /// Page-space area `b` grown by what this node's visible effects paint around it: blurs all
     /// round, drop shadows towards their offset (in page units, as the renderer draws them), so a
-    /// shadow falling down adds room below and none above.
+    /// shadow falling down adds room below and none above. Layer blurs spread the layer's own pixels
+    /// first, so a shadow is cast from the **blurred** box and reaches the blur's distance further.
     pub fn grow_by_effects(&self, b: figcraft_geom::Rect) -> figcraft_geom::Rect {
         let miter = self.spread_miter_reach();
-        self.effects.iter().filter(|e| e.visible).fold(b, |r, e| match &e.kind {
+        let blurred = {
+            let g = self.layer_effects_reach();
+            if g.is_finite() && g > 0.0 { b.inflate(g, g) } else { b }
+        };
+        self.effects.iter().filter(|e| e.visible && !matches!(e.kind, EffectKind::LayerBlur(_))).fold(blurred, |r, e| match &e.kind {
             EffectKind::DropShadow(s) => {
                 let g = s.radius.abs() * 1.5 + s.spread.max(0.0) + miter;
                 let (dx, dy) = s.offset;
-                if g.is_finite() && dx.is_finite() && dy.is_finite() { r.union(b.inflate(g, g) + figcraft_geom::kurbo::Vec2::new(dx, dy)) } else { r }
+                if g.is_finite() && dx.is_finite() && dy.is_finite() {
+                    r.union(blurred.inflate(g, g) + figcraft_geom::kurbo::Vec2::new(dx, dy))
+                } else {
+                    r
+                }
             }
             _ => {
                 let g = e.reach();
-                if g.is_finite() && g > 0.0 { r.union(b.inflate(g, g)) } else { r }
+                if g.is_finite() && g > 0.0 { r.union(blurred.inflate(g, g)) } else { r }
             }
         })
     }

@@ -8,11 +8,7 @@
 //! 格式化好的 `String`（或 `Paint`），面板只负责用通用组件画出来 + 推命令，不再碰 doc。
 
 use figcraft_color::Paint;
-use figcraft_doc::{
-    styles::StyleKind,
-    text::trim_num,
-    Document, NodeId, NodeKind,
-};
+use figcraft_doc::{Document, NodeId, NodeKind, styles::StyleKind, text::trim_num};
 use figcraft_i18n::tr;
 use figcraft_i18n::tr_noop;
 use serde_json::Value;
@@ -551,13 +547,20 @@ fn asset_thumb(doc: &Document, id: NodeId, side_px: f32) -> Option<(u32, u32, Ve
         return None;
     }
     let scale = (f64::from(side_px) / side).min(2.0);
-    let pix = if let Some(n) = slice {
-        let setting = n.exports.first().cloned().unwrap_or_default();
-        let layers = figcraft_engine::cmd::file::drawn_layers(doc, &[id], &setting);
-        figcraft_render::render_area(doc, &layers, b, scale)?
-    } else {
-        figcraft_render::render_node(doc, id, scale)?
-    };
+    // 渲染按层递归，深度取决于被渲染的树。这里原本直接在 UI 线程上跑，而 Windows 的主线程
+    // 栈只有约 1 MB（渲染线称是 8 MB，见 `figcraft_render::RENDER_STACK`）：组件树一深就
+    // `thread '<unknown>' has overflowed its stack`——它表现为偶发，因为浅树不会触发。
+    // 借 `doc` 到一条临时的大栈线程上渲染（`spawn_scoped` 不需要 clone 文档）；有 thread_local
+    // 缓存兜着，只在内容变化时才会走到这里。
+    let pix = crate::render_stack::on_render_stack(|| {
+        if let Some(n) = slice {
+            let setting = n.exports.first().cloned().unwrap_or_default();
+            let layers = figcraft_engine::cmd::file::drawn_layers(doc, &[id], &setting);
+            figcraft_render::render_area(doc, &layers, b, scale)
+        } else {
+            figcraft_render::render_node(doc, id, scale)
+        }
+    })??;
     // 与 `canvas::render_worker::screen_image` 相同：tiny-skia 是预乘 RGBA，
     // GPUI 纹理要直通 BGRA；非 sRGB 文档先转 sRGB。
     let mut buf = pix.data().to_vec();
@@ -585,10 +588,7 @@ pub fn read_inspect(
         .into_iter()
         .map(|s| InspectSection {
             title: s.title,
-            rows: s.rows
-                .into_iter()
-                .map(|p| InspectRow { label: p.label, value: p.value, color: p.color, token: p.token })
-                .collect(),
+            rows: s.rows.into_iter().map(|p| InspectRow { label: p.label, value: p.value, color: p.color, token: p.token }).collect(),
         })
         .collect();
     let raw = figcraft_engine::codegen::code_for(doc, first, lang);
@@ -606,11 +606,7 @@ pub fn read_inspect(
         assets: devinspect::assets(doc, ids)
             .iter()
             .map(|a| {
-                let idx = a
-                    .settings
-                    .first()
-                    .and_then(|s| figcraft_doc::ExportFormat::ALL.iter().position(|f| *f == s.format))
-                    .unwrap_or(0);
+                let idx = a.settings.first().and_then(|s| figcraft_doc::ExportFormat::ALL.iter().position(|f| *f == s.format)).unwrap_or(0);
                 AssetRow {
                     id: a.id,
                     name: a.name.clone(),
@@ -761,10 +757,8 @@ pub fn read_dev(doc: &Document, ids: &[NodeId], page: Option<NodeId>, ready_filt
             },
         })
         .collect();
-    d.categories = annotations::categories(doc)
-        .iter()
-        .map(|c| CategoryRow { id: c.id.clone(), name: c.name.clone(), color: c.color.to_hex() })
-        .collect();
+    d.categories =
+        annotations::categories(doc).iter().map(|c| CategoryRow { id: c.id.clone(), name: c.name.clone(), color: c.color.to_hex() }).collect();
 
     let first = ids.first().copied().filter(|id| doc.node(*id).is_some_and(|n| !n.is_page()));
     // ── Measurements：当前页上、碰到选区的那些（egui `refresh_measurements` + filter）──
@@ -800,11 +794,7 @@ pub fn read_dev(doc: &Document, ids: &[NodeId], page: Option<NodeId>, ready_filt
             let mut category_menu: Vec<(String, Option<String>, Value)> =
                 vec![(tr("No category").into(), None, serde_json::json!({ "id": id, "index": index, "category": null }))];
             for c in cats {
-                category_menu.push((
-                    c.name.clone(),
-                    Some(c.color.to_hex()),
-                    serde_json::json!({ "id": id, "index": index, "category": c.id }),
-                ));
+                category_menu.push((c.name.clone(), Some(c.color.to_hex()), serde_json::json!({ "id": id, "index": index, "category": c.id })));
             }
             let pin_menu = annotations::PINNABLE
                 .iter()
@@ -850,8 +840,7 @@ pub fn read_dev(doc: &Document, ids: &[NodeId], page: Option<NodeId>, ready_filt
             from: l.from.and_then(|f| doc.node(f)).map(|m| m.name.clone()),
         })
         .collect();
-    d.can_add_resource =
-        !figcraft_engine::components::inside_instance(doc, id) && n.dev_resources.len() < dev_resources::MAX_PER_LAYER;
+    d.can_add_resource = !figcraft_engine::components::inside_instance(doc, id) && n.dev_resources.len() < dev_resources::MAX_PER_LAYER;
     d
 }
 
@@ -898,11 +887,8 @@ pub fn read_component(doc: &Document, ids: &[NodeId]) -> Option<ComponentData> {
         figcraft_doc::NodeKind::Instance { component, props } => {
             let set = components::variant_set(doc, *component);
             let missing = !doc.contains(*component);
-            let main_name = set
-                .or(Some(*component))
-                .and_then(|c| doc.node(c))
-                .map(|c| c.name.clone())
-                .unwrap_or_else(|| tr("Main component deleted").into());
+            let main_name =
+                set.or(Some(*component)).and_then(|c| doc.node(c)).map(|c| c.name.clone()).unwrap_or_else(|| tr("Main component deleted").into());
             let nested = components::inside_instance(doc, *id);
             let components = list_components(doc);
             let mut out = ComponentData {
@@ -975,30 +961,21 @@ pub fn read_component(doc: &Document, ids: &[NodeId]) -> Option<ComponentData> {
                             });
                         }
                         // Slot 的填充走 `slot_fill`（挑选组件填进去），此轮只标注出来。
-                        figcraft_doc::PropDef::Slot { .. } => out.props.push(ComponentProp {
-                            name: k.clone(),
-                            kind: "slot",
-                            value: String::new(),
-                            options: Vec::new(),
-                        }),
+                        figcraft_doc::PropDef::Slot { .. } => {
+                            out.props.push(ComponentProp { name: k.clone(), kind: "slot", value: String::new(), options: Vec::new() })
+                        }
                         figcraft_doc::PropDef::Variant { .. } => {}
                     }
                 }
             }
             Some(out)
         }
-        figcraft_doc::NodeKind::ComponentSet { description } => Some(ComponentData {
-            title: tr("Component set"),
-            description: description.clone(),
-            editable_description: true,
-            ..Default::default()
-        }),
-        figcraft_doc::NodeKind::Component { description, .. } => Some(ComponentData {
-            title: tr("Component"),
-            description: description.clone(),
-            editable_description: true,
-            ..Default::default()
-        }),
+        figcraft_doc::NodeKind::ComponentSet { description } => {
+            Some(ComponentData { title: tr("Component set"), description: description.clone(), editable_description: true, ..Default::default() })
+        }
+        figcraft_doc::NodeKind::Component { description, .. } => {
+            Some(ComponentData { title: tr("Component"), description: description.clone(), editable_description: true, ..Default::default() })
+        }
         _ => None,
     }
 }
@@ -1043,18 +1020,16 @@ pub fn read_vector(doc: &Document, ve: &figcraft_engine::vectoredit::VectorEdit)
     let width_point = if ve.tool == vectoredit::VTool::Width {
         let stroke = doc.node(ve.id).map(|n| &n.stroke);
         let weight = stroke.map_or(1.0, |s| s.weight);
-        ve.width_point
-            .and_then(|i| Some((i, *stroke?.profile()?.points.get(i)?)))
-            .map(|(index, p)| {
-                let (l, r) = p.sides();
-                WidthPointData {
-                    t: round(p.t * 100.0),
-                    width: round(p.scale * weight),
-                    left: round(l * weight / 2.0),
-                    right: round(r * weight / 2.0),
-                    index,
-                }
-            })
+        ve.width_point.and_then(|i| Some((i, *stroke?.profile()?.points.get(i)?))).map(|(index, p)| {
+            let (l, r) = p.sides();
+            WidthPointData {
+                t: round(p.t * 100.0),
+                width: round(p.scale * weight),
+                left: round(l * weight / 2.0),
+                right: round(r * weight / 2.0),
+                index,
+            }
+        })
     } else {
         None
     };
@@ -1442,14 +1417,7 @@ pub fn read(doc: &Document, ids: &[NodeId], page: Option<NodeId>, ready_filter: 
                 StyleKind::Text { style, .. } => (None, Some(format!("{}/{}", trim_num(style.font_size), style.line_height.label()))),
                 _ => (None, None),
             };
-            LocalStyleRow {
-                id: s.id.to_string(),
-                name: s.name.clone(),
-                ty: s.kind.type_name(),
-                paint,
-                text_meta,
-                description: s.description.clone(),
-            }
+            LocalStyleRow { id: s.id.to_string(), name: s.name.clone(), ty: s.kind.type_name(), paint, text_meta, description: s.description.clone() }
         })
         .collect();
     if ids.is_empty() {
@@ -1476,8 +1444,7 @@ pub fn read(doc: &Document, ids: &[NodeId], page: Option<NodeId>, ready_filter: 
     // lizard `right.rs::header` 的五个判断输入，全部只读当前文档 / 选区。
     let is_text = ids.iter().all(|i| doc.node(*i).is_some_and(|n| matches!(n.kind, NodeKind::Text(_))));
     let is_shape = ids.len() == 1 && first.is_some_and(|n| n.kind.is_shape());
-    let is_component =
-        ids.len() == 1 && first.is_some_and(|n| matches!(n.kind, NodeKind::Component { .. } | NodeKind::ComponentSet { .. }));
+    let is_component = ids.len() == 1 && first.is_some_and(|n| matches!(n.kind, NodeKind::Component { .. } | NodeKind::ComponentSet { .. }));
     // More actions：右键菜单的顶层行（子菜单 / 不可运行的命令跳过，分隔线顺延到下一行）。
     let mut more_actions: Vec<(String, &'static str, bool)> = Vec::new();
     let mut carry_sep = false;
@@ -1555,9 +1522,7 @@ pub fn read(doc: &Document, ids: &[NodeId], page: Option<NodeId>, ready_filter: 
 
     // ── WGSL 材质绑定（plugin_data 保留 key，非 EffectKind）──
     // 单选时读该节点的绑定；多选时只有全部一致才显示，避免给多个节点误改同一个材质。
-    d.wgsl = crate::wgsl_material::read_binding_of(doc, ids)
-        .map(|b| WgslPanelData { path: Some(b.path), params: b.params })
-        .unwrap_or_default();
+    d.wgsl = crate::wgsl_material::read_binding_of(doc, ids).map(|b| WgslPanelData { path: Some(b.path), params: b.params }).unwrap_or_default();
 
     // ── Layout grids（`effects.rs::grids`） ──
     d.grids = common(doc, ids, |n| n.grids.clone()).map(|list| {
@@ -1701,9 +1666,7 @@ pub fn read(doc: &Document, ids: &[NodeId], page: Option<NodeId>, ready_filter: 
     // ── Constraints（`right.rs::position_fields` 的 Constraints 子节）──
     let in_frame = ids.iter().all(|i| {
         doc.node(*i).is_some_and(|n| {
-            n.parent
-                .and_then(|p| doc.node(p))
-                .is_some_and(|p| p.kind.is_frame_like() && (p.layout.is_none() || n.child_layout.absolute))
+            n.parent.and_then(|p| doc.node(p)).is_some_and(|p| p.kind.is_frame_like() && (p.layout.is_none() || n.child_layout.absolute))
         })
     });
     let constraints_h = common(doc, ids, |n| match n.constraints.horizontal {
@@ -1880,10 +1843,7 @@ pub fn read(doc: &Document, ids: &[NodeId], page: Option<NodeId>, ready_filter: 
                 })
                 .collect()
         };
-        Some(GridTracksData {
-            columns: track_rows(&layout.column_tracks, &g.columns),
-            rows: track_rows(&layout.row_tracks, &g.rows),
-        })
+        Some(GridTracksData { columns: track_rows(&layout.column_tracks, &g.columns), rows: track_rows(&layout.row_tracks, &g.rows) })
     });
 
     d
@@ -2036,7 +1996,6 @@ mod tests {
         assert!(d.assets[0].thumb.is_some(), "Assets 行带着缩略图");
     }
 }
-
 
 // DIAGNOSTIC CUT (isolate data.rs): stub LiveData so per-frame `read` is neutralized.
 #[derive(Default, Clone, Debug, PartialEq)]

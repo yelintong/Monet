@@ -40,10 +40,7 @@
 
 use std::{borrow::Cow, sync::OnceLock};
 
-use gpui::{
-    App, AssetSource, Bounds, Hsla, IntoElement, Pixels, Point, Result, SharedString,
-    TransformationMatrix, Window, prelude::*, px, svg,
-};
+use gpui::{App, AssetSource, Bounds, Hsla, IntoElement, Pixels, Point, Result, SharedString, TransformationMatrix, Window, prelude::*, px, svg};
 
 /// Every icon Monet's UI can show. The names mirror `crates/ui-egui/src/icons.rs` so the two
 /// front-ends share one vocabulary; glyphs are drawn for the common ones and fall back otherwise.
@@ -482,18 +479,11 @@ impl AssetSource for IconAssets {
             _ => {}
         }
         // Resolve by full path so `icons/*.svg` and `brand/*.svg` share one table.
-        Ok(table()
-            .iter()
-            .find(|a| a.path.as_ref() == path)
-            .map(|a| Cow::Borrowed(a.svg.as_slice())))
+        Ok(table().iter().find(|a| a.path.as_ref() == path).map(|a| Cow::Borrowed(a.svg.as_slice())))
     }
 
     fn list(&self, path: &str) -> Result<Vec<SharedString>> {
-        if path.is_empty() || path == "icons" || path == "icons/" {
-            Ok(table().iter().map(|a| a.path.clone()).collect())
-        } else {
-            Ok(Vec::new())
-        }
+        if path.is_empty() || path == "icons" || path == "icons/" { Ok(table().iter().map(|a| a.path.clone()).collect()) } else { Ok(Vec::new()) }
     }
 }
 
@@ -508,12 +498,8 @@ impl SvgCanvas {
         if pts.len() < 3 {
             return;
         }
-        let d = pts
-            .iter()
-            .enumerate()
-            .map(|(i, (x, y))| format!("{}{:.3} {:.3}", if i == 0 { "M" } else { "L" }, x, y))
-            .collect::<Vec<_>>()
-            .join(" ");
+        let d =
+            pts.iter().enumerate().map(|(i, (x, y))| format!("{}{:.3} {:.3}", if i == 0 { "M" } else { "L" }, x, y)).collect::<Vec<_>>().join(" ");
         self.shapes.push(format!("<path d=\"{d} Z\"/>"));
     }
 
@@ -539,23 +525,18 @@ impl SvgCanvas {
     }
 
     fn disc(&mut self, cx: f32, cy: f32, r: f32) {
-        self.shapes
-            .push(format!("<circle cx=\"{cx:.3}\" cy=\"{cy:.3}\" r=\"{:.3}\"/>", r.max(0.0)));
+        self.shapes.push(format!("<circle cx=\"{cx:.3}\" cy=\"{cy:.3}\" r=\"{:.3}\"/>", r.max(0.0)));
     }
 
     fn ring(&mut self, cx: f32, cy: f32, r: f32, w: f32) {
-        self.shapes.push(format!(
-            "<circle cx=\"{cx:.3}\" cy=\"{cy:.3}\" r=\"{:.3}\" fill=\"none\" stroke=\"#000\" stroke-width=\"{w:.3}\"/>",
-            r.max(0.0)
-        ));
+        self.shapes
+            .push(format!("<circle cx=\"{cx:.3}\" cy=\"{cy:.3}\" r=\"{:.3}\" fill=\"none\" stroke=\"#000\" stroke-width=\"{w:.3}\"/>", r.max(0.0)));
     }
 
     fn rect(&mut self, x0: f32, y0: f32, x1: f32, y1: f32) {
         let (x, w) = ordered(x0, x1);
         let (y, h) = ordered(y0, y1);
-        self.shapes.push(format!(
-            "<rect x=\"{x:.3}\" y=\"{y:.3}\" width=\"{w:.3}\" height=\"{h:.3}\"/>"
-        ));
+        self.shapes.push(format!("<rect x=\"{x:.3}\" y=\"{y:.3}\" width=\"{w:.3}\" height=\"{h:.3}\"/>"));
     }
 
     fn outline_rect(&mut self, x0: f32, y0: f32, x1: f32, y1: f32, w: f32) {
@@ -1111,29 +1092,14 @@ fn svg_canvas(icon: Icon) -> SvgCanvas {
 /// Paint `icon` centred in `bounds`, scaled to the shorter side. The entry point for callers that
 /// draw directly into a `canvas` paint closure (a swatch's image/pattern glyph), which is why it
 /// goes through `Window::paint_svg` instead of the `svg()` element.
-pub(crate) fn draw_centred(
-    window: &mut Window,
-    bounds: Bounds<Pixels>,
-    icon: Icon,
-    color: gpui::Rgba,
-    cx: &App,
-) {
+pub(crate) fn draw_centred(window: &mut Window, bounds: Bounds<Pixels>, icon: Icon, color: gpui::Rgba, cx: &App) {
     let w: f32 = bounds.size.width.into();
     let h: f32 = bounds.size.height.into();
     let side = w.min(h).max(1.0);
     let ox = f32::from(bounds.origin.x) + (w - side) / 2.0;
     let oy = f32::from(bounds.origin.y) + (h - side) / 2.0;
-    let square = Bounds {
-        origin: Point::new(px(ox), px(oy)),
-        size: gpui::size(px(side), px(side)),
-    };
-    let _ = window.paint_svg(
-        square,
-        icon.asset_path(),
-        TransformationMatrix::unit(),
-        Hsla::from(color),
-        cx,
-    );
+    let square = Bounds { origin: Point::new(px(ox), px(oy)), size: gpui::size(px(side), px(side)) };
+    let _ = window.paint_svg(square, icon.asset_path(), TransformationMatrix::unit(), Hsla::from(color), cx);
 }
 
 // ── 绘制原语：签名与旧版一致，输出从「像素三角形」换成「SVG 图元」──────────────────
@@ -1217,12 +1183,7 @@ fn ring(p: &mut SvgCanvas, ox: f32, oy: f32, s: f32, cx: f32, cy: f32, r: f32, w
 /// 调用点（`icon::paint(icon, rgba(t.icon), 14.0)`）一行都不用改。
 pub fn paint(icon: Icon, color: impl Into<gpui::Rgba>, size: f32) -> impl IntoElement {
     let rgba: gpui::Rgba = color.into();
-    svg()
-        .path(icon.asset_path())
-        .w(px(size))
-        .h(px(size))
-        .flex_none()
-        .text_color(Hsla::from(rgba))
+    svg().path(icon.asset_path()).w(px(size)).h(px(size)).flex_none().text_color(Hsla::from(rgba))
 }
 
 #[cfg(test)]
@@ -1245,12 +1206,7 @@ mod tests {
             let grid = if a.icon == Icon::Logo { "0 0 24 24" } else { "0 0 16 16" };
             assert!(s.contains(&format!("viewBox=\"{grid}\"")), "{}", a.name);
             assert!(!s.contains("NaN") && !s.contains("inf"), "{}: {}", a.name, s);
-            assert!(
-                s.contains("<path") || s.contains("<circle") || s.contains("<rect"),
-                "{} has no shapes: {}",
-                a.name,
-                s
-            );
+            assert!(s.contains("<path") || s.contains("<circle") || s.contains("<rect"), "{} has no shapes: {}", a.name, s);
         }
     }
 

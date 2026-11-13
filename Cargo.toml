@@ -101,6 +101,9 @@ icu_segmenter = { version = "2.3", default-features = false, features = ["compil
 deunicode = "1.6"
 linesweeper = "0.4"
 zip = { version = "2", default-features = false, features = ["deflate"] }
+# Motion WebM/AV1 export: pure-Rust AV1 encoder (no `asm` feature → no nasm needed). Already in the
+# lock via `ravif` (image's AVIF backend), so this adds no new crate to the graph.
+rav1e = { version = "0.8", default-features = false, features = ["threading"] }
 # `.fig` import: raw deflate chunks (already built for zip) and zstd chunks (pure Rust, MIT, wasm-safe).
 flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
 ruzstd = { version = "0.9.1", default-features = false, features = ["std"] }

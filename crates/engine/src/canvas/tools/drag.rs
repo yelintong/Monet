@@ -11,7 +11,10 @@ use super::{
 impl Session {
     pub(super) fn move_down(&mut self, ev: &PointerEvent) -> Result<()> {
         let ds = self.ds()?;
-        let (doc, sel, page) = (ds.doc.clone(), ds.selection.clone(), ds.page);
+        // 命中/手柄几何按**显示文档**算（动画模式播放头中间时画面是求值后的文档）；
+        // 写操作仍走 `ds.doc`（下面用 `ds_mut`），所以不会把编辑写进求值副本。
+        let doc = self.display_doc.clone().unwrap_or_else(|| ds.doc.clone());
+        let (sel, page) = (ds.selection.clone(), ds.page);
         // Clicking outside the text being edited ends editing.
         if let Some(te) = ds.text_edit.clone() {
             let inside = doc.world_bounds(te.id).is_some_and(|b| b.inflate(ev.tol() * 4.0, ev.tol() * 4.0).contains(ev.p()));
@@ -58,12 +61,7 @@ impl Session {
                     .moved_origin()
                     .unwrap_or_else(|| Point::new(b.iter().map(|c| c.x).sum::<f64>() / 4.0, b.iter().map(|c| c.y).sum::<f64>() / 4.0));
                 self.begin_interaction("Rotate")?;
-                self.tool.gesture = Gesture::Rotate {
-                    center,
-                    start_angle: (ev.p() - center).atan2(),
-                    ids,
-                    moved: false,
-                };
+                self.tool.gesture = Gesture::Rotate { center, start_angle: (ev.p() - center).atan2(), ids, moved: false };
                 return Ok(());
             }
             let nodes: Vec<(NodeId, Affine, f64, f64)> =
@@ -83,8 +81,7 @@ impl Session {
         // layers in it is like the canvas (a press starts a marquee inside it) unless the frame is
         // selected; an empty frame (or a widget, or a board object such as a sticky) is picked and
         // dragged.
-        let board_background =
-            |leaf: NodeId| !sel.contains(&leaf) && super::frame_background(&doc, page, leaf);
+        let board_background = |leaf: NodeId| !sel.contains(&leaf) && super::frame_background(&doc, page, leaf);
         let label = label_at(&doc, page, &self.tool.labels, ev.p());
         let target = label.or_else(|| {
             self.hit(&doc, page, ev.p(), ev.tol() * 2.0)
@@ -168,16 +165,7 @@ impl Session {
                     return Err(e);
                 }
                 let ids2 = ids.clone();
-                self.tool.gesture = Gesture::Move {
-                    start: ev.p(),
-                    ids,
-                    live: ids2,
-                    targets,
-                    duplicate: ev.alt,
-                    moved: false,
-                    deselect,
-                    keep,
-                };
+                self.tool.gesture = Gesture::Move { start: ev.p(), ids, live: ids2, targets, duplicate: ev.alt, moved: false, deselect, keep };
                 self.tool.overlay.cursor = if ev.alt { Cursor::Copy } else { Cursor::Default };
             }
             None => {

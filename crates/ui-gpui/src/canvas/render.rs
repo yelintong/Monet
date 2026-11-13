@@ -103,36 +103,22 @@ fn bands_key(bands: &[figcraft_render::Band]) -> u64 {
     h.finish()
 }
 
-/// 拖动期间要不要**完全不渲**整页贴图。
+/// 提交一次整页渲染请求（内容没变、缓存又盖得住时直接短路）。
 ///
-/// 只要还有图层在动，底图就冻在拖动前那一张：画布每帧当帧同步渲染「旧位置 ∪ 新位置」的
-/// 不透明局部场景补丁（见 `canvas/mod.rs`），它既擦掉原地残影、也画出新位置，而且走的是
-/// 和静态画面完全相同的渲染管线。异步整页渲染永远比选框晚一两帧，是「内容 / 效果与框
-/// 脱开」的根源；每帧同步渲一整页又会反复分配整页缓冲（内存）。
-fn drag_holds(moving: &[NodeId]) -> bool {
-    !moving.is_empty()
-}
-
+/// **拖动期间照常提交**，不冻结底图。原工程就是这么做的：每完成一张就上台，`poll` 取最新
+/// 的那张（`latest wins`）。代价是内容可能比选框晚一两帧，换来的是**没有「必须擦掉的历史
+/// 像素」**——残影没有产生的余地。曾经的「冻结底图 + 当帧同步补丁」是为了消灭那一两帧滞后，
+/// 但它把正确性押在「每帧算准覆盖范围」上：容器 Hug 变宽又缩回、`moving` 集合中途变化、
+/// `start` 被重置，每一步算错都会留下半块残影。
 pub(super) fn request_render(
     app: &mut CanvasApp,
     worker: &mut Worker,
     ppp: f32,
     max_texture_side: u32,
-    moving: &[NodeId],
-    _moving_bounds: Option<figcraft_geom::Rect>,
-    _redraw: bool,
+    skip: &[NodeId],
+    grab_ask: Option<GrabAsk>,
     bands: &[figcraft_render::Band],
 ) {
-    // 拖动期间底图**完全冻结**：一张整页渲染都不提交。
-    //
-    // 旧做法是提交一张「让开被拖图层」的整页图、再抓一张透明底的图层替身；两张位图都由
-    // 异步线程产出，必有一两帧不同步 —— 内置效果在原地留下残影，外置材质被替身盖掉，
-    // 容器子节点则被 `Options::skip` 连根挖空。现在画布每帧**当帧同步**渲染「旧位置 ∪
-    // 新位置」的局部完整场景补丁（见 `canvas/mod.rs`），底图从头到尾不动：没有异步往返，
-    // 就没有残影；效果走的是和静态画面完全相同的渲染管线，也就不会丢失。
-    if drag_holds(moving) {
-        return;
-    }
     let Ok(ds) = app.session.ds() else { return };
     let rect = app.canvas.rect;
     let (mut ox, mut oy) = ds.view.origin();
@@ -163,10 +149,8 @@ pub(super) fn request_render(
     let visible = (visible_w, visible_h);
     let requested = (ox - f64::from(margin) / scale, oy - f64::from(margin) / scale);
     let size = (visible_w.saturating_add(margin * 2).min(max_texture_side), visible_h.saturating_add(margin * 2).min(max_texture_side));
-    // 整页贴图永远是完整场景：拖动时叠在它上面的局部补丁自己会盖住旧位置，
-    // 所以这里不让开任何图层、也不再抓透明底替身。
-    let skip: Vec<NodeId> = Vec::new();
-    let grab_ask: Option<GrabAsk> = None;
+    // 拖动时底图**跳过被拖的层**，由替身（`grab`）单独提供它的内容：
+    // 两者合起来才是完整画面，不会重复画同一层，也不需要"擦掉旧位置"。
     let key = JobKey {
         doc: Arc::as_ptr(&doc) as usize,
         page: ds.page,
@@ -176,7 +160,7 @@ pub(super) fn request_render(
         outline: ds.view.outlines,
         outline_extras,
         outlined: outlined.clone(),
-        skip: skip.clone(),
+        skip: skip.to_vec(),
         solo: ds.focused(),
         fonts: figcraft_text::layout_generation(),
         proof,
@@ -232,7 +216,7 @@ pub(super) fn request_render(
         outline: ds.view.outlines,
         outline_extras,
         outlined,
-        skip,
+        skip: skip.to_vec(),
         solo: key.solo,
         proof,
         dots: None,
@@ -267,17 +251,7 @@ fn overscan_margin(width: u32, height: u32, max_texture_side: u32) -> u32 {
 
 #[cfg(test)]
 mod tests {
-    use super::{cached_render_covers, drag_holds, overscan_margin};
-    use figcraft_doc::NodeId;
-
-    /// 拖动期间一次整页渲染都不提交：底图冻住，局部场景补丁当帧画。
-    /// 否则异步渲染晚一两帧，效果就会在原地留下残影。
-    #[test]
-    fn a_drag_never_submits_a_page_render() {
-        let ids = vec![NodeId(2)];
-        assert!(drag_holds(&ids), "拖住一个图层：不提交整页渲染");
-        assert!(!drag_holds(&[]), "没有拖动：正常提交");
-    }
+    use super::{cached_render_covers, overscan_margin};
 
     #[test]
     fn pan_uses_cached_pixels_until_the_refill_boundary() {
@@ -305,4 +279,3 @@ mod tests {
         }
     }
 }
-

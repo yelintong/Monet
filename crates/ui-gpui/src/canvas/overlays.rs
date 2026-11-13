@@ -14,6 +14,70 @@ use super::rulers::fmt;
 use crate::app::CanvasApp;
 use crate::theme::{COMPONENT, Tokens, stroke as s};
 
+/// 三次贝塞尔在 `t` 处的点（GPUI 画笔没有贝塞尔图元，段要采样成折线）。
+fn cubic_at(p0: Pos2, p1: Pos2, p2: Pos2, p3: Pos2, t: f32) -> Pos2 {
+    let u = 1.0 - t;
+    let (w0, w1, w2, w3) = (u * u * u, 3.0 * u * u * t, 3.0 * u * t * t, t * t * t);
+    pos2(p0.x * w0 + p1.x * w1 + p2.x * w2 + p3.x * w3, p0.y * w0 + p1.y * w1 + p2.y * w2 + p3.y * w3)
+}
+
+/// 矢量编辑叠加层（照抄 `ui-egui/src/canvas/overlays.rs::vector_overlay`）：
+/// 贝塞尔段（采样成折线）+ 手柄线 + 方形点（hover 放大、选中 accent）。
+///
+/// 用户 2026-11-12：进入矢量编辑后必须能看到每个节点的手柄、能点中它们。
+fn vector_overlay(
+    app: &CanvasApp,
+    painter: &mut Painter,
+    o: &figcraft_engine::vectoredit::EditOverlay,
+    hover: Option<figcraft_engine::vectoredit::VHit>,
+    accent: Color32,
+) {
+    use figcraft_engine::vectoredit::VHit;
+    let sp = |p: &[f64; 2]| app.to_screen(p[0], p[1]);
+    let hover_seg = match hover {
+        Some(VHit::Segment { seg, .. }) => Some(seg),
+        _ => None,
+    };
+    // 段：三次贝塞尔采样成折线。
+    for (i, seg) in o.segments.iter().enumerate() {
+        let w = if o.selected_segments.contains(&i) {
+            3.0
+        } else if hover_seg == Some(i) {
+            2.5
+        } else {
+            1.5
+        };
+        let (p0, p1, p2, p3) = (sp(&seg[0]), sp(&seg[1]), sp(&seg[2]), sp(&seg[3]));
+        let mut prev = p0;
+        for step in 1..=24 {
+            let q = cubic_at(p0, p1, p2, p3, step as f32 / 24.0);
+            painter.line_segment([prev, q], s(accent, w));
+            prev = q;
+        }
+    }
+    // 手柄线 + 端点圆（hover 放大、选中 accent）。
+    for h in &o.handles {
+        let a = sp(&h.vertex);
+        let b = sp(&h.handle);
+        painter.line_segment([a, b], s(accent, 1.0));
+        let on = o.selected_handles.contains(&(h.seg, h.start));
+        let hovered = hover == Some(VHit::Handle { seg: h.seg, start: h.start });
+        let r = if hovered { 4.5 } else { 3.5 };
+        painter.circle_filled(b, r, if on { accent } else { Color32::WHITE });
+        painter.circle_stroke(b, r, s(accent, 1.0));
+    }
+    // 顶点：方形（hover 放大、选中 accent）。
+    for (i, v) in o.vertices.iter().enumerate() {
+        let p = sp(v);
+        let hovered = matches!(hover, Some(VHit::Vertex { index }) if index == i);
+        let half = if hovered { 4.5 } else { 3.5 };
+        let r = Rect::from_min_max(pos2(p.x - half, p.y - half), pos2(p.x + half, p.y + half));
+        let on = o.selected_vertices.contains(&i);
+        painter.rect_filled(r, CornerRadius::same(2), if on { accent } else { Color32::WHITE });
+        painter.rect_stroke(r, CornerRadius::same(2), s(accent, 1.0), StrokeKind::Inside);
+    }
+}
+
 /// 选中/叠加层主色（与原文 `accent(painter)` 一致：页面深色用亮绿，浅色用对比绿）。
 pub(super) fn accent(app: &CanvasApp) -> Color32 {
     app.accent()
@@ -164,16 +228,25 @@ pub(super) fn overlays(app: &CanvasApp, painter: &mut Painter, t: &Tokens) -> Ve
         }
     }
 
-    // ── 矢量编辑：区域斜线剖面（在段与点下面）。
-    if ds.vector_edit.is_some() {
+    // ── 矢量编辑：区域斜线剖面（在段与点下面）+ 点/段/手柄。
+    if let Some(ve) = ds.vector_edit.as_ref() {
         super::builder::region_hatch(app, painter);
+        // 照抄 `ui-egui/src/canvas/overlays.rs:154-175`：先画段，再画手柄，最后画点。
+        // hover 由引擎在指针事件里算好（`tool.overlay.vector_hover`），这里只读。
+        let ov = &app.session.tool.overlay;
+        let hover = ov.vector_hover.filter(|_| ov.vector_hover_on.unwrap_or(ve.id) == ve.id);
+        if let Some(o) = figcraft_engine::vectoredit::overlay(&doc, ve) {
+            vector_overlay(app, painter, &o, hover, accent);
+        }
     }
 
     // ── 选中：每个选中层的真实轮廓 + 变换框。
     // 选中框的尺寸标签，测量标签要避开它。
     let mut size_label = None;
     let editing = ds.text_edit.is_some();
-    if !sel.is_empty() && !editing && ds.vector_edit.is_none() {
+    // 运动模式播放中：选中边框隐藏（物体在这一帧已不在选中框的位置，留在原地只会造成误导；
+    // gizmo / 运动路径也已在播放时藏起，这里保持一致，用户 2026-11-12）。
+    if !sel.is_empty() && !editing && ds.vector_edit.is_none() && !app.motion_overlay.playing {
         let col = if sel.iter().any(|i| outline_colour(&doc, *i, accent) == COMPONENT) { COMPONENT } else { accent };
         for id in &sel {
             // 选中描边统一走 draw_outline（源码选中色、1px）。

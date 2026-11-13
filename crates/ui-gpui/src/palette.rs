@@ -11,9 +11,9 @@
 //! `style:<id>`, `plugin:<plugin>/<command>`, `widget:<plugin>`); `CanvasView::pick_palette`
 //! turns it back into an engine command.
 
-use figcraft_i18n::tr;
 use figcraft_engine::Session;
 use figcraft_engine::catalog::{MENU, SEP};
+use figcraft_i18n::tr;
 use std::collections::HashSet;
 
 /// The Actions palette's tab (egui `PaletteTab`).

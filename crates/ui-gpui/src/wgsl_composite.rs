@@ -99,7 +99,17 @@ fn snapshot(id: &str) -> Option<Bundle> {
         groups.entry(b.group).or_default().push(b.clone());
     }
     let uniforms = scan.uniforms.iter().map(|(k, v)| (k.clone(), v.size.max(16))).collect();
-    Some(Bundle { hash: hasher.finish(), code, vertex, groups: groups.into_iter().collect(), uniforms, tile: find("fs_tile"), blur_h: find("fs_blurH"), blur_v: find("fs_blurV"), glass })
+    Some(Bundle {
+        hash: hasher.finish(),
+        code,
+        vertex,
+        groups: groups.into_iter().collect(),
+        uniforms,
+        tile: find("fs_tile"),
+        blur_h: find("fs_blurH"),
+        blur_v: find("fs_blurV"),
+        glass,
+    })
 }
 
 /// GPU resources for one (effect, node): pipelines, uniform buffers, tile/blur textures and bind
@@ -151,36 +161,51 @@ fn bind_entries<'a>(
     t_buf: &'a wgpu::Buffer,
     sampler: &'a wgpu::Sampler,
 ) -> Vec<wgpu::BindGroupEntry<'a>> {
-    bs.iter().filter_map(|binding| {
-        let resource = if binding.uniform {
-            let buf = match binding.name.as_str() {
-                "U" => Some(u_buf),
-                "F" => Some(f_buf),
-                "T" => Some(t_buf),
-                _ => None,
-            }?;
-            buf.as_entire_binding()
-        } else if binding.ty.contains("texture_2d") {
-            wgpu::BindingResource::TextureView(view)
-        } else if binding.ty.trim() == "sampler" {
-            wgpu::BindingResource::Sampler(sampler)
-        } else {
-            return None;
-        };
-        Some(wgpu::BindGroupEntry { binding: binding.binding, resource })
-    }).collect()
+    bs.iter()
+        .filter_map(|binding| {
+            let resource = if binding.uniform {
+                let buf = match binding.name.as_str() {
+                    "U" => Some(u_buf),
+                    "F" => Some(f_buf),
+                    "T" => Some(t_buf),
+                    _ => None,
+                }?;
+                buf.as_entire_binding()
+            } else if binding.ty.contains("texture_2d") {
+                wgpu::BindingResource::TextureView(view)
+            } else if binding.ty.trim() == "sampler" {
+                wgpu::BindingResource::Sampler(sampler)
+            } else {
+                return None;
+            };
+            Some(wgpu::BindGroupEntry { binding: binding.binding, resource })
+        })
+        .collect()
 }
 
 fn target(format: wgpu::TextureFormat, blend: bool) -> wgpu::ColorTargetState {
     wgpu::ColorTargetState { format, blend: blend.then_some(wgpu::BlendState::ALPHA_BLENDING), write_mask: wgpu::ColorWrites::ALL }
 }
 
-fn pipeline(device: &wgpu::Device, module: &wgpu::ShaderModule, layout: &wgpu::PipelineLayout, vertex: &str, fragment: &str, format: wgpu::TextureFormat, blend: bool) -> wgpu::RenderPipeline {
+fn pipeline(
+    device: &wgpu::Device,
+    module: &wgpu::ShaderModule,
+    layout: &wgpu::PipelineLayout,
+    vertex: &str,
+    fragment: &str,
+    format: wgpu::TextureFormat,
+    blend: bool,
+) -> wgpu::RenderPipeline {
     device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some(fragment),
         layout: Some(layout),
         vertex: wgpu::VertexState { module, entry_point: Some(vertex), compilation_options: Default::default(), buffers: &[] },
-        fragment: Some(wgpu::FragmentState { module, entry_point: Some(fragment), compilation_options: Default::default(), targets: &[Some(target(format, blend))] }),
+        fragment: Some(wgpu::FragmentState {
+            module,
+            entry_point: Some(fragment),
+            compilation_options: Default::default(),
+            targets: &[Some(target(format, blend))],
+        }),
         primitive: wgpu::PrimitiveState { topology: wgpu::PrimitiveTopology::TriangleList, ..Default::default() },
         depth_stencil: None,
         multisample: wgpu::MultisampleState::default(),
@@ -200,15 +225,24 @@ fn build(device: &wgpu::Device, b: &Bundle, canvas_view: &wgpu::TextureView, can
     let tile_view = tile.create_view(&wgpu::TextureViewDescriptor::default());
     let tmp_view = tmp.create_view(&wgpu::TextureViewDescriptor::default());
     let frost_view = frost.create_view(&wgpu::TextureViewDescriptor::default());
-    let sampler = device.create_sampler(&wgpu::SamplerDescriptor { mag_filter: wgpu::FilterMode::Linear, min_filter: wgpu::FilterMode::Linear, ..Default::default() });
+    let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+        mag_filter: wgpu::FilterMode::Linear,
+        min_filter: wgpu::FilterMode::Linear,
+        ..Default::default()
+    });
 
     // The host always writes U/F/T with fixed arities (U = shader layout ≥16, F = 8 f32, T = 4 f32).
     // Size each buffer to the max of the shader's declared layout and what the host writes, so a
     // shader declaring a smaller F/T can't make `write_buffer` go out of bounds.
     let size_of = |var: &str, floor: u64| b.uniforms.iter().find(|(v, _)| v == var).map(|(_, s)| (*s as u64).max(floor)).unwrap_or(floor);
-    let buffer = |name: &str, size: u64| device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some(name), size, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false,
-    });
+    let buffer = |name: &str, size: u64| {
+        device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some(name),
+            size,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        })
+    };
     let u_buf = buffer("U", size_of("U", 16));
     let f_buf = buffer("F", size_of("F", 32));
     let t_buf = buffer("T", size_of("T", 16));
@@ -216,24 +250,44 @@ fn build(device: &wgpu::Device, b: &Bundle, canvas_view: &wgpu::TextureView, can
     let max_group = b.groups.iter().map(|(g, _)| *g).max().unwrap_or(0);
     let mut layouts = Vec::new();
     for g in 0..=max_group {
-        let entries: Vec<wgpu::BindGroupLayoutEntry> = b.groups.iter().find(|(k, _)| *k == g)
-            .map(|(_, bs)| bs.iter().filter_map(|binding| {
-                let ty = if binding.uniform {
-                    wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None }
-                } else if binding.ty.contains("texture_2d") {
-                    wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: true }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false }
-                } else if binding.ty.trim() == "sampler" {
-                    wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering)
-                } else {
-                    return None;
-                };
-                Some(wgpu::BindGroupLayoutEntry { binding: binding.binding, visibility: wgpu::ShaderStages::VERTEX_FRAGMENT, ty, count: None })
-            }).collect())
+        let entries: Vec<wgpu::BindGroupLayoutEntry> = b
+            .groups
+            .iter()
+            .find(|(k, _)| *k == g)
+            .map(|(_, bs)| {
+                bs.iter()
+                    .filter_map(|binding| {
+                        let ty = if binding.uniform {
+                            wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None }
+                        } else if binding.ty.contains("texture_2d") {
+                            wgpu::BindingType::Texture {
+                                sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                                view_dimension: wgpu::TextureViewDimension::D2,
+                                multisampled: false,
+                            }
+                        } else if binding.ty.trim() == "sampler" {
+                            wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering)
+                        } else {
+                            return None;
+                        };
+                        Some(wgpu::BindGroupLayoutEntry {
+                            binding: binding.binding,
+                            visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                            ty,
+                            count: None,
+                        })
+                    })
+                    .collect()
+            })
             .unwrap_or_default();
         layouts.push(device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: Some("wgsl material group"), entries: &entries }));
     }
     let layout_refs: Vec<Option<&wgpu::BindGroupLayout>> = layouts.iter().map(Some).collect();
-    let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("wgsl material"), bind_group_layouts: &layout_refs, immediate_size: 0 });
+    let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: Some("wgsl material"),
+        bind_group_layouts: &layout_refs,
+        immediate_size: 0,
+    });
 
     let g0: &[fx::Binding] = b.groups.iter().find(|(k, _)| *k == 0).map(|(_, bs)| bs.as_slice()).unwrap_or(&[]);
     let g1: &[fx::Binding] = b.groups.iter().find(|(k, _)| *k == 1).map(|(_, bs)| bs.as_slice()).unwrap_or(&[]);
@@ -255,10 +309,28 @@ fn build(device: &wgpu::Device, b: &Bundle, canvas_view: &wgpu::TextureView, can
     let p_glass = pipeline(device, &module, &layout, &b.vertex, &b.glass.clone(), TILE_FORMAT, true);
 
     Ok(Gpu {
-        hash: b.hash, canvas_size: canvas, u_buf, f_buf, t_buf, tile_view, tmp_view, frost_view,
-        _sampler: sampler, _layouts: layouts, _textures: vec![tile, tmp, frost], _layout: layout,
-        bg_tile, bg_blur_h, bg_blur_v, bg_g1_frost, bg_glass, bg_t,
-        p_tile, p_blur_h, p_blur_v, p_glass,
+        hash: b.hash,
+        canvas_size: canvas,
+        u_buf,
+        f_buf,
+        t_buf,
+        tile_view,
+        tmp_view,
+        frost_view,
+        _sampler: sampler,
+        _layouts: layouts,
+        _textures: vec![tile, tmp, frost],
+        _layout: layout,
+        bg_tile,
+        bg_blur_h,
+        bg_blur_v,
+        bg_g1_frost,
+        bg_glass,
+        bg_t,
+        p_tile,
+        p_blur_h,
+        p_blur_v,
+        p_glass,
     })
 }
 
@@ -308,7 +380,8 @@ impl WgslComposite {
             force_fallback_adapter: false,
             compatible_surface: None,
             apply_limit_buckets: false,
-        })).ok()?;
+        }))
+        .ok()?;
         let adapter_info = adapter.get_info();
         let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
             label: Some("figcraft-wgsl-composite"),
@@ -317,7 +390,8 @@ impl WgslComposite {
             memory_hints: wgpu::MemoryHints::Performance,
             trace: wgpu::Trace::Off,
             experimental_features: wgpu::ExperimentalFeatures::disabled(),
-        })).ok()?;
+        }))
+        .ok()?;
         Some(Self { device, queue, cache: HashMap::new(), scene: None, out: None, adapter_info })
     }
 
@@ -332,7 +406,9 @@ impl WgslComposite {
         let texture = self.device.create_texture(&wgpu::TextureDescriptor {
             label: Some("wgsl sceneTex"),
             size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
-            mip_level_count: 1, sample_count: 1, dimension: wgpu::TextureDimension::D2,
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
             format: TILE_FORMAT,
             usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_SRC | wgpu::TextureUsages::COPY_DST,
             view_formats: &[],
@@ -349,7 +425,9 @@ impl WgslComposite {
         let texture = self.device.create_texture(&wgpu::TextureDescriptor {
             label: Some("wgsl output canvas"),
             size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
-            mip_level_count: 1, sample_count: 1, dimension: wgpu::TextureDimension::D2,
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
             format: TILE_FORMAT,
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC | wgpu::TextureUsages::COPY_DST,
             view_formats: &[],
@@ -380,7 +458,12 @@ impl WgslComposite {
         {
             let scene_view = self.scene.as_ref()?;
             self.queue.write_texture(
-                wgpu::TexelCopyTextureInfo { texture: &scene_view.texture, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+                wgpu::TexelCopyTextureInfo {
+                    texture: &scene_view.texture,
+                    mip_level: 0,
+                    origin: wgpu::Origin3d::ZERO,
+                    aspect: wgpu::TextureAspect::All,
+                },
                 &scene_rgba[..expected],
                 wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(w * 4), rows_per_image: Some(h) },
                 wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
@@ -388,7 +471,12 @@ impl WgslComposite {
             let out = self.out.as_ref()?;
             let mut enc = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("wgsl seed canvas") });
             enc.copy_texture_to_texture(
-                wgpu::TexelCopyTextureInfo { texture: &scene_view.texture, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+                wgpu::TexelCopyTextureInfo {
+                    texture: &scene_view.texture,
+                    mip_level: 0,
+                    origin: wgpu::Origin3d::ZERO,
+                    aspect: wgpu::TextureAspect::All,
+                },
                 wgpu::TexelCopyTextureInfo { texture: &out.texture, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
                 wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
             );
@@ -399,11 +487,14 @@ impl WgslComposite {
         //    Collect clones of the immutable handles first, then mutate the cache — no borrow fight.
         {
             let scene_view = self.scene.as_ref()?.view.clone();
-            let bundles: Vec<(String, u64, Bundle)> = passes.iter().filter_map(|p| {
-                let key = (p.effect.clone(), p.node.0);
-                let stale = self.cache.get(&key).is_none_or(|g| g.canvas_size != (w, h));
-                if stale { snapshot(&p.effect).map(|b| (p.effect.clone(), p.node.0, b)) } else { None }
-            }).collect();
+            let bundles: Vec<(String, u64, Bundle)> = passes
+                .iter()
+                .filter_map(|p| {
+                    let key = (p.effect.clone(), p.node.0);
+                    let stale = self.cache.get(&key).is_none_or(|g| g.canvas_size != (w, h));
+                    if stale { snapshot(&p.effect).map(|b| (p.effect.clone(), p.node.0, b)) } else { None }
+                })
+                .collect();
             for (effect, node, bundle) in bundles {
                 let gpu = build(&self.device, &bundle, &scene_view, (w, h)).ok()?;
                 self.cache.insert((effect, node), gpu);
@@ -426,25 +517,37 @@ impl WgslComposite {
         for p in passes {
             let key = (p.effect.clone(), p.node.0);
             let Some(g) = self.cache.get(&key) else { continue };
-            if !p.u.is_empty() { self.queue.write_buffer(&g.u_buf, 0, &p.u); }
-            if !p.f.is_empty() { self.queue.write_buffer(&g.f_buf, 0, &p.f); }
-            if !p.t.is_empty() { self.queue.write_buffer(&g.t_buf, 0, &p.t); }
+            if !p.u.is_empty() {
+                self.queue.write_buffer(&g.u_buf, 0, &p.u);
+            }
+            if !p.f.is_empty() {
+                self.queue.write_buffer(&g.f_buf, 0, &p.f);
+            }
+            if !p.t.is_empty() {
+                self.queue.write_buffer(&g.t_buf, 0, &p.t);
+            }
 
             let out = self.out.as_ref()?;
             let mut enc = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("wgsl material pass") });
             if let (Some(pipe), Some(g1)) = (&g.p_tile, &g.bg_g1_frost) {
                 let mut groups = vec![(0u32, &g.bg_tile), (1, g1)];
-                if let Some(t) = &g.bg_t { groups.push((2, t)); }
+                if let Some(t) = &g.bg_t {
+                    groups.push((2, t));
+                }
                 draw_pass(&mut enc, pipe, &g.tile_view, &groups);
             }
             if let (Some(pipe), Some(g1)) = (&g.p_blur_h, &g.bg_blur_h) {
                 let mut groups = vec![(0u32, &g.bg_tile), (1, g1)];
-                if let Some(t) = &g.bg_t { groups.push((2, t)); }
+                if let Some(t) = &g.bg_t {
+                    groups.push((2, t));
+                }
                 draw_pass(&mut enc, pipe, &g.tmp_view, &groups);
             }
             if let (Some(pipe), Some(g1)) = (&g.p_blur_v, &g.bg_blur_v) {
                 let mut groups = vec![(0u32, &g.bg_tile), (1, g1)];
-                if let Some(t) = &g.bg_t { groups.push((2, t)); }
+                if let Some(t) = &g.bg_t {
+                    groups.push((2, t));
+                }
                 draw_pass(&mut enc, pipe, &g.frost_view, &groups);
             }
             // Glass: viewport + scissor = node rect, blending over the seeded canvas.
@@ -455,20 +558,32 @@ impl WgslComposite {
                 let vw = rw.min(w.saturating_sub(x)).max(1);
                 let vh = rh.min(h.saturating_sub(y)).max(1);
                 let mut groups = vec![(0u32, &g.bg_glass)];
-                if let Some(g1) = &g.bg_g1_frost { groups.push((1, g1)); }
-                if let Some(g2) = &g.bg_t { groups.push((2, g2)); }
+                if let Some(g1) = &g.bg_g1_frost {
+                    groups.push((1, g1));
+                }
+                if let Some(g2) = &g.bg_t {
+                    groups.push((2, g2));
+                }
                 let att = [Some(wgpu::RenderPassColorAttachment {
-                    view: &out.view, depth_slice: None, resolve_target: None,
+                    view: &out.view,
+                    depth_slice: None,
+                    resolve_target: None,
                     ops: wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store },
                 })];
                 let mut rp = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
-                    label: Some("wgsl glass pass"), color_attachments: &att, depth_stencil_attachment: None,
-                    timestamp_writes: None, occlusion_query_set: None, multiview_mask: None,
+                    label: Some("wgsl glass pass"),
+                    color_attachments: &att,
+                    depth_stencil_attachment: None,
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                    multiview_mask: None,
                 });
                 rp.set_viewport(x as f32, y as f32, vw as f32, vh as f32, 0.0, 1.0);
                 rp.set_scissor_rect(x, y, vw, vh);
                 rp.set_pipeline(&g.p_glass);
-                for (index, group) in groups { rp.set_bind_group(index, group, &[]); }
+                for (index, group) in groups {
+                    rp.set_bind_group(index, group, &[]);
+                }
                 rp.draw(0..3, 0..1);
             }
             self.queue.submit(Some(enc.finish()));
@@ -483,13 +598,18 @@ impl WgslComposite {
         let mut enc = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("wgsl readback") });
         enc.copy_texture_to_buffer(
             wgpu::TexelCopyTextureInfo { texture: &out.texture, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
-            wgpu::TexelCopyBufferInfo { buffer: &out.readback, layout: wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(out.padded), rows_per_image: Some(h) } },
+            wgpu::TexelCopyBufferInfo {
+                buffer: &out.readback,
+                layout: wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(out.padded), rows_per_image: Some(h) },
+            },
             wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
         );
         self.queue.submit(Some(enc.finish()));
         let slice = out.readback.slice(..);
         let (tx, rx) = std::sync::mpsc::channel();
-        slice.map_async(wgpu::MapMode::Read, move |r| { let _ = tx.send(r); });
+        slice.map_async(wgpu::MapMode::Read, move |r| {
+            let _ = tx.send(r);
+        });
         let _ = self.device.poll(wgpu::PollType::Wait { submission_index: None, timeout: None });
         let _ = rx.recv();
         let mapped = slice.get_mapped_range().ok()?;
@@ -506,15 +626,23 @@ impl WgslComposite {
 
 fn draw_pass<'a>(enc: &mut wgpu::CommandEncoder, pipe: &wgpu::RenderPipeline, view: &'a wgpu::TextureView, groups: &[(u32, &'a wgpu::BindGroup)]) {
     let att = [Some(wgpu::RenderPassColorAttachment {
-        view, depth_slice: None, resolve_target: None,
+        view,
+        depth_slice: None,
+        resolve_target: None,
         ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT), store: wgpu::StoreOp::Store },
     })];
     let mut rp = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
-        label: Some("wgsl tile/blur pass"), color_attachments: &att, depth_stencil_attachment: None,
-        timestamp_writes: None, occlusion_query_set: None, multiview_mask: None,
+        label: Some("wgsl tile/blur pass"),
+        color_attachments: &att,
+        depth_stencil_attachment: None,
+        timestamp_writes: None,
+        occlusion_query_set: None,
+        multiview_mask: None,
     });
     rp.set_pipeline(pipe);
-    for (index, group) in groups { rp.set_bind_group(*index, *group, &[]); }
+    for (index, group) in groups {
+        rp.set_bind_group(*index, *group, &[]);
+    }
     rp.draw(0..3, 0..1);
 }
 
@@ -527,7 +655,9 @@ fn node_visible(doc: &Document, id: NodeId) -> bool {
     let mut cur = Some(id);
     while let Some(nid) = cur {
         let Some(n) = doc.node(nid) else { return false };
-        if !n.visible { return false; }
+        if !n.visible {
+            return false;
+        }
         cur = n.parent;
     }
     true
@@ -557,7 +687,9 @@ pub fn passes_for(doc: &Document, page: NodeId, view: &figcraft_render::View, ti
         let Some(binding) = crate::wgsl_material::WgslMaterialBinding::from_json(json) else { continue };
         let Some(r) = doc.bounds_of(&[id]) else { continue };
         let (w, h) = (r.width(), r.height());
-        if w <= 0.0 || h <= 0.0 { continue; }
+        if w <= 0.0 || h <= 0.0 {
+            continue;
+        }
         let (cx, cy) = ((r.x0 + r.x1) / 2.0, (r.y0 + r.y1) / 2.0);
         let radii = n.corners.radii;
         let smoothing = n.corners.smoothing;
@@ -601,7 +733,9 @@ pub fn passes_for(doc: &Document, page: NodeId, view: &figcraft_render::View, ti
         let (x1, y1) = map(xf_view, r.x1, r.y1);
         let (sx0, sy0) = (x0.min(x1).max(0.0), y0.min(y1).max(0.0));
         let (sx1, sy1) = (x0.max(x1), y0.max(y1));
-        if sx1 - sx0 <= 1.0 || sy1 - sy0 <= 1.0 { continue; }
+        if sx1 - sx0 <= 1.0 || sy1 - sy0 <= 1.0 {
+            continue;
+        }
         let rect_px = [sx0 as u32, sy0 as u32, (sx1 - sx0) as u32, (sy1 - sy0) as u32];
 
         out.push(MaterialPass { effect, node: id, u, f: f32_bytes(&f), t: f32_bytes(&t), rect_px });
@@ -690,7 +824,9 @@ fn fs_glass(i : VSOut) -> @location(0) vec4<f32> {
         let (w, h) = (64u32, 64u32);
         // Flat grey canvas with **opaque** alpha: straight RGBA [128,128,128,255] per pixel.
         let mut scene = vec![0u8; (w * h * 4) as usize];
-        for px in scene.chunks_exact_mut(4) { px.copy_from_slice(&[128, 128, 128, 255]); }
+        for px in scene.chunks_exact_mut(4) {
+            px.copy_from_slice(&[128, 128, 128, 255]);
+        }
         // Node rect: [16,16]..[48,48]. U.tint = 1.0 → opaque red glass over that rect.
         let pass = MaterialPass {
             effect: id.to_string(),
@@ -704,8 +840,8 @@ fn fs_glass(i : VSOut) -> @location(0) vec4<f32> {
         assert_eq!(out.len(), scene.len());
 
         let inside = px(&out, w, 32, 32); // rect centre
-        let outside = px(&out, w, 4, 4);  // well outside the rect
-        let edge = px(&out, w, 8, 32);    // outside on the same row
+        let outside = px(&out, w, 4, 4); // well outside the rect
+        let edge = px(&out, w, 8, 32); // outside on the same row
         assert!(inside[0] > 200 && inside[1] < 40 && inside[2] < 40, "glass is opaque red inside the node rect: {inside:?}");
         assert_eq!(outside, [128, 128, 128, 255], "pixels outside the rect are byte-identical to the scene: {outside:?}");
         assert_eq!(edge, [128, 128, 128, 255], "pixels left of the rect are untouched: {edge:?}");
@@ -718,7 +854,10 @@ fn fs_glass(i : VSOut) -> @location(0) vec4<f32> {
     fn recompositing_from_the_raw_scene_does_not_stack() {
         let mut comp = match WgslComposite::new() {
             Some(c) => c,
-            None => { eprintln!("no GPU adapter — skipping"); return; }
+            None => {
+                eprintln!("no GPU adapter — skipping");
+                return;
+            }
         };
         let id = "testglass";
         {
@@ -731,9 +870,12 @@ fn fs_glass(i : VSOut) -> @location(0) vec4<f32> {
         let (w, h) = (32u32, 32u32);
         // Flat grey canvas with **opaque** alpha: straight RGBA [128,128,128,255] per pixel.
         let mut scene = vec![0u8; (w * h * 4) as usize];
-        for px in scene.chunks_exact_mut(4) { px.copy_from_slice(&[128, 128, 128, 255]); }
+        for px in scene.chunks_exact_mut(4) {
+            px.copy_from_slice(&[128, 128, 128, 255]);
+        }
         let half = MaterialPass {
-            effect: id.to_string(), node: NodeId(2),
+            effect: id.to_string(),
+            node: NodeId(2),
             u: f32_bytes(&[0.5, 0.0, 0.0, 0.0]), // U.tint = 0.5
             f: f32_bytes(&[16.0, 16.0, 16.0, 16.0, 0.0, 0.0, 1.0, 0.0]),
             t: f32_bytes(&[0.25, 0.25, 0.5, 0.5]),

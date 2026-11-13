@@ -8,6 +8,13 @@
 // 2026-11-07 用户明确授权本次修改：**整个小窗口就是一个插槽**（除了右上角 X 的区域），
 // 不再有独立的 40pt 标题栏 + 下面另起一栏 body；`title()` 只是插槽里的第一块内容，
 // 拖动绑在整张卡片上（输入框会 `stop_propagation`，不会误拖）。
+//
+// 2026-11-12 用户再次明确结构（本次修改只落实这三条，不改动架构）：
+//   1. 头部栏 40pt 高的整块区域，除右上角 X 占的区域外，**整体就是一个插槽**（不是一行文字）；
+//   2. 底下放东西的是**第二个插槽**，紧贴头部栏；8pt 是这个 body 插槽**内部各项之间**的间距
+//      （由 [`popover_body`] 统一给出），不是两个插槽之间的间距；
+//   3. 拖动是控件的**通用能力**，统一绑在头部栏插槽上，不是每个调用方各写一套。
+//   头部栏内容垂直居中；X 仍浮在右上角、不占布局行。
 // ============================================================================
 //! The chrome every detached panel shares — the GPUI port of `ui-egui/src/popover.rs`.
 //!
@@ -23,19 +30,22 @@
 //! lifts it when its bottom would pass the screen; [`Open::At`] puts its top-left exactly there.
 //! `at()` overrides both (a dragged card). Everything is clamped inside the viewport.
 
-use figcraft_i18n::tr;
 use crate::canvas::geom::Color32;
 use crate::widgets::icon::{Icon, paint as paint_icon};
 use crate::widgets::{pt, rgba, tokens};
+use figcraft_i18n::tr;
 use gpui::{
-    AnyElement, App, BoxShadow, IntoElement, MouseButton, MouseDownEvent, MouseMoveEvent, Pixels, Point, SharedString, Size, Window, div, point, prelude::*, px,
+    AnyElement, App, BoxShadow, IntoElement, MouseButton, MouseDownEvent, MouseMoveEvent, Pixels, Point, SharedString, Size, Window, div, point,
+    prelude::*, px,
 };
 use std::rc::Rc;
 
 /// The default width: the colour picker's, and the one every detached panel shares.
 pub const WIDTH: f32 = 240.0;
-/// The header's height: the title's line and the X sit in it.
+/// The header's height: the whole 40 pt band is the title slot (minus the X's corner).
 pub const HEADER_H: f32 = 40.0;
+/// The vertical gap between **items inside the body slot** (2026-11-12).
+pub const ITEM_GAP: f32 = 8.0;
 /// The title starts this far from the panel's left edge, the X ends this far from its right one.
 pub const TITLE_LEFT: f32 = 16.0;
 pub const CLOSE_RIGHT: f32 = 8.0;
@@ -84,6 +94,9 @@ pub struct Popover {
     /// 最初元素」时拖拽仍连续（与根 `on_mouse_move` 接管同构；编辑器 body 自身的 `on_mouse_move`
     /// 只处理内置拖拽，不负责整卡移动，这里补上窗口级路由）。
     on_move: Option<Rc<dyn Fn(&MouseMoveEvent, &mut Window, &mut App)>>,
+    /// 卡片上的 **up** 收尾：弹窗是 `occlude()` 浮层，指针停在其上方时根 div 的 up 被吞，
+    /// 松手必须能在卡片这一层收到，否则拖拽状态残留、「放不下」。与 `on_move` 对称。
+    on_up: Option<Rc<dyn Fn(&gpui::MouseUpEvent, &mut Window, &mut App)>>,
     /// 全屏呈现（egui `Frame::NONE`）：不画圆角/阴影、不加内边距，位置也不被 `clamp` 夹离。
     flush: bool,
 }
@@ -102,6 +115,7 @@ impl Popover {
             body: None,
             on_drag: None,
             on_move: None,
+            on_up: None,
             flush: false,
         }
     }
@@ -171,6 +185,14 @@ impl Popover {
         self
     }
 
+    /// 整卡 `on_mouse_up` 的回调：与 `on_drag_move` 对称。弹窗 `occlude()` 会吞掉根 div 的 up，
+    /// 指针停在卡片上方松手时只有卡片自己能收到——拖拽收尾（`end_drag`）必须绑在这里，
+    /// 否则状态残留、鼠标一动卡片又跟着走（「放不下」）。
+    pub fn on_drag_up(mut self, f: impl Fn(&gpui::MouseUpEvent, &mut Window, &mut App) + 'static) -> Self {
+        self.on_up = Some(Rc::new(f));
+        self
+    }
+
     /// Where this card sits in `viewport`, after lift and clamp. Exposed so a drag can seed its
     /// state from the exact same origin the card is drawn at.
     pub fn origin(&self, viewport: Size<Pixels>) -> Point<Pixels> {
@@ -189,9 +211,8 @@ impl Popover {
     /// Draws the card and returns `(origin, element)`. `dismiss` is wired to the X; Escape and
     /// outside presses stay with the view that owns the popup (the egui original does the same).
     ///
-    /// 2026-11-07 用户要求：**整个小窗口就是一个插槽**（除了右上角的 X）——不再有独立的
-    /// 40pt 标题栏 + 下面另起一栏 body。`title()`（若有）只是插槽里的第一块内容；拖动绑在
-    /// 整张卡片上（输入框自己 `stop_propagation`，不会误拖）。
+    /// 2026-11-12 结构：**两个插槽**。40pt 的头部栏除右上角 X 占的区域外整块是 title 插槽
+    /// （内容垂直居中、通用拖动绑在这里），下面 8pt 处是 body 插槽。X 浮在右上角不占布局行。
     pub fn show(self, viewport: Size<Pixels>, dismiss: Rc<dyn Fn(&mut Window, &mut App)>) -> (Point<Pixels>, AnyElement) {
         let origin = self.origin(viewport);
         let t = tokens();
@@ -201,26 +222,30 @@ impl Popover {
 
         // 全屏时没有内边距（egui `Frame::NONE` + `inner_margin(0)`）。
         let pad = if self.flush { 0.0 } else { self.pad };
-        // 一个插槽装下全部内容：title 是插槽第一行（右侧让开 X），body 紧随其后。
-        let mut content = div().w_full().flex().flex_col().p(pt(pad));
+        // 卡片 = 两个插槽。头部栏**贴卡片边缘**（egui 的 40pt header 不吃 body 的 pad），
+        // 只有 body 插槽带 pad；X 绝对定位、(40−24)/2 垂直居中于头部栏，标题与 X 才同一水平线。
+        // 两个插槽之间**没有**额外间距；8pt 是 body 插槽内部各项之间、由 [`popover_body`] 给。
+        let mut stack = div().w_full().flex().flex_col();
         if let Some(title) = self.title {
-            let mut t = div().w_full().pr(pt(CLOSE + CLOSE_RIGHT)).child(title);
-            // ⛔ 拖动只绑在**标题行**，不是整张卡片：绑整卡会让点 body 里任何地方都开始拖
-            // 窗口（用户 2026-11-07 指出）。变量编辑器有自己的头部，它自己绑。
+            // 头部栏插槽：整块 40pt 都是插槽，内容垂直居中；左 16、右让开 X 的 24 + 8。
+            let mut head = div().w_full().h(pt(HEADER_H)).flex().items_center().pl(pt(TITLE_LEFT)).pr(pt(CLOSE + CLOSE_RIGHT)).child(title);
+            // ⛔ 通用拖动能力只绑在头部栏插槽，不是整张卡片：绑整卡会让点 body 里任何
+            // 地方都开始拖窗口（用户 2026-11-07 指出）。X 自己 stop_propagation。
             if let Some(f) = self.on_drag.clone() {
-                t = t.cursor_grab().on_mouse_down(MouseButton::Left, move |e, window, cx| f(e, window, cx));
+                head = head.cursor_grab().on_mouse_down(MouseButton::Left, move |e, window, cx| f(e, window, cx));
             }
-            content = content.child(t);
+            stack = stack.child(head);
         }
         if let Some(body) = self.body {
-            content = content.child(body);
+            stack = stack.child(div().w_full().flex().flex_col().p(pt(pad)).child(body));
         }
 
         // X 浮在右上角，不占布局行。
         let close = div()
             .absolute()
             .right(pt(CLOSE_RIGHT))
-            .top(pt(CLOSE_RIGHT))
+            // 24×24 的 X 垂直居中于 40pt 头部栏：(40 − 24) / 2 = 8。
+            .top(pt((HEADER_H - CLOSE) / 2.0))
             .size(pt(CLOSE))
             .rounded(pt(crate::widgets::RADIUS))
             .flex()
@@ -238,20 +263,16 @@ impl Popover {
             .child(paint_icon(Icon::Close, rgba(if dark { t.menu_text } else { t.icon }), 12.0));
 
         // 拖动：整张卡片（除 X 以外）都是拖动区。
-        let mut card = div()
-            .absolute()
-            .left(pt(f32::from(origin.x)))
-            .top(pt(f32::from(origin.y)))
-            .w(pt(self.width))
-            .flex()
-            .flex_col()
-            .bg(rgba(fill))
-            .occlude();
+        let mut card =
+            div().absolute().left(pt(f32::from(origin.x))).top(pt(f32::from(origin.y))).w(pt(self.width)).flex().flex_col().bg(rgba(fill)).occlude();
         // 全屏 = egui `Frame::NONE`：不要圆角、不要阴影，贴边铺满编辑器区。
         if !self.flush {
-            card = card
-                .rounded(pt(RADIUS))
-                .shadow(vec![BoxShadow { color: rgba(t.shadow).into(), offset: point(px(0.0), px(4.0)), blur_radius: px(16.0), spread_radius: px(0.0) }]);
+            card = card.rounded(pt(RADIUS)).shadow(vec![BoxShadow {
+                color: rgba(t.shadow).into(),
+                offset: point(px(0.0), px(4.0)),
+                blur_radius: px(16.0),
+                spread_radius: px(0.0),
+            }]);
         }
         // 拖动区已绑在标题行（见上），整张卡片不再接收拖动按下。
         // 整卡 move 路由：与 `on_drag_start` 同构，把卡片上的移动交给根视图的拖拽状态机。
@@ -260,7 +281,12 @@ impl Popover {
         if let Some(f) = self.on_move.clone() {
             card = card.on_mouse_move(move |e: &MouseMoveEvent, window, cx| f(e, window, cx));
         }
-        (origin, card.child(content).child(close).into_any_element())
+        // 卡片层 up：弹窗 occlude 吞掉根 div 的 up，松手停在卡片上方时靠这里收尾，
+        // 与根 div up / cancel_drag_if_not_held 三路都调同一个幂等 end_drag。
+        if let Some(f) = self.on_up.clone() {
+            card = card.on_mouse_up(MouseButton::Left, move |e: &gpui::MouseUpEvent, window, cx| f(e, window, cx));
+        }
+        (origin, card.child(stack).child(close).into_any_element())
     }
 }
 
@@ -272,7 +298,27 @@ pub fn popover_window(open: Open) -> Popover {
 /// The default **title slot**: the original's 11 pt semibold label. Callers that want something
 /// richer simply pass their own element to [`Popover::title`].
 pub fn title_text(text: impl Into<SharedString>) -> gpui::Div {
-    div().text_size(pt(11.0)).font_weight(gpui::FontWeight::SEMIBOLD).text_color(rgba(tokens().text)).overflow_hidden().child(text.into())
+    // egui 用 `elide_font` 按可用宽度裁标题；GPUI 这边保持同一效果：不换行 + 溢出隐藏。
+    // `h_full + items_center` 让标题在 40pt 头部栏插槽里真正垂直居中（只靠外层 items_center
+    // 时，文本自身的行盒 leading 会让字看起来偏上/偏下 1~2pt）。
+    div()
+        .h_full()
+        .flex()
+        .items_center()
+        .text_size(pt(11.0))
+        .font_weight(gpui::FontWeight::SEMIBOLD)
+        .text_color(rgba(tokens().text))
+        .whitespace_nowrap()
+        .overflow_hidden()
+        .child(text.into())
+}
+
+/// **body 插槽的统一容器**：把弹窗里的每一项 `.child(...)` 进来，各项之间固定 8pt。
+///
+/// 8pt 只写在这一处，所有弹窗复用；不要在每个调用方自己写 `gap()` 或手算行距。
+/// 头部栏插槽与 body 插槽之间**没有**额外间距（见 [`Popover::show`]）。
+pub fn popover_body() -> gpui::Div {
+    div().w_full().flex().flex_col().gap(pt(ITEM_GAP))
 }
 
 /// The opening position: the right edge on `anchor.x`, the top on `anchor.y` — lifted, when that

@@ -5,12 +5,12 @@
 //! section are the parts of `home/home_recents.rs` / `home/online.rs` still to come; this file is
 //! where they land.
 
-use figcraft_i18n::tr_noop;
 use crate::CanvasApp;
 use crate::panels::extra::ExtraState;
 use crate::panels::{Cmd, Cmds};
 use crate::widgets::{Icon, pt, rgba, tokens};
 use figcraft_i18n::tr;
+use figcraft_i18n::tr_noop;
 use gpui::{Div, MouseButton, SharedString, div, prelude::*, px};
 use serde_json::json;
 use std::cell::RefCell;
@@ -44,13 +44,7 @@ pub(crate) fn body(app: &CanvasApp, cmds: &Cmds, state: &ExtraState) -> Div {
             // Brand mark: the three anchor dots in red over the blue path (the mono version is
             // used by the rail / main menu). The renderer only keeps alpha, so each layer is
             // tinted separately instead of relying on the SVG's own colours.
-            .child(
-                gpui::svg()
-                    .path("brand/monet-dots.svg")
-                    .w(px(24.0))
-                    .h(px(24.0))
-                    .text_color(gpui::Hsla::from(gpui::rgb(0x007BE5))),
-            )
+            .child(gpui::svg().path("brand/monet-dots.svg").w(px(24.0)).h(px(24.0)).text_color(gpui::Hsla::from(gpui::rgb(0x007BE5))))
             .child(div().text_size(pt(16.0)).font_weight(gpui::FontWeight::SEMIBOLD).text_color(rgba(t.text)).child(tr("Monet"))),
     );
     side = side.child(state.home_search.clone());
@@ -104,9 +98,8 @@ pub(crate) fn body(app: &CanvasApp, cmds: &Cmds, state: &ExtraState) -> Div {
         1 => {
             // egui `home/online.rs::section`：标题 + 说明 + 本机在线文件列表（空态另说）。
             main = main.child(heading(tr("Online files")));
-            main = main.child(note(tr(
-                "The files you shared or published online from this computer. They stay on their server until you remove them.",
-            )));
+            main =
+                main.child(note(tr("The files you shared or published online from this computer. They stay on their server until you remove them.")));
             let files = &app.session.prefs.online_files;
             if files.is_empty() {
                 main = main.child(note(tr("Nothing online yet. Use Share on a file to put it online and it is listed here.")));
@@ -124,9 +117,15 @@ pub(crate) fn body(app: &CanvasApp, cmds: &Cmds, state: &ExtraState) -> Div {
                             .px(pt(10.0))
                             .rounded(pt(5.0))
                             .child(crate::widgets::icon::paint(Icon::LinkOn, rgba(t.icon), 16.0))
-                            .child(div().flex_1().min_w(px(0.0)).overflow_hidden().text_size(pt(12.0)).text_color(rgba(t.text)).child(
-                                SharedString::from(f.name.clone()),
-                            ))
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w(px(0.0))
+                                    .overflow_hidden()
+                                    .text_size(pt(12.0))
+                                    .text_color(rgba(t.text))
+                                    .child(SharedString::from(f.name.clone())),
+                            )
                             .child(div().text_size(pt(11.0)).text_color(rgba(t.text_tertiary)).child(SharedString::from(f.server.clone()))),
                     );
                 }
@@ -357,15 +356,7 @@ fn template_card(state: &ExtraState, tpl: &figcraft_engine::templates::Template,
             c.push(Cmd { id: "file.newFromTemplate", params: Some(json!({ "template": id, "name": name_for_cmd.clone() })) });
         });
     // The picture: the template drawn small, or its mark when it couldn't be drawn.
-    let mut pic = div()
-        .w_full()
-        .h(px(148.0))
-        .flex()
-        .items_center()
-        .justify_center()
-        .bg(rgba(t.panel))
-        .border_b_1()
-        .border_color(rgba(t.border));
+    let mut pic = div().w_full().h(px(148.0)).flex().items_center().justify_center().bg(rgba(t.panel)).border_b_1().border_color(rgba(t.border));
     pic = match thumb {
         Some(tex) => pic.child(gpui::img(gpui::ImageSource::Render(tex)).max_w(px(226.0)).max_h(px(148.0))),
         None => pic.child(crate::widgets::icon::paint(Icon::Frame, rgba(t.icon), 32.0)),
@@ -410,7 +401,7 @@ fn draw_template_thumb(tpl: &figcraft_engine::templates::Template) -> Option<std
     let (w, h) = (226.0f64, 126.0f64);
     let area = figcraft_geom::Rect::new(bounds.x0, bounds.y0, bounds.x1, bounds.y1.min(bounds.y0 + bounds.width() * h / w * 1.5));
     let scale = (w / area.width()).min(h / area.height());
-    let pix = figcraft_render::render_area(&doc, &frames, area, scale.min(1.0))?;
+    let pix = crate::render_stack::on_render_stack(|| figcraft_render::render_area(&doc, &frames, area, scale.min(1.0)))??;
     Some(crate::canvas::render_worker::screen_image(&pix, doc.color_profile))
 }
 

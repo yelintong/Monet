@@ -23,10 +23,10 @@
 //! of the panel (the root view renders them last). A full-window transparent backdrop catches
 //! outside clicks; rows highlight on hover; a click picks an item and dismisses.
 
-use figcraft_i18n::tr;
 use crate::canvas::geom::Color32;
 use crate::widgets::input::text_field::TextField;
 use crate::widgets::{pt, rgba, tokens};
+use figcraft_i18n::tr;
 use gpui::{AnyElement, App, Bounds, Entity, MouseButton, MouseDownEvent, Pixels, Point, SharedString, Window, div, prelude::*};
 use std::rc::Rc;
 
@@ -88,8 +88,7 @@ pub fn menu_popup(
 /// 抽成纯函数，好让「行 28pt / 分隔行 9pt」这条规则有数值断言守着——以前手工估计时
 /// 分隔符和卡片 8pt padding 都漏算，靠近屏幕底部时最后几项就溢出去了。
 pub(crate) fn menu_metrics(rows: &[MenuRow]) -> (f32, f32) {
-    let rows_h = rows.len() as f32 * 28.0
-        + rows.iter().filter(|r| r.separator_before).count() as f32 * 9.0;
+    let rows_h = rows.len() as f32 * 28.0 + rows.iter().filter(|r| r.separator_before).count() as f32 * 9.0;
     let content_w = rows
         .iter()
         .map(|r| {
@@ -427,11 +426,7 @@ mod tests {
 
     #[test]
     fn separators_count_toward_the_height_the_overflow_guard_uses() {
-        let rows = vec![
-            MenuRow::new(tr("Fit")),
-            MenuRow::new(tr("Fill")).separator(),
-            MenuRow::new("100%").checked(Some(true)),
-        ];
+        let rows = vec![MenuRow::new(tr("Fit")), MenuRow::new(tr("Fill")).separator(), MenuRow::new("100%").checked(Some(true))];
         let (rows_h, content_w) = menu_metrics(&rows);
         // 3×28 + 一条分隔行 9（my(4)+1+my(4)）。旧的手工估计只有 rows*28+16，
         // 既漏了分隔行、又把卡片 padding 当成了行数，靠近屏幕底部时最后几项会溢出。

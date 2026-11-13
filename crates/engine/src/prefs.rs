@@ -48,16 +48,7 @@ pub struct VariablesLayout {
 impl Default for VariablesLayout {
     fn default() -> Self {
         // Mirrors the panel's own defaults (`SIDEBAR_W`, `NAME_W`, `MODE_W`, an even split).
-        Self {
-            sidebar: true,
-            sidebar_w: 264.0,
-            sidebar_split: 0.5,
-            name_w: 240.0,
-            mode_w: 200.0,
-            mode_ws: BTreeMap::new(),
-            size: None,
-            pos: None,
-        }
+        Self { sidebar: true, sidebar_w: 264.0, sidebar_split: 0.5, name_w: 240.0, mode_w: 200.0, mode_ws: BTreeMap::new(), size: None, pos: None }
     }
 }
 
@@ -190,7 +181,8 @@ impl Default for Prefs {
             panel_widths: (240.0, 240.0),
             pages_height: None,
             variables: VariablesLayout::default(),
-            language: "system".into(),
+            // English unless the user picks another language in the preferences.
+            language: "en".into(),
             user_name: cmd::comment::DEFAULT_AUTHOR.into(),
             reduce_motion: false,
             ui_scale: 1.0,

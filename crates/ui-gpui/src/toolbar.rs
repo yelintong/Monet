@@ -19,11 +19,11 @@
 //! has no prototypes and no Dev Mode). Its one-tool groups (sticky notes, shapes, stamps) open a
 //! flyout of **choices** rather than of tools — see [`Group::options`].
 
-use figcraft_i18n::tr;
 use crate::menu_card::Item;
 use crate::widgets::icon::{Icon, paint as paint_icon};
 use crate::widgets::{pt, rgba, tokens};
 use figcraft_engine::ToolId;
+use figcraft_i18n::tr;
 use gpui::{App, BoxShadow, Div, MouseButton, MouseDownEvent, SharedString, Stateful, Window, div, point, prelude::*, px};
 use std::rc::Rc;
 
@@ -109,42 +109,22 @@ pub(crate) const GROUPS: &[Group] = &[
         tools: &[(ToolId::Pen, Icon::Pen), (ToolId::Pencil, Icon::Pencil), (ToolId::ShapeBuilder, Icon::ShapeBuilder)],
         options: Options::None,
     },
-    Group {
-        key: "text",
-        name: "Text",
-        tools: &[(ToolId::Text, Icon::Text), (ToolId::TextOnPath, Icon::TextOnPath)],
-        options: Options::None,
-    },
+    Group { key: "text", name: "Text", tools: &[(ToolId::Text, Icon::Text), (ToolId::TextOnPath, Icon::TextOnPath)], options: Options::None },
     Group { key: "comment", name: "Comment", tools: &[(ToolId::Comment, Icon::Comment)], options: Options::None },
 ];
 
 /// A board's tool groups, in the original's order (`ui-egui/src/toolbar.rs::BOARD_GROUPS`).
 pub(crate) const BOARD_GROUPS: &[Group] = &[
-    Group {
-        key: "bmove",
-        name: "Move tools",
-        tools: &[(ToolId::Move, Icon::Move), (ToolId::Hand, Icon::Hand)],
-        options: Options::None,
-    },
+    Group { key: "bmove", name: "Move tools", tools: &[(ToolId::Move, Icon::Move), (ToolId::Hand, Icon::Hand)], options: Options::None },
     Group {
         key: "ink",
         name: "Drawing tools",
         tools: &[(ToolId::Marker, Icon::Marker), (ToolId::Highlighter, Icon::Highlighter), (ToolId::Eraser, Icon::Eraser)],
         options: Options::None,
     },
-    Group {
-        key: "sticky",
-        name: "Sticky note colors",
-        tools: &[(ToolId::Sticky, Icon::Board)],
-        options: Options::Colors,
-    },
+    Group { key: "sticky", name: "Sticky note colors", tools: &[(ToolId::Sticky, Icon::Board)], options: Options::Colors },
     Group { key: "bshape", name: "Shapes", tools: &[(ToolId::BoardShape, Icon::Shapes)], options: Options::Shapes },
-    Group {
-        key: "connector",
-        name: "Connector",
-        tools: &[(ToolId::Connector, Icon::Connector)],
-        options: Options::None,
-    },
+    Group { key: "connector", name: "Connector", tools: &[(ToolId::Connector, Icon::Connector)], options: Options::None },
     Group { key: "text", name: "Text", tools: &[(ToolId::Text, Icon::Text)], options: Options::None },
     Group { key: "section", name: "Section", tools: &[(ToolId::Section, Icon::Section)], options: Options::None },
     Group { key: "stamp", name: "Stamps", tools: &[(ToolId::Stamp, Icon::Stamp)], options: Options::Stamps },
@@ -385,13 +365,10 @@ pub(crate) fn bar(
         // button is the only way to bring it back (`ui-egui/src/toolbar.rs::main_toolbar`).
         let on_tpl = on.clone();
         let open = flyout == Some(crate::board_picker::KEY);
-        pill = pill.child(tool_cell("board_templates", Icon::Templates, open, tr("Templates").into(), move |w, cx| {
-            on_tpl(Intent::Templates, w, cx)
-        }));
+        pill = pill.child(tool_cell("board_templates", Icon::Templates, open, tr("Templates").into(), move |w, cx| on_tpl(Intent::Templates, w, cx)));
         let on_panel = on.clone();
-        pill = pill.child(tool_cell("board_panel", Icon::Panels, board_panel, tr("Design panel").into(), move |w, cx| {
-            on_panel(Intent::DesignPanel, w, cx)
-        }));
+        pill = pill
+            .child(tool_cell("board_panel", Icon::Panels, board_panel, tr("Design panel").into(), move |w, cx| on_panel(Intent::DesignPanel, w, cx)));
         return placed(pill, groups, board, canvas_left, canvas_w);
     }
 
@@ -551,12 +528,7 @@ mod tests {
         for g in GROUPS {
             let shown_tool = shown(g, current, &last).0;
             let rows = flyout_items(GROUPS, g.key, shown_tool);
-            assert_eq!(
-                rows.iter().filter(|r| r.checked == Some(true)).count(),
-                1,
-                "group `{}` must tick exactly one row",
-                g.key
-            );
+            assert_eq!(rows.iter().filter(|r| r.checked == Some(true)).count(), 1, "group `{}` must tick exactly one row", g.key);
             assert!(
                 rows.iter().any(|r| r.id == shown_tool.id() && r.checked == Some(true)),
                 "group `{}` must tick the tool its cell shows ({})",

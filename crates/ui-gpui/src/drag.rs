@@ -202,10 +202,7 @@ pub fn resolve(rows: &[Row], from: usize, pointer: Point<Pixels>, cfg: Config) -
     let ancestor_path = ar.path.split('/').take(level).collect::<Vec<_>>().join("/");
     let prefix = format!("{ancestor_path}/");
     let subtree_start = rows.iter().position(|r| r.path == ancestor_path).unwrap_or(hit);
-    let subtree_end = rows
-        .iter()
-        .rposition(|r| r.path == ancestor_path || r.path.starts_with(&prefix))
-        .unwrap_or(hit);
+    let subtree_end = rows.iter().rposition(|r| r.path == ancestor_path || r.path.starts_with(&prefix)).unwrap_or(hit);
     // 浅层级一律落在整棵子树之后（egui groups：绝不插在父与子之间）；同层级按三区走。
     let after = level < anchor_level || zone == Zone::Below;
     let gap = if after { subtree_end + 1 } else { subtree_start };
@@ -213,12 +210,7 @@ pub fn resolve(rows: &[Row], from: usize, pointer: Point<Pixels>, cfg: Config) -
     // ── 插入线几何：y 直接由 gap 取，不再另算一套 ─────────────────────────────
     let x0 = cfg.base + (level.saturating_sub(1) as f32) * cfg.indent;
     let y = if gap >= rows.len() { bottom } else { f32::from(rows[gap].rect.origin.y) };
-    let line = Line {
-        x0,
-        x1: max_x.max(x0 + 1.0),
-        y,
-        into_rect: if zone == Zone::Into { Some(ar.rect) } else { None },
-    };
+    let line = Line { x0, x1: max_x.max(x0 + 1.0), y, into_rect: if zone == Zone::Into { Some(ar.rect) } else { None } };
 
     // ── 防环 / no-op（`drop_is_noop_or_cycle`） ──────────────────────────────
     // 落在自己或自己子树里，且层级不比原来浅 → 空操作或成环；**浅层级是合法移出**。
@@ -242,13 +234,7 @@ pub fn is_noop_or_cycle(old_path: &str, anchor_path: &str, level: usize) -> bool
 pub fn insert_index(rows: &[Row], sib_path: &str, after: bool) -> usize {
     if after {
         let prefix = format!("{sib_path}/");
-        rows
-            .iter()
-            .enumerate()
-            .filter(|(_, r)| r.path == sib_path || r.path.starts_with(&prefix))
-            .map(|(k, _)| k)
-            .max()
-            .map_or(rows.len(), |k| k + 1)
+        rows.iter().enumerate().filter(|(_, r)| r.path == sib_path || r.path.starts_with(&prefix)).map(|(k, _)| k).max().map_or(rows.len(), |k| k + 1)
     } else {
         rows.iter().position(|r| r.path == sib_path).unwrap_or(rows.len())
     }
@@ -256,11 +242,7 @@ pub fn insert_index(rows: &[Row], sib_path: &str, after: bool) -> usize {
 
 /// `apply_group_drop` 的父路径：取 anchor 路径的前 `level-1` 段；层级 1 → 顶层。
 pub fn parent_path_at(anchor_path: &str, level: usize) -> String {
-    if level <= 1 {
-        String::new()
-    } else {
-        anchor_path.split('/').take(level - 1).collect::<Vec<_>>().join("/")
-    }
+    if level <= 1 { String::new() } else { anchor_path.split('/').take(level - 1).collect::<Vec<_>>().join("/") }
 }
 
 /// GPUI 0.2.1 没有公开的「元素 id → 布局矩形」查询；`on_drag_move` 只给出**命中那一行**的
@@ -277,10 +259,7 @@ pub fn calibrate(rows: &mut [Row], hit: usize, bounds: Bounds<Pixels>) {
     let y0 = f32::from(bounds.origin.y);
     for (i, r) in rows.iter_mut().enumerate() {
         let y = y0 + (i as f32 - hit as f32) * h;
-        r.rect = Bounds {
-            origin: Point::new(px(x), px(y)),
-            size: Size::new(px(w), px(h)),
-        };
+        r.rect = Bounds { origin: Point::new(px(x), px(y)), size: Size::new(px(w), px(h)) };
     }
 }
 
@@ -416,12 +395,7 @@ mod tests {
     }
     /// 一棵三层树：a (L1) / a/b (L2) / a/b/c (L3)，后面再跟一个顶层 space。
     fn rows() -> Vec<Row> {
-        vec![
-            row(1, "1", 0.0, true),
-            row(2, "1/2", 32.0, true),
-            row(3, "1/2/3", 64.0, true),
-            row(4, "4", 96.0, false),
-        ]
+        vec![row(1, "1", 0.0, true), row(2, "1/2", 32.0, true), row(3, "1/2/3", 64.0, true), row(4, "4", 96.0, false)]
     }
     fn cfg() -> Config {
         Config { base: 0.0, indent: 24.0 }

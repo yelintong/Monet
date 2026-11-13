@@ -202,7 +202,9 @@ impl Session {
     pub(super) fn hover(&mut self, ev: &PointerEvent) -> Result<()> {
         let tool = self.acting_tool();
         let ds = self.ds()?;
-        let (doc, sel, page) = (ds.doc.clone(), ds.selection.clone(), ds.page);
+        // 悬停/光标也按显示文档算（动画模式播放头中间时，物体画在动画位置）。
+        let doc = self.display_doc.clone().unwrap_or_else(|| ds.doc.clone());
+        let (sel, page) = (ds.selection.clone(), ds.page);
         let mut cursor = tool.cursor();
         // The text being edited, and with the Text tool any text, takes the I-beam: a click there
         // puts the caret.
@@ -244,8 +246,7 @@ impl Session {
                 // 画框本体的悬停只在「按下去真能选中它」时才算：顶层非自动布局 frame 的本体
                 // 和画布一样（按下是框选），悬它显示描边会骗人——那种框只认标题。
                 hover = label_at(&doc, page, &self.tool.labels, ev.p()).or_else(|| {
-                    leaf.filter(|l| ev.cmd || !super::frame_background(&doc, page, *l))
-                        .map(|leaf| select_target(&doc, leaf, &sel, ev.cmd))
+                    leaf.filter(|l| ev.cmd || !super::frame_background(&doc, page, *l)).map(|leaf| select_target(&doc, leaf, &sel, ev.cmd))
                 });
                 // Alt over a selected layer: a drag from here duplicates it.
                 if ev.alt && !self.tool.dev_mode && tool == ToolId::Move && hover.is_some_and(|h| sel.contains(&h) && !locked_in(&doc, h)) {

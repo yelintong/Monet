@@ -597,11 +597,10 @@ pub(crate) struct DialogState {
     preview: Option<Arc<RenderImage>>,
     /// The root view: dropdown menus and the shared drag state machine both live there.
     root: Entity<CanvasView>,
-    // Drag state, mirroring `popovers::WindowState` (3 pt dead zone + per-step `popover::clamp`).
+    // 通用「按住拖动」状态：与浮窗、尺寸分隔条共用 `hold_drag`，不再自己写一套。
     viewport: Size<Pixels>,
     place: Option<Point<Pixels>>,
-    pending: Option<Point<Pixels>>,
-    grab: Option<Point<Pixels>>,
+    hold: crate::hold_drag::HoldDrag,
 }
 
 fn centered(viewport: Size<Pixels>, width: f32, height: f32) -> Point<Pixels> {
@@ -632,38 +631,28 @@ impl DialogState {
             root,
             viewport: size(px(0.0), px(0.0)),
             place: None,
-            pending: None,
-            grab: None,
+            hold: crate::hold_drag::HoldDrag::default(),
         }
     }
 
-    /// The shared window's drag state machine (same dead zone / clamp as `popovers::WindowState`).
+    /// 通用按住拖动：按下 / 3pt 死区 / 相对位移 / 收尾全在 `hold_drag`，
+    /// 这里只把算出的绝对位置按视口夹紧并写回 `place`。
     pub(crate) fn press(&mut self, at: Point<Pixels>) {
-        self.pending = Some(at);
+        let origin = self.place.unwrap_or_else(|| centered(self.viewport, self.spec.width, self.height()));
+        self.hold.press(at, origin);
     }
     pub(crate) fn dragging(&self) -> bool {
-        self.grab.is_some()
+        self.hold.active()
     }
     pub(crate) fn pending(&self) -> bool {
-        self.pending.is_some()
+        self.hold.pending()
     }
     pub(crate) fn end_drag(&mut self) {
-        self.grab = None;
-        self.pending = None;
+        self.hold.end();
     }
     pub(crate) fn route_move(&mut self, at: Point<Pixels>) -> bool {
-        let origin = self.place.unwrap_or_else(|| centered(self.viewport, self.spec.width, self.height()));
-        if !self.dragging() {
-            let Some(p) = self.pending else { return false };
-            if (f32::from(at.x) - f32::from(p.x)).abs() + (f32::from(at.y) - f32::from(p.y)).abs() < 3.0 {
-                return false;
-            }
-            self.grab = Some(Point { x: px(f32::from(p.x) - f32::from(origin.x)), y: px(f32::from(p.y) - f32::from(origin.y)) });
-            self.pending = None;
-        }
-        let Some(g) = self.grab else { return false };
-        let raw = Point { x: px(f32::from(at.x) - f32::from(g.x)), y: px(f32::from(at.y) - f32::from(g.y)) };
-        let p = clamp(raw, self.spec.width, self.height(), self.viewport);
+        let Some(step) = self.hold.advance(at) else { return false };
+        let p = clamp(step.place, self.spec.width, self.height(), self.viewport);
         if let Some(old) = self.place
             && (f32::from(p.x) - f32::from(old.x)).abs() < 0.5
             && (f32::from(p.y) - f32::from(old.y)).abs() < 0.5
@@ -729,7 +718,8 @@ impl DialogState {
         self.viewport = viewport;
         let height = self.height();
         let at = self.place.unwrap_or_else(|| centered(viewport, self.spec.width, height));
-        let mut body = div().w_full().flex().flex_col().gap(pt(8.0));
+        // 项间距统一走通用弹窗的 body 容器（8pt 只定义一次）。
+        let mut body = crate::widgets::popover::popover_body();
 
         if let Some(msg) = &self.spec.message {
             body = body.child(div().w_full().text_size(pt(11.0)).text_color(rgba(t.text)).child(SharedString::from(msg.clone())));

@@ -9,12 +9,12 @@
 //! egui gives for an unavailable command (`available(id)`); the UI-layer commands that live in
 //! egui's own clipboard (Copy as CSS / SVG / PNG, Copy link) are the ones that come out grey here.
 
-use figcraft_i18n::tr_noop;
 use crate::app::CanvasApp;
 use crate::menu_card::Item;
 use figcraft_doc::{Document, NodeId, NodeKind};
 use figcraft_geom::Point;
 use figcraft_i18n::tr;
+use figcraft_i18n::tr_noop;
 
 /// A context menu row's height (egui allocates 28 pt per row).
 pub(crate) const ROW_H: f32 = 28.0;

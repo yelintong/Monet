@@ -292,11 +292,11 @@ fn overflowing_text_is_drawn_while_its_box_is_out_of_view() {
 /// Draw a full render through [`Retained::begin`] `band_h` rows at a time; how many steps it took.
 fn stepped(r: &mut Retained, doc: &Arc<Document>, page: NodeId, v: &View, band_h: u32) -> (View, Pixmap, usize) {
     match r.begin(doc, page, v, &Options::default(), band_h).unwrap() {
-        crate::Begun::Done(shown, pix, work) => {
+        crate::retained::Begun::Done(shown, pix, work) => {
             assert_eq!(work, Work::Full, "one piece only when a blur can't be measured");
             (shown, pix.clone(), 0)
         }
-        crate::Begun::Steps(mut steps) => {
+        crate::retained::Begun::Steps(mut steps) => {
             let mut n = 1;
             while !steps.step() {
                 n += 1;
@@ -342,9 +342,49 @@ fn a_reused_or_patched_render_needs_no_steps() {
     let v = view(0.0, 0.0, 1.0);
     let mut r = Retained::default();
     check(&mut r, &s.doc, s.page, &v);
-    assert!(matches!(r.begin(&s.doc, s.page, &v, &Options::default(), 40), Some(crate::Begun::Done(_, _, Work::Reused))));
+    assert!(matches!(r.begin(&s.doc, s.page, &v, &Options::default(), 40), Some(crate::retained::Begun::Done(_, _, Work::Reused))));
     let panned = View { origin: (12.0, 0.0), ..v };
-    assert!(matches!(r.begin(&s.doc, s.page, &panned, &Options::default(), 40), Some(crate::Begun::Done(_, _, Work::Partial { .. }))));
+    assert!(matches!(r.begin(&s.doc, s.page, &panned, &Options::default(), 40), Some(crate::retained::Begun::Done(_, _, Work::Partial { .. }))));
+}
+
+/// While a layer is dragged the canvas draws it itself and skips it here: the places it left and
+/// took are not damage to the page, so a drag frame reuses the page image instead of redrawing it.
+#[test]
+fn moving_a_skipped_layer_leaves_the_page_reused() {
+    fonts();
+    let mut d = Document::new("skip");
+    let page = d.first_page().unwrap();
+    let under = d.create(page, NodeKind::Rectangle, "Under", 20.0, 20.0, 140.0, 140.0).unwrap();
+    solid(d.get_mut(under).unwrap(), "E03030");
+    let dragged = d.create(page, NodeKind::Rectangle, "Dragged", 60.0, 60.0, 60.0, 60.0).unwrap();
+    solid(d.get_mut(dragged).unwrap(), "3070E0");
+    let v = view(0.0, 0.0, 1.0);
+
+    let mut moved = d.clone();
+    moved.get_mut(dragged).unwrap().transform = Affine::translate((40.0, 25.0));
+    let (before, after) = (Arc::new(d), Arc::new(moved));
+
+    let skipping = Options { skip: vec![dragged], ..Default::default() };
+    let mut skipped = Retained::default();
+    assert_eq!(whole(&mut skipped, &before, page, &v, &skipping), Work::Full);
+    assert_eq!(whole(&mut skipped, &after, page, &v, &skipping), Work::Reused, "a skipped layer's move draws nothing");
+
+    let all = Options::default();
+    let mut shown = Retained::default();
+    assert_eq!(whole(&mut shown, &before, page, &v, &all), Work::Full);
+    assert!(matches!(whole(&mut shown, &after, page, &v, &all), Work::Partial { pixels } if pixels > 0), "a drawn layer's move repaints");
+}
+
+/// Render `doc` at `v` to the end of its bands, and say what the retained renderer had to draw.
+fn whole(r: &mut Retained, doc: &Arc<Document>, page: NodeId, v: &View, opts: &Options) -> Work {
+    match r.begin(doc, page, v, opts, 40).unwrap() {
+        crate::retained::Begun::Done(_, _, work) => work,
+        crate::retained::Begun::Steps(mut steps) => {
+            while !steps.step() {}
+            let _ = r.finish(*steps);
+            Work::Full
+        }
+    }
 }
 
 /// Background blurs stacked on each other (the upper reads the lower's blurred pixels) across the
@@ -437,15 +477,18 @@ fn a_shadow_cast_from_a_blurred_layer_draws_the_same_in_a_cut_view() {
     assert_within(&part, &one, 390, 2, "the shadow of a blurred layer above the view");
 }
 
-/// Reaches too large to add (texture of 1e308, twice) each count up to the cap and add up: a margin
-/// that stays finite, not none, and not the largest one alone.
+/// A reach too large to add stays finite rather than being dropped: two textures of 1e308 take the
+/// largest of them, and an infinite one is filtered out instead of poisoning the margin.
 #[test]
 fn effect_margins_too_large_to_add_stay_large() {
     let mut n = Node::new(NodeId(1), NodeKind::Rectangle, "T", 10.0, 10.0);
     let t = figcraft_doc::Texture { radius: 1e308, ..Default::default() };
     n.effects = vec![Effect { kind: EffectKind::Texture(t.clone()), visible: true }, Effect { kind: EffectKind::Texture(t), visible: true }];
     let m = crate::draw::effect_margin(&n);
-    assert_eq!(m, 2.0 * crate::draw::MAX_REACH);
+    assert_eq!(m, 1e308);
+    let inf = figcraft_doc::Texture { radius: f64::INFINITY, ..Default::default() };
+    n.effects = vec![Effect { kind: EffectKind::Texture(inf), visible: true }];
+    assert_eq!(crate::draw::effect_margin(&n), 0.0, "an infinite reach is not a reach");
 }
 
 #[test]

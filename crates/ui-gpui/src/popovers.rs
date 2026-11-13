@@ -9,19 +9,19 @@
 //! library (search field, number fields, icon buttons, text), and every action goes through the
 //! very same `CmdQueue` the right panel uses, so the engine sees the exact same commands.
 
-use figcraft_i18n::tr;
 use crate::canvas::geom::Color32;
 use crate::panels::right::data::PanelData;
 use crate::panels::right::variables::{self, VariablesData, VariablesEditor};
 use crate::panels::{Cmd, Cmds};
-use crate::widgets::popover::{self, HEADER_H, Open, Surface, WIDTH, popover_window, title_text};
-use crate::widgets::{MenuRow, dropdown};
 use crate::widgets::menu::menu_popup_in;
-use crate::widgets::{Icon, IconButton, SegItem, Segmented, Slot, TextField, number_field, pt, rgba, search_field, tokens};
+use crate::widgets::popover::{self, HEADER_H, Open, Surface, WIDTH, popover_window, title_text};
 use crate::widgets::typ_icons::TypIcon;
+use crate::widgets::{Icon, IconButton, SegItem, Segmented, Slot, TextField, number_field, pt, rgba, search_field, tokens};
+use crate::widgets::{MenuRow, dropdown};
+use figcraft_i18n::tr;
 use gpui::{
-    AnyElement, App, Bounds, Entity, IntoElement, MouseButton, MouseDownEvent, MouseMoveEvent, Pixels, Point, SharedString, Size, Window, div, point, prelude::*, px,
-    size,
+    AnyElement, App, Bounds, Entity, IntoElement, MouseButton, MouseDownEvent, MouseMoveEvent, Pixels, Point, SharedString, Size, Window, div, point,
+    prelude::*, px, size,
 };
 use serde_json::{Value, json};
 use std::cell::RefCell;
@@ -202,13 +202,10 @@ pub(crate) struct WindowState {
     /// egui's `clamp(at - grab, size, screen)`, so a pointer leaving the window cannot park the
     /// card outside it.
     viewport: Size<Pixels>,
-    /// Pointer minus origin at the press, while dragging.
-    grab: Option<Point<Pixels>>,
-    /// Where the pointer pressed, before it has moved far enough to count as a drag. A press alone
-    /// must NOT start a drag (and must not repaint): GPUI matches a click's down/up by `ElementId`,
-    /// so repainting on every press is what made header buttons stop responding. The drag only
-    /// latches once the pointer moves past a small threshold — egui's `click_and_drag`.
-    pending: Option<Point<Pixels>>,
+    /// 通用「按住拖动」状态：按下 / 3pt 死区 / latch / 相对位移 / 收尾。
+    /// 与尺寸分隔条（`resize_drag`）、通用对话框（`dialogs`）共用同一份 `hold_drag` 实现。
+    /// 按下本身**不重绘**：GPUI 靠 ElementId 匹配 click 的 down/up，重绘会让头部按钮点不动。
+    hold: crate::hold_drag::HoldDrag,
     /// 标题栏 / 头部左侧的拖动回调（整卡拖动）。**只绑在头部左侧**，不是整张卡片：
     /// 绑整卡会让「点表格行、点按钮」都开始拖窗口（用户 2026-11-07 指出）。
     drag_start: Option<Rc<dyn Fn(&MouseDownEvent, &mut Window, &mut App)>>,
@@ -256,8 +253,7 @@ impl WindowState {
             place: None,
             origin: Point { x: px(0.0), y: px(0.0) },
             viewport: size(px(0.0), px(0.0)),
-            grab: None,
-            pending: None,
+            hold: crate::hold_drag::HoldDrag::default(),
             drag_start: None,
             cmds,
             rows: Vec::new(),
@@ -603,7 +599,8 @@ impl WindowState {
             drill_in: None,
             options: vec![
                 Opt::new(tr("Don't truncate"), "node.set", json!({ "props": { "textAutoResize": "none" } })).with_glyph(TypIcon::None),
-                Opt::new(tr("Truncate with an ellipsis"), "node.set", json!({ "props": { "textAutoResize": "truncate" } })).with_glyph(TypIcon::Truncate),
+                Opt::new(tr("Truncate with an ellipsis"), "node.set", json!({ "props": { "textAutoResize": "truncate" } }))
+                    .with_glyph(TypIcon::Truncate),
             ],
         });
         settings.push(Setting::Dropdown {
@@ -864,8 +861,7 @@ impl WindowState {
 
     /// 变量窗口是否有拖拽正在进行（整卡移动 / 8 个 resize handle）。
     pub(crate) fn variables_active(&self) -> bool {
-        self.pending.is_some()
-            || self.grab.is_some()
+        self.hold.busy()
             || self.editor.as_ref().is_some_and(|e| e.resizing())
             // 编辑器内部的拖拽（行排序 / 列宽 / 侧栏 / 分栏 / 模式列 / 横向滚动条）同样要由
             // **根视图**接管：GPUI 元素级的 `on_mouse_move` 只在指针悬停该元素时触发，
@@ -899,16 +895,8 @@ impl WindowState {
             }
             return true;
         }
-        // 整卡移动：越过 3pt 死区才 latch，纯点击不拖（egui `click_and_drag`）。
-        if !self.dragging() {
-            let Some(p) = self.pending else { return false };
-            let dx = (f32::from(at.x) - f32::from(p.x)).abs();
-            let dy = (f32::from(at.y) - f32::from(p.y)).abs();
-            if dx + dy < 3.0 {
-                return false;
-            }
-            self.start_drag();
-        }
+        // 整卡移动：3pt 死区 / latch / 相对位移 / 收尾全在通用 `hold_drag` 里
+        // （egui `click_and_drag`）；这里只把算出的绝对位置写回 `place`。
         self.move_drag(at)
     }
 
@@ -987,36 +975,27 @@ impl WindowState {
         self.search = Some(field);
     }
 
-    // ── drag (the view owns the pointer events; this is just its state) ──────────────────────
-    /// Record a press on the card. This does **not** start a drag and does **not** repaint: a press
-    /// that never moves past the threshold must stay a click, or header buttons stop firing (GPUI
-    /// matches a click's down/up by `ElementId`, and a repaint between them can shift the id).
+    // ── drag：状态机在 `hold_drag`，这里只把结果写回 `place` ─────────────────────────────
+    /// 按下：只记状态、**不重绘**（GPUI 靠 ElementId 匹配 click 的 down/up）。
     pub(crate) fn press(&mut self, at: Point<Pixels>) {
-        self.pending = Some(at);
+        self.hold.press(at, self.origin);
     }
-    /// The press point while the pointer is held but has not moved far enough to be a drag.
+    /// 已按下但还没越过 3pt 死区时的按下点。
     pub(crate) fn pending(&self) -> Option<Point<Pixels>> {
-        self.pending
+        self.hold.pending_point()
     }
-    /// Latch the drag: from here the card follows the pointer. Seeds `grab` from the *press* so the
-    /// card does not jump to the pointer.
+    /// 显式 latch（跳过死区），供测试与需要立即起拖的调用方。
     pub(crate) fn start_drag(&mut self) {
-        if let Some(at) = self.pending.take() {
-            self.grab = Some(Point { x: px(f32::from(at.x) - f32::from(self.origin.x)), y: px(f32::from(at.y) - f32::from(self.origin.y)) });
-        }
+        self.hold.latch();
     }
     pub(crate) fn dragging(&self) -> bool {
-        self.grab.is_some()
+        self.hold.active()
     }
-    /// Returns true only when the card actually moved. egui clamps **every** drag step to the
-    /// screen (`self.place = Place::At(clamp(at - grab, size, screen))`); without that clamp a
-    /// pointer that leaves the window parks the card outside it, and the next enter jumps it.
-    /// Clamping here also keeps `place` in the same coordinate space as `origin` (which `show()`
-    /// clamps), so the grab offset never drifts between frames.
+    /// 通用状态机给出「按下时原点 + 相对位移」的绝对位置，再按视口夹紧（egui 每步都 clamp）。
+    /// 返回 true 仅当卡片确实移动了。
     pub(crate) fn move_drag(&mut self, at: Point<Pixels>) -> bool {
-        let Some(g) = self.grab else { return false };
-        let raw = Point { x: px(f32::from(at.x) - f32::from(g.x)), y: px(f32::from(at.y) - f32::from(g.y)) };
-        let p = popover::clamp(raw, self.width, self.height, self.viewport);
+        let Some(step) = self.hold.advance(at) else { return false };
+        let p = popover::clamp(step.place, self.width, self.height, self.viewport);
         if let Some(old) = self.place {
             let dx = f32::from(p.x) - f32::from(old.x);
             let dy = f32::from(p.y) - f32::from(old.y);
@@ -1028,8 +1007,7 @@ impl WindowState {
         true
     }
     pub(crate) fn end_drag(&mut self) {
-        self.grab = None;
-        self.pending = None;
+        self.hold.end();
     }
 
     /// 仅供端到端测试读取拖拽后的卡片原点（窗口坐标）。
@@ -1155,13 +1133,7 @@ impl WindowState {
             WindowKind::VariablesTable => {
                 if self.editor.is_none() {
                     if let Some(data) = self.variables_data.take() {
-                        let editor = VariablesEditor::new(
-                            self.cmds.clone(),
-                            data,
-                            cx,
-                            self.var_on_full.clone(),
-                            self.var_on_close.clone(),
-                        );
+                        let editor = VariablesEditor::new(self.cmds.clone(), data, cx, self.var_on_full.clone(), self.var_on_close.clone());
                         // 把在 editor 建立之前就收到的 Full/Floating 记住值灌进去。
                         if let Some(full) = self.editor_full {
                             editor.set_full(full);
@@ -1413,11 +1385,12 @@ impl WindowState {
         let t = tokens();
         // Type settings 卡片 pad 为了让标题栏与 X 垂直居中改成 8；正文这里补左右各 4，
         // 把视觉内边距补回设计的 12（Layout / Stroke 仍是 pad 12，不加）。
+        // body 插槽里的项间距统一由 `popover_body` 给（8pt），不在每个弹窗各写一个 gap。
+        // TypeSettings 的 pad 少 4，这里补回左右各 4 的视觉内边距。
         let mut col = if self.kind == WindowKind::TypeSettings {
-            // 用户 2026-11-11：文字弹层里每一项（块）之间 8，不是 2。
-            div().w_full().flex().flex_col().gap(pt(8.0)).px(pt(4.0))
+            crate::widgets::popover::popover_body().px(pt(4.0))
         } else {
-            div().w_full().flex().flex_col().gap(pt(2.0))
+            crate::widgets::popover::popover_body()
         };
         // Type settings 的页签已画在标题栏插槽里；Layout / Stroke 仍沿用正文顶部的页签行。
         if self.kind != WindowKind::TypeSettings {
@@ -1567,19 +1540,13 @@ impl WindowState {
                 }
                 let bar = options.iter().map(|o| est_text_w(&o.label) + 16.0).sum::<f32>().max(48.0);
                 let seg = seg.fixed_bar(bar);
-                if label.is_empty() {
-                    Some(seg.into_any_element())
-                } else {
-                    Some(type_row(label, &t, seg.into_any_element()))
-                }
+                if label.is_empty() { Some(seg.into_any_element()) } else { Some(type_row(label, &t, seg.into_any_element())) }
             }
             Setting::IconOptions { tab: st, label, active, bar_w, options, drill_in } => {
                 if *st != tab {
                     return None;
                 }
-                let mut seg = Segmented::new(options.iter().map(|o| o.item()).collect())
-                    .active(*active)
-                    .fixed_bar(*bar_w);
+                let mut seg = Segmented::new(options.iter().map(|o| o.item()).collect()).active(*active).fixed_bar(*bar_w);
                 let cmds = self.cmds.clone();
                 let settings = self.settings.clone();
                 let opts = options.clone();
@@ -1602,14 +1569,12 @@ impl WindowState {
                 if let Some(flag) = drill_in {
                     let f = flag.clone();
                     let wake = self.cmds.clone();
-                    let chev = IconButton::new(Icon::ChevronRight)
-                        .size(16.0)
-                        .on_click(move |_, _, _| {
-                            let mut b = f.borrow_mut();
-                            *b = !*b;
-                            drop(b);
-                            wake.wake();
-                        });
+                    let chev = IconButton::new(Icon::ChevronRight).size(16.0).on_click(move |_, _, _| {
+                        let mut b = f.borrow_mut();
+                        *b = !*b;
+                        drop(b);
+                        wake.wake();
+                    });
                     control = div().flex().flex_row().items_center().gap(pt(4.0)).child(control).child(chev).into_any_element();
                 }
                 Some(type_row(label, &t, control))
@@ -1624,21 +1589,17 @@ impl WindowState {
                 // 不再自己拼 div。点击把按钮窗口矩形回填为菜单锚点。
                 let at = anchor.clone();
                 let wake = self.cmds.clone();
-                let trigger = dropdown(cur, 96.0, None)
-                    .menu(key)
-                    .on_click(move |rect, _window, _cx| {
-                        *at.borrow_mut() = Some(rect);
-                        wake.wake();
-                    });
+                let trigger = dropdown(cur, 96.0, None).menu(key).on_click(move |rect, _window, _cx| {
+                    *at.borrow_mut() = Some(rect);
+                    wake.wake();
+                });
 
                 // 菜单：通用 `menu_popup_in`（`Menu::show` 的菜单表面 / hover / 勾选列 / 防溢出）。
                 // 浮层占着根视图唯一的 popup 槽，故菜单由 `render()` 作为窗口级兄弟元素返回。
                 let shown = *anchor.borrow();
                 if let Some(rect) = shown {
-                    let rows: Vec<MenuRow> = options
-                        .iter()
-                        .map(|o| MenuRow::new(o.label.clone()).checked(Some(o.label == *current.borrow())))
-                        .collect();
+                    let rows: Vec<MenuRow> =
+                        options.iter().map(|o| MenuRow::new(o.label.clone()).checked(Some(o.label == *current.borrow()))).collect();
                     let opts = options.clone();
                     let cmds = self.cmds.clone();
                     let cur_state = current.clone();
@@ -1669,9 +1630,7 @@ impl WindowState {
                     return None;
                 }
                 let idx = if *on.borrow() { 1 } else { 0 };
-                let mut seg = Segmented::new(vec![SegItem::Svg(TypIcon::None), SegItem::Icon(Icon::Check)])
-                    .active(Some(idx))
-                    .fixed_bar(48.0);
+                let mut seg = Segmented::new(vec![SegItem::Svg(TypIcon::None), SegItem::Icon(Icon::Check)]).active(Some(idx)).fixed_bar(48.0);
                 if *supported {
                     let cmds = self.cmds.clone();
                     let state = on.clone();
@@ -1806,14 +1765,7 @@ fn type_row(label: &SharedString, t: &crate::theme::Tokens, control: AnyElement)
         .flex_row()
         .items_center()
         .gap(pt(6.0))
-        .child(
-            div()
-                .flex_none()
-                .min_w(px(0.0))
-                .text_size(pt(10.0))
-                .text_color(rgba(t.text))
-                .child(label.clone()),
-        )
+        .child(div().flex_none().min_w(px(0.0)).text_size(pt(10.0)).text_color(rgba(t.text)).child(label.clone()))
         .child(div().flex_1().min_w(px(0.0)))
         .child(div().flex_none().child(control))
         .into_any_element()
@@ -1916,7 +1868,11 @@ mod tests {
     #[test]
     fn variables_route_move_latches_past_dead_zone_and_relocates() {
         let wake: Rc<dyn Fn()> = Rc::new(|| {});
-        let mut w = WindowState::variables_table(Cmds::new(&wake), Point { x: px(100.0), y: px(100.0) }, VariablesData { collections: Vec::new(), libraries: Vec::new() });
+        let mut w = WindowState::variables_table(
+            Cmds::new(&wake),
+            Point { x: px(100.0), y: px(100.0) },
+            VariablesData { collections: Vec::new(), libraries: Vec::new() },
+        );
         w.viewport = size(px(1280.0), px(860.0));
         w.origin = Point { x: px(100.0), y: px(100.0) };
         // Press records the grab origin; no drag yet.
@@ -2016,10 +1972,13 @@ mod tests {
         let supported = ["liga", "tnum"].iter().map(|s| s.to_string()).collect();
         let rows = WindowState::type_feature_groups(1, &features, &supported);
         // 按命令里的 tag 定位 liga（组序里 Numbers 在 Letter forms 前，不能用索引）。
-        let liga = rows.iter().find_map(|s| match s {
-            Setting::Toggle { on_cmd, .. } if on_cmd.params["features"].get("liga").is_some() => Some(s),
-            _ => None,
-        }).expect("liga toggle must exist (it was scanned)");
+        let liga = rows
+            .iter()
+            .find_map(|s| match s {
+                Setting::Toggle { on_cmd, .. } if on_cmd.params["features"].get("liga").is_some() => Some(s),
+                _ => None,
+            })
+            .expect("liga toggle must exist (it was scanned)");
         let Setting::Toggle { on, on_cmd, off_cmd, .. } = liga else { unreachable!() };
         assert_eq!(on_cmd.cmd, "text.setFeatures");
         assert_eq!(off_cmd.cmd, "text.setFeatures");
@@ -2036,5 +1995,4 @@ mod tests {
         let Setting::Toggle { on, .. } = &rows[1] else { panic!("expected toggle after title") };
         assert!(!*on.borrow(), "文档覆盖应盖过默认开");
     }
-
 }

@@ -215,13 +215,18 @@ fn render_rows(rows: Vec<FieldRow>) -> Div {
                 line = line.child(dbg_frame(div().flex_1().min_w(pt(0.0)).h_full(), 0x30D158));
             }
         }
-        // **One** 24 pt column — a separate "blank 24" plus "trailing 24" would shift every row.
+        // **One** 24 pt column per trailing element — a separate "blank 24" plus "trailing 24"
+        // would shift every row. Each trailing element gets its OWN `SLOT` (24 pt) cell, centred:
+        // that is the `field_row_full_trailing` contract ("two 24 pt buttons 4 apart"). Without
+        // per-element slots, two 20 pt icons sit flush (centres 20 apart) instead of 24 apart,
+        // losing the 4 pt gutter — the clip row's eye/minus looked stuck together (user 2026-11-12).
+        // Single-icon rows are unchanged (their icon just centres in the same 24 pt).
         let count = trailing.len().max(1) as f32;
-        let mut cell = div().flex_none().w(pt(SLOT * count)).h_full().flex().items_center();
+        let mut cell = div().flex_none().w(pt(SLOT * count)).h_full().flex().flex_row().items_center();
         for t in trailing {
-            cell = cell.child(t);
+            cell = cell.child(dbg_frame(div().w(pt(SLOT)).h_full().flex().items_center().justify_center().child(t), 0xBF5AF2));
         }
-        line = line.child(dbg_frame(cell, 0xBF5AF2));
+        line = line.child(cell);
         body = body.child(line);
     }
     body

@@ -125,8 +125,7 @@ pub fn params_for(path: &str) -> Vec<fx::ParamSpec> {
 /// they are consumed by the host, not written by the user).
 pub fn binding_for(path: &str) -> WgslMaterialBinding {
     let params = params_for(path).into_iter().filter(|p| !p.host).map(|p| (p.field, p.default)).collect();
-    WgslMaterialBinding::new(path)
-        .with_params(params)
+    WgslMaterialBinding::new(path).with_params(params)
 }
 
 /// Pack one node's control values into its `U` uniform **in isolation**.
@@ -149,9 +148,7 @@ pub fn pack_node_uniforms(binding: &WgslMaterialBinding, exports: &fx::EngineExp
     // `frost` is a host control consumed by the blur chain, not a uniform write. Its params key is
     // the full uniform path (`U.frost`), so resolve by suffix — `set_param` above already applied
     // the user's edit to the clone; `param_value` then reads the edited value or the seeded default.
-    let frost = local.params(&id).into_iter().find(|p| p.field.ends_with("frost"))
-        .and_then(|p| local.param_value(&id, &p.field))
-        .unwrap_or(0.0);
+    let frost = local.params(&id).into_iter().find(|p| p.field.ends_with("frost")).and_then(|p| local.param_value(&id, &p.field)).unwrap_or(0.0);
     (id, u, frost)
 }
 
@@ -197,8 +194,7 @@ pub fn scan_dir(dir: &Path) -> Vec<WgslFile> {
         if !p.is_file() {
             continue;
         }
-        let name = p.file_stem().map(|s| s.to_string_lossy().into_owned())
-            .unwrap_or_else(|| p.to_string_lossy().into_owned());
+        let name = p.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| p.to_string_lossy().into_owned());
         files.push(WgslFile { name, path: p });
     }
     files.sort_by(|a, b| a.name.cmp(&b.name).then_with(|| a.path.cmp(&b.path)));

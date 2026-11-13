@@ -9,8 +9,8 @@
 use figcraft_geom::{Rect, Shape};
 use tiny_skia::{FillRule, Paint, Path, PathBuilder, Pixmap};
 
-use crate::draw::{ts_path, ts_transform};
 use crate::Band;
+use crate::draw::{ts_path, ts_transform};
 
 /// 铺一块带子：底色 + 斜线。
 pub(crate) fn paint(page_xf: figcraft_geom::Affine, pix: &mut Pixmap, b: &Band) {
@@ -44,11 +44,7 @@ fn stripes(page_xf: figcraft_geom::Affine, pix: &mut Pixmap, r: Rect, s: &crate:
         return;
     }
     let off = if s.m > 0.0 { s.origin[0] + s.origin[1] } else { -(s.origin[0] - s.origin[1]) };
-    let (lo, hi) = if s.m > 0.0 {
-        (r.x0 + r.y0 - off, r.x1 + r.y1 - off)
-    } else {
-        (r.y0 - r.x1 - off, r.y1 - r.x0 - off)
-    };
+    let (lo, hi) = if s.m > 0.0 { (r.x0 + r.y0 - off, r.x1 + r.y1 - off) } else { (r.y0 - r.x1 - off, r.y1 - r.x0 - off) };
     // 多算两头：只擦到一个角的条纹也要画。
     let reach = 2.0 * half * std::f64::consts::SQRT_2;
     let start = ((lo - reach) / period).floor() * period;
@@ -151,10 +147,7 @@ mod tests {
                     painted += 1;
                     assert!(poly.len() >= 3);
                     for q in &poly {
-                        assert!(
-                            q[0] >= r.x0 - 1e-6 && q[0] <= r.x1 + 1e-6 && q[1] >= r.y0 - 1e-6 && q[1] <= r.y1 + 1e-6,
-                            "{q:?} pokes out of {r:?}"
-                        );
+                        assert!(q[0] >= r.x0 - 1e-6 && q[0] <= r.x1 + 1e-6 && q[1] >= r.y0 - 1e-6 && q[1] <= r.y1 + 1e-6, "{q:?} pokes out of {r:?}");
                     }
                 }
             }

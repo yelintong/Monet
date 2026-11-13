@@ -14,10 +14,10 @@
 //! control (`swatch(ui, paint, size)`), **not** a slot variant of a field: `color_field` uses it in
 //! its lead slot for any paint that is not a plain solid, and other panels place one directly.
 
-use figcraft_i18n::tr;
 use crate::widgets::icon::{Icon, draw_centred};
 use crate::widgets::{pt, rgba, tokens};
 use figcraft_color::{Paint, PaintKind};
+use figcraft_i18n::tr;
 use gpui::{App, Bounds, Corners, IntoElement, Pixels, SharedString, Window, div, prelude::*};
 
 /// `figcraft_color::Color`（f32 通道）→ 画布/GPUI 的 `Color32`。

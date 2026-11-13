@@ -136,10 +136,7 @@ impl TextInput {
             suffix: SharedString::new(""),
             dim: false,
             align: TextAlign::Left,
-            caret_blink: Rc::new(CaretBlink {
-                visible: std::cell::Cell::new(true),
-                started: std::cell::Cell::new(false),
-            }),
+            caret_blink: Rc::new(CaretBlink { visible: std::cell::Cell::new(true), started: std::cell::Cell::new(false) }),
         }
     }
 
@@ -160,6 +157,13 @@ impl TextInput {
     pub fn set_dim(&mut self, d: bool) {
         self.dim = d;
     }
+    /// The glyph size. The inline rename editor sets this to match the label it replaces:
+    /// two different sizes mean two different line boxes, and centring each one in the row
+    /// leaves the baselines a pixel or two apart.
+    pub fn set_font_size(&mut self, size: Pixels) {
+        self.font_size = size;
+    }
+
     pub fn set_colors(&mut self, text: Hsla, placeholder: Hsla, caret: Hsla) {
         self.color = text;
         self.placeholder_color = placeholder;
@@ -319,11 +323,13 @@ impl TextInput {
                 blink.started.set(true);
                 let b = blink.clone();
                 let e = blink_entity.clone();
-                cx.spawn(async move |cx: &mut gpui::AsyncApp| loop {
-                    cx.background_executor().timer(std::time::Duration::from_millis(530)).await;
-                    b.visible.set(!b.visible.get());
-                    if e.update(cx, |_, cx| cx.notify()).is_err() {
-                        break;
+                cx.spawn(async move |cx: &mut gpui::AsyncApp| {
+                    loop {
+                        cx.background_executor().timer(std::time::Duration::from_millis(530)).await;
+                        b.visible.set(!b.visible.get());
+                        if e.update(cx, |_, cx| cx.notify()).is_err() {
+                            break;
+                        }
                     }
                 })
                 .detach();
@@ -336,7 +342,11 @@ impl TextInput {
             let text_top = line_origin.y;
             let caret_quad = if focused && caret_visible && sel_a == sel_b {
                 let x = line.x_for_index(caret_byte);
-                Some(fill(Bounds { origin: point(text_x + x, line_origin.y), size: size(px(1.0), text_height) }, caret_color))
+                // 1 pt wide with a 0.5 pt radius: both ends are round, so the caret reads as a
+                // pill rather than a hairline rectangle.
+                let mut quad = fill(Bounds { origin: point(text_x + x, line_origin.y), size: size(px(1.0), text_height) }, caret_color);
+                quad.corner_radii = gpui::Corners::all(px(0.5));
+                Some(quad)
             } else {
                 None
             };
