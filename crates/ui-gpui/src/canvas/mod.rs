@@ -85,6 +85,10 @@ pub struct CanvasState {
     pub(crate) drag_grab: Option<Grab>,
     /// 拖动中盖在整页贴图之上的局部场景补丁（见 [`Live`]）。
     pub live: Option<Live>,
+    /// 本次拖动开始时的包围盒：补丁每帧都要盖住它，旧位置才不会留在冻结底图上成残影。
+    /// 与 `Live` 解耦 —— 拖进容器 / 自动布局重排时 `moving` 会被 `affected_root` 提升，
+    /// `live` 因此重建；只把起点存在 `Live.start` 里，那一刻起点就丢了。
+    pub(crate) drag_start: Option<[f64; 4]>,
     /// UI 线程自己的材质合成器，供当帧同步的局部渲染用（不与渲染线程抢设备）。
     /// 生产拖动走 worker 的 `GrabAsk` 替身，不占用它；只有文档里真的绑了外置材质
     /// 才会惰性创建 wgpu 设备。
@@ -121,6 +125,7 @@ impl Default for CanvasState {
             dragging: false,
             drag_grab: None,
             live: None,
+            drag_start: None,
             patch_renders: None,
             want_view: None,
             render_work: None,
@@ -247,9 +252,16 @@ pub fn show(app: &mut CanvasApp, worker: &mut Worker, ppp: f32, t: &Tokens) -> C
     let was_dragging = app.canvas.dragging;
     let released = was_dragging && moving.is_empty();
     if !moving.is_empty() {
+        // 新一次拖动才作废起点；同一次拖动里 `moving` 怎么变都保留（见 `drag_start_rect`）。
+        if !was_dragging {
+            app.canvas.drag_start = None;
+        }
         let changed = app.canvas.live.as_ref().is_some_and(|l| l.ids != moving);
         if !was_dragging || changed {
-            app.canvas.live = None;
+            // 换下来的补丁要显式进 retired，否则一直占着 GPUI 的 sprite atlas。
+            if let Some(old) = app.canvas.live.take() {
+                app.canvas.retired.push(old.image);
+            }
         }
         app.canvas.dragging = true;
     } else if released {
@@ -267,7 +279,11 @@ pub fn show(app: &mut CanvasApp, worker: &mut Worker, ppp: f32, t: &Tokens) -> C
     // 它和整页贴图走同一条渲染管线（内置效果、外置 WGSL 材质、容器裁剪与子节点都在），所以
     // 效果与选框天然同一帧；底图里停在旧位置的那份被这块不透明场景直接盖掉，无需异步挖空。
     if let Some(b) = moving_bounds {
-        let start = app.canvas.live.as_ref().map(|l| l.start).unwrap_or([b.x0, b.y0, b.x1, b.y1]);
+        // 起点按「整次拖动」记，不随 `moving` 集合变化：拖进容器时 `dragging_into_flow`
+        // 把 moving 提升成容器根，`live` 会重建；若这里回退到当前包围盒，补丁就不再
+        // 覆盖拖出位置，冻结底图上那份旧影像就成了残影。
+        let start = drag_start_rect(app.canvas.drag_start, b, !was_dragging);
+        app.canvas.drag_start = Some(start);
         if let Some((image, page)) = patch_for(app, ppp, &moving, start, b, &bands) {
             if let Some(old) = app.canvas.live.take() {
                 app.canvas.retired.push(old.image);
@@ -377,6 +393,7 @@ pub fn show(app: &mut CanvasApp, worker: &mut Worker, ppp: f32, t: &Tokens) -> C
         && (app.canvas.tex_seq >= seq || !worker.in_flight())
     {
         app.canvas.live = None;
+        app.canvas.drag_start = None;
     }
 
     let retired = std::mem::take(&mut app.canvas.retired);
@@ -513,6 +530,13 @@ pub const MAX_CANVAS_PIXELS: u64 = 12_000_000;
 /// 超过就降渲染分辨率：按页面矩形贴上去只是略糊，不会错位。
 const MAX_PATCH_PIXELS: f64 = 4_000_000.0;
 
+/// 本帧补丁要盖住的拖动起点：同一次拖动全程保留，哪怕 `moving` 被提升成容器根、
+/// `Live` 被重建；只有新手势才用当前包围盒重新记。抽成纯函数便于回归。
+fn drag_start_rect(prev: Option<[f64; 4]>, now: figcraft_geom::Rect, new_gesture: bool) -> [f64; 4] {
+    let fresh = [now.x0, now.y0, now.x1, now.y1];
+    if new_gesture { fresh } else { prev.unwrap_or(fresh) }
+}
+
 /// 补丁要覆盖的页面矩形：起始包围盒 ∪ 当前包围盒 + 效果余量，再裁到可见视口。
 /// 两块都包住是关键 —— 少包旧位置就留下原地残影，少包新位置就把效果切掉半个。
 fn patch_rect(start: [f64; 4], now: figcraft_geom::Rect, pad: f64, visible: [f64; 4]) -> Option<[f64; 4]> {
@@ -612,6 +636,38 @@ fn affected_root(doc: &Document, id: NodeId) -> NodeId {
         cur = pn.parent;
     }
     root
+}
+
+#[cfg(test)]
+mod drag_start_tests {
+    use super::{drag_start_rect, patch_rect};
+    use figcraft_geom::Rect;
+
+    /// 拖进容器时 `moving` 被 `affected_root` 提升成整个容器。起点不能跟着变，
+    /// 否则补丁只覆盖容器，拖出位置留在冻结底图上就是「残影」。
+    #[test]
+    fn start_survives_a_change_of_moving_layers() {
+        let a = Rect::new(0.0, 0.0, 10.0, 10.0);
+        let start = drag_start_rect(None, a, true);
+        assert_eq!(start, [0.0, 0.0, 10.0, 10.0]);
+        let container = Rect::new(100.0, 100.0, 300.0, 300.0);
+        assert_eq!(drag_start_rect(Some(start), container, false), start, "同一手势不能丢起点");
+        // 新一次拖动才重置。
+        assert_eq!(drag_start_rect(Some(start), container, true), [100.0, 100.0, 300.0, 300.0]);
+    }
+
+    #[test]
+    fn patch_keeps_covering_the_old_position_after_reparent() {
+        let start = [0.0, 0.0, 10.0, 10.0];
+        let now = Rect::new(200.0, 200.0, 260.0, 260.0);
+        let visible = [-1000.0, -1000.0, 1000.0, 1000.0];
+        let r = patch_rect(start, now, 4.0, visible).expect("两个位置都要在补丁里");
+        assert!(r[0] <= 0.0 && r[1] <= 0.0, "旧位置没被盖住: {r:?}");
+        assert!(r[2] >= 260.0 && r[3] >= 260.0, "新位置没被盖住: {r:?}");
+        // 起点丢失（回退成当前包围盒）时，旧位置确实落到补丁外 —— 复现那个残影。
+        let lost = patch_rect([now.x0, now.y0, now.x1, now.y1], now, 4.0, visible).unwrap();
+        assert!(lost[0] > 0.0, "起点丢失时旧位置不再被覆盖");
+    }
 }
 
 #[cfg(test)]
