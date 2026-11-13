@@ -66,8 +66,9 @@ impl CanvasView {
         );
         // 让引擎的命中/悬停按「画面上显示的那份」算：动画模式播放头停在中间时，物体画在
         // 动画位置，命中若仍读未求值的 ds.doc 就点不中（用户 2026-11-12）。
+        // 播放态同样如此：画面是预览文档，命中读源文档就会「框和内容各跑各的」。
         // 写操作不受影响——引擎的 `display_doc` 只用于命中几何，编辑仍走 `ds.doc`。
-        self.app.session.display_doc = if self.motion && !self.motion_ui.playing {
+        self.app.session.display_doc = if self.motion {
             self.motion_ui.preview_doc.clone()
         } else {
             None

@@ -89,7 +89,7 @@ pub(super) fn overlays(app: &CanvasApp, painter: &mut Painter, t: &Tokens) -> Ve
     let tex_doc = app.canvas.tex_doc.clone();
     let display_doc = app.display_doc.clone();
     let Ok(ds) = app.session.ds() else { return Vec::new() };
-    let doc = tex_doc.or(display_doc).unwrap_or_else(|| ds.doc.clone());
+    let doc = super::overlay_doc(tex_doc, display_doc, &ds.doc);
     let page = ds.page;
     let mut labels = Vec::new();
     let sel = ds.selection.clone();

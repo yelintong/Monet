@@ -305,6 +305,16 @@ pub fn show(app: &mut CanvasApp, worker: &mut Worker, ppp: f32, t: &Tokens) -> C
 }
 
 
+/// 叠加层读哪份文档：台上贴图的 > 本帧显示文档 > 源文档。
+/// 抽成纯函数，回归「选框与画面同帧」这条契约。
+pub(crate) fn overlay_doc(
+    tex: Option<Arc<Document>>,
+    display: Option<Arc<Document>>,
+    source: &Arc<Document>,
+) -> Arc<Document> {
+    tex.or(display).unwrap_or_else(|| source.clone())
+}
+
 /// 画叠加层：标尺 + （后续）选中框/手柄/参考线/标签。
 ///
 /// 抽成公开的入口，`show()` 与无头预览用同一份代码，保证两边完全一致。
@@ -323,7 +333,7 @@ pub(crate) fn draw_overlays(app: &mut CanvasApp, painter: &mut Painter, t: &Toke
     let tex_doc = app.canvas.tex_doc.clone();
     let display_doc = app.display_doc.clone();
     let (doc, sel) = match app.session.ds() {
-        Ok(ds) => (tex_doc.or(display_doc).unwrap_or_else(|| ds.doc.clone()), ds.selection.clone()),
+        Ok(ds) => (overlay_doc(tex_doc, display_doc, &ds.doc), ds.selection.clone()),
         Err(_) => (Arc::new(Document::new("empty")), Vec::new()),
     };
     // 叠加层（选中框/手柄/尺寸/框选/参考线）——与原实现同一份画法。
@@ -348,18 +358,23 @@ pub(crate) fn draw_overlays(app: &mut CanvasApp, painter: &mut Painter, t: &Toke
 }
 
 /// 贴图的屏幕矩形；原生密度的渲染对齐到设备像素，避免线性过滤把相邻纹素混在一起。
+/// 位置吸附设备像素；像素预览或无效 ppp 时原样返回。
+/// 与贴图自带的 `view.scale` 无关：缩放中贴图是旧 scale，位置也必须对齐。
+fn snap_origin(x: f32, y: f32, ppp: f32, pixel_preview: bool) -> (f32, f32) {
+    if pixel_preview || !ppp.is_finite() || ppp <= 0.0 || !x.is_finite() || !y.is_finite() {
+        return (x, y);
+    }
+    ((x * ppp).round() / ppp, (y * ppp).round() / ppp)
+}
+
 pub(crate) fn presented_image_rect(tl: Pos2, view: &View, zoom: f64, ppp: f32, pixel_preview: bool) -> Rect {
     let w = (f64::from(view.width) / view.scale * zoom) as f32;
     let h = (f64::from(view.height) / view.scale * zoom) as f32;
     // 位置始终吸附设备像素：缩放过程中贴图自带的 view.scale 还是旧值，若把对齐
     // 绑在「view.scale == zoom * ppp」上，整个手势期间都会退化成半像素定位，表现为
     // 贴图边缘抖动、内容跟不上选框。原生密度只影响清晰度，不影响位置对齐。
-    let align = !pixel_preview
-        && ppp.is_finite()
-        && ppp > 0.0
-        && tl.x.is_finite()
-        && tl.y.is_finite();
-    let min = if align { pos2((tl.x * ppp).round() / ppp, (tl.y * ppp).round() / ppp) } else { tl };
+    let (x, y) = snap_origin(tl.x, tl.y, ppp, pixel_preview);
+    let min = pos2(x, y);
     Rect::from_min_size(min, vec2(w, h))
 }
 
@@ -370,3 +385,30 @@ pub const MAX_TEXTURE_SIDE: u32 = 8_192;
 /// 一整页缓冲的像素预算（12MP ≈ 48MB/张）。超了就降渲染分辨率、显示时拉伸：
 /// 一页缓冲在链路里同时存在好几份（Retained、转换副本、GPUI 纹理），没有上限时峰值能到 GB。
 pub const MAX_CANVAS_PIXELS: u64 = 12_000_000;
+
+#[cfg(test)]
+mod display_doc_tests {
+    use super::*;
+
+    fn doc(name: &str) -> Arc<Document> {
+        Arc::new(Document::new(name))
+    }
+
+    #[test]
+    fn overlay_document_prefers_the_on_screen_frame_then_display_then_source() {
+        let source = doc("source");
+        let display = doc("display");
+        let tex = doc("tex");
+        assert!(Arc::ptr_eq(&overlay_doc(Some(tex.clone()), Some(display.clone()), &source), &tex));
+        assert!(Arc::ptr_eq(&overlay_doc(None, Some(display.clone()), &source), &display));
+        assert!(Arc::ptr_eq(&overlay_doc(None, None, &source), &source));
+    }
+
+    #[test]
+    fn origin_snapping_does_not_depend_on_the_texture_scale() {
+        // 缩放中贴图还是旧 scale；位置吸附必须照常发生。
+        assert_eq!(snap_origin(10.3, 20.7, 2.0, false), (10.5, 20.5));
+        assert_eq!(snap_origin(10.3, 20.7, 1.0, true), (10.3, 20.7));
+        assert_eq!(snap_origin(10.3, 20.7, 0.0, false), (10.3, 20.7));
+    }
+}
