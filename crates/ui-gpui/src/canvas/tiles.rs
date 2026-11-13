@@ -386,3 +386,92 @@ mod tests {
         assert!(tiles_over(rect(0.0, 0.0, 1.0, 1.0), 0).is_empty());
     }
 }
+
+/// 视口 → 渲染单元清单（第 2 批：接口层，仍未接线）。
+///
+/// 这一步只把「当前视口由哪些渲染单元组成」算出来，供后续 PR 接到 `JobKey`
+/// 与 `canvas::show`；本批不改变任何渲染行为。
+pub mod view_units {
+    use super::{PageRect, TileCoord, UnitKey, TILE_SIDE, tiles_over, zoom_bucket};
+
+    /// 生成单元键所需的、与格子位置无关的输入。
+    #[derive(Clone, Copy, Debug)]
+    pub struct ViewInput {
+        pub doc_revision: u64,
+        pub params: u64,
+        pub size: (u32, u32),
+        pub fonts: u64,
+        pub side: u32,
+    }
+
+    impl Default for ViewInput {
+        fn default() -> Self {
+            Self { doc_revision: 0, params: 0, size: (0, 0), fonts: 0, side: TILE_SIDE }
+        }
+    }
+
+    /// 视口覆盖到的每个格子生成一个身份键，缩放档位对所有格子一致。
+    pub fn for_view(view: PageRect, scale: f64, input: ViewInput) -> Vec<UnitKey> {
+        let bucket = zoom_bucket(scale);
+        tiles_over(view, input.side)
+            .into_iter()
+            .map(|tile| UnitKey {
+                tile,
+                zoom_bucket: bucket,
+                doc_revision: input.doc_revision,
+                params: input.params,
+                size: input.size,
+                fonts: input.fonts,
+            })
+            .collect()
+    }
+
+    /// 下一帧需要重跑的格子：身份键变了或新出现的格。
+    pub fn changed(prev: &[UnitKey], next: &[UnitKey]) -> Vec<TileCoord> {
+        next.iter().filter(|u| !prev.iter().any(|p| p == *u)).map(|u| u.tile).collect()
+    }
+}
+
+#[cfg(test)]
+mod view_unit_tests {
+    use super::view_units::{ViewInput, changed, for_view};
+    use super::{TILE_SIDE, TileCoord};
+
+    fn view(x0: f64, x1: f64) -> [f64; 4] {
+        [x0, 0.0, x1, 1024.0]
+    }
+
+    #[test]
+    fn a_pan_keeps_old_units_and_only_adds_new_ones() {
+        let input = ViewInput::default();
+        let before = for_view(view(0.0, 1024.0), 1.0, input);
+        let after = for_view(view(100.0, 1124.0), 1.0, input);
+        assert_eq!(before.len(), 4);
+        assert_eq!(after.len(), 6);
+        assert!(before.iter().all(|u| after.contains(u)));
+        assert_eq!(changed(&before, &after).len(), 2);
+    }
+
+    #[test]
+    fn crossing_a_zoom_bucket_invalidates_every_unit() {
+        let input = ViewInput::default();
+        let before = for_view(view(0.0, 1024.0), 1.0, input);
+        let after = for_view(view(0.0, 1024.0), 2.0, input);
+        assert_eq!(changed(&before, &after).len(), before.len());
+    }
+
+    #[test]
+    fn a_document_change_invalidates_every_unit() {
+        let first = for_view(view(0.0, 1024.0), 1.0, ViewInput { doc_revision: 1, ..ViewInput::default() });
+        let second = for_view(view(0.0, 1024.0), 1.0, ViewInput { doc_revision: 2, ..ViewInput::default() });
+        assert_eq!(changed(&first, &second).len(), first.len());
+    }
+
+    #[test]
+    fn an_oversized_view_yields_no_units_instead_of_allocating() {
+        let units = for_view([0.0, 0.0, 1.0e9, 1.0e9], 1.0, ViewInput::default());
+        assert!(units.is_empty());
+        assert_eq!(TILE_SIDE, 512);
+        assert_eq!(TileCoord::new(0, 0).x, 0);
+    }
+}
