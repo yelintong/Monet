@@ -88,6 +88,12 @@ pub mod wgsl_composite;
 
 pub mod wgsl_runner;
 
+/// 逐层外置材质的 GPU 后端（`--features gpu`）：一层底图进、一层像素出，配合
+/// `figcraft_render::shade` 把材质从「整页合成」搬进 `draw_layer` 的 backdrop 槽。
+#[cfg(feature = "gpu")]
+
+mod shade_gpu;
+
 mod main_menu;
 
 /// 点锚定的菜单卡片：右键菜单与工具栏飞出菜单共用的一套行模型。

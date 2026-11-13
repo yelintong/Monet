@@ -183,6 +183,7 @@ fn exports_never_use_lod() {
         time: 0.0,
         bounds: &bounds,
         bands: &[],
+        shade: None,
         page_xf: v.transform(),
     };
     let parent = d.world_transform(p);

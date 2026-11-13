@@ -22,6 +22,7 @@ pub mod paint;
 pub mod pattern;
 pub mod retained;
 pub mod shadow;
+pub mod shade;
 pub mod wgsl_effect;
 
 pub use dots::Dots;
@@ -94,6 +95,10 @@ pub struct Options {
     /// 画布提示带（auto layout 的 padding / spacing）：铺在所属图层的填充**之后**、子层**之前**，
     /// 这样子层的抗锯齿边缘是与带子混色，而不是与画框/页面底色混色（否则边界会留一条白细线）。
     pub bands: Vec<Band>,
+    /// 外置 WGSL 材质：`Some` 时，绑了材质的图层改由 GPU 产出它自己那层的「底图」像素
+    /// （等价于内置 Glass 在 `backdrop_layer` 里的位置），子树仍由普通递归画在其上。
+    /// 见 [`shade`]。
+    pub shade: Option<std::sync::Arc<shade::ShadeBoard>>,
 }
 
 /// 一块提示带（不属于文档，只是画布上的辅助显示）。坐标是**页面坐标**。
@@ -295,6 +300,7 @@ fn render_one(doc: &Document, page: NodeId, view: &View, opts: &Options) -> Opti
         time: 0.0,
         bounds: &bounds,
         bands: &opts.bands,
+        shade: opts.shade.as_deref(),
         page_xf: view.transform(),
     };
     let xf = view.transform();
@@ -336,6 +342,7 @@ fn nodes_into(doc: &Document, ids: &[NodeId], view: &View, pix: &mut Pixmap, tim
         time,
         bounds: &bounds,
         bands: &[],
+        shade: None,
         page_xf: view.transform(),
     };
     // 0, but inside an exporter's [`draw::at_layer_depth`] its depth: one cap for both (#1082).

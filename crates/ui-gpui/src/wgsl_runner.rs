@@ -24,7 +24,7 @@
 //! back to straight RGBA. One shared wgpu device/queue is cached across frames; per-node pipelines
 //! are cached by (shader hash, canvas size). Any failure degrades to the untouched CPU image.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use figcraft_doc::{Document, NodeId};
 use figcraft_geom::{Affine, Point};
@@ -159,52 +159,66 @@ pub fn passes_for(doc: &Document, page: NodeId, view: &figcraft_render::View, ti
         ex.set("time", vec![time]);
 
         let eid = crate::wgsl_material::ensure_loaded(&binding.path);
-        // Pack every `var<uniform>` the shader declares, under its own variable name.
-        let (uniforms, field_band) = {
-            let reg = fx::shared().lock().unwrap_or_else(|e| e.into_inner());
-            let mut local = reg.clone();
-            for (field, value) in &binding.params {
-                let _ = local.set_param(&eid, field, *value);
-            }
-            // The field only has to resolve as far out as the shader can look, and the shader reads
-            // `depth` **after** this node's own overrides are applied. Ask the registry for the value
-            // that will actually be uploaded, not the binding: a material whose depth the panel set
-            // to 98 would otherwise get a band sized for 20 and a wrong "deep inside" fill between.
-            let depth_field = local.params(&eid).into_iter()
-                .find(|p| p.field == "depth" || p.field.ends_with(".depth"))
-                .map(|p| p.field.clone());
-            let reach = depth_field.as_ref()
-                .and_then(|f| local.param_value(&eid, f))
-                .unwrap_or(20.0);
-            // Depth is a panel notch (1..100), not a pixel length. Figma turns it into a node-space
-            // thickness upstream (see `figma_depth_coefficient.html` §1.5/§5); the CPU glass and this
-            // external material must share that one conversion or the same document looks different
-            // on the two paths. `w`/`h` are document-unit node bounds, the same domain as `reach`, so
-            // write the converted **document-unit** thickness back into `u.depth`: the shader's
-            // unchanged `clamp(u.depth, 1, 100) * dpr` then lands on exactly the CPU's lens band.
-            // Small notches that already fit pass through untouched, so the panel's low end and the
-            // default keep their exact old look; only "small node + high notch", which cannot
-            // physically fit, is clamped. `local` is a clone, so no other node / the global registry
-            // is affected. `band` keeps using the raw notch (an upper bound), which is a safe margin
-            // >= the clamped reach, leaving the region/backdrop mapping byte-identical to before.
-            let reach_doc = figcraft_doc::Glass::depth_reach_doc(reach, w.min(h));
-            if let Some(f) = depth_field.as_ref() {
-                let _ = local.set_param(&eid, f, reach_doc);
-            }
-            let band = (reach.max(1.0) * sc + 2.0 * sc + 8.0) as f32;
-            let vars: Vec<String> = local.scan(&eid)
-                .map(|s| s.uniforms.keys().cloned().collect())
-                .unwrap_or_default();
-            let packed = vars.into_iter()
-                .filter_map(|var| local.uniform_bytes_for(&eid, &var, &ex).ok().map(|b| (var, b)))
-                .collect();
-            (packed, band)
-        };
+        let (uniforms, field_band) = pack_uniforms(&eid, &binding.params, &ex, w, h, sc);
 
         let field_bytes = prepare_fields(doc, id, rect_px[2], rect_px[3], sc, origin_px);
         out.push(RunPass { effect: eid, node: id, rect_px, radii_px, node_px, origin_px, field_bytes, field_band, uniforms });
     }
     out
+}
+
+/// Pack every `var<uniform>` a shader declares, from `ex` (the generic exports) and `params` (the
+/// node's control values), and return the `fields` band the pass needs.
+///
+/// One node's params never leak into the global registry: the registry is cloned, so two layers on
+/// the same shader keep their own values. Both material channels (the whole-page compositor and the
+/// per-layer one) go through here, so a node looks the same whichever draws it.
+pub(crate) fn pack_uniforms(
+    eid: &str,
+    params: &BTreeMap<String, f64>,
+    ex: &fx::EngineExports,
+    node_w: f64,
+    node_h: f64,
+    sc: f64,
+) -> (Vec<(String, Vec<u8>)>, f32) {
+    let reg = fx::shared().lock().unwrap_or_else(|e| e.into_inner());
+    let mut local = reg.clone();
+    for (field, value) in params {
+        let _ = local.set_param(eid, field, *value);
+    }
+    // The field only has to resolve as far out as the shader can look, and the shader reads
+    // `depth` **after** this node's own overrides are applied. Ask the registry for the value
+    // that will actually be uploaded, not the binding: a material whose depth the panel set
+    // to 98 would otherwise get a band sized for 20 and a wrong "deep inside" fill between.
+    let depth_field = local.params(eid).into_iter()
+        .find(|p| p.field == "depth" || p.field.ends_with(".depth"))
+        .map(|p| p.field.clone());
+    let reach = depth_field.as_ref()
+        .and_then(|f| local.param_value(eid, f))
+        .unwrap_or(20.0);
+    // Depth is a panel notch (1..100), not a pixel length. Figma turns it into a node-space
+    // thickness upstream (see `figma_depth_coefficient.html` §1.5/§5); the CPU glass and this
+    // external material must share that one conversion or the same document looks different
+    // on the two paths. `node_w`/`node_h` are document-unit node bounds, the same domain as
+    // `reach`, so write the converted **document-unit** thickness back into `u.depth`: the
+    // shader's unchanged `clamp(u.depth, 1, 100) * dpr` then lands on exactly the CPU's lens band.
+    // Small notches that already fit pass through untouched, so the panel's low end and the
+    // default keep their exact old look; only "small node + high notch", which cannot
+    // physically fit, is clamped. `local` is a clone, so no other node / the global registry
+    // is affected. `band` keeps using the raw notch (an upper bound), which is a safe margin
+    // >= the clamped reach, leaving the region/backdrop mapping byte-identical to before.
+    let reach_doc = figcraft_doc::Glass::depth_reach_doc(reach, node_w.min(node_h));
+    if let Some(f) = depth_field.as_ref() {
+        let _ = local.set_param(eid, f, reach_doc);
+    }
+    let band = (reach.max(1.0) * sc + 2.0 * sc + 8.0) as f32;
+    let vars: Vec<String> = local.scan(eid)
+        .map(|s| s.uniforms.keys().cloned().collect())
+        .unwrap_or_default();
+    let packed = vars.into_iter()
+        .filter_map(|var| local.uniform_bytes_for(eid, &var, ex).ok().map(|b| (var, b)))
+        .collect();
+    (packed, band)
 }
 
 fn map(m: Affine, x: f64, y: f64) -> (f64, f64) {
@@ -232,7 +246,7 @@ fn node_visible(doc: &Document, id: NodeId) -> bool {
 /// same exact-Euclidean-distance + smoothed-normal pipeline the built-in CPU glass reads, so a
 /// shader needs no change and no per-shape knowledge to sit correctly on arbitrary artwork.
 /// `None` = "no outline" and falls back to the analytic rectangle.
-fn prepare_fields(doc: &Document, id: NodeId, rw: u32, rh: u32, sc: f64, origin_px: (f32, f32)) -> Option<Vec<u8>> {
+pub(crate) fn prepare_fields(doc: &Document, id: NodeId, rw: u32, rh: u32, sc: f64, origin_px: (f32, f32)) -> Option<Vec<u8>> {
     use figcraft_doc::NodeKind;
     let n = doc.node(id)?;
     if matches!(n.kind, NodeKind::Rectangle) {

@@ -52,6 +52,8 @@ pub struct Job {
     pub grab: Option<GrabAsk>,
     /// 画布提示带（padding / spacing）：铺在所属图层的子层之前。
     pub bands: Vec<figcraft_render::Band>,
+    /// 逐层材质板（`Some` = 这一帧走 `draw_layer` 求值，不再挖空主图、不做整页合成）。
+    pub shade: Option<std::sync::Arc<figcraft_render::shade::ShadeBoard>>,
     pub uid: u64,
     pub zoom_preview: bool,
     pub at: std::time::Instant,
@@ -321,7 +323,9 @@ fn run(job: &Job, view: &View, retained: &mut Retained, coarse: bool, reuse: Opt
     // 裁下来的那块」。节点自己若还在图里，玻璃就会折射自己的填充色（实测：绿色矩形的中心
     // 被自己的绿色填满、边缘才发白），而不是背后的画面。拖动期间同样要挖空——效果优先，
     // 材质在拖动中也要完整呈现（代价是拖动帧要等一次 GPU 合成）。
-    if cfg!(feature = "gpu") {
+    // 逐层通道（`job.shade = Some`）**不挖空**：材质在 `draw_layer` 里按层求值，主图里那个节点
+    // 该照常画（它的内容就是材质之上的那层），所以没有洞要补，也没有子树要重渲。
+    if cfg!(feature = "gpu") && job.shade.is_none() {
         for id in job.doc.subtree(job.page) {
             if job.doc.node(id).is_some_and(|n| n.plugin_data.contains_key(crate::wgsl_material::BINDING_KEY)) {
                 skip.push(id);
@@ -338,6 +342,7 @@ fn run(job: &Job, view: &View, retained: &mut Retained, coarse: bool, reuse: Opt
         magnified_image_pixels: true,
         dots: job.dots,
         bands: job.bands.clone(),
+        shade: job.shade.clone(),
         ..Default::default()
     };
     let (view, pix, work) = retained.render(&job.doc, job.page, view, &opts)?;
@@ -709,6 +714,8 @@ pub struct Materials {
     runner: Option<crate::wgsl_runner::WgslRunner>,
     /// The last composited picture, handed back while its inputs stay byte-identical.
     last_composite: Option<LastComposite>,
+    /// 逐层材质板（`figcraft_render::shade`）：跨帧保存每层算好的像素。整页合成不用它。
+    shade: std::sync::Arc<figcraft_render::shade::ShadeBoard>,
 }
 
 /// One composited frame: what it was made from, and what it looked like.
@@ -763,7 +770,22 @@ fn reuse_composite(mats: &Materials, base: &Arc<RenderImage>, key: u64) -> Optio
     (last.key == key && Arc::ptr_eq(&last.base, base)).then(|| last.image.clone())
 }
 
+/// 逐层材质是否接管外置 WGSL 材质。
+///
+/// `Some` 时材质由 `vec`/`draw_layer` 按层求值（见 `figcraft_render::shade`）：主图不再挖空、
+/// 不做 `children_layer` 子树重渲、没有整页并集读回。`FIGCRAFT_SHADE_LAYERED=0` 切回整页合成
+/// —— 保留它就是为了两条通道能对同一份文档做逐像素比对，以及出问题时一键回退。
 #[cfg(feature = "gpu")]
+fn layered() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| match std::env::var("FIGCRAFT_SHADE_LAYERED") {
+        Ok(v) => v != "0",
+        Err(_) => true,
+    })
+}
+
+#[cfg(feature = "gpu")]
+#[track_caller]
 fn apply_wgsl_materials(mats: &mut Materials, doc: &Document, page: NodeId, done: &mut Done) {
     if !try_apply_wgsl_materials(mats, doc, page, done) {
         // `run` 在 cfg!(gpu) 下把材质节点连子树一起挖空了。GPU 这一帧没能补回，必须用 CPU 画
@@ -802,6 +824,7 @@ fn assemble_steps<'a>(
 /// 试走 GPU 合成。返回 `true` 当且仅当：**画布里本该由外置材质补回的节点，这一帧确实补齐了**
 /// （或本来就没有需要补的节点）。返回 `false` 时画布带着挖空的洞，调用方必须走 CPU 兜底。
 #[cfg(feature = "gpu")]
+#[track_caller]
 fn try_apply_wgsl_materials(mats: &mut Materials, doc: &Document, page: NodeId, done: &mut Done) -> bool {
     let (w, h) = {
         let sz = done.image.size(0);
@@ -885,10 +908,15 @@ fn try_apply_wgsl_materials(mats: &mut Materials, doc: &Document, page: NodeId, 
         mats.last_composite = Some(LastComposite { base: base_image, key, image: done.image.clone() });
     }
     if render_log() {
+        // 谁调的这条整页合成（画布 / 兜底缩略图 / 预览）看 `at`：一度把缩略图那次当成了主画布，
+        // 白追了一轮「逐层没生效」。两条通道并存时这个调用点是第一件要看的事。
+        let at = std::panic::Location::caller();
         eprintln!(
-            "[material] {w}x{h} passes={} drawn={drawn}/{total} layers={layers_ms:.1}ms composite={:.1}ms ok={ok}",
+            "[material] {w}x{h} passes={} drawn={drawn}/{total} layers={layers_ms:.1}ms composite={:.1}ms ok={ok} at={}:{}",
             passes.len(),
-            t_comp.elapsed().as_secs_f64() * 1000.0
+            t_comp.elapsed().as_secs_f64() * 1000.0,
+            at.file(),
+            at.line(),
         );
     }
     ok
@@ -1222,6 +1250,17 @@ impl Renders {
     fn rasterize(&mut self, job: &Job) -> Option<Done> {
         // 上一张图借给 `run`：像素没变时它直接复用这张，不再分配整整一页。
         let prev = self.last_image.clone();
+        // 逐层材质：把板挂到这次渲染上——`run` 见到 `Some` 就不挖空主图，`draw_layer` 按层求值。
+        // 材质集合每帧重算（节点增删/换 shader/改参数都在里面），板本身跨帧，缓存的是像素。
+        #[cfg(feature = "gpu")]
+        let shaded = layered().then(|| {
+            let board = self.mats.lock().unwrap_or_else(|e| e.into_inner()).shade.clone();
+            board.set_specs(crate::shade_gpu::specs(&job.doc, job.page));
+            if render_log() { eprintln!("[shade] attached specs={}", board.specs_len()); }
+            Job { shade: Some(board), ..job.clone() }
+        });
+        #[cfg(feature = "gpu")]
+        let job: &Job = shaded.as_ref().unwrap_or(job);
         let mut done = guarded(&mut self.full, |r| run(job, &job.view, r, false, prev.as_ref()))?;
         self.last = Some((job.uid, job.page, job.view.scale));
         if done.work == Work::Full {
@@ -1235,6 +1274,18 @@ impl Renders {
             done.image = prev.clone();
         }
         self.last_image = Some(done.image.clone());
+        // 这一帧在 `draw_layer` 里登记的层，现在算出来装回板上：下一帧直接画，不再等。
+        #[cfg(feature = "gpu")]
+        if let Some(board) = job.shade.as_ref() {
+            if render_log() { eprintln!("[shade] drain pending={}", board.pending()); }
+            let mut mats = self.mats.lock().unwrap_or_else(|e| e.into_inner());
+            if mats.runner.is_none() {
+                mats.runner = crate::wgsl_runner::WgslRunner::new();
+            }
+            if let Some(runner) = mats.runner.as_mut() {
+                crate::shade_gpu::shade_pending(board, runner, &job.doc);
+            }
+        }
         Some(done)
     }
 
@@ -1272,8 +1323,11 @@ impl Renders {
         let mut done = self.rasterize(job)?;
         // WGSL 材质合成：CPU 画布当 sceneTex，逐绑定节点跑多 pass，readback 回显示图。
         // 必须在 last_image 赋值之后——缓存始终保留未合成原图，Reused 帧才不会二次叠加。
+        // 逐层模式下材质已经在 `draw_layer` 里画进去了，这里再合成一次就是叠两次玻璃。
         #[cfg(feature = "gpu")]
-        apply_wgsl_materials(&mut self.mats.lock().unwrap_or_else(|e| e.into_inner()), &job.doc, job.page, &mut done);
+        if !layered() {
+            apply_wgsl_materials(&mut self.mats.lock().unwrap_or_else(|e| e.into_inner()), &job.doc, job.page, &mut done);
+        }
         Some(done)
     }
 
@@ -1294,6 +1348,10 @@ impl Renders {
             Some(d) => d,
             None => return RefineOutcome::None,
         };
+        // 逐层模式：材质已经在 `rasterize` 里的 `draw_layer` 求值并装回板上，这一帧就是成品。
+        if layered() {
+            return RefineOutcome::Ready(base);
+        }
         let (w, h) = {
             let sz = base.image.size(0);
             (u32::from(sz.width), u32::from(sz.height))
@@ -1350,6 +1408,7 @@ pub(super) fn patch_job(doc: Arc<Document>, page: NodeId, view: View, bands: &[f
         grab: None,
         bands: bands.to_vec(),
         uid,
+        shade: None,
         zoom_preview: false,
         at: std::time::Instant::now(),
     }
@@ -1436,6 +1495,7 @@ fn build_overview(job: &Job, retained: &mut Retained, mats: &mut Materials) -> O
         grab: None,
         bands: Vec::new(),
         uid: job.uid,
+        shade: None,
         zoom_preview: false,
         at: std::time::Instant::now(),
     };
@@ -1448,7 +1508,7 @@ fn build_overview(job: &Job, retained: &mut Retained, mats: &mut Materials) -> O
 #[cfg(not(feature = "gpu"))]
 fn build_overview(job: &Job, retained: &mut Retained) -> Option<Overview> {
     let view = overview_view(&job.doc, job.page)?;
-    let sub = Job { doc: job.doc.clone(), page: job.page, view, outline: false, outline_extras: figcraft_render::Outline::default(), outlined: Vec::new(), skip: Vec::new(), solo: None, proof: false, dots: None, grab: None, bands: Vec::new(), uid: job.uid, zoom_preview: false, at: std::time::Instant::now() };
+    let sub = Job { doc: job.doc.clone(), page: job.page, view, outline: false, outline_extras: figcraft_render::Outline::default(), outlined: Vec::new(), skip: Vec::new(), solo: None, proof: false, dots: None, grab: None, bands: Vec::new(), shade: None, uid: job.uid, zoom_preview: false, at: std::time::Instant::now() };
     let done = run(&sub, &sub.view, retained, false, None)?;
     Some(Overview { image: done.image, view: done.view, key: (Arc::as_ptr(&sub.doc) as usize, sub.page, figcraft_text::layout_generation()) })
 }

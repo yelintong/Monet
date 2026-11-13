@@ -230,6 +230,8 @@ pub(super) fn request_render(
         dots: None,
         grab: grab_ask,
         bands: bands.to_vec(),
+        // 逐层材质板由 worker 自持（它跨帧缓存每层像素），UI 线程不参与。
+        shade: None,
         uid: ds.uid,
         zoom_preview: ds.view.pixel_preview_scale().is_none(),
         at: std::time::Instant::now(),
