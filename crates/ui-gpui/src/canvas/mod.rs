@@ -23,6 +23,7 @@ pub mod rulers;
 pub mod selection_spacing;
 /// 动态内联 SVG：GPUI 0.2.2 里唯一能旋转的文字（标尺左侧数字）。
 pub mod svg_text;
+pub mod tiles;
 
 pub use geom::*;
 pub use painter::Painter;
