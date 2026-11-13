@@ -118,7 +118,9 @@ pub(super) fn request_render(
     skip: &[NodeId],
     grab_ask: Option<GrabAsk>,
     bands: &[figcraft_render::Band],
-) {    let Ok(ds) = app.session.ds() else { return };
+) {
+    let display_doc = app.display_doc.clone();
+    let Ok(ds) = app.session.ds() else { return };
     let rect = app.canvas.rect;
     let (mut ox, mut oy) = ds.view.origin();
     let (scale, visible_w, visible_h) = if let Some(k) = ds.view.pixel_preview_scale() {
@@ -138,7 +140,8 @@ pub(super) fn request_render(
     } else {
         (scale, visible_w, visible_h)
     };
-    let doc = ds.doc.clone();
+    // 本帧显示文档由 CanvasApp 显式给出（Motion 预览时是求值后的文档）。
+    let doc = display_doc.unwrap_or_else(|| ds.doc.clone());
     let outlined = if ds.view.outlines_selection { ds.selection.clone() } else { vec![] };
     let proof = ds.view.proof_srgb && !doc.color_profile.is_srgb();
     let outline_extras = figcraft_render::Outline { hidden: ds.view.outline_hidden, bounds: ds.view.outline_bounds, light: false };

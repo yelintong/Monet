@@ -5,7 +5,6 @@
 //! Glue between the Motion state machine and the root view: drain actions each frame, advance
 //! playback, build the inspector / timeline / clip window from reusable widgets.
 
-use std::sync::Arc;
 
 use figcraft_doc::Document;
 use gpui::{AnyElement, Context, Div, IntoElement, Stateful, Window};
@@ -73,11 +72,8 @@ impl CanvasView {
         } else {
             None
         };
-    }
-
-    /// The document the canvas should draw while Motion is previewing a playhead position.
-    pub(crate) fn motion_preview_doc(&self) -> Option<Arc<Document>> {
-        self.motion_ui.preview_doc.clone()
+        // 画布这一帧显示的文档：渲染请求与叠加层都读它，ds.doc 不再被临时替换。
+        self.app.display_doc = self.motion_ui.preview_doc.clone();
     }
 
     /// The Motion right panel (replaces the Design panel while Motion is open).

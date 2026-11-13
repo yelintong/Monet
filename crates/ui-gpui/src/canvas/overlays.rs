@@ -86,8 +86,9 @@ pub(super) fn accent(app: &CanvasApp) -> Color32 {
 /// 画布上所有叠加层。返回每个顶层帧/section 名称标签的屏幕矩形（页面坐标），
 /// 供引擎在点击标签时选中/拖拽对应容器（`ToolState::labels`，照搬 `ui-egui`）。
 pub(super) fn overlays(app: &CanvasApp, painter: &mut Painter, t: &Tokens) -> Vec<(NodeId, [Point; 4])> {
+    let display_doc = app.display_doc.clone();
     let Ok(ds) = app.session.ds() else { return Vec::new() };
-    let doc = ds.doc.clone();
+    let doc = display_doc.unwrap_or_else(|| ds.doc.clone());
     let page = ds.page;
     let mut labels = Vec::new();
     let sel = ds.selection.clone();

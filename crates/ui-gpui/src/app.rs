@@ -50,6 +50,10 @@ pub struct CanvasApp {
     pub motion_overlay: crate::canvas::motion_overlay::State,
     /// Motion gizmo 的跨帧拖动句柄（`State` 每帧重建，放不下）。
     pub motion_gizmo: crate::canvas::motion_overlay::Interaction,
+    /// 本帧画布要显示的文档（Motion 求值后的预览）；None = 源文档。
+    /// 由 `CanvasView::sync_motion` 每帧设置，渲染请求与叠加层都读它，
+    /// 这样 `ds.doc` 在一帧内不再被临时替换，引擎 / 撤销 / 命中 / 右栏始终看到源文档。
+    pub display_doc: Option<std::sync::Arc<Document>>,
 }
 
 impl CanvasApp {
@@ -72,6 +76,7 @@ impl CanvasApp {
             dev_cat_filter: None,
             motion_overlay: crate::canvas::motion_overlay::State::default(),
             motion_gizmo: crate::canvas::motion_overlay::Interaction::default(),
+            display_doc: None,
         };
         // 预选一个自动布局容器：启动即可见 hatch（紧贴轮廓 + padding 蓝斜线 + spacing 粉斜线），
         // 不用先手动点选，方便核对"选中=1px / 悬停=2px"与边距斜线管线。

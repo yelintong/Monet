@@ -314,8 +314,9 @@ pub(crate) fn draw_overlays(app: &mut CanvasApp, painter: &mut Painter, t: &Toke
     if !painter.clip.is_positive() {
         return;
     }
+    let display_doc = app.display_doc.clone();
     let (doc, sel) = match app.session.ds() {
-        Ok(ds) => (ds.doc.clone(), ds.selection.clone()),
+        Ok(ds) => (display_doc.unwrap_or_else(|| ds.doc.clone()), ds.selection.clone()),
         Err(_) => (Arc::new(Document::new("empty")), Vec::new()),
     };
     // 叠加层（选中框/手柄/尺寸/框选/参考线）——与原实现同一份画法。

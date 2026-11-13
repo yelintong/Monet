@@ -5602,31 +5602,11 @@ impl Render for CanvasView {
 
         }
 
-        // Motion 播放头预览（egui `motion_preview` 的等价）：这一帧让画布画「在 playhead
+        // Motion 播放头预览：本帧画布显示的文档由 `CanvasApp::display_doc` 显式给出，
 
-        // 求值后的文档」，画完立刻还原真实文档。引擎 / 撤销栈 / 选中状态全程不受影响，
-
-        // 因为替换的只是 `DocState.doc` 这一份 `Arc<Document>`，且同一帧内还原。
-
-        let saved_doc = self.motion_preview_doc().and_then(|preview| {
-
-            let ds = self.app.session.ds_mut().ok()?;
-
-            Some(std::mem::replace(&mut ds.doc, preview))
-
-        });
+        // 不再临时替换 `ds.doc`；引擎 / 撤销栈 / 命中 / 右栏全程看到源文档。
 
         let CanvasOutput { image, overview, live, painter, bg, in_flight, retired } = canvas::show(&mut self.app, &mut self.worker, ppp, &t);
-
-        if let Some(real) = saved_doc
-
-            && let Ok(ds) = self.app.session.ds_mut()
-
-        {
-
-            ds.doc = real;
-
-        }
 
 
 
