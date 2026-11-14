@@ -806,7 +806,7 @@ struct LastComposite {
 /// `uniforms`, so its key differs every frame and it recomposites — animation keeps running. A
 /// shader that ignores `time` packs nothing of it and keeps its key.
 #[cfg(feature = "gpu")]
-fn composite_key(passes: &[crate::wgsl_runner::RunPass], view: &View, w: u32, h: u32) -> u64 {
+fn composite_key(doc: &Document, passes: &[crate::wgsl_runner::RunPass], view: &View, w: u32, h: u32) -> u64 {
     use std::hash::{Hash as _, Hasher as _};
     let mut key = std::collections::hash_map::DefaultHasher::new();
     (w, h).hash(&mut key);
@@ -826,6 +826,18 @@ fn composite_key(passes: &[crate::wgsl_runner::RunPass], view: &View, w: u32, h:
         for (name, bytes) in &p.uniforms {
             name.hash(&mut key);
             bytes.hash(&mut key);
+        }
+        // The composite bakes in each material's child layer, but the CPU base deliberately leaves
+        // that subtree out of the page image — so a `Retained` patch that only edits a child inside
+        // it changes no pixel of `base` and none of the fields above, and the stale composite would
+        // be handed straight back. `Document::nodes` is an immutable `OrdMap<NodeId, Arc<Node>>`: an
+        // edited node is a fresh allocation, so the subtree's pointers are an exact, allocation-cheap
+        // identity for precisely the content the child layer draws.
+        for id in doc.subtree(p.node) {
+            id.0.hash(&mut key);
+            if let Some(n) = doc.node_arc(id) {
+                (std::sync::Arc::as_ptr(n) as usize).hash(&mut key);
+            }
         }
     }
     key.finish()
@@ -966,7 +978,7 @@ fn try_apply_wgsl_materials(mats: &mut Materials, doc: &Document, page: NodeId, 
         return material_ids(doc, page).is_empty();
     }
     // 同一张底图 + 同一组 passes：上一帧的合成图就是这一帧的图（拖动、hover 之类的帧间静止）。
-    let key = composite_key(&passes, &done.view, w, h);
+    let key = composite_key(doc, &passes, &done.view, w, h);
     if let Some(image) = reuse_composite(mats, &done.image, key) {
         done.image = image;
         return true;
@@ -1072,7 +1084,7 @@ fn try_submit_wgsl_materials(mats: &mut Materials, doc: &Document, page: NodeId,
         return Submit::Sync;
     }
     // 底图与 passes 逐字节没变：上一帧的合成图就是这一帧该显示的图，连 GPU 都不用碰。
-    let key = composite_key(&passes, &done.view, w, h);
+    let key = composite_key(doc, &passes, &done.view, w, h);
     if let Some(image) = reuse_composite(mats, &done.image, key) {
         return Submit::Reused(image);
     }
