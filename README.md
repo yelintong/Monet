@@ -17,6 +17,11 @@
   <img alt="Status: early alpha" src="https://img.shields.io/badge/status-early%20alpha-d69e2e?style=flat-square">
 </p>
 
+<p align="center">
+  <img src="docs/images/monet-hero.gif" alt="Monet: a real-time glass (refraction) effect in the Design panel with a keyframed Position track on the animation timeline, looping" width="100%">
+  <br><sub>A glass refraction effect and a keyframed animation track on the timeline</sub>
+</p>
+
 ---
 
 ## What this is
