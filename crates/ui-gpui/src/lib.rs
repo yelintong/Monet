@@ -1657,6 +1657,50 @@ impl CanvasView {
                     self.app.session.execute("branch.list", &serde_json::json!({})).ok().and_then(|v| v.as_array().cloned()).unwrap_or_default();
                 std::borrow::Cow::Owned(serde_json::json!({ "branches": branches }))
             }
+            dialogs::Kind::ColorProfile => {
+                // A10: the engine reports the current profile for `{}` (save.rs returns
+                // `{profile, changed}` without changing anything), so `data["current"]` is the
+                // live one and the radio starts on it — 1:1 with `ui-egui/.../color_profile.rs`.
+                let current = self
+                    .app
+                    .session
+                    .execute("file.colorProfile", &serde_json::json!({}))
+                    .ok()
+                    .and_then(|v| v.get("profile").and_then(serde_json::Value::as_str).map(String::from))
+                    .unwrap_or_else(|| "srgb".to_string());
+                std::borrow::Cow::Owned(serde_json::json!({ "current": current }))
+            }
+            dialogs::Kind::SampledColor => {
+                // A15: 1:1 with `ui-egui/.../sampled_color.rs::request`: the sampled colour comes
+                // from the eyedropper request, the default name is the next free "Color N" style,
+                // and the collection dropdown lists the document's local collections (so the user
+                // can pick one or "New collection").
+                let color = data.get("color").and_then(serde_json::Value::as_str).unwrap_or("#000000").to_string();
+                let doc = self.app.session.doc().ok().cloned();
+                let collections: Vec<serde_json::Value> = doc
+                    .as_ref()
+                    .map(|d| figcraft_engine::library::local_collections(d).map(|c| serde_json::json!({ "id": c.id, "name": c.name })).collect())
+                    .unwrap_or_default();
+                let name = doc.as_ref().map(|d| d.next_name("Color")).unwrap_or_else(|| "Color 1".to_string());
+                std::borrow::Cow::Owned(serde_json::json!({ "color": color, "variable": false, "name": name, "collections": collections }))
+            }
+            dialogs::Kind::Rename => {
+                // A8: 1:1 with `ui-egui/src/dialogs/batch_rename.rs::open_batch_rename`:
+                // layers in stacking order (bottom first) and their live names, so the preview
+                // and `object.batchRename` address exactly the same layers in the same order.
+                let doc = self.app.session.doc().ok().cloned();
+                let ids: Vec<figcraft_doc::NodeId> = data
+                    .get("ids")
+                    .and_then(serde_json::Value::as_array)
+                    .map(|a| a.iter().filter_map(|v| v.as_u64().map(figcraft_doc::NodeId)).collect())
+                    .unwrap_or_else(|| self.app.session.selection());
+                let sorted = doc.as_ref().map(|d| figcraft_engine::cmd::edit::z_sorted(d, &ids)).unwrap_or(ids);
+                let names: Vec<String> = doc
+                    .as_ref()
+                    .map(|d| sorted.iter().filter_map(|i| d.node(*i).map(|n| n.name.clone())).collect())
+                    .unwrap_or_default();
+                std::borrow::Cow::Owned(serde_json::json!({ "ids": sorted, "names": names }))
+            }
             _ => std::borrow::Cow::Borrowed(data),
         };
 
@@ -6143,7 +6187,7 @@ impl Render for CanvasView {
 
         // A19：通用对话框（遮罩 + 居中窗口）画在所有面板 / 弹层 / 整面板之上。
 
-        let dialog_el: Vec<AnyElement> = self.dialog.as_mut().map(|d| d.render(vp)).unwrap_or_default();
+        let dialog_el: Vec<AnyElement> = self.dialog.as_mut().map(|d| d.render(vp, cx)).unwrap_or_default();
 
         // 拖着文件悬在窗口上（egui `open.rs::drop_overlay`）：整窗一圈强调色 + 中间一句话，
 
