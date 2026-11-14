@@ -24,7 +24,7 @@
 //! back to straight RGBA. One shared wgpu device/queue is cached across frames; per-node pipelines
 //! are cached by (shader hash, canvas size). Any failure degrades to the untouched CPU image.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use figcraft_doc::{Document, NodeId};
 use figcraft_geom::{Affine, Point};
@@ -77,6 +77,13 @@ pub struct RunPass {
     pub field_band: f32,
     /// Packed uniform buffers, one per `var<uniform>` declaration: `(var_name, bytes)`.
     pub uniforms: Vec<(String, Vec<u8>)>,
+    /// Device pixels per document unit for the frame this pass belongs to (the view's scale).
+    ///
+    /// The compositor needs it to size the backdrop's frost pyramid: a material's blur radius is in
+    /// **document** units, so the mip level it asks for is `log2(radius × dpr)` — a level budget
+    /// fixed at "8" is only enough while `dpr ≈ 1` and silently truncates the frost at every zoom
+    /// above that.
+    pub dpr: f32,
 }
 
 /// Compute the universal material passes for a rendered page: enumerate bound + visible nodes,
@@ -165,44 +172,66 @@ pub fn passes_for(doc: &Document, page: NodeId, view: &figcraft_render::View, ti
         ex.set("time", vec![time]);
 
         let eid = crate::wgsl_material::ensure_loaded(&binding.path);
-        // Pack every `var<uniform>` the shader declares, under its own variable name.
-        let (uniforms, field_band) = {
-            let reg = fx::shared().lock().unwrap_or_else(|e| e.into_inner());
-            let mut local = reg.clone();
-            for (field, value) in &binding.params {
-                let _ = local.set_param(&eid, field, *value);
-            }
-            // The field only has to resolve as far out as the shader can look, and the shader reads
-            // `depth` **after** this node's own overrides are applied. Ask the registry for the value
-            // that will actually be uploaded, not the binding: a material whose depth the panel set
-            // to 98 would otherwise get a band sized for 20 and a wrong "deep inside" fill between.
-            let depth_field = local.params(&eid).into_iter().find(|p| p.field == "depth" || p.field.ends_with(".depth")).map(|p| p.field.clone());
-            let reach = depth_field.as_ref().and_then(|f| local.param_value(&eid, f)).unwrap_or(20.0);
-            // Depth is a panel notch (1..100), not a pixel length. Figma turns it into a node-space
-            // thickness upstream (see `figma_depth_coefficient.html` §1.5/§5); the CPU glass and this
-            // external material must share that one conversion or the same document looks different
-            // on the two paths. `w`/`h` are document-unit node bounds, the same domain as `reach`, so
-            // write the converted **document-unit** thickness back into `u.depth`: the shader's
-            // unchanged `clamp(u.depth, 1, 100) * dpr` then lands on exactly the CPU's lens band.
-            // Small notches that already fit pass through untouched, so the panel's low end and the
-            // default keep their exact old look; only "small node + high notch", which cannot
-            // physically fit, is clamped. `local` is a clone, so no other node / the global registry
-            // is affected. `band` keeps using the raw notch (an upper bound), which is a safe margin
-            // >= the clamped reach, leaving the region/backdrop mapping byte-identical to before.
-            let reach_doc = figcraft_doc::Glass::depth_reach_doc(reach, w.min(h));
-            if let Some(f) = depth_field.as_ref() {
-                let _ = local.set_param(&eid, f, reach_doc);
-            }
-            let band = (reach.max(1.0) * sc + 2.0 * sc + 8.0) as f32;
-            let vars: Vec<String> = local.scan(&eid).map(|s| s.uniforms.keys().cloned().collect()).unwrap_or_default();
-            let packed = vars.into_iter().filter_map(|var| local.uniform_bytes_for(&eid, &var, &ex).ok().map(|b| (var, b))).collect();
-            (packed, band)
-        };
+        let (uniforms, field_band) = pack_uniforms(&eid, &binding.params, &ex, w, h, sc);
 
         let field_bytes = prepare_fields(doc, id, rect_px[2], rect_px[3], sc, origin_px);
-        out.push(RunPass { effect: eid, node: id, rect_px, radii_px, node_px, origin_px, field_bytes, field_band, uniforms });
+        out.push(RunPass { effect: eid, node: id, rect_px, radii_px, node_px, origin_px, field_bytes, field_band, uniforms, dpr: sc as f32 });
     }
     out
+}
+
+/// Pack every `var<uniform>` a shader declares, from `ex` (the generic exports) and `params` (the
+/// node's control values), and return the `fields` band the pass needs.
+///
+/// One node's params never leak into the global registry: the registry is cloned, so two layers on
+/// the same shader keep their own values. Both material channels (the whole-page compositor and the
+/// per-layer one) go through here, so a node looks the same whichever draws it.
+pub(crate) fn pack_uniforms(
+    eid: &str,
+    params: &BTreeMap<String, f64>,
+    ex: &fx::EngineExports,
+    node_w: f64,
+    node_h: f64,
+    sc: f64,
+) -> (Vec<(String, Vec<u8>)>, f32) {
+    let reg = fx::shared().lock().unwrap_or_else(|e| e.into_inner());
+    let mut local = reg.clone();
+    for (field, value) in params {
+        let _ = local.set_param(eid, field, *value);
+    }
+    // The field only has to resolve as far out as the shader can look, and the shader reads
+    // `depth` **after** this node's own overrides are applied. Ask the registry for the value
+    // that will actually be uploaded, not the binding: a material whose depth the panel set
+    // to 98 would otherwise get a band sized for 20 and a wrong "deep inside" fill between.
+    let depth_field = local.params(eid).into_iter()
+        .find(|p| p.field == "depth" || p.field.ends_with(".depth"))
+        .map(|p| p.field.clone());
+    let reach = depth_field.as_ref()
+        .and_then(|f| local.param_value(eid, f))
+        .unwrap_or(20.0);
+    // Depth is a panel notch (1..100), not a pixel length. Figma turns it into a node-space
+    // thickness upstream (see `figma_depth_coefficient.html` §1.5/§5); the CPU glass and this
+    // external material must share that one conversion or the same document looks different
+    // on the two paths. `node_w`/`node_h` are document-unit node bounds, the same domain as
+    // `reach`, so write the converted **document-unit** thickness back into `u.depth`: the
+    // shader's unchanged `clamp(u.depth, 1, 100) * dpr` then lands on exactly the CPU's lens band.
+    // Small notches that already fit pass through untouched, so the panel's low end and the
+    // default keep their exact old look; only "small node + high notch", which cannot
+    // physically fit, is clamped. `local` is a clone, so no other node / the global registry
+    // is affected. `band` keeps using the raw notch (an upper bound), which is a safe margin
+    // >= the clamped reach, leaving the region/backdrop mapping byte-identical to before.
+    let reach_doc = figcraft_doc::Glass::depth_reach_doc(reach, node_w.min(node_h));
+    if let Some(f) = depth_field.as_ref() {
+        let _ = local.set_param(eid, f, reach_doc);
+    }
+    let band = (reach.max(1.0) * sc + 2.0 * sc + 8.0) as f32;
+    let vars: Vec<String> = local.scan(eid)
+        .map(|s| s.uniforms.keys().cloned().collect())
+        .unwrap_or_default();
+    let packed = vars.into_iter()
+        .filter_map(|var| local.uniform_bytes_for(eid, &var, ex).ok().map(|b| (var, b)))
+        .collect();
+    (packed, band)
 }
 
 fn map(m: Affine, x: f64, y: f64) -> (f64, f64) {
@@ -232,7 +261,7 @@ fn node_visible(doc: &Document, id: NodeId) -> bool {
 /// same exact-Euclidean-distance + smoothed-normal pipeline the built-in CPU glass reads, so a
 /// shader needs no change and no per-shape knowledge to sit correctly on arbitrary artwork.
 /// `None` = "no outline" and falls back to the analytic rectangle.
-fn prepare_fields(doc: &Document, id: NodeId, rw: u32, rh: u32, sc: f64, origin_px: (f32, f32)) -> Option<Vec<u8>> {
+pub(crate) fn prepare_fields(doc: &Document, id: NodeId, rw: u32, rh: u32, sc: f64, origin_px: (f32, f32)) -> Option<Vec<u8>> {
     use figcraft_doc::NodeKind;
     let n = doc.node(id)?;
     if matches!(n.kind, NodeKind::Rectangle) {
@@ -621,6 +650,21 @@ fn mip_levels(w: u32, h: u32) -> u32 {
     (w.max(h).max(1) as f32).log2().floor() as u32 + 1
 }
 
+/// The largest frost radius any shader can ask for, in **document** units — `glass.wgsl` clamps its
+/// `frost` control to this and `@fx param u.frost` declares the same ceiling.
+const MAX_FROST_DOC: f64 = 100.0;
+
+/// How many backdrop mip levels a frame at `dpr` device pixels per document unit can reach.
+///
+/// The blur radius is a **document** length, so the shader asks for `log2(frost × dpr)`: the level
+/// budget follows the zoom, not the texture. Past the level that is one texel wide the blur is
+/// already "the average of the whole window", so the texture's own chain is the hard ceiling.
+fn backdrop_levels(w: u32, h: u32, dpr: f32) -> u32 {
+    let radius_px = (MAX_FROST_DOC * f64::from(dpr.max(1e-6))).max(1.0);
+    let need = radius_px.log2().ceil() as u32 + 1;
+    mip_levels(w, h).min(need.max(1))
+}
+
 /// The 2×2 box reduction that builds one backdrop mip level. A `textureLoad` block average (rather
 /// than a bilinear tap) keeps every level exactly aligned to the one above it: destination pixel
 /// `i` always reads source pixels `2i` and `2i+1`, so the blur's centre cannot drift by half a pixel
@@ -982,15 +1026,18 @@ impl WgslRunner {
         OverlayTex { w, h, texture, view }
     }
 
-    /// One node's backdrop: its window plus a full mip chain, kept while the window keeps its size.
-    fn ensure_backdrop(&mut self, node: u64, w: u32, h: u32) {
-        if self.backdrop.get(&node).is_some_and(|t| t.w == w && t.h == h) {
-            return;
-        }
-        // Frost tops out at 100 document px, so eight levels (a 256-px reduction) already cover every
-        // radius at any sane zoom; the whole chain of a 1080p window would be four more full-surface
-        // reduction passes for levels nothing can ask for.
-        let count = mip_levels(w, h).min(8);
+    /// One node's backdrop: its window plus the mip chain its frost can actually reach, kept while
+    /// the window keeps its size.
+    fn ensure_backdrop(&mut self, node: u64, w: u32, h: u32, dpr: f32) {
+        let count = backdrop_levels(w, h, dpr);
+        if self.backdrop.get(&node).is_some_and(|t| t.w == w && t.h == h && t.levels.len() as u32 == count) { return; }
+        // The chain has to cover `log2(frost × dpr)`, and `dpr` is the zoom: a budget fixed at eight
+        // levels covers every radius only while `dpr ≈ 1`. Above that the shader's `frost` silently
+        // clamped to level 7 (a 128-px blur) no matter how far you zoomed in — the pane's interior
+        // stopped being frosted and became a 1:1 copy of the backdrop, which reads as "the glass
+        // vanished" as soon as the pane's own edge was off-screen. Deeper levels are 4× cheaper per
+        // level than the one above, so following `dpr` to the texture's own chain costs almost
+        // nothing.
         let texture = self.device.create_texture(&wgpu::TextureDescriptor {
             label: Some("universal backdrop"),
             size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
@@ -1081,7 +1128,7 @@ impl WgslRunner {
     /// straight BGRA of the same size. `None` on any failure (the caller keeps the CPU image).
     pub fn composite(&mut self, canvas: &[u8], w: u32, h: u32, passes: &[RunPass]) -> Option<Vec<u8>> {
         let steps: Vec<Step<'_>> = passes.iter().map(Step::Pass).collect();
-        self.composite_steps(canvas, w, h, &steps)
+        self.composite_steps(canvas, w, h, &steps, None)
     }
 
     /// One composite, in z order. A `Step::Pass` reads **the composite so far** as its backdrop, so a
@@ -1096,8 +1143,8 @@ impl WgslRunner {
     /// spliced back into `canvas`. Kept byte-for-byte identical for the drag patch and overview
     /// paths (which must show this frame's material *now*). The refined path uses
     /// [`Self::submit_async`] + [`Self::poll_ready`] instead.
-    pub fn composite_steps(&mut self, canvas: &[u8], w: u32, h: u32, steps: &[Step<'_>]) -> Option<Vec<u8>> {
-        let (region, padded) = self.encode_submit(canvas, w, h, steps, None)?;
+    pub fn composite_steps(&mut self, canvas: &[u8], w: u32, h: u32, steps: &[Step<'_>], shade: Option<[u32; 4]>) -> Option<Vec<u8>> {
+        let (region, padded) = self.encode_submit(canvas, w, h, steps, None, shade)?;
         self.map_region(w, h, region, padded, canvas)
     }
 
@@ -1113,7 +1160,7 @@ impl WgslRunner {
     /// soon as frame N is submitted: the GPU consumes the queue in order and never reads a texture
     /// that a later frame has overwritten. The **readback** is the one resource that cannot be
     /// reused until its `map_async` completes and it is unmapped — hence the per-frame slot.
-    fn encode_submit(&mut self, canvas: &[u8], w: u32, h: u32, steps: &[Step<'_>], readback: Option<&wgpu::Buffer>) -> Option<([u32; 4], u32)> {
+    fn encode_submit(&mut self, canvas: &[u8], w: u32, h: u32, steps: &[Step<'_>], readback: Option<&wgpu::Buffer>, shade: Option<[u32; 4]>) -> Option<([u32; 4], u32)> {
         let expected = (w as usize) * (h as usize) * 4;
         if steps.is_empty() || w == 0 || h == 0 || canvas.len() < expected {
             return None;
@@ -1160,8 +1207,8 @@ impl WgslRunner {
         //    steady rect uploads nothing at all.
         for step in steps {
             let Step::Pass(p) = step else { continue };
-            let Some([_, _, rw, rh]) = clip_rect(p.rect_px, w, h) else { continue };
-            self.ensure_backdrop(p.node.0, rw, rh);
+            let Some([rx, ry, rw, rh]) = clip_rect(p.rect_px, w, h) else { continue };
+            self.ensure_backdrop(p.node.0, rw, rh, p.dpr);
             let key = field_key(p, rw, rh);
             let changed = self.ensure_field(p.node.0, rw, rh, key);
             // A rect's field is analytic and its key is exact, so an unchanged rect can skip. A real
@@ -1171,15 +1218,54 @@ impl WgslRunner {
             if !upload {
                 continue;
             }
-            let bytes = p.field_bytes.clone().unwrap_or_else(|| fields_for_rect_banded(rw, rh, p.node_px, p.origin_px, p.radii_px, p.field_band));
-            if let Some(fd) = self.fields.get(&p.node.0) {
+            let Some(fd) = self.fields.get(&p.node.0) else { continue };
+            if let Some(full) = &p.field_bytes {
                 self.queue.write_texture(
                     wgpu::TexelCopyTextureInfo { texture: &fd.texture, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
-                    &bytes,
+                    full,
                     wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(rw * 8), rows_per_image: Some(rh) },
                     wgpu::Extent3d { width: rw, height: rh, depth_or_array_layers: 1 },
                 );
+                continue;
             }
+            // A rect's field is analytic, and the pass only **shades** the visible viewport (the
+            // scissor), so the field is only ever read there. Generating the whole overscanned
+            // window costs a 90 MB buffer per frame (11.2M px × 8 B ≈ 210 ms of the 245 ms encode);
+            // the off-screen ring is never sampled. Generate just the visible sub-rect, at its
+            // offset inside the window, and upload that.
+            let sub = shade.and_then(|s| {
+                let x0 = s[0].max(rx);
+                let y0 = s[1].max(ry);
+                let x1 = (s[0] + s[2]).min(rx + rw);
+                let y1 = (s[1] + s[3]).min(ry + rh);
+                (x1 > x0 && y1 > y0).then_some((x0, y0, x1 - x0, y1 - y0))
+            });
+            let (sx, sy, sw, sh) = match sub {
+                Some((x0, y0, w0, h0)) => (x0 - rx, y0 - ry, w0, h0),
+                None => (0, 0, rw, rh),
+            };
+            if sw == 0 || sh == 0 {
+                continue;
+            }
+            let bytes = fields_for_rect_banded(
+                sw,
+                sh,
+                p.node_px,
+                (p.origin_px.0 + sx as f32, p.origin_px.1 + sy as f32),
+                p.radii_px,
+                p.field_band,
+            );
+            self.queue.write_texture(
+                wgpu::TexelCopyTextureInfo {
+                    texture: &fd.texture,
+                    mip_level: 0,
+                    origin: wgpu::Origin3d { x: sx, y: sy, z: 0 },
+                    aspect: wgpu::TextureAspect::All,
+                },
+                &bytes,
+                wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(sw * 8), rows_per_image: Some(sh) },
+                wgpu::Extent3d { width: sw, height: sh, depth_or_array_layers: 1 },
+            );
         }
 
         // 4. One command buffer for the whole stack, submitted once.
@@ -1360,7 +1446,19 @@ impl WgslRunner {
                         multiview_mask: None,
                     });
                     rp.set_viewport(rx as f32, ry as f32, rw as f32, rh as f32, 0.0, 1.0);
-                    rp.set_scissor_rect(rx, ry, rw, rh);
+                    // 底图仍覆盖整个 pass 区域（视口外那一圈要给透镜采样），但**着色**只做可见视口：
+                    // 那一圈不在屏幕上，逐像素跑 shader 只会把一帧拖到 250ms。
+                    let scissor = shade.and_then(|s| {
+                        let x0 = s[0].max(rx);
+                        let y0 = s[1].max(ry);
+                        let x1 = (s[0] + s[2]).min(rx + rw);
+                        let y1 = (s[1] + s[3]).min(ry + rh);
+                        (x1 > x0 && y1 > y0).then_some((x0, y0, x1 - x0, y1 - y0))
+                    });
+                    match scissor {
+                        Some((sx, sy, sw, sh)) => rp.set_scissor_rect(sx, sy, sw, sh),
+                        None => rp.set_scissor_rect(rx, ry, rw, rh),
+                    }
                     rp.set_pipeline(&ci.pipeline);
                     for (g, bg) in &built {
                         rp.set_bind_group(*g, bg, &[]);
@@ -1519,7 +1617,7 @@ impl WgslRunner {
     ///
     /// Returns `None` if there is no free slot (all ASYNC_SLOTS frames still in flight), or on the
     /// same encode conditions `composite_steps` refuses. In both cases the canvas is untouched.
-    pub fn submit_async(&mut self, canvas: &[u8], w: u32, h: u32, steps: &[Step<'_>]) -> Option<u64> {
+    pub fn submit_async(&mut self, canvas: &[u8], w: u32, h: u32, steps: &[Step<'_>], shade: Option<[u32; 4]>) -> Option<u64> {
         let expected = (w as usize) * (h as usize) * 4;
         if steps.is_empty() || w == 0 || h == 0 || canvas.len() < expected {
             return None;
@@ -1534,7 +1632,7 @@ impl WgslRunner {
         // Clone the buffer handle out: `encode_submit` needs `&mut self`, which cannot coexist with
         // a borrow into `self.async_slots`. Both handles point at the same GPU allocation.
         let buffer = self.async_slots[i].buffer.clone();
-        let (region, padded) = match self.encode_submit(canvas, w, h, steps, Some(&buffer)) {
+        let (region, padded) = match self.encode_submit(canvas, w, h, steps, Some(&buffer), shade) {
             Some(v) => v,
             None => {
                 self.async_slots[i].in_use = false;
@@ -1978,6 +2076,7 @@ mod tests {
             field_bytes: None,
             field_band: f32::INFINITY,
             uniforms: vec![("u".into(), u_bytes)],
+            dpr: 1.0,
         };
         let out = runner.composite(&scene, w, h, &[pass]).expect("universal composite on a real adapter");
         assert_eq!(out.len(), scene.len());
@@ -2172,6 +2271,7 @@ mod tests {
             field_bytes: None,
             field_band: f32::INFINITY,
             uniforms: vec![("u".into(), u_bytes)],
+            dpr: 1.0,
         };
         let gpu = runner.composite(&scene, w, h, &[pass]).expect("the GPU material composites");
 
@@ -2428,20 +2528,15 @@ mod tests {
         };
         // Frost 0 so the interior is the backdrop itself, not a blur of it.
         let pass = RunPass {
-            effect: eid,
-            node: NodeId(7),
-            rect_px: [0, 0, 32, 32],
-            radii_px: [0.0; 4],
-            node_px: (32.0, 32.0),
-            origin_px: (0.0, 0.0),
-            field_bytes: None,
-            field_band: f32::INFINITY,
-            uniforms,
+            effect: eid, node: NodeId(7), rect_px: [0, 0, 32, 32],
+            radii_px: [0.0; 4], node_px: (32.0, 32.0), origin_px: (0.0, 0.0),
+            field_bytes: None, field_band: f32::INFINITY, uniforms,
+            dpr: 1.0,
         };
         // Straight RGBA (the overlay's format): opaque red everywhere.
         let red = vec![255u8, 0, 0, 255].repeat((w * h) as usize);
         let steps = [Step::Over { pixels: &red, rect: [0, 0, w, h] }, Step::Pass(&pass)];
-        let out = runner.composite_steps(&canvas, w, h, &steps).expect("composite");
+        let out = runner.composite_steps(&canvas, w, h, &steps, None).expect("composite");
         // Read back as BGRA: red = channel 2.
         let i = ((16 * w + 16) * 4) as usize;
         assert!(out[i + 2] > 100, "the glass interior shows the layer below it: {:?}", &out[i..i + 4]);
@@ -2476,15 +2571,10 @@ mod tests {
             vec![("u".to_string(), reg.uniform_bytes_for(&eid, "u", &ex).expect("pack u"))]
         };
         let pass = RunPass {
-            effect: eid,
-            node: NodeId(9),
-            rect_px: [0, 0, w, h],
-            radii_px: [24.0; 4],
-            node_px: (w as f32, h as f32),
-            origin_px: (0.0, 0.0),
-            field_bytes: None,
-            field_band: f32::INFINITY,
-            uniforms,
+            effect: eid, node: NodeId(9), rect_px: [0, 0, w, h],
+            radii_px: [24.0; 4], node_px: (w as f32, h as f32), origin_px: (0.0, 0.0),
+            field_bytes: None, field_band: f32::INFINITY, uniforms,
+            dpr: 1.0,
         };
         let steps = [Step::Pass(&pass)];
         // How long the *host* side of one 1080p field costs: this is the part a zoom re-pays every
@@ -2497,11 +2587,11 @@ mod tests {
         let banded = t_band.elapsed().as_secs_f64() * 1000.0;
         eprintln!("1080p fields: exact {exact:.2} ms, banded(30px) {banded:.2} ms");
         // Warm up: upload, compile, allocate.
-        let _ = runner.composite_steps(&scene, w, h, &steps);
+        let _ = runner.composite_steps(&scene, w, h, &steps, None);
         let n = 12;
         let t0 = std::time::Instant::now();
         for _ in 0..n {
-            let _ = runner.composite_steps(&scene, w, h, &steps).expect("composite");
+            let _ = runner.composite_steps(&scene, w, h, &steps, None).expect("composite");
         }
         let per = t0.elapsed().as_secs_f64() * 1000.0 / f64::from(n);
         eprintln!("1920x1080 full-window glass composite: {per:.2} ms/frame (upload + SDF(free) + skyline + readback)");
@@ -2524,7 +2614,7 @@ mod tests {
         let red: Vec<u8> = [255u8, 0, 0, 255].repeat(8 * 8);
         let green: Vec<u8> = [0u8, 255, 0, 255].repeat(8 * 8);
         let steps = [Step::Over { pixels: &red, rect: [0, 0, 8, h] }, Step::Over { pixels: &green, rect: [8, 0, 8, h] }];
-        let out = runner.composite_steps(&canvas, w, h, &steps).expect("composite");
+        let out = runner.composite_steps(&canvas, w, h, &steps, None).expect("composite");
         let at = |x: u32, y: u32| -> [u8; 4] {
             let i = ((y * w + x) * 4) as usize;
             [out[i], out[i + 1], out[i + 2], out[i + 3]]
@@ -2581,7 +2671,7 @@ mod tests {
         let canvas = vec![0u8; (w * h * 4) as usize];
         let block: Vec<u8> = [255u8, 0, 0, 255].repeat(8 * 8);
         let steps = [Step::Over { pixels: &block, rect: [20, 10, 8, 8] }];
-        let out = runner.composite_steps(&canvas, w, h, &steps).expect("composite");
+        let out = runner.composite_steps(&canvas, w, h, &steps, None).expect("composite");
         let at = |x: u32, y: u32| -> [u8; 4] {
             let i = ((y * w + x) * 4) as usize;
             [out[i], out[i + 1], out[i + 2], out[i + 3]]
@@ -2635,6 +2725,7 @@ mod tests {
             field_bytes: None,
             field_band: f32::INFINITY,
             uniforms: vec![("u".into(), u_bytes)],
+            dpr: 1.0,
         }
     }
 
@@ -2668,8 +2759,8 @@ mod tests {
         let pass = glass_pass(w, h);
         let steps = [Step::Pass(&pass)];
 
-        let sync = runner.composite_steps(&canvas, w, h, &steps).expect("sync composite");
-        let id = runner.submit_async(&canvas, w, h, &steps).expect("async submit");
+        let sync = runner.composite_steps(&canvas, w, h, &steps, None).expect("sync composite");
+        let id = runner.submit_async(&canvas, w, h, &steps, None).expect("async submit");
         // Collect with a bounded pump loop — never spin forever if a broken driver never fires.
         let mut async_out = None;
         for _ in 0..2000 {
@@ -2710,7 +2801,7 @@ mod tests {
         let steps = [Step::Pass(&pass)];
 
         let t = std::time::Instant::now();
-        let id = runner.submit_async(&canvas, w, h, &steps).expect("async submit");
+        let id = runner.submit_async(&canvas, w, h, &steps, None).expect("async submit");
         let submit_ms = t.elapsed().as_secs_f64() * 1000.0;
         assert!(submit_ms < 50.0, "submit_async returns without waiting for the GPU: {submit_ms:.1}ms");
         assert_eq!(runner.in_flight(), 1, "the submitted frame owns one slot");
@@ -2755,13 +2846,13 @@ mod tests {
             for px in base.chunks_exact_mut(4) {
                 px.copy_from_slice(&[k as u8 * 40, 10, 200, 255]);
             }
-            let id = runner.submit_async(&base, w, h, &steps).expect("a free slot exists");
+            let id = runner.submit_async(&base, w, h, &steps, None).expect("a free slot exists");
             ids.push(id);
             bases.push(base);
         }
         assert_eq!(runner.in_flight(), ASYNC_SLOTS, "all slots occupied");
         let extra = vec![7u8; (w * h * 4) as usize];
-        assert!(runner.submit_async(&extra, w, h, &steps).is_none(), "full ring refuses a new frame instead of blocking or evicting");
+        assert!(runner.submit_async(&extra, w, h, &steps, None).is_none(), "full ring refuses a new frame instead of blocking or evicting");
 
         // Collect every frame and confirm its outside-region pixels come from *its* base.
         for (id, base) in ids.into_iter().zip(bases.into_iter()) {

@@ -61,6 +61,21 @@ usvg = { version = "0.48", optional = true }
 # 只给 GPU 后端的吞吐对照测试用（§18「保留 CPU 路径做对照」）。
 tiny-skia = "0.12"
 
+# 这三个示例直接驱动 wgpu 材质后端，默认构建（无 `gpu` feature）下不能编译。
+# 显式声明 required-features，`cargo build --examples` / `cargo test` 才不会因为
+# 找不到 `wgpu` / `shade_gpu` 而整体失败；要跑它们时加 `--features gpu`。
+[[example]]
+name = "frost_zoom"
+required-features = ["gpu"]
+
+[[example]]
+name = "glass_interior"
+required-features = ["gpu"]
+
+[[example]]
+name = "solid_probe"
+required-features = ["gpu"]
+
 # 画布是**逐像素**的活：整页贴图 440 万像素，每次重绘都要把预乘 RGBA 转成 BGRA。
 # 未优化的 debug 构建下 tiny-skia 和这趟转换会慢 20~40 倍，一次拖拽的渲染从 6ms 涨到
 # 100ms 以上——表现就是「选框很跟手，里面的色块和文字明显落后」。

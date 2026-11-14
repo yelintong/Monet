@@ -119,6 +119,13 @@ pub(super) fn request_render(
     grab_ask: Option<GrabAsk>,
     bands: &[figcraft_render::Band],
 ) {
+    let display_doc = app.display_doc.clone();
+    // 拖动期间底图完全冻结：被拖层由画布每帧当帧同步渲染的局部完整场景补丁提供
+    // （见 canvas/mod.rs 的 patch_for）。提交异步整页图会让内容比选框晚一两帧，
+    // 且旧位置会留下残影；这里一张都不提交，松手后再由 submitted=None 强制补一张。
+    if !skip.is_empty() {
+        return;
+    }
     let Ok(ds) = app.session.ds() else { return };
     let rect = app.canvas.rect;
     let (mut ox, mut oy) = ds.view.origin();
@@ -139,7 +146,8 @@ pub(super) fn request_render(
     } else {
         (scale, visible_w, visible_h)
     };
-    let doc = ds.doc.clone();
+    // 本帧显示文档由 CanvasApp 显式给出（Motion 预览时是求值后的文档）。
+    let doc = display_doc.unwrap_or_else(|| ds.doc.clone());
     let outlined = if ds.view.outlines_selection { ds.selection.clone() } else { vec![] };
     let proof = ds.view.proof_srgb && !doc.color_profile.is_srgb();
     let outline_extras = figcraft_render::Outline { hidden: ds.view.outline_hidden, bounds: ds.view.outline_bounds, light: false };
@@ -222,6 +230,8 @@ pub(super) fn request_render(
         dots: None,
         grab: grab_ask,
         bands: bands.to_vec(),
+        // 逐层材质板由 worker 自持（它跨帧缓存每层像素），UI 线程不参与。
+        shade: None,
         uid: ds.uid,
         zoom_preview: ds.view.pixel_preview_scale().is_none(),
         at: std::time::Instant::now(),

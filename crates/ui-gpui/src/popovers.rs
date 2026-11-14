@@ -45,6 +45,8 @@ pub(crate) enum WindowKind {
     /// 详细排版设置（egui `typography.rs::type_settings_panel`）：Basics / Details /
     /// Variable 三页签的浮层，正文全部用通用 `Setting` 行（chips + 数字框）搭出来。
     TypeSettings,
+    /// 效果设置小窗：点右栏效果行的方框弹出，装该效果的设置项与类型切换。
+    EffectSettings,
 }
 
 /// One clickable row of a list window (a variable, a style, a create action).
@@ -80,11 +82,29 @@ pub(crate) struct Opt {
     /// 有值时用排版对话框字形（`typ-*.svg`）画格，label 退为 tooltip/无障碍文本。
     /// Type settings  Basics 页的对齐 / 装饰线 / 大小写 / 列表 / 截断全是图标格。
     pub glyph: Option<crate::widgets::typ_icons::TypIcon>,
+    /// 有值时在**点击那一刻**用实时状态算出 `params`，而不是用构造时拍下的快照。
+    /// 效果设置小窗里数值 / 开关 / 枚举共用一份可变 effect：任何一个控件写回后，
+    /// 其余控件的命令都必须从**最新** effect 起改，否则会把彼此的修改覆盖掉
+    /// （先改 X 再改 Y，Y 的 `effect.set` 带着开窗时的旧 X）。`params` 退为占位。
+    pub params_fn: Option<std::rc::Rc<dyn Fn() -> Value>>,
 }
 
 impl Opt {
     pub fn new(label: impl Into<SharedString>, cmd: &'static str, params: Value) -> Self {
-        Self { label: label.into(), cmd, params, glyph: None }
+        Self { label: label.into(), cmd, params, glyph: None, params_fn: None }
+    }
+
+    /// 一个 params 在点击时才算的选项：`params_fn` 读实时共享状态。
+    pub fn dynamic(label: impl Into<SharedString>, cmd: &'static str, params_fn: std::rc::Rc<dyn Fn() -> Value>) -> Self {
+        Self { label: label.into(), cmd, params: Value::Null, glyph: None, params_fn: Some(params_fn) }
+    }
+
+    /// 点击时真正要下发的 params：有懒算函数就用它，否则用构造时的快照。
+    pub fn now(&self) -> Value {
+        match &self.params_fn {
+            Some(f) => f(),
+            None => self.params.clone(),
+        }
     }
     /// 把这一格改成 lizard 的排版字形（U̲ / AG / 项目符号…），label 仍保留作语义标注。
     pub fn with_glyph(mut self, g: crate::widgets::typ_icons::TypIcon) -> Self {
@@ -828,6 +848,59 @@ impl WindowState {
         w
     }
 
+    /// 效果设置小窗：点效果行的方框弹出。egui `effects.rs::effect_settings` 是**向下 inline
+    /// 展开**设置项，这里按用户 2026-11-13 的要求把设置项装进 detached 小窗。
+    ///
+    /// 类型切换也搬进小窗顶部，且用 `Effect::of_type` 生成**全新默认对象**。原实现是 clone
+    /// 旧 effect JSON 只改 `type`：旧类型的字段（offset / spread / size / density …）会残留，
+    /// 被引擎 `refuse_ignored_effect_keys` 判为 unknown properties 后整条 `effect.set` 拒收，
+    /// 命令静默失效 —— 这就是「有一些效果点了、选中图层在画布中没有效果」的根因。
+    /// `effect.add` 走 `Effect::of_type`，所以从 `+` 菜单添加一直是正常的。
+    pub(crate) fn effect_settings(
+        cmds: Cmds,
+        cx: &mut App,
+        anchor: Point<Pixels>,
+        index: usize,
+        label: SharedString,
+        effect: Value,
+    ) -> Self {
+        let mut w = Self::base(WindowKind::EffectSettings, label.clone(), cmds.clone(), Open::Anchor(anchor));
+        w.width = 248.0;
+        w.height = 320.0;
+        w.pad = 12.0;
+        let ty = effect.get("type").and_then(Value::as_str).unwrap_or("dropShadow").to_string();
+        let mut settings: Vec<Setting> = Vec::new();
+        // ① 类型切换：每项都带一份干净的、只属于该类型的默认 effect。
+        let options: Vec<Opt> = figcraft_doc::Effect::TYPES
+            .iter()
+            .map(|(l, t)| {
+                let clean = figcraft_doc::Effect::of_type(*t)
+                    .and_then(|e| serde_json::to_value(e).ok())
+                    .unwrap_or(Value::Null);
+                Opt::new(tr(*l), "effect.set", json!({ "index": index, "effect": clean }))
+            })
+            .collect();
+        let current: SharedString = figcraft_doc::Effect::TYPES
+            .iter()
+            .find(|(_, t)| *t == ty)
+            .map(|(l, _)| tr(*l).into())
+            .unwrap_or_else(|| label.clone());
+        settings.push(Setting::Dropdown {
+            tab: 0,
+            label: tr("Type").into(),
+            current: Rc::new(RefCell::new(current)),
+            anchor: Rc::new(RefCell::new(None)),
+            options,
+        });
+        // ② 该效果的具体设置项（egui effect_settings 的数值 / 开关 / 枚举）。
+        // 全部控件共用这一份可变 effect：任何一个写回后，其余控件的命令都从最新值起改，
+        // 否则「先改 X 再改 Y」时 Y 的 effect.set 会带着开窗时的旧 X 把 X 冲掉。
+        let shared = Rc::new(RefCell::new(effect.clone()));
+        settings.extend(effect_setting_rows(cx, &cmds, index, &shared, &ty));
+        w.settings = Rc::new(RefCell::new(settings));
+        w
+    }
+
     /// 根视图注入 Floating/Full 切换与关闭回调（编辑器尚未创建时先存着）。
     pub(crate) fn set_variables_callbacks(&mut self, on_full: Rc<dyn Fn(bool, &mut App)>, on_close: Rc<dyn Fn(&mut App)>) {
         self.var_on_full = on_full;
@@ -1082,7 +1155,7 @@ impl WindowState {
             }
             // 变量编辑器把「标题 + 计数」画进自己的工具条：整窗一个插槽，顶部只有一行。
             WindowKind::VariablesTable => div().into_any_element(),
-            WindowKind::Layout | WindowKind::Stroke => title_text(self.title.clone()).into_any_element(),
+            WindowKind::Layout | WindowKind::Stroke | WindowKind::EffectSettings => title_text(self.title.clone()).into_any_element(),
             // Type settings 的标题栏就是三页签（截图顶部没有单独的 "Type settings" 标题文字），
             // 与 lizard `type_settings_panel` 把 Tabs 放进 header 一致。
             WindowKind::TypeSettings => {
@@ -1128,7 +1201,7 @@ impl WindowState {
     fn body_element(&mut self, cx: &mut App, body_h: f32, card_w: f32, viewport: Size<Pixels>) -> AnyElement {
         match self.kind {
             WindowKind::Color => self.color_body(),
-            WindowKind::Layout | WindowKind::Stroke | WindowKind::TypeSettings => self.settings_element(cx),
+            WindowKind::Layout | WindowKind::Stroke | WindowKind::TypeSettings | WindowKind::EffectSettings => self.settings_element(cx),
             WindowKind::Variables | WindowKind::TextStyles => self.list_element(cx),
             WindowKind::VariablesTable => {
                 if self.editor.is_none() {
@@ -1553,7 +1626,7 @@ impl WindowState {
                 let key = label.clone();
                 seg = seg.on_pick(move |i, _, _| {
                     let Some(opt) = opts.get(i) else { return };
-                    cmds.push(Cmd { id: opt.cmd, params: Some(opt.params.clone()) });
+                    cmds.push(Cmd { id: opt.cmd, params: Some(opt.now()) });
                     // 抬起格同步（命令引发的重绘会读到新值）。
                     if let Ok(mut list) = settings.try_borrow_mut() {
                         for s in list.iter_mut() {
@@ -1605,13 +1678,23 @@ impl WindowState {
                     let cur_state = current.clone();
                     let at2 = anchor.clone();
                     let wake2 = self.cmds.clone();
-                    let on_pick = Rc::new(move |picked: &str, _w: &mut Window, _cx: &mut App| {
+                    // 效果小窗：切换类型后下面那批数值行还属于旧类型，拿旧键写回会被引擎拒收。
+                    // 选中即关窗，重新点开时按新类型重建设置项；其它窗口的行为不变。
+                    let close_window = if self.kind == WindowKind::EffectSettings {
+                        self.dismiss.borrow().clone()
+                    } else {
+                        None
+                    };
+                    let on_pick = Rc::new(move |picked: &str, w: &mut Window, cx: &mut App| {
                         if let Some(o) = opts.iter().find(|o| o.label == picked) {
                             *cur_state.borrow_mut() = o.label.clone();
-                            cmds.push(Cmd { id: o.cmd, params: Some(o.params.clone()) });
+                            cmds.push(Cmd { id: o.cmd, params: Some(o.now()) });
                         }
                         *at2.borrow_mut() = None;
                         wake2.wake();
+                        if let Some(cb) = &close_window {
+                            cb(w, cx);
+                        }
                     });
                     let at3 = anchor.clone();
                     let wake3 = self.cmds.clone();
@@ -1640,7 +1723,7 @@ impl WindowState {
                         let val = i == 1;
                         *state.borrow_mut() = val;
                         let opt = if val { &oc } else { &fc };
-                        cmds.push(Cmd { id: opt.cmd, params: Some(opt.params.clone()) });
+                        cmds.push(Cmd { id: opt.cmd, params: Some(opt.now()) });
                     });
                 }
                 let row = type_row(label, &t, seg.into_any_element());
@@ -1670,7 +1753,7 @@ impl WindowState {
         let key = key.clone();
         seg.on_pick(move |i, _, _| {
             let Some(opt) = opts.get(i) else { return };
-            cmds.push(Cmd { id: opt.cmd, params: Some(opt.params.clone()) });
+            cmds.push(Cmd { id: opt.cmd, params: Some(opt.now()) });
             if let Ok(mut list) = settings.try_borrow_mut() {
                 for s in list.iter_mut() {
                     if let Setting::Options { label: l, active: a, .. } = s {
@@ -1775,6 +1858,152 @@ fn type_row(label: &SharedString, t: &crate::theme::Tokens, control: AnyElement)
 ///
 /// 提交值按 `[min, max]` 夹紧 —— egui 那边是 `value.clamp(...)`，越界的键入不该写进文档。
 /// 空文本视为「不动」：`Auto` 类的值（装饰线粗细）本来就允许留空。
+/// clone 一份 effect JSON，只改一个顶层键，作为 `effect.set` 的 `effect` 参数。
+/// 所有键都属于当前类型，不会触发引擎的 unknown properties 拒收。
+fn effect_with(effect: &Value, key: &str, value: Value) -> Value {
+    let mut e = effect.clone();
+    if let Some(o) = e.as_object_mut() {
+        o.insert(key.to_string(), value);
+    }
+    e
+}
+
+/// 一条数值设置项：显示值 = 存储值 × `scale`（密度 / 强度这类 0..1 用 100 显示成百分比），
+/// 提交时反算、夹紧，然后只改一个键推 `effect.set`。`at = Some(i)` 用于 `offset: [x, y]`。
+#[allow(clippy::too_many_arguments)]
+fn effect_number(
+    cx: &mut App,
+    cmds: &Cmds,
+    index: usize,
+    shared: &Rc<RefCell<Value>>,
+    key: &'static str,
+    at: Option<usize>,
+    label: &'static str,
+    suffix: &str,
+    step: f64,
+    scale: f64,
+    min: f64,
+    max: f64,
+) -> Setting {
+    let raw = {
+        let effect = shared.borrow();
+        match at {
+            Some(i) => effect.get(key).and_then(Value::as_array).and_then(|a| a.get(i)).and_then(Value::as_f64),
+            None => effect.get(key).and_then(Value::as_f64),
+        }
+        .unwrap_or(0.0)
+    };
+    let field = number_field(cx, 72.0, Some(raw * scale), suffix, step, Slot::None);
+    let live = shared.clone();
+    let queue = cmds.clone();
+    field.update(cx, move |tf, _| {
+        tf.set_on_commit(move |text, _, _| {
+            let Ok(v) = text.trim().parse::<f64>() else { return };
+            if !v.is_finite() {
+                return;
+            }
+            let v = (v / scale).clamp(min, max);
+            // 从**最新**共享 effect 起改，而不是开窗时的快照，避免冲掉同窗其它控件的编辑。
+            let mut e = live.borrow().clone();
+            let Some(o) = e.as_object_mut() else { return };
+            match at {
+                Some(i) => {
+                    let Some(arr) = o.get_mut(key).and_then(Value::as_array_mut) else { return };
+                    if let Some(cell) = arr.get_mut(i) {
+                        *cell = json!(v);
+                    }
+                }
+                None => {
+                    o.insert(key.to_string(), json!(v));
+                }
+            }
+            *live.borrow_mut() = e.clone();
+            queue.push(Cmd { id: "effect.set", params: Some(json!({ "index": index, "effect": e })) });
+        });
+    });
+    Setting::Number { tab: 0, label: SharedString::from(label), field }
+}
+
+/// 按效果类型生成设置项（与 egui `effects.rs::effect_settings` 的字段对应；颜色需取色器，
+/// 暂不搬入小窗）。所有写回都走 `effect.set`，参数只含当前类型自己的键。
+fn effect_setting_rows(cx: &mut App, cmds: &Cmds, index: usize, shared: &Rc<RefCell<Value>>, ty: &str) -> Vec<Setting> {
+    let mut out: Vec<Setting> = Vec::new();
+    macro_rules! n {
+        ($key:expr, $at:expr, $label:expr, $suffix:expr, $step:expr, $scale:expr, $min:expr, $max:expr) => {
+            out.push(effect_number(cx, cmds, index, shared, $key, $at, $label, $suffix, $step, $scale, $min, $max));
+        };
+    }
+    macro_rules! tgl {
+        ($key:expr, $label:expr) => {{
+            let cur = shared.borrow().get($key).and_then(Value::as_bool).unwrap_or(false);
+            let s_on = shared.clone();
+            let s_off = shared.clone();
+            out.push(Setting::Toggle {
+                tab: 0,
+                label: SharedString::from($label),
+                on: Rc::new(RefCell::new(cur)),
+                supported: true,
+                on_cmd: Opt::dynamic("On", "effect.set", Rc::new(move || json!({ "index": index, "effect": effect_with(&s_on.borrow(), $key, json!(true)) }))),
+                off_cmd: Opt::dynamic("Off", "effect.set", Rc::new(move || json!({ "index": index, "effect": effect_with(&s_off.borrow(), $key, json!(false)) }))),
+            });
+        }};
+    }
+    macro_rules! choice {
+        ($key:expr, $label:expr, $values:expr) => {{
+            let vals: &[(&str, &str)] = $values;
+            let cur = shared.borrow().get($key).and_then(Value::as_str).unwrap_or("").to_string();
+            let opts: Vec<Opt> = vals
+                .iter()
+                .map(|(l, v)| {
+                    let s = shared.clone();
+                    let val = Value::String(v.to_string());
+                    Opt::dynamic(*l, "effect.set", Rc::new(move || json!({ "index": index, "effect": effect_with(&s.borrow(), $key, val.clone()) })))
+                })
+                .collect();
+            let active = vals.iter().position(|(_, v)| *v == cur.as_str());
+            out.push(Setting::Options { tab: 0, label: SharedString::from($label), active, options: opts });
+        }};
+    }
+    match ty {
+        "dropShadow" | "innerShadow" => {
+            n!("offset", Some(0), "X", "", 1.0, 1.0, -10_000.0, 10_000.0);
+            n!("offset", Some(1), "Y", "", 1.0, 1.0, -10_000.0, 10_000.0);
+            n!("radius", None, "Blur", "", 1.0, 1.0, 0.0, 10_000.0);
+            n!("spread", None, "Spread", "", 1.0, 1.0, -10_000.0, 10_000.0);
+            if ty == "dropShadow" {
+                tgl!("show_behind", "Show behind transparent areas");
+            }
+        }
+        "layerBlur" | "backgroundBlur" => {
+            choice!("blur_type", "Blur type", &[("Uniform", "uniform"), ("Progressive", "progressive")]);
+            n!("radius", None, "Blur", "", 1.0, 1.0, 0.0, 10_000.0);
+            n!("start_radius", None, "Start", "", 1.0, 1.0, 0.0, 10_000.0);
+        }
+        "noise" => {
+            choice!("mode", "Mode", &[("Mono", "mono"), ("Duo", "duo"), ("Multi", "multi")]);
+            n!("size", None, "Size", "", 0.1, 1.0, 0.01, 1_000.0);
+            n!("density", None, "Density", "%", 1.0, 100.0, 0.0, 1.0);
+            n!("opacity", None, "Opacity", "%", 1.0, 100.0, 0.0, 1.0);
+        }
+        "texture" => {
+            n!("size", None, "Size", "", 0.1, 1.0, 0.01, 1_000.0);
+            n!("radius", None, "Radius", "", 1.0, 1.0, 0.0, 10_000.0);
+            tgl!("clip_to_shape", "Clip to shape");
+        }
+        "glass" => {
+            n!("light_angle", None, "Light angle", "\u{00b0}", 1.0, 1.0, -180.0, 180.0);
+            n!("light_intensity", None, "Intensity", "%", 1.0, 100.0, 0.0, 1.0);
+            n!("refraction", None, "Refraction", "%", 1.0, 100.0, 0.0, 1.0);
+            n!("depth", None, "Depth", "", 1.0, 1.0, 1.0, 1_000.0);
+            n!("dispersion", None, "Dispersion", "%", 1.0, 100.0, 0.0, 1.0);
+            n!("frost", None, "Frost", "", 1.0, 1.0, 0.0, 100.0);
+            n!("splay", None, "Splay", "%", 1.0, 100.0, 0.0, 1.0);
+        }
+        _ => {}
+    }
+    out
+}
+
 fn wire_set(field: &Entity<TextField>, cx: &mut App, cmds: &Cmds, key: &'static str, min: f64, max: f64) {
     let queue = cmds.clone();
     field.update(cx, move |tf, _| {
@@ -1995,4 +2224,43 @@ mod tests {
         let Setting::Toggle { on, .. } = &rows[1] else { panic!("expected toggle after title") };
         assert!(!*on.borrow(), "文档覆盖应盖过默认开");
     }
+
+    /// 效果设置小窗的数值行按这些键写回。键名必须与 `serde_json::to_value(Effect)` 一致，
+    /// 否则 `effect.set` 会被引擎 `refuse_ignored_effect_keys` 判成 unknown properties 拒收。
+    #[test]
+    fn effect_setting_keys_match_the_serialized_effect() {
+        let cases: &[(&str, figcraft_doc::Effect, &[&str])] = &[
+            ("dropShadow", figcraft_doc::Effect::drop_shadow(), &["type", "offset", "radius", "spread", "show_behind", "visible"]),
+            ("layerBlur", figcraft_doc::Effect::layer_blur(), &["type", "radius", "blur_type", "start_radius"]),
+            ("noise", figcraft_doc::Effect::noise(), &["type", "mode", "size", "density", "opacity"]),
+            ("texture", figcraft_doc::Effect::texture(), &["type", "size", "radius", "clip_to_shape"]),
+            ("glass", figcraft_doc::Effect::glass(), &["type", "light_angle", "light_intensity", "refraction", "depth", "dispersion", "frost", "splay"]),
+        ];
+        for (name, e, keys) in cases {
+            let v = serde_json::to_value(e).unwrap();
+            for k in *keys {
+                assert!(v.get(k).is_some(), "{name} JSON missing `{k}`: {v}");
+            }
+        }
+    }
+
+    /// 类型切换必须生成干净对象：旧实现 clone 旧 effect JSON 只改 `type`，
+    /// 残留的 offset / spread / color 会让整条 `effect.set` 静默失效。
+    #[test]
+    fn switching_effect_type_drops_the_old_types_fields() {
+        let old = serde_json::to_value(figcraft_doc::Effect::drop_shadow()).unwrap();
+        assert!(old.get("offset").is_some() && old.get("spread").is_some());
+        let clean = serde_json::to_value(figcraft_doc::Effect::of_type("glass").unwrap()).unwrap();
+        assert_eq!(clean.get("type").and_then(Value::as_str), Some("glass"));
+        for k in ["offset", "spread", "color"] {
+            assert!(clean.get(k).is_none(), "clean glass must not carry shadow field `{k}`: {clean}");
+        }
+        // 小窗里的类型切换用的正是 `Effect::of_type`，逐类型都不残留别类的键。
+        for (_, ty) in figcraft_doc::Effect::TYPES {
+            let v = serde_json::to_value(figcraft_doc::Effect::of_type(ty).unwrap()).unwrap();
+            assert_eq!(v.get("type").and_then(Value::as_str), Some(ty), "type tag for {ty}");
+            assert!(v.as_object().unwrap().len() < 16, "{ty} carries too many fields: {v}");
+        }
+    }
+
 }

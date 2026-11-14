@@ -228,8 +228,10 @@ impl Retained {
             Prepared::Patched(snapped, work) => Some(Begun::Done(snapped, &self.last.as_ref()?.pix, work)),
             Prepared::Full { snapped, px, fonts, sensitive } => {
                 // Bands at least twice what they overlap (each draws its overlap again both ways),
-                // so a background blur reaching past `band_h` makes the bands taller.
-                let overlap = crate::band_overlap(doc, &snapped, u32::MAX).map(|o| o.min(snapped.height));
+                // so a background blur — or a material's lens — reaching past `band_h` makes the
+                // bands taller.
+                let overlap =
+                    crate::band_overlap(doc, &snapped, u32::MAX, opts.shade_reach).map(|o| o.min(snapped.height));
                 let band_h = band_h.max(1).max(overlap.unwrap_or(0).saturating_mul(2));
                 // A blur that can't be measured: one piece.
                 let Some(overlap) = overlap else {

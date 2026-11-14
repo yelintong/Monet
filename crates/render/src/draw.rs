@@ -46,6 +46,14 @@ pub struct Ctx<'a, 'd> {
     pub bounds: &'a Bounds<'d>,
     /// 画布提示带（padding / spacing）：铺在所属图层的填充之后、子层之前（见 [`crate::Band`]）。
     pub bands: &'a [crate::Band],
+    /// 外置 WGSL 材质板（`Some` 时，绑了材质的图层那层的底图由 GPU 产出，见 [`crate::shade`]）。
+    pub shade: Option<&'a crate::shade::ShadeBoard>,
+    /// 这次渲染**真正负责**的设备像素行范围（分带渲染时是带自己那段；`None` 是整幅）。
+    ///
+    /// 每带会多渲染一圈 overlap 好让模糊/材质读到自己那层之外的底图，这圈像素最后会被裁掉。
+    /// 材质节点本身由「装得下它」的那一条带整块算一次（见 `crate::band_spans`），所以按行范围
+    /// 归属就不必在相邻带的 overlap 里再算一遍——否则同一节点会白跑 N 次 GPU pass。
+    pub rows: Option<(f64, f64)>,
     /// 页面 → 设备像素（提示带是页面坐标，直接用它画）。
     pub page_xf: Affine,
 }
@@ -609,7 +617,7 @@ fn draw_layer(ctx: &Ctx, pix: &mut Pixmap, n: &Node, parent_xf: Affine, depth: u
         lod::splat_subtree(ctx, pix, n, xf, None, 1.0, depth);
         return;
     }
-    if !needs_layer(n) {
+    if !needs_layer(n) && ctx.shade.and_then(|b| b.spec_for(id)).is_none() {
         draw_content(ctx, pix, n, xf, depth, None);
         return;
     }
@@ -628,9 +636,19 @@ fn draw_layer(ctx: &Ctx, pix: &mut Pixmap, n: &Node, parent_xf: Affine, depth: u
     let Some(mut layer) = Pixmap::new(lw, lh) else { return };
     let lxf = Affine::translate((-f64::from(lx), -f64::from(ly))) * xf;
     let shape = node_outline(ctx.doc, n);
+    // 外置 WGSL 材质：这一层的「底图」由 GPU 现算，落点与内置 Glass 完全相同（内容之下的
+    // 那一层像素），子树仍由普通递归画在它上面。有材质时内置 backdrop 效果让位——两条路径
+    // 同时画会在同一层里叠两次玻璃。
+    //
+    // 每条跨到这个节点的带都按**自己窗口**算玻璃：缓存键含窗口尺寸 / origin / 底图，所以相邻带
+    // 不会互相覆盖（早期「单一 per-node 槽」才会让所有带画成同一张、出现重复亮带）；带的
+    // overlap 又按材质透镜 reach 给了模糊足够上下文，拼接处连续。绝不能只让「一条带」认领——
+    // 那样比视口高的窗格在其余带里整块不画玻璃，放大到 235% 时整块消失。
+    let shader = ctx.shade.and_then(|b| b.spec_for(id));
+    let shaded = shader.as_ref().and_then(|spec| shader_layer(ctx, pix, n, spec, (lx, ly), (lw, lh), lxf));
     // Background blur and glass: the whole backdrop under the layer (every surface below this
     // one, composited), through the shape, under the content.
-    let back_shape = if backdrop::has_effects(n) { backdrop::outline(ctx.doc, n) } else { None };
+    let back_shape = if shader.is_none() && backdrop::has_effects(n) { backdrop::outline(ctx.doc, n) } else { None };
     let read_backdrop = |pix: &Pixmap| back_shape.as_ref().and_then(|sh| backdrop_layer(ctx, pix, n, sh, (lx, ly), (lw, lh), lxf));
     // With drop shadows too, the layer casts them from what it paints, not from the backdrop, and
     // the backdrop is read again once they lie under it (a shadow showing behind is seen through
@@ -642,6 +660,10 @@ fn draw_layer(ctx: &Ctx, pix: &mut Pixmap, n: &Node, parent_xf: Affine, depth: u
     let first_back = if !casts || nested() { read_backdrop(pix) } else { None };
     if !casts && let Some(b) = &first_back {
         layer.draw_pixmap(0, 0, b.as_ref(), &PixmapPaint::default(), Transform::identity(), None);
+    }
+    // 材质产出的那一层像素：与上面一样，画在内容之下。
+    if let Some(s) = &shaded {
+        layer.draw_pixmap(0, 0, s.as_ref(), &PixmapPaint::default(), Transform::identity(), None);
     }
     let op = n.opacity.clamp(0.0, 1.0);
     {
@@ -662,7 +684,14 @@ fn draw_layer(ctx: &Ctx, pix: &mut Pixmap, n: &Node, parent_xf: Affine, depth: u
         let under = Under { opacity: op, blend: n.blend, ..Under::new(pix, (lx, ly), ctx.under) };
         let over_back = first_back.as_ref().filter(|_| casts).map(|b| Under::new(b, (0, 0), Some(&under)));
         let content_under = over_back.as_ref().unwrap_or(&under);
-        draw_content(&Ctx { under: Some(content_under), ..*ctx }, &mut layer, n, lxf, depth, has_inner.then_some(&inner as &dyn Fn(&mut Pixmap)));
+        let inner_ctx = Ctx { under: Some(content_under), ..*ctx };
+        // 绑了外置材质：材质就是节点那层漆。整页合成通道把节点整个挖空、再把材质贴回，逐层
+        // 通道要给出同一张图，就只能画子树——照常画填充会把玻璃整个盖掉（不透明填充尤其）。
+        if shader.is_some() {
+            draw_children_only(&inner_ctx, &mut layer, n, lxf, depth);
+        } else {
+            draw_content(&inner_ctx, &mut layer, n, lxf, depth, has_inner.then_some(&inner as &dyn Fn(&mut Pixmap)));
+        }
     }
     // A group is no outline of its own: its inner shadows are cast from around what its layers
     // draw together, over them.
@@ -709,6 +738,60 @@ fn draw_layer(ctx: &Ctx, pix: &mut Pixmap, n: &Node, parent_xf: Affine, depth: u
         layer_effects(ctx, &mut layer, n, id, lxf);
     }
     composite(pix, (lx, ly), &layer, op, n.blend);
+}
+
+/// 外置 WGSL 材质产出的那一层像素：这一层内容之下的底图，由 GPU 换成 shader 的结果。
+///
+/// 命中（同一 layer、同一底图、同一参数）直接给出可画的图；未命中则**登记请求**并返回 `None`
+/// ——本帧这一层就没有玻璃，内容照常画，下一帧真图上台。渲染线程不阻塞在 GPU 上，
+/// 这是 [`crate::shade`] 的契约。
+fn shader_layer(
+    ctx: &Ctx,
+    pix: &Pixmap,
+    n: &Node,
+    spec: &Arc<crate::shade::ShaderSpec>,
+    at: (i32, i32),
+    (lw, lh): (u32, u32),
+    lxf: Affine,
+) -> Option<Pixmap> {
+    let board = ctx.shade?;
+    if lw == 0 || lh == 0 {
+        return None;
+    }
+    // 窗口左上角在**节点像素**空间里的位置：层可能只是节点的可见那一块。
+    let origin = {
+        let p = lxf * figcraft_geom::Point::new(0.0, 0.0);
+        (-p.x as f32, -p.y as f32)
+    };
+    let bounds = ctx.doc.bounds_of(&[n.id]);
+    let node_px = bounds.map_or((lw as f32, lh as f32), |r| {
+        ((r.width() * ctx.scale) as f32, (r.height() * ctx.scale) as f32)
+    });
+    let bounds = bounds.map_or([0.0; 4], |r| [r.x0, r.y0, r.x1, r.y1]);
+    let radii_px = n.corners.radii.map(|v| (v * ctx.scale).max(0.0) as f32);
+    // 这一层背后（不含层自己）的像素：内置 Glass 读的就是这份底图，材质读同一份。
+    let back = backdrop::backdrop(pix, ctx.under, at.0, at.1, lw, lh)?;
+    let straight = crate::shade::straight(&back);
+    let key = crate::shade::shade_key(spec, (lw, lh), origin, radii_px, ctx.scale, &straight);
+    if let Some(s) = board.ready(n.id, key) {
+        return Some(s.pixmap.clone());
+    }
+    board.request(crate::shade::ShadeRequest {
+        node: n.id,
+        key,
+        spec: spec.clone(),
+        size: (lw, lh),
+        node_px,
+        origin_px: origin,
+        radii_px,
+        scale: ctx.scale,
+        bounds,
+        smoothing: n.corners.smoothing,
+        backdrop: Arc::new(straight),
+    });
+    // 没算出来就用这一层上一张：拖动材质本身时键每帧都换，画空白会闪。第一次见到这个节点
+    // 时它本来就没有上一张，那一帧仍然是空的。
+    board.latest(n.id, (lw, lh), origin).map(|s| s.pixmap.clone())
 }
 
 /// Node `n`'s backdrop effects through its backdrop outline `sh`, for its `size` layer at `at` on
@@ -761,6 +844,21 @@ fn draw_outline(ctx: &Ctx, pix: &mut Pixmap, n: &Node, xf: Affine, depth: usize)
 /// What paints over a node's fills, under its children and strokes (its inner shadows).
 type OverFills<'a> = Option<&'a dyn Fn(&mut Pixmap)>;
 
+/// What a node's children paint, through its clip, **without** its own fill, stroke or inner shadow.
+/// A layer that paints nothing of its own (see `paints_nothing`) and one whose paint an external
+/// material replaces both come out this way.
+fn draw_children_only(ctx: &Ctx, pix: &mut Pixmap, n: &Node, xf: Affine, depth: usize) {
+    if n.children.is_empty() || n.hides_contents() {
+        return;
+    }
+    if n.clip && n.kind.is_frame_like() {
+        let outline = node_outline(ctx.doc, n);
+        draw_children_clipped(ctx, pix, n, xf, depth, outline.as_ref().map(|(p, _)| p));
+    } else {
+        draw_children(ctx, pix, n, xf, depth);
+    }
+}
+
 /// Fills, `over_fills`, children (clipped), strokes and text of a node, without opacity/effects.
 fn draw_content(ctx: &Ctx, pix: &mut Pixmap, n: &Node, xf: Affine, depth: usize, over_fills: OverFills) {
     let doc = ctx.doc;
@@ -769,15 +867,7 @@ fn draw_content(ctx: &Ctx, pix: &mut Pixmap, n: &Node, xf: Affine, depth: usize,
     // **inside** a listed one (a container's child) paints as usual.
     let in_only = ctx.only.is_empty() || ctx.only.iter().any(|o| doc.is_ancestor(*o, n.id));
     if !in_only {
-        if !n.children.is_empty() && !n.hides_contents() {
-            let clips = n.clip && n.kind.is_frame_like();
-            if clips {
-                let outline = node_outline(doc, n);
-                draw_children_clipped(ctx, pix, n, xf, depth, outline.as_ref().map(|(p, _)| p));
-            } else {
-                draw_children(ctx, pix, n, xf, depth);
-            }
-        }
+        draw_children_only(ctx, pix, n, xf, depth);
         return;
     }
     let (w, h) = (n.width, n.height);
@@ -977,6 +1067,10 @@ fn paints_nothing(ctx: &Ctx, n: &Node) -> bool {
     if n.has_visible_stroke() || n.effects.iter().any(|e| e.visible) {
         return false;
     }
+    // Drawing it inline would paint its children past the shader bound to it.
+    if ctx.shade.and_then(|b| b.spec_for(n.id)).is_some() {
+        return false;
+    }
     match n.kind {
         NodeKind::Group => true,
         // A frame with a fill lays a backdrop where it sits in the paint order; an empty one only
@@ -1124,6 +1218,11 @@ fn world_box(doc: &Document, n: &Node) -> Option<Rect> {
 /// own (merging it would change what it paints — those paints are laid out in the shape's own box).
 fn plain_rect<'d>(ctx: &Ctx<'_, 'd>, n: &'d Node) -> Option<&'d [Paint]> {
     if !n.visible || n.is_mask || n.clip || !n.children.is_empty() {
+        return None;
+    }
+    // A layer bound to a shader is painted by `draw_layer`, which evaluates the material on the
+    // layer's own backdrop: filling it along with its neighbours would skip that.
+    if ctx.shade.and_then(|b| b.spec_for(n.id)).is_some() {
         return None;
     }
     // Outline mode paints the outline instead of the fill; a skipped node isn't drawn at all.

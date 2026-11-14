@@ -1046,6 +1046,20 @@ pub fn apply(app: &mut CanvasApp, ui: &mut MotionUi, acts: Vec<Act>) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn moving_the_playhead_rebuilds_the_preview_document() {
+        let doc = Arc::new(Document::new("motion-preview"));
+        let page = doc.pages[0];
+        let mut ui = MotionUi::default();
+        ui.refresh_preview(&doc, page);
+        let first = ui.preview_doc.as_ref().map(|d| Arc::as_ptr(d) as usize);
+        ui.playhead_ms = 500.0;
+        ui.refresh_preview(&doc, page);
+        let second = ui.preview_doc.as_ref().map(|d| Arc::as_ptr(d) as usize);
+        assert!(first.is_some(), "the first refresh produces a document");
+        assert_ne!(first, second, "a playhead change must produce a new document identity");
+    }
     use crate::app::{CanvasApp, sample_doc};
     use figcraft_doc::NodeKind;
 

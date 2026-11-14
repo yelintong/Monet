@@ -75,6 +75,12 @@ pub mod wgsl_composite;
 #[cfg(feature = "gpu")]
 pub mod wgsl_runner;
 
+/// 逐层外置材质的 GPU 后端（`--features gpu`）：一层底图进、一层像素出，配合
+/// `figcraft_render::shade` 把材质从「整页合成」搬进 `draw_layer` 的 backdrop 槽。
+#[cfg(feature = "gpu")]
+
+mod shade_gpu;
+
 mod main_menu;
 
 /// 点锚定的菜单卡片：右键菜单与工具栏飞出菜单共用的一套行模型。
@@ -4230,15 +4236,14 @@ impl Render for CanvasView {
             canvas::guides::end_released(&mut self.app);
         }
 
-        // Motion 播放头预览（egui `motion_preview` 的等价）：这一帧让画布画「在 playhead
-
-        // 求值后的文档」，画完立刻还原真实文档。引擎 / 撤销栈 / 选中状态全程不受影响，
-
-        // 因为替换的只是 `DocState.doc` 这一份 `Arc<Document>`，且同一帧内还原。
-
-        let saved_doc = self.motion_preview_doc().and_then(|preview| {
+        // Motion 播放头预览：本帧让整条画布链路（渲染请求 / 当帧同步补丁 / 所有叠加层）
+        // 都读到同一份求值后的文档，画完立刻还原。只替换 `Arc<Document>` 这一份，
+        // 同一帧内还原；引擎的写操作仍走输入事件里的 `ds.doc`。
+        // 这是 main 基线「拖动/缩放/旋转正常」的关键：叠加层子模块（handles / guides /
+        // dev / selection_spacing / motion_overlay / comments）都直接读 `ds.doc`，
+        // 若不在本帧统一它们，画面、选框、手柄会变成三套坐标系。
+        let saved_doc = self.app.display_doc.clone().and_then(|preview| {
             let ds = self.app.session.ds_mut().ok()?;
-
             Some(std::mem::replace(&mut ds.doc, preview))
         });
 

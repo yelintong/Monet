@@ -124,10 +124,12 @@ impl Out {
 
 // ---------------------------------------------------------------- tree / timeline helpers
 
-/// Timeline settings of the page `node` belongs to (default page timeline when absent).
+/// Timeline settings that govern `node`: its own frame entry when it has one, else the
+/// containing page's, else defaults — the same frame→page chain export (`Animation::new`)
+/// and the motion editor read through. Reading only `page_of(node)` ignored per-frame
+/// settings, so generated CSS/SwiftUI/Compose ran at the page tempo instead of the frame's.
 fn timeline_of(doc: &Document, node: NodeId) -> figcraft_doc::anim::motion::TimelineSettings {
-    let page = doc.page_of(node).or(Some(node)).filter(|p| doc.contains(*p));
-    page.and_then(|p| doc.timelines.get(&p).copied()).unwrap_or_default()
+    doc.timeline_settings_for(node)
 }
 
 /// Pre-order walk of `root` and all its descendants (mirrors desigma `doc.walk`).

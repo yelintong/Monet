@@ -52,6 +52,8 @@ pub struct Job {
     pub grab: Option<GrabAsk>,
     /// 画布提示带（padding / spacing）：铺在所属图层的子层之前。
     pub bands: Vec<figcraft_render::Band>,
+    /// 逐层材质板（`Some` = 这一帧走 `draw_layer` 求值，不再挖空主图、不做整页合成）。
+    pub shade: Option<std::sync::Arc<figcraft_render::shade::ShadeBoard>>,
     pub uid: u64,
     pub zoom_preview: bool,
     pub at: std::time::Instant,
@@ -79,10 +81,15 @@ pub struct Grab {
 }
 
 pub struct Done {
+    /// 这张图对应的文档：上台时叠加层读它，保证选框与画面同帧同基准。
+    pub doc: Arc<Document>,
     /// 可直接上传为纹理的整页图像。
     pub image: Arc<RenderImage>,
-    /// 该图显示的视图（请求视图向外吸附到整设备像素后的结果）。
+    /// 该图显示的视图（请求视图向外吸附到整设备像素后的结果）。材质 overscan 时它比请求的视口大。
     pub view: View,
+    /// 请求的视口（overscan 前）。只用来把材质的**着色**限制在看得见的那块：底图仍是整张大图，
+    /// shader 没必要对整圈（视口外、根本没显示）逐像素算一遍——那正是 300ms/帧的来源。
+    pub visible: Option<View>,
     /// 这张图**没有**画哪些图层（画布自己画了它们）。
     pub skip: Vec<NodeId>,
     /// 这次渲染顺带裁出来的图层块（请求了才给）。
@@ -319,13 +326,24 @@ fn run(job: &Job, view: &View, retained: &mut Retained, coarse: bool, reuse: Opt
     // 裁下来的那块」。节点自己若还在图里，玻璃就会折射自己的填充色（实测：绿色矩形的中心
     // 被自己的绿色填满、边缘才发白），而不是背后的画面。拖动期间同样要挖空——效果优先，
     // 材质在拖动中也要完整呈现（代价是拖动帧要等一次 GPU 合成）。
-    if cfg!(feature = "gpu") {
+    // 逐层通道（`job.shade = Some`）**不挖空**：材质在 `draw_layer` 里按层求值，主图里那个节点
+    // 该照常画（它的内容就是材质之上的那层），所以没有洞要补，也没有子树要重渲。
+    if cfg!(feature = "gpu") && job.shade.is_none() {
         for id in job.doc.subtree(job.page) {
             if job.doc.node(id).is_some_and(|n| n.plugin_data.contains_key(crate::wgsl_material::BINDING_KEY)) {
                 skip.push(id);
             }
         }
     }
+    // 材质透镜能读多远（设备像素）：与走整页还是逐层无关——两条通道都以视口栅格为底图，透镜向
+    // pane 内部（core 方向）采样时会越过视口边缘，读到栅格外的透明 → 折射消失成亮带。
+    #[cfg(feature = "gpu")]
+    let material_reach = crate::shade_gpu::reach_px(&job.doc, job.page, view.scale);
+    #[cfg(not(feature = "gpu"))]
+    let material_reach = 0.0;
+    // 逐层通道还要把 reach 交给分带器，否则每条带各自画一遍边缘高光，接缝就是一条条亮带
+    // （大节点被切 16 条时最刺眼）。
+    let shade_reach = if job.shade.is_some() { material_reach } else { 0.0 };
     let opts = figcraft_render::Options {
         outline_mode: job.outline,
         outline: job.outline_extras,
@@ -336,9 +354,34 @@ fn run(job: &Job, view: &View, retained: &mut Retained, coarse: bool, reuse: Opt
         magnified_image_pixels: true,
         dots: job.dots,
         bands: job.bands.clone(),
+        shade: job.shade.clone(),
+        shade_reach,
         ..Default::default()
     };
-    let (view, pix, work) = retained.render(&job.doc, job.page, view, &opts)?;
+    // 材质透镜的 overscan：lens 从 pane 边往 core 方向最多读 `material_reach` 个设备像素，pane
+    // 的边在屏幕上时，这个读取会伸到视口另一侧之外。视口栅格之外的底层内容在栅格化时就被裁掉了
+    // （`draw_layer` 的剔除也只到 pix 边），lens 采到透明 → 折射消失成亮带。
+    //
+    // 每边多渲一圈，**保留这张大图**（不裁）：整页合成（默认通道）在 `done.image` 上按节点窗口
+    // 取样，逐层合成在 `render_view` 里就把它画进这张图——两条都因此拿到视口外那圈底图。
+    // 显示端是安全的：`presented_image_rect` 按 `done.view` 重投影，画布根节点 `overflow_hidden`
+    // （`lib.rs`）把超出视口的部分裁掉；`shows()` 的 `covers()` 也明确允许「显示视图比请求视图大」。
+    let pad_px = lens_overscan(material_reach, view);
+    let big = if pad_px > 0 {
+        let s = view.scale.max(1e-9);
+        let d = f64::from(pad_px) / s;
+        View {
+            origin: (view.origin.0 - d, view.origin.1 - d),
+            scale: view.scale,
+            width: view.width + pad_px * 2,
+            height: view.height + pad_px * 2,
+        }
+    } else {
+        view.clone()
+    };
+    // 请求的视口（overscan 之前）：材质的着色用它做 scissor，底图仍用整张 `big`。
+    let visible = if pad_px > 0 { Some(view.clone()) } else { None };
+    let (view, pix, work) = retained.render(&job.doc, job.page, &big, &opts)?;
     let (w, h) = (pix.width(), pix.height());
     // 像素没变（`Retained` 增量缓存命中）：直接复用上一张图，不拷贝、不转换、不新建纹理。
     // 必须放在 `pix.data().to_vec()` **之前**——否则每帧白分配一整页（4.4MP ≈ 17.6MB），
@@ -348,9 +391,11 @@ fn run(job: &Job, view: &View, retained: &mut Retained, coarse: bool, reuse: Opt
         && let Some(prev) = reuse
     {
         return Some(Done {
+            doc: job.doc.clone(),
             image: prev.clone(),
             grab: None,
             view,
+            visible: visible.clone(),
             skip: job.skip.clone(),
             ms: t0.elapsed().as_secs_f64() * 1000.0,
             work,
@@ -392,7 +437,40 @@ fn run(job: &Job, view: &View, retained: &mut Retained, coarse: bool, reuse: Opt
             grab.is_some(),
         );
     }
-    Some(Done { image, grab, view, skip: job.skip.clone(), ms, work, uid: job.uid, page: job.page, coarse, at: job.at, seq: 0 })
+    Some(Done { doc: job.doc.clone(), image, grab, view, visible, skip: job.skip.clone(), ms, work, uid: job.uid, page: job.page, coarse, at: job.at, seq: 0 })
+}
+
+/// 材质透镜要的那圈 overscan，设备像素：lens 最多从 pane 边往 core 方向读 `reach_px`，
+/// 该方向到视口对边的距离是 `view` 的短边。超出部分必须多栅格，否则读到的就是栅格外的透明。
+///
+/// 只多渲「超出量」（`reach − 短边`），不是整个 reach：pane 边在视口内时，采样最多到
+/// 「pane 边 + reach」，而 pane 边离视口对边至多一个短边，所以溢出不超过这个差值。
+/// 上限按总像素卡住，避免极端缩放下一帧分配上百 MB（画面退化为读不到最远那一截，而不是崩）。
+fn lens_overscan(reach_px: f64, view: &View) -> u32 {
+    if !reach_px.is_finite() || reach_px <= 0.0 {
+        return 0;
+    }
+    let short = f64::from(view.width.min(view.height).max(1));
+    let extra = reach_px - short;
+    if extra <= 0.0 {
+        return 0;
+    }
+    // 与 `canvas::MAX_CANVAS_PIXELS` / `MAX_TEXTURE_SIDE` 对齐：一圈 overscan 之后仍要能作为一张
+    // 纹理上传。超了就退到装得下的那一圈（最远处少一截折射，而不是黑屏 / 分配失败）。
+    const MAX_PIXELS: f64 = 12_000_000.0;
+    const MAX_SIDE: f64 = 8192.0;
+    let side = f64::from(view.width.max(view.height));
+    let side_cap = ((MAX_SIDE - side) / 2.0).max(0.0);
+    let mut pad = extra.ceil().min(4096.0).min(side_cap) as u32;
+    while pad > 0 {
+        let w = f64::from(view.width) + 2.0 * f64::from(pad);
+        let h = f64::from(view.height) + 2.0 * f64::from(pad);
+        if w * h <= MAX_PIXELS && w <= MAX_SIDE && h <= MAX_SIDE {
+            break;
+        }
+        pad = pad.saturating_sub((pad / 8).max(1));
+    }
+    pad
 }
 
 /// `view` 每边少 [`PREVIEW_FACTOR`] 倍像素，至少显示同样大的区域。
@@ -697,6 +775,8 @@ pub struct Materials {
     runner: Option<crate::wgsl_runner::WgslRunner>,
     /// The last composited picture, handed back while its inputs stay byte-identical.
     last_composite: Option<LastComposite>,
+    /// 逐层材质板（`figcraft_render::shade`）：跨帧保存每层算好的像素。整页合成不用它。
+    shade: std::sync::Arc<figcraft_render::shade::ShadeBoard>,
 }
 
 /// One composited frame: what it was made from, and what it looked like.
@@ -712,6 +792,13 @@ struct LastComposite {
     base: Arc<RenderImage>,
     key: u64,
     image: Arc<RenderImage>,
+    /// The page this composite was made for. A fallback must only hand back a raster for the same
+    /// scene: after a successful page A, switching to a same-size page B whose material fails must
+    /// not show page A's glass under page B's `Done`.
+    page: NodeId,
+    /// The viewport it was made for — a pan/zoom changes which pixels are under the glass, so a
+    /// same-size raster of a different view is not the same picture either.
+    view: View,
 }
 
 /// Everything a composite reads besides its page image, hashed. `time` is not hashed on purpose:
@@ -719,7 +806,7 @@ struct LastComposite {
 /// `uniforms`, so its key differs every frame and it recomposites — animation keeps running. A
 /// shader that ignores `time` packs nothing of it and keeps its key.
 #[cfg(feature = "gpu")]
-fn composite_key(passes: &[crate::wgsl_runner::RunPass], view: &View, w: u32, h: u32) -> u64 {
+fn composite_key(doc: &Document, passes: &[crate::wgsl_runner::RunPass], view: &View, w: u32, h: u32) -> u64 {
     use std::hash::{Hash as _, Hasher as _};
     let mut key = std::collections::hash_map::DefaultHasher::new();
     (w, h).hash(&mut key);
@@ -740,6 +827,18 @@ fn composite_key(passes: &[crate::wgsl_runner::RunPass], view: &View, w: u32, h:
             name.hash(&mut key);
             bytes.hash(&mut key);
         }
+        // The composite bakes in each material's child layer, but the CPU base deliberately leaves
+        // that subtree out of the page image — so a `Retained` patch that only edits a child inside
+        // it changes no pixel of `base` and none of the fields above, and the stale composite would
+        // be handed straight back. `Document::nodes` is an immutable `OrdMap<NodeId, Arc<Node>>`: an
+        // edited node is a fresh allocation, so the subtree's pointers are an exact, allocation-cheap
+        // identity for precisely the content the child layer draws.
+        for id in doc.subtree(p.node) {
+            id.0.hash(&mut key);
+            if let Some(n) = doc.node_arc(id) {
+                (std::sync::Arc::as_ptr(n) as usize).hash(&mut key);
+            }
+        }
     }
     key.finish()
 }
@@ -751,13 +850,55 @@ fn reuse_composite(mats: &Materials, base: &Arc<RenderImage>, key: u64) -> Optio
     (last.key == key && Arc::ptr_eq(&last.base, base)).then(|| last.image.clone())
 }
 
+/// 逐层材质是否接管外置 WGSL 材质。
+///
+/// `Some` 时材质由 `vec`/`draw_layer` 按层求值（见 `figcraft_render::shade`）：主图不再挖空、
+/// 不做 `children_layer` 子树重渲、没有整页并集读回。`FIGCRAFT_SHADE_LAYERED=0` 切回整页合成
+/// —— 保留它就是为了两条通道能对同一份文档做逐像素比对，以及出问题时一键回退。
 #[cfg(feature = "gpu")]
+fn layered() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    // Default OFF: the whole-page **synchronous** compositor (`apply_wgsl_materials`) is the route
+    // that has never lost the material — it composites into the frame it delivers. The per-layer
+    // route only wins on speed for a container, and it cannot shade a node larger than the view
+    // (a band only sees its own slice of the page, so its window/key churns every drag/zoom frame
+    // and nothing ever cache-hits). `FIGCRAFT_SHADE_LAYERED=1` opts back in for comparison.
+    *ON.get_or_init(|| match std::env::var("FIGCRAFT_SHADE_LAYERED") {
+        Ok(v) => v == "1",
+        Err(_) => false,
+    })
+}
+
+#[cfg(feature = "gpu")]
+#[track_caller]
 fn apply_wgsl_materials(mats: &mut Materials, doc: &Document, page: NodeId, done: &mut Done) {
-    if !try_apply_wgsl_materials(mats, doc, page, done) {
-        // `run` 在 cfg!(gpu) 下把材质节点连子树一起挖空了。GPU 这一帧没能补回，必须用 CPU 画
-        // 回去，否则就是「容器不闪、里面的图不见了」。无 adapter 的设备上这是常事，不是意外。
-        cpu_restore_materials(doc, page, done);
+    if try_apply_wgsl_materials(mats, doc, page, done) {
+        return;
     }
+    // 一次重试。`drawn != total` 几乎总是"这一帧某个 pass 的 pipeline 刚被编译/刷新、还没就绪"
+    // ——第一次失败的同时 `ensure_pipelines` 已经把编译提交了、并把 device 推进了一轮，再走一遍
+    // 通常就成。玻璃在那一帧被纯色顶替，正是用户说的"毫无预兆地突然丢失"；重试把它从源头救回来。
+    // 老多 pass 契约失败时会改写 `done.image`（挖空+子层），不能再叠一次，故只对通用通道重试。
+    if !frame_uses_legacy_pipeline(doc, page) && try_apply_wgsl_materials(mats, doc, page, done) {
+        return;
+    }
+    // 仍然失败：绝不把材质节点画回它的填充色（那正是"玻璃突然变成一块纯色"的观感）。保住上一张
+    // 合成图——几何可能差一帧，但仍是玻璃。只有连上一张都没有（首帧就失败/画布尺寸变了）才退回 CPU。
+    // 上一张合成图只有在**同一个页面、同一个视口、同尺寸**时才是这一帧的合法替身。换了页面 / 平移
+    // 缩放之后，同尺寸的旧图会把 A 页的玻璃当成 B 页交出去（元数据却是 B 页的）。对不上就宁可走
+    // CPU 兜底，也不交一张错位的图。
+    if let Some(last) = mats.last_composite.as_ref() {
+        let v = &done.view;
+        let same_view = last.view.origin == v.origin && last.view.scale == v.scale && last.view.width == v.width && last.view.height == v.height;
+        let (want, got) = (done.image.size(0), last.image.size(0));
+        if last.page == page && same_view && want.width == got.width && want.height == got.height {
+            eprintln!("[material] COMPOSITE FAILED page={page:?}: keeping the last good raster");
+            done.image = last.image.clone();
+            return;
+        }
+    }
+    eprintln!("[material] COMPOSITE FAILED page={page:?}: nothing cached, restoring from CPU");
+    cpu_restore_materials(doc, page, done);
 }
 
 /// 材质进程的单调时钟（秒）。同步合成与异步提交共用同一原点，让同一帧里 `passes_for`
@@ -787,6 +928,7 @@ fn assemble_steps<'a>(passes: &'a [crate::wgsl_runner::RunPass], layers: &'a [Op
 /// 试走 GPU 合成。返回 `true` 当且仅当：**画布里本该由外置材质补回的节点，这一帧确实补齐了**
 /// （或本来就没有需要补的节点）。返回 `false` 时画布带着挖空的洞，调用方必须走 CPU 兜底。
 #[cfg(feature = "gpu")]
+#[track_caller]
 fn try_apply_wgsl_materials(mats: &mut Materials, doc: &Document, page: NodeId, done: &mut Done) -> bool {
     let (w, h) = {
         let sz = done.image.size(0);
@@ -836,7 +978,7 @@ fn try_apply_wgsl_materials(mats: &mut Materials, doc: &Document, page: NodeId, 
         return material_ids(doc, page).is_empty();
     }
     // 同一张底图 + 同一组 passes：上一帧的合成图就是这一帧的图（拖动、hover 之类的帧间静止）。
-    let key = composite_key(&passes, &done.view, w, h);
+    let key = composite_key(doc, &passes, &done.view, w, h);
     if let Some(image) = reuse_composite(mats, &done.image, key) {
         done.image = image;
         return true;
@@ -866,7 +1008,16 @@ fn try_apply_wgsl_materials(mats: &mut Materials, doc: &Document, page: NodeId, 
     let Some(runner) = mats.runner.as_mut() else { return false };
     let steps = assemble_steps(&passes, &layers);
     let t_comp = std::time::Instant::now();
-    let composited = runner.composite_steps(canvas, w, h, &steps);
+    // 材质的**着色**只需覆盖看得见的那块：底图（含 overscan 那圈）照旧整块准备，但视口外的像素
+    // 根本不会被显示，让 shader 对它们逐像素跑一遍纯属浪费（11.3M px 时 encode ≈250ms/帧，
+    // 正是放大时 coarse 有折射、refine 追不上的闪烁来源）。scissor 到可见视口即可。
+    let shade = done.visible.as_ref().map(|v| {
+        let s = done.view.scale.max(1e-9);
+        let x = ((v.origin.0 - done.view.origin.0) * s).round().max(0.0) as u32;
+        let y = ((v.origin.1 - done.view.origin.1) * s).round().max(0.0) as u32;
+        [x, y, v.width, v.height]
+    });
+    let composited = runner.composite_steps(canvas, w, h, &steps, shade);
     // `composite_steps` returns a full-size buffer even when a shader failed to load or compile: it
     // silently skips that pass's glass draw, still draws the children (`Over`), and reads back. If
     // we only checked the buffer length we would show a container with its contents but no glass —
@@ -876,13 +1027,18 @@ fn try_apply_wgsl_materials(mats: &mut Materials, doc: &Document, page: NodeId, 
     let ok = composited.as_ref().is_some_and(|out| out.len() >= expected) && drawn == total;
     if ok && let Some(out) = composited {
         done.image = wrap_bgra(w, h, out);
-        mats.last_composite = Some(LastComposite { base: base_image, key, image: done.image.clone() });
+        mats.last_composite = Some(LastComposite { base: base_image, key, image: done.image.clone(), page, view: done.view.clone() });
     }
     if render_log() {
+        // 谁调的这条整页合成（画布 / 兜底缩略图 / 预览）看 `at`：一度把缩略图那次当成了主画布，
+        // 白追了一轮「逐层没生效」。两条通道并存时这个调用点是第一件要看的事。
+        let at = std::panic::Location::caller();
         eprintln!(
-            "[material] {w}x{h} passes={} drawn={drawn}/{total} layers={layers_ms:.1}ms composite={:.1}ms ok={ok}",
+            "[material] {w}x{h} passes={} drawn={drawn}/{total} layers={layers_ms:.1}ms composite={:.1}ms ok={ok} at={}:{}",
             passes.len(),
-            t_comp.elapsed().as_secs_f64() * 1000.0
+            t_comp.elapsed().as_secs_f64() * 1000.0,
+            at.file(),
+            at.line(),
         );
     }
     ok
@@ -928,29 +1084,16 @@ fn try_submit_wgsl_materials(mats: &mut Materials, doc: &Document, page: NodeId,
         return Submit::Sync;
     }
     // 底图与 passes 逐字节没变：上一帧的合成图就是这一帧该显示的图，连 GPU 都不用碰。
-    let key = composite_key(&passes, &done.view, w, h);
+    let key = composite_key(doc, &passes, &done.view, w, h);
     if let Some(image) = reuse_composite(mats, &done.image, key) {
         return Submit::Reused(image);
     }
-    let Some(canvas) = done.image.as_bytes(0) else { return Submit::Sync };
-    let layers: Vec<Option<(Vec<u8>, [u32; 4])>> = passes.iter().map(|p| children_layer(doc, page, &done.view, p.node, w, h)).collect();
-    if mats.runner.is_none() {
-        mats.runner = crate::wgsl_runner::WgslRunner::new();
-    }
-    let Some(runner) = mats.runner.as_mut() else { return Submit::Sync };
-    let steps = assemble_steps(&passes, &layers);
-    // 编译 + 判据：与同步 `try_apply_wgsl_materials` 的 `steps_drawn` 检查等价。必须先确保
-    // shader 齐全再占用 slot——否则一个静默跳过 glass draw 的异步帧会把「有子层没玻璃」的
-    // 错图交回 UI。`submit_async` 内部还会再走一次 `refresh_pipelines`，但那时 cache 已热，
-    // 只是 500ms 节流的 stale 检查，几乎免费。
-    let (drawn, total) = runner.ensure_pipelines(w, h, &steps);
-    if drawn != total || drawn == 0 {
-        return Submit::Sync;
-    }
-    match runner.submit_async(canvas, w, h, &steps) {
-        Some(id) => Submit::Queued { id, key },
-        None => Submit::Sync,
-    }
+    // 不再异步提交。`submit_async` 的像素要靠**之后**一轮 `collect_ready` 才收回，而静止的画布
+    // 不再有那一轮——材质于是在视图停下时整块消失（实测：`[gpu] … submit (async)` 之后没有对应
+    // 的 `[material] …` 合成行，主画布洋红=0）。同步合成只要 ~1–2 ms，这里直接做完，交付的帧
+    // 必定带着材质；这也正是整页通道（`apply_wgsl_materials` 同步）从来没出过这类问题的原因。
+    // `Reused` 短路留在上面：输入没变时仍然不碰 GPU。
+    Submit::Sync
 }
 
 /// 一帧已提交到 GPU、readback 还在飞的完整上下文。收集成功后 `done.image` 从「未合成的
@@ -1034,7 +1177,7 @@ fn collect_ready(mats: &std::sync::Arc<std::sync::Mutex<Materials>>, pending: &m
         // 收齐的这张就是「这张底图 + 这组 passes」的合成结果：记下来，下一帧输入没变就直接用它。
         let base = pf.done.image.clone();
         pf.done.image = wrap_bgra(pf.w, pf.h, pixels);
-        guard.last_composite = Some(LastComposite { base, key: pf.key, image: pf.done.image.clone() });
+        guard.last_composite = Some(LastComposite { base, key: pf.key, image: pf.done.image.clone(), page: pf.done.page, view: pf.done.view.clone() });
         ready.push(pf.done);
     }
 }
@@ -1205,6 +1348,17 @@ impl Renders {
     fn rasterize(&mut self, job: &Job) -> Option<Done> {
         // 上一张图借给 `run`：像素没变时它直接复用这张，不再分配整整一页。
         let prev = self.last_image.clone();
+        // 逐层材质：把板挂到这次渲染上——`run` 见到 `Some` 就不挖空主图，`draw_layer` 按层求值。
+        // 材质集合每帧重算（节点增删/换 shader/改参数都在里面），板本身跨帧，缓存的是像素。
+        #[cfg(feature = "gpu")]
+        let shaded = layered().then(|| {
+            let board = self.mats.lock().unwrap_or_else(|e| e.into_inner()).shade.clone();
+            board.set_specs(crate::shade_gpu::specs(&job.doc, job.page));
+            if render_log() { eprintln!("[shade] attached specs={}", board.specs_len()); }
+            Job { shade: Some(board), ..job.clone() }
+        });
+        #[cfg(feature = "gpu")]
+        let job: &Job = shaded.as_ref().unwrap_or(job);
         let mut done = guarded(&mut self.full, |r| run(job, &job.view, r, false, prev.as_ref()))?;
         self.last = Some((job.uid, job.page, job.view.scale));
         if done.work == Work::Full {
@@ -1218,6 +1372,34 @@ impl Renders {
             done.image = prev.clone();
         }
         self.last_image = Some(done.image.clone());
+        // 这一帧在 `draw_layer` 里登记的层算出来装回板上，再把「栅格出现在画之前」的复用缓存丢掉
+        // 重画——**反复**做：重画本身可能给上层材质排新的请求（下层刚画进去，上层的底图就变了），
+        // 而静止画布不一定还有下一帧，排了就永远没人收（上层材质停在旧图或空白）。所以有界地
+        // 「drain → 重画」直到一轮不再产出新栅格；静止帧没产出，不付这份代价。
+        #[cfg(feature = "gpu")]
+        {
+            const MAX_SHADE_PASSES: usize = 4;
+            for _ in 0..MAX_SHADE_PASSES {
+                let Some(board) = job.shade.as_ref() else { break };
+                let produced = {
+                    let mut mats = self.mats.lock().unwrap_or_else(|e| e.into_inner());
+                    if mats.runner.is_none() {
+                        mats.runner = crate::wgsl_runner::WgslRunner::new();
+                    }
+                    mats.runner.as_mut().map_or(0, |runner| crate::shade_gpu::shade_pending(board, runner, &job.doc))
+                };
+                if produced == 0 {
+                    break;
+                }
+                self.full.clear();
+                done = guarded(&mut self.full, |r| run(job, &job.view, r, false, None))?;
+                self.last = Some((job.uid, job.page, job.view.scale));
+                if done.work == Work::Full {
+                    self.full_ms = done.ms;
+                }
+                self.last_image = Some(done.image.clone());
+            }
+        }
         Some(done)
     }
 
@@ -1255,8 +1437,11 @@ impl Renders {
         let mut done = self.rasterize(job)?;
         // WGSL 材质合成：CPU 画布当 sceneTex，逐绑定节点跑多 pass，readback 回显示图。
         // 必须在 last_image 赋值之后——缓存始终保留未合成原图，Reused 帧才不会二次叠加。
+        // 逐层模式下材质已经在 `draw_layer` 里画进去了，这里再合成一次就是叠两次玻璃。
         #[cfg(feature = "gpu")]
-        apply_wgsl_materials(&mut self.mats.lock().unwrap_or_else(|e| e.into_inner()), &job.doc, job.page, &mut done);
+        if !layered() {
+            apply_wgsl_materials(&mut self.mats.lock().unwrap_or_else(|e| e.into_inner()), &job.doc, job.page, &mut done);
+        }
         Some(done)
     }
 
@@ -1277,6 +1462,10 @@ impl Renders {
             Some(d) => d,
             None => return RefineOutcome::None,
         };
+        // 逐层模式：材质已经在 `rasterize` 里的 `draw_layer` 求值并装回板上，这一帧就是成品。
+        if layered() {
+            return RefineOutcome::Ready(base);
+        }
         let (w, h) = {
             let sz = base.image.size(0);
             (u32::from(sz.width), u32::from(sz.height))
@@ -1333,6 +1522,7 @@ pub(super) fn patch_job(doc: Arc<Document>, page: NodeId, view: View, bands: &[f
         grab: None,
         bands: bands.to_vec(),
         uid,
+        shade: None,
         zoom_preview: false,
         at: std::time::Instant::now(),
     }
@@ -1419,6 +1609,7 @@ fn build_overview(job: &Job, retained: &mut Retained, mats: &mut Materials) -> O
         grab: None,
         bands: Vec::new(),
         uid: job.uid,
+        shade: None,
         zoom_preview: false,
         at: std::time::Instant::now(),
     };
@@ -1431,23 +1622,7 @@ fn build_overview(job: &Job, retained: &mut Retained, mats: &mut Materials) -> O
 #[cfg(not(feature = "gpu"))]
 fn build_overview(job: &Job, retained: &mut Retained) -> Option<Overview> {
     let view = overview_view(&job.doc, job.page)?;
-    let sub = Job {
-        doc: job.doc.clone(),
-        page: job.page,
-        view,
-        outline: false,
-        outline_extras: figcraft_render::Outline::default(),
-        outlined: Vec::new(),
-        skip: Vec::new(),
-        solo: None,
-        proof: false,
-        dots: None,
-        grab: None,
-        bands: Vec::new(),
-        uid: job.uid,
-        zoom_preview: false,
-        at: std::time::Instant::now(),
-    };
+    let sub = Job { doc: job.doc.clone(), page: job.page, view, outline: false, outline_extras: figcraft_render::Outline::default(), outlined: Vec::new(), skip: Vec::new(), solo: None, proof: false, dots: None, grab: None, bands: Vec::new(), shade: None, uid: job.uid, zoom_preview: false, at: std::time::Instant::now() };
     let done = run(&sub, &sub.view, retained, false, None)?;
     Some(Overview { image: done.image, view: done.view, key: (Arc::as_ptr(&sub.doc) as usize, sub.page, figcraft_text::layout_generation()) })
 }
@@ -1741,9 +1916,11 @@ fn run_gpu(job: &Job, view: &View, gpu: &mut crate::gpu::Gpu) -> Option<Done> {
         eprintln!("[render] {}x{} {ms:.1}ms gpu rects={}", view.width, view.height, scene.rects.len());
     }
     Some(Done {
+        doc: job.doc.clone(),
         image,
         grab: None,
         view: view.clone(),
+        visible: None,
         skip: job.skip.clone(),
         ms,
         work: Work::Full,
@@ -1884,8 +2061,10 @@ mod material_foreground_tests {
 
         let (w, h) = (200u32, 200u32);
         let mut done = Done {
+            doc: Arc::new(doc.clone()),
             image: wrap_bgra(w, h, vec![0u8; (w * h * 4) as usize]),
             view: View { origin: (0.0, 0.0), scale: 1.0, width: w, height: h },
+            visible: None,
             skip: Vec::new(),
             grab: None,
             ms: 0.0,
@@ -1930,8 +2109,10 @@ mod material_foreground_tests {
         let _gpu = crate::wgsl_runner::GPU_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let (doc, page) = glass_container();
         let mut done = crate::canvas::render_worker::Done {
+            doc: Arc::new(doc.clone()),
             image: wrap_bgra(100, 100, vec![0u8; 100 * 100 * 4]),
             view: view(),
+            visible: None,
             skip: Vec::new(),
             grab: None,
             ms: 0.0,
@@ -1963,8 +2144,10 @@ mod material_foreground_tests {
         let (doc, page) = glass_container();
         // 一张「已被挖空」的画布：材质节点连子树都不在里面，全透明。
         let mut done = Done {
+            doc: Arc::new(doc.clone()),
             image: wrap_bgra(100, 100, vec![0u8; 100 * 100 * 4]),
             view: view(),
+            visible: None,
             skip: Vec::new(),
             grab: None,
             ms: 0.0,
@@ -2019,8 +2202,10 @@ mod async_refine_tests {
     fn done_with_seq(seq: u64) -> Done {
         let page = figcraft_doc::Document::default().pages[0];
         Done {
+            doc: Arc::new(figcraft_doc::Document::default()),
             image: wrap_bgra(2, 2, vec![0u8; 2 * 2 * 4]),
             view: View { origin: (0.0, 0.0), scale: 1.0, width: 2, height: 2 },
+            visible: None,
             skip: Vec::new(),
             grab: None,
             ms: 0.0,
@@ -2143,6 +2328,7 @@ mod async_refine_tests {
             dots: None,
             grab: None,
             bands: Vec::new(),
+            shade: None,
             uid: 1,
             zoom_preview: false,
             at: std::time::Instant::now(),
@@ -2285,6 +2471,7 @@ mod material_apply_tests {
             dots: None,
             grab: None,
             bands: Vec::new(),
+            shade: None,
             uid: 1,
             zoom_preview: false,
             at: std::time::Instant::now(),
@@ -2506,5 +2693,123 @@ mod material_apply_tests {
             "covers the bottom-right: {v:?}"
         );
         assert!(u64::from(v.width) * u64::from(v.height) <= OVERVIEW_PIXELS as u64 * 2, "within the pixel budget: {v:?}");
+    }
+
+}
+
+#[cfg(test)]
+mod overlay_admission_tests {
+    use super::*;
+
+    #[test]
+    fn a_coarse_preview_never_covers_a_refined_image_of_the_same_view() {
+        use crate::canvas::render::shows;
+        let page = figcraft_doc::Document::default().pages[0];
+        let view = View { origin: (0.0, 0.0), scale: 1.0, width: 100, height: 100 };
+        let mut c = crate::canvas::CanvasState::default();
+        c.tex_of = Some((7, page));
+        c.tex_seq = 10;
+        c.tex_view = Some(view.clone());
+        c.want_view = Some(view.clone());
+        let done = Done {
+            doc: Arc::new(figcraft_doc::Document::default()),
+            image: wrap_bgra(2, 2, vec![0u8; 16]),
+            view: view.clone(),
+            visible: None,
+            skip: Vec::new(),
+            grab: None,
+            ms: 0.0,
+            work: Work::Full,
+            uid: 7,
+            page,
+            coarse: true,
+            at: std::time::Instant::now(),
+            seq: 11,
+        };
+        assert!(!shows(&c, &done, Some((7, page))), "same view: a coarse preview must not cover the refined image");
+        c.want_view = Some(View { scale: 2.0, ..view });
+        assert!(shows(&c, &done, Some((7, page))), "after a zoom the coarse preview may show");
+    }
+}
+
+#[cfg(test)]
+mod overscan_tests {
+    use super::lens_overscan;
+    use figcraft_render::View;
+
+    fn view(w: u32, h: u32) -> View {
+        View { origin: (0.0, 0.0), scale: 1.0, width: w, height: h }
+    }
+
+    #[test]
+    fn no_overscan_when_the_lens_fits_inside_the_viewport() {
+        // reach 600 on a 1157-short-side viewport: the lens never leaves the raster, so the
+        // backdrop already holds everything it samples. No extra pixels, no cost.
+        assert_eq!(lens_overscan(600.0, &view(1157, 1666)), 0);
+        assert_eq!(lens_overscan(0.0, &view(1157, 1666)), 0);
+    }
+
+    #[test]
+    fn overscan_is_the_reach_past_the_short_side() {
+        // depth×scale = 2080 with a 1157 short side: the lens samples 2080 px in from the pane
+        // edge, so the raster is 923 px short on the far side. That is exactly the ring to add.
+        assert_eq!(lens_overscan(2080.0, &view(1157, 1666)), 2080 - 1157);
+    }
+
+    #[test]
+    fn overscan_is_bounded_by_the_pixel_budget() {
+        // A monstrous reach must not ask for an unbounded raster (the app would OOM or fail to
+        // upload the texture). 12M px matches the canvas budget; 8192 is the texture side limit.
+        let p = lens_overscan(1_000_000.0, &view(1157, 1666));
+        let (w, h) = (1157 + 2 * p, 1666 + 2 * p);
+        assert!(p > 0, "an extreme reach still gets some ring");
+        assert!(w * h <= 12_000_000, "overscan {p} blew the pixel budget: {w}x{h}");
+        assert!(w <= 8192 && h <= 8192, "overscan {p} blew the texture side: {w}x{h}");
+    }
+
+    /// End to end through `render_now` (which is `run` without the worker): a glass pane larger
+    /// than the viewport must come back with a raster **bigger** than the viewport, so the lens can
+    /// read the ring past the view edge instead of transparent pixels.
+    #[test]
+    fn a_glass_pane_past_the_view_edge_overscans_the_raster() {
+        use figcraft_doc::{Document, NodeKind};
+
+        let mut doc = Document::default();
+        let page = doc.pages[0];
+        let pane = doc.create(page, NodeKind::Rectangle, "pane", 0.0, 0.0, 200.0, 200.0).expect("pane");
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/assets/wgsl/glass.wgsl").replace('\\', "\\\\");
+        doc.get_mut(pane)
+            .expect("pane node")
+            .plugin_data
+            .insert("figcraft.wgslMaterial".to_string(), format!("{{\"path\":\"{path}\",\"params\":{{}}}}"));
+
+        // 200 px viewport inside a 200-doc pane at 60×: the lens reads depth 20 → 1200 px inward,
+        // far past the view edge (the exact shape of the reported bug).
+        let view = View { origin: (80.0, 80.0), scale: 60.0, width: 200, height: 200 };
+        let job = super::Job {
+            doc: std::sync::Arc::new(doc),
+            page,
+            view: view.clone(),
+            outline: false,
+            outline_extras: figcraft_render::Outline::default(),
+            outlined: Vec::new(),
+            skip: Vec::new(),
+            solo: None,
+            proof: false,
+            dots: None,
+            grab: None,
+            bands: Vec::new(),
+            shade: None,
+            uid: 1,
+            zoom_preview: false,
+            at: std::time::Instant::now(),
+        };
+        let done = super::render_now(&job).expect("a CPU render");
+        assert!(
+            done.view.width > view.width && done.view.height > view.height,
+            "the raster must grow past the viewport for the lens ring, got {}x{}",
+            done.view.width,
+            done.view.height,
+        );
     }
 }
