@@ -85,7 +85,7 @@ pub(super) fn accent(app: &CanvasApp) -> Color32 {
 
 /// 画布上所有叠加层。返回每个顶层帧/section 名称标签的屏幕矩形（页面坐标），
 /// 供引擎在点击标签时选中/拖拽对应容器（`ToolState::labels`，照搬 `ui-egui`）。
-pub(super) fn overlays(app: &CanvasApp, painter: &mut Painter, t: &Tokens) -> Vec<(NodeId, [Point; 4])> {
+pub(super) fn overlays(app: &CanvasApp, painter: &mut Painter, t: &Tokens, renaming: Option<NodeId>) -> Vec<(NodeId, [Point; 4])> {
     let Ok(ds) = app.session.ds() else { return Vec::new() };
     let doc = ds.doc.clone();
     let page = ds.page;
@@ -166,7 +166,7 @@ pub(super) fn overlays(app: &CanvasApp, painter: &mut Painter, t: &Tokens) -> Ve
             }
         }
         let labelled = focus.is_none() && (n.kind.is_frame_like() || matches!(n.kind, NodeKind::Section { .. })) && !n.is_board_atom();
-        if labelled && let Some(q) = super::frame_labels::draw(app, painter, t, &doc, *c, sel.contains(c), ds.hover == Some(*c)) {
+        if labelled && let Some(q) = super::frame_labels::draw(app, painter, t, &doc, *c, sel.contains(c), ds.hover == Some(*c), renaming == Some(*c)) {
             labels.push((*c, q.map(|p| app.to_page(p))));
         }
     }

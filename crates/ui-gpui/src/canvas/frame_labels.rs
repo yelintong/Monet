@@ -44,7 +44,7 @@ pub fn label_edge(p00: Pos2, p10: Pos2, p01: Pos2) -> LabelEdge {
 }
 
 /// 画 `id`（顶层帧或 section）的标签；返回它在屏幕上的四角（用于命中测试）。
-pub fn draw(app: &CanvasApp, painter: &mut Painter, t: &Tokens, doc: &Document, id: NodeId, selected: bool, hovered: bool) -> Option<[Pos2; 4]> {
+pub fn draw(app: &CanvasApp, painter: &mut Painter, t: &Tokens, doc: &Document, id: NodeId, selected: bool, hovered: bool, renaming: bool) -> Option<[Pos2; 4]> {
     let n = doc.node(id)?;
     let w = doc.world_transform(id);
     let at = |x: f64, y: f64| {
@@ -74,7 +74,10 @@ pub fn draw(app: &CanvasApp, painter: &mut Painter, t: &Tokens, doc: &Document, 
         let galley = painter.layout_no_wrap(n.name.clone(), semibold(11.0), fg);
         let r = Rect::from_min_size(tl, galley.size() + vec2(16.0, 8.0));
         painter.rect_filled(r, CornerRadius::same(4), if selected { t.accent } else { t.hover });
-        painter.galley(r.min + vec2(8.0, 4.0), galley, fg);
+        // 改名期间不画旧名字（内联输入框是透明的），pill 与矩形照旧。
+        if !renaming {
+            painter.galley(r.min + vec2(8.0, 4.0), galley, fg);
+        }
         status_badge(painter, n, pos2(r.max.x + 6.0, r.center().y));
         let _ = hidden;
         r
@@ -84,7 +87,10 @@ pub fn draw(app: &CanvasApp, painter: &mut Painter, t: &Tokens, doc: &Document, 
         let galley = painter.layout_no_wrap(n.name.clone(), regular(11.0), col);
         let size = galley.size();
         let end = x + size.x;
-        painter.galley(pos2(x, tl.y - 16.0), galley, col);
+        // 同上：几何（`area`）仍按 galley 量出来的宽度算，只是不落笔。
+        if !renaming {
+            painter.galley(pos2(x, tl.y - 16.0), galley, col);
+        }
         status_badge(painter, n, pos2(end + 6.0, tl.y - 9.0));
         Rect::from_min_max(pos2(tl.x, tl.y - 18.0), pos2(end, tl.y - 16.0 + size.y.max(12.0)))
     };

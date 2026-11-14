@@ -3638,7 +3638,11 @@ impl CanvasView {
 
         // Ctrl+右键平移时 `Right` 也算「按住」，否则一移动就被判成松手（用户 2026-11-08）。
 
-        let held = e.pressed_button == Some(MouseButton::Left) || (self.right_pan && e.pressed_button == Some(MouseButton::Right));
+        let held = e.pressed_button == Some(MouseButton::Left)
+            || (self.right_pan && e.pressed_button == Some(MouseButton::Right))
+            // 中键按下就开始平移（`self.pan`），而画布元素的 move 在共用拖拽期间直接返回——
+            // 中键必须在这里也算「按住」，否则第一次 move 就把 `self.pan` 清掉、画布纹丝不动。
+            || (self.pan.is_some() && e.pressed_button == Some(MouseButton::Middle));
 
         if !held {
             let pos = self.local(e.position);
@@ -4202,7 +4206,10 @@ impl Render for CanvasView {
             Some(std::mem::replace(&mut ds.doc, preview))
         });
 
-        let CanvasOutput { image, overview, live, painter, bg, in_flight, retired } = canvas::show(&mut self.app, &mut self.worker, ppp, &t);
+        // 正在改名的画布标签：这一帧不要再画旧名字。输入框是透明的，旧字会从底下透出来，
+        // 名字变短时还会露出旧后缀。几何（`label_rename_rect`）不受影响。
+        let renaming_label = self.inline_rename.as_ref().filter(|r| r.target == InlineRenameTarget::Label).and_then(|r| r.ids.first().copied());
+        let CanvasOutput { image, overview, live, painter, bg, in_flight, retired } = canvas::show(&mut self.app, &mut self.worker, ppp, &t, renaming_label);
 
         if let Some(real) = saved_doc
             && let Ok(ds) = self.app.session.ds_mut()
@@ -6353,7 +6360,13 @@ impl drag_manager::WindowDragTarget for CanvasView {
         // Clip 弹窗头部栏：模块自持 hold_drag，按相对位移推进（不走 drag_router 的
         // pressed 判定，GPUI 的 move 有时不带按键状态）。
         if crate::motion::clip_popover::drag_active() {
-            crate::motion::clip_popover::route_move(e.position);
+            // 窗口外松手收不到 MouseUp：下一次「没按住」的 move 必须把拖动收掉，
+            // 否则弹窗会跟着一个根本没按下的指针走。
+            if e.pressed_button != Some(MouseButton::Left) {
+                crate::motion::clip_popover::end_drag();
+            } else {
+                crate::motion::clip_popover::route_move(e.position);
+            }
             cx.notify();
             return;
         }
@@ -6411,7 +6424,10 @@ impl drag_manager::WindowDragTarget for CanvasView {
 
         // 指针移出最初元素后拖拽不中断（与 motion/timeline 同理）。
 
-        if self.window_drag_active() {
+        // 对话框的整卡拖动也必须走这里：只按 `window_drag_active()`（浮动变量卡）判断时，
+        // 对话框拖动只剩卡片自己的回调，指针一离开卡片就断。`move_popup_drag` 内部已经
+        // 按 active_window / dialog 分流，把 pending 一并纳进来即可。
+        if self.window_drag_active() || self.popup_pending() || self.popup_dragging() {
             if self.cancel_drag_if_not_held(e.pressed_button == Some(MouseButton::Left)) {
                 cx.notify();
 

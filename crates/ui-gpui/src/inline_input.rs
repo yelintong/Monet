@@ -83,7 +83,10 @@ impl InlineInput {
 
     /// 每帧在渲染前调用：申请焦点、判断是否已经结束。
     pub fn poll_active(&mut self, window: &mut Window, cx: &mut Context<Self>) -> EditState {
-        if !self.edit.read(cx).is_active(window) {
+        // 只在「还没激活过」时抢焦点：一旦激活过，失焦就代表用户点了别处。未改动的重命名
+        // 在失焦时 `TextEdit::commit` 不产生回调，这里若把焦点再抢回来，就会把重命名重新
+        // 打开、把后续输入全部截走（点另一个输入框即复现）。
+        if !self.was_active && !self.edit.read(cx).is_active(window) {
             self.edit.update(cx, |te, _| te.focus_editor(window));
         }
         let active = self.edit.read(cx).is_active(window);
