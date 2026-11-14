@@ -29,7 +29,7 @@ use crate::widgets::popover::{Open, clamp, popover_window, title_text};
 use crate::widgets::{Checkbox, MenuRow, Slot, TextField, field_row, field_row_full, number_field, pt, rgba, text_field, tokens};
 use figcraft_i18n::tr;
 use gpui::{
-    AnyElement, App, Bounds, Div, Entity, ImageSource, MouseButton, MouseDownEvent, MouseMoveEvent, Pixels, Point, RenderImage, SharedString, Size,
+    AnyElement, App, Bounds, Div, Entity, Hsla, ImageSource, MouseButton, MouseDownEvent, MouseMoveEvent, Pixels, Point, RenderImage, SharedString, Size,
     Window, div, img, prelude::*, px, size,
 };
 use serde_json::{Map, Value, json};
@@ -114,7 +114,9 @@ pub(crate) enum Field {
     Choice {
         key: &'static str,
         label: &'static str,
-        options: Vec<&'static str>,
+        /// Owned, so a dialog can list dynamic options (e.g. the document's variable
+        /// collections). Static dialogs build these from `&'static str` via [`Field::choice`].
+        options: Vec<SharedString>,
         /// Optional JSON values sent instead of the label (numeric scale, lower-case format, …).
         values: Option<Vec<Value>>,
         /// Optional engine command per option; picking one runs it immediately.
@@ -146,12 +148,44 @@ pub(crate) enum Field {
         id: &'static str,
         params: Value,
     },
+    /// A solid colour swatch with its hex label (SampledColor). Reuses the shared row grid — no
+    /// new control, just a `div().bg(..)` inside `field_row_full`.
+    Color {
+        color: SharedString,
+    },
+    /// A boolean field (egui `widgets::checkbox`) that contributes a JSON bool to the command.
+    /// Unlike a two-option `Choice` with commands, it runs nothing on change.
+    Toggle {
+        key: &'static str,
+        label: &'static str,
+        value: bool,
+    },
+    /// One horizontal row of small buttons that append a rename code to a text field
+    /// (`ui-egui/src/dialogs/batch_rename.rs`: Current name / Number up / Number down).
+    InsertCodes {
+        target: &'static str,
+        codes: Vec<(&'static str, &'static str)>,
+    },
+    /// The live batch-rename preview: up to five `old -> new` lines, the engine's error, and
+    /// "and N more". Computed every frame from the fields, never a stale snapshot.
+    RenamePreview {
+        names: Vec<String>,
+    },
 }
 
 impl Field {
-    /// A plain choice whose label is its value.
+    /// A plain choice whose label is its value. Static `&'static str` options are stored as
+    /// owned `SharedString` so dynamic options (e.g. the document's collections) use the same variant.
     fn choice(key: &'static str, label: &'static str, options: Vec<&'static str>, active: usize) -> Self {
-        Self::Choice { key, label, options, values: None, commands: None, command_params: None, active }
+        Self::Choice {
+            key,
+            label,
+            options: options.into_iter().map(SharedString::from).collect(),
+            values: None,
+            commands: None,
+            command_params: None,
+            active,
+        }
     }
     /// Give the choice engine values (numbers, ids, …) instead of the labels.
     fn values(mut self, v: Vec<Value>) -> Self {
@@ -197,6 +231,12 @@ pub(crate) enum Action {
     Run {
         id: &'static str,
     },
+    /// Resolve the engine command from the collected field values (e.g. SampledColor: style vs
+    /// variable vs new-collection → different commands). `base` carries fixed values the fields do
+    /// not (here, the sampled colour). No closure, so `Action` stays `Clone` + `PartialEq`.
+    Derived {
+        base: Value,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -225,6 +265,10 @@ impl Button {
     }
     fn run(label: &'static str, id: &'static str) -> Self {
         Self { label, primary: false, action: Action::Run { id } }
+    }
+    /// A primary button whose command is resolved from the field values (`Action::Derived`).
+    fn derived(label: &'static str, base: Value) -> Self {
+        Self { label, primary: true, action: Action::Derived { base } }
     }
 }
 
@@ -279,6 +323,146 @@ pub(crate) fn merge_params(base: &Value, values: &[(String, Value)]) -> Value {
     Value::Object(out)
 }
 
+/// `#rrggbb` / `#rgb` → GPUI `Hsla` for `bg()`, matching the egui swatch. Invalid input falls back
+/// to black (the swatch still draws; the colour the engine actually receives is the unchanged
+/// sampled hex carried in the button's `base`, not this display fallback).
+fn parse_hex(s: &str) -> Hsla {
+    let c = crate::canvas::geom::Color32::from_hex(s).unwrap_or(crate::canvas::geom::Color32::BLACK);
+    Hsla::from(rgba(c))
+}
+
+/// The four live values of the Rename layers dialog (egui's `BatchRenameUi` fields).
+fn rename_state(sources: &[(String, Value)]) -> (String, String, bool, f64) {
+    let get = |k: &str| sources.iter().find(|(key, _)| key == k).map(|(_, v)| v.clone());
+    let find = match get("find") { Some(Value::String(s)) => s, _ => String::new() };
+    let to = match get("to") { Some(Value::String(s)) => s, _ => String::new() };
+    let regex = matches!(get("regex"), Some(Value::Bool(true)));
+    let start = match get("start") { Some(Value::Number(n)) => n.as_f64().unwrap_or(1.0), _ => 1.0 };
+    (find, to, regex, start)
+}
+
+/// `ui-egui/src/dialogs/batch_rename.rs::batch_rename_params`: an empty match renames the whole
+/// name (`name`); a match replaces occurrences (`find` + `replace`). `None` means egui's `ready`
+/// is false (invalid regex, or Match and Rename to both empty) and the Rename button is disabled.
+pub(crate) fn batch_rename_params(base: &Value, sources: &[(String, Value)]) -> Option<Value> {
+    let (find, to, regex, start) = rename_state(sources);
+    let find_opt = (!find.is_empty()).then_some(find.as_str());
+    // The engine's own validator: an invalid regex is a hard error, not a silent no-op.
+    figcraft_engine::rename::BatchRename::new(find_opt, regex, &to, find_opt.is_none().then_some(to.as_str()), Some(start)).ok()?;
+    if find.is_empty() && to.is_empty() {
+        return None;
+    }
+    let mut p = match base { Value::Object(m) => m.clone(), _ => Map::new() };
+    p.insert("regex".into(), json!(regex));
+    p.insert("start".into(), json!(start.clamp(0.0, 1_000_000.0).round() as u64));
+    if find.is_empty() {
+        p.insert("name".into(), json!(to));
+    } else {
+        p.insert("find".into(), json!(find));
+        p.insert("replace".into(), json!(to));
+    }
+    Some(Value::Object(p))
+}
+
+/// egui's live preview: the engine's `BatchRename` applied to the first five names, or its error.
+/// `names` are in z order (bottom first), injected by `CanvasView::open_dialog`.
+pub(crate) fn batch_rename_preview(names: &[String], sources: &[(String, Value)]) -> (Option<String>, Vec<(String, String)>) {
+    const PREVIEW_ROWS: usize = 5;
+    let (find, to, regex, start) = rename_state(sources);
+    let find_opt = (!find.is_empty()).then_some(find.as_str());
+    let r = match figcraft_engine::rename::BatchRename::new(find_opt, regex, &to, find_opt.is_none().then_some(to.as_str()), Some(start)) {
+        Ok(r) => r,
+        Err(e) => return (Some(e), Vec::new()),
+    };
+    if find.is_empty() && to.is_empty() {
+        return (None, Vec::new());
+    }
+    let n = names.len();
+    (None, names.iter().enumerate().take(PREVIEW_ROWS).map(|(k, old)| (old.clone(), r.apply(old, k, n))).collect())
+}
+
+/// Resolve the engine command for an `Action::Derived` button from the live field values. Only
+/// `SampledColor` uses it today, but the dispatch is keyed on `kind` so each dialog that needs a
+/// computed command gets its own arm — no closure, so `Action` stays `Clone` + `PartialEq`.
+/// Returns whether the dialog may close. A disabled/invalid submit must keep the window open
+/// (egui's Rename button is disabled until `ready`).
+fn resolve_derived(kind: Kind, sources: &[(String, Value)], base: &Value, cmds: &Cmds) -> bool {
+    match kind {
+        Kind::SampledColor => {
+            // 1:1 with `ui-egui/src/dialogs/sampled_color.rs::create_params`: a paint style, a
+            // colour variable in its collection, or (no collection) a new collection and the
+            // variable in it — one undo step.
+            let get = |k: &str| sources.iter().find(|(key, _)| key == k).map(|(_, v)| v.clone());
+            let color = base.get("color").and_then(Value::as_str).unwrap_or("#000000").to_string();
+            // Read owned copies out of the field values (no borrowing out of the `Value`).
+            let name = match get("name") {
+                Some(Value::String(s)) => s.trim().to_string(),
+                _ => String::new(),
+            };
+            if name.is_empty() {
+                return false; // egui: Create is disabled until a name is entered.
+            }
+            let variable = matches!(get("variable"), Some(Value::Bool(true)));
+            let collection = get("collection");
+            let (id, params) = if !variable {
+                ("style.create", json!({ "type": "paint", "name": name, "value": color }))
+            } else {
+                let variable_params = |collection: Value| json!({ "collection": collection, "name": name, "type": "color", "value": color });
+                match collection {
+                    Some(Value::String(c)) if !c.is_empty() => ("variable.create", variable_params(json!(c))),
+                    _ => {
+                        // No collection chosen: make a uniquely-named one, then the variable in it.
+                        let existing: Vec<String> = base
+                            .get("existing")
+                            .and_then(Value::as_array)
+                            .map(|a| a.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
+                            .unwrap_or_default();
+                        let mut collection_name = "Collection".to_string();
+                        if existing.iter().any(|n| n == &collection_name) {
+                            let mut i = 1;
+                            loop {
+                                let cand = format!("Collection {i}");
+                                if !existing.iter().any(|n| n == &cand) {
+                                    collection_name = cand;
+                                    break;
+                                }
+                                i += 1;
+                            }
+                        }
+                        let new = json!({ "command": "variable.createCollection", "params": { "name": collection_name, "modes": ["Mode 1"] }, "as": "collection" });
+                        let add = json!({ "command": "variable.create", "params": variable_params(json!({ "$ref": "collection" })) });
+                        ("command.batch", json!({ "label": "Create variable", "commands": [new, add] }))
+                    }
+                }
+            };
+            cmds.push(Cmd { id, params: Some(params) });
+            true
+        }
+        Kind::Rename => match batch_rename_params(base, sources) {
+            Some(params) => {
+                cmds.push(Cmd { id: "object.batchRename", params: Some(params) });
+                true
+            }
+            None => false,
+        },
+        _ => false,
+    }
+}
+
+/// The engine commands a `Derived` button could push, derived from `resolve_derived`. The parity
+/// contract lists them so `every_dialog_command_is_a_real_engine_command` can verify they are real
+/// engine commands — not invented ones. Keep this in lock-step with the `resolve_derived` arms: a
+/// Derived button that pushes an id missing here would not be checked for realness.
+pub(crate) fn derived_commands(kind: Kind) -> Vec<&'static str> {
+    // Keep in lock-step with the `resolve_derived` arms. Each id is audited by
+    // `every_dialog_command_is_a_real_engine_command` in `parity_contract.rs`.
+    match kind {
+        Kind::SampledColor => vec!["style.create", "variable.create", "command.batch"],
+        Kind::Rename => vec!["object.batchRename"],
+        _ => Vec::new(),
+    }
+}
+
 /// Engine `ui_requests` (and a few menu commands that need input) → a dialog kind.
 /// Kept a pure function so every mapping has a regression test and no UI state is touched here.
 pub(crate) fn ui_action(kind: &str, _data: &Value) -> Option<Kind> {
@@ -318,6 +502,9 @@ pub(crate) fn menu_action(cmd: &str) -> Option<Kind> {
         "file.export" | "file.exportFramesPdf" | "file.exportSvg" => Some(Kind::Export),
         // `text.link` needs a URL; the Text header's Create link button opens the same dialog.
         "text.link" => Some(Kind::Link),
+        // egui's `Object > Batch rename...` opens the dialog; executing the command with `{}`
+        // would silently rename with defaults. It is not an inline edit (R4/R5/R6 are).
+        "object.batchRename" => Some(Kind::Rename),
         _ => None,
     }
 }
@@ -440,13 +627,33 @@ pub(crate) fn spec(kind: Kind, data: &Value) -> Spec {
                 // 已经 `doc.switch` 到被关闭的标签，所以这里不需要（引擎也不接受）index。
                 .button(Button::primary(tr("Save"), "file.save", json!({})))
         }
-        Kind::Rename => Spec::new(tr("Rename"))
-            .width(360.0)
-            .field(Field::Text { key: "name", label: tr("Name"), value: str_field("name", data, "") })
-            // A batch rename carries the ids; `object.rename` needs them explicitly. A menu-driven
-            // batch rename has none and falls back to the selection (engine `req_targets`).
-            .button(Button::primary(tr("Rename"), "object.rename", json!({ "ids": data.get("ids").cloned().unwrap_or(json!([])) })))
-            .with_cancel(),
+        Kind::Rename => {
+            // 1:1 with `ui-egui/src/dialogs/batch_rename.rs::batch_rename_dialog`: the layer
+            // count, Match, Regular expression, Rename to, the three code buttons, the number
+            // start, the live preview, then Cancel / Rename. `ids`/`names` are injected by
+            // `CanvasView::open_dialog` in z order, so preview and command see the same layers.
+            let ids = data.get("ids").cloned().unwrap_or(json!([]));
+            let names: Vec<String> = data
+                .get("names")
+                .and_then(Value::as_array)
+                .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+                .unwrap_or_default();
+            let n = names.len();
+            Spec::new(tr("Rename layers"))
+                .width(320.0)
+                .field(Field::Note { text: figcraft_i18n::trn("{n} layers", n, &[]) })
+                .field(Field::Text { key: "find", label: tr("Match (empty: the whole name)"), value: String::new() })
+                .field(Field::Toggle { key: "regex", label: tr("Regular expression"), value: false })
+                .field(Field::Text { key: "to", label: tr("Rename to"), value: String::new() })
+                .field(Field::InsertCodes {
+                    target: "to",
+                    codes: vec![(tr("Current name"), "$&"), (tr("Number up"), "$n"), (tr("Number down"), "$N")],
+                })
+                .field(Field::Number { key: "start", label: tr("Start ascending from / stop descending at"), value: 1.0 })
+                .field(Field::RenamePreview { names })
+                .button(Button::close(tr("Cancel")))
+                .button(Button::derived(tr("Rename"), json!({ "ids": ids })))
+        }
         // `lizard dialogs.rs::MenuInput::Link`: 一个 URL 输入框，提交时由按钮把它作为
         // `{"url": …}` 交给 `text.link`（引擎只认这个键）。
         Kind::Link => Spec::new(tr("Create link"))
@@ -454,15 +661,30 @@ pub(crate) fn spec(kind: Kind, data: &Value) -> Spec {
             .field(Field::Text { key: "url", label: tr("URL"), value: str_field("url", data, "https://") })
             .button(Button::primary(tr("Create link"), "text.link", json!({})))
             .with_cancel(),
-        Kind::ColorProfile => Spec::new(tr("Color profile"))
-            .width(380.0)
-            .message(tr("Choose the colour space used for display and export."))
-            .field(
-                Field::choice("profile", tr("Profile"), vec!["sRGB", "Display P3"], 0)
-                    .values(vec![json!("srgb"), json!("displayP3")]),
-            )
-            .button(Button::primary(tr("Apply"), "file.colorProfile", json!({})))
-            .with_cancel(),
+        Kind::ColorProfile => {
+            // 1:1 with `ui-egui/src/dialogs/color_profile.rs`: the sRGB / Display P3 radio, then
+            // "Keep appearance" / "Keep values" run `file.colorProfile {profile, convert}`. The
+            // radio starts on the live current profile (`data["current"]`, injected by
+            // `CanvasView::open_dialog`). egui hides the buttons while the chosen profile already
+            // is the current one; here they are always shown — picking the current and applying is
+            // a no-op (the engine returns `changed: false`), so nothing is faked.
+            let current = data.get("current").and_then(Value::as_str).unwrap_or("srgb");
+            let active = ["srgb", "displayP3"].iter().position(|p| p == &current).unwrap_or(0);
+            Spec::new(tr("Color profile"))
+                .width(380.0)
+                .message(tr("Color values in this file are in this color space."))
+                .field(
+                    Field::choice("profile", tr("Profile"), vec!["sRGB", "Display P3"], active)
+                        .values(vec![json!("srgb"), json!("displayP3")]),
+                )
+                .field(Field::Note {
+                    text: tr("Keep appearance converts every color value to the new profile so colors look the same. Keep values leaves the numbers as they are, so colors shift.")
+                        .to_string(),
+                })
+                .button(Button::primary(tr("Keep appearance"), "file.colorProfile", json!({ "convert": true })))
+                .button(Button::submit(tr("Keep values"), "file.colorProfile", json!({ "convert": false })))
+                .with_cancel()
+        }
         Kind::MissingFonts => Spec::new(tr("Missing fonts"))
             .width(400.0)
             .message(tr("This file uses fonts that are not installed. Font substitution has no engine command yet, so this is a notice rather than a fake control."))
@@ -473,11 +695,56 @@ pub(crate) fn spec(kind: Kind, data: &Value) -> Spec {
             .message(str_field("message", data, "The file was imported. Review the warnings below."))
             .field(Field::Note { text: str_field("warnings", data, "No warnings.") })
             .button(Button::close(tr("Close"))),
-        Kind::SampledColor => Spec::new(tr("Sampled colour"))
-            .width(360.0)
-            .message(tr("The eyedropper sampled this colour. Creating a style from it is not wired yet."))
-            .field(Field::Note { text: str_field("color", data, "#000000") })
-            .button(Button::close(tr("Close"))),
+        Kind::SampledColor => {
+            // 1:1 with `ui-egui/src/dialogs/sampled_color.rs`: a swatch of the sampled colour, a
+            // Style/Variable selector, the new style's name, and (a variable) the collection to put
+            // it in. Cancel + Create resolve the engine command from the field values
+            // (`resolve_derived`): a paint style, a colour variable in its collection, or (no
+            // collection) a new collection and the variable in it — one undo step, like the original.
+            let color = str_field("color", data, "#000000");
+            let name = str_field("name", data, "Color 1");
+            let variable = data.get("variable").and_then(Value::as_bool).unwrap_or(false);
+            let collections: Vec<(String, String)> = data
+                .get("collections")
+                .and_then(Value::as_array)
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|c| {
+                            let id = c.get("id").and_then(Value::as_str)?.to_string();
+                            let n = c.get("name").and_then(Value::as_str)?.to_string();
+                            Some((id, n))
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            // The collection dropdown mirrors egui: every local collection, then "New collection"
+            // (value `null`). Shown only for variables (hidden for Style, like egui).
+            let mut coll_opts: Vec<SharedString> = collections.iter().map(|(_, n)| SharedString::from(n.clone())).collect();
+            coll_opts.push(SharedString::from(tr("New collection")));
+            let mut coll_vals: Vec<Value> = collections.iter().map(|(id, _)| json!(id.clone())).collect();
+            coll_vals.push(Value::Null);
+            let coll_active = if collections.is_empty() { coll_opts.len() - 1 } else { 0 };
+            let existing: Vec<Value> = collections.iter().map(|(_, n)| json!(n.clone())).collect();
+            Spec::new(tr("Create from color"))
+                .width(300.0)
+                .field(Field::Color { color: SharedString::from(color.clone()) })
+                .field(
+                    Field::choice("variable", tr("Type"), vec![tr("Style"), tr("Variable")], if variable { 1 } else { 0 })
+                        .values(vec![json!(false), json!(true)]),
+                )
+                .field(Field::Text { key: "name", label: tr("Name"), value: name })
+                .field(Field::Choice {
+                    key: "collection",
+                    label: tr("Collection"),
+                    options: coll_opts,
+                    values: Some(coll_vals),
+                    commands: None,
+                    command_params: None,
+                    active: coll_active,
+                })
+                .button(Button::close(tr("Cancel")))
+                .button(Button::derived(tr("Create"), json!({ "color": color, "existing": existing })))
+        }
         Kind::Plugins => {
             // 1:1 with `ui-egui/src/dialogs/plugins_ui.rs::installed_tab`: the installed plugins
             // (name + summary + Remove), then "Import plugin from manifest…". The Browse tab fetches
@@ -559,7 +826,8 @@ struct Rendered {
 enum Source {
     Text(&'static str, Entity<TextField>),
     Number(&'static str, Entity<TextField>),
-    Choice(&'static str, Vec<&'static str>, Option<Vec<Value>>, Rc<RefCell<usize>>),
+    Toggle(&'static str, Rc<RefCell<usize>>),
+    Choice(&'static str, Vec<SharedString>, Option<Vec<Value>>, Rc<RefCell<usize>>),
     Note,
 }
 
@@ -573,11 +841,12 @@ fn collect_sources(sources: &[Source], cx: &App) -> Vec<(String, Value)> {
                 let value = raw.trim().parse::<f64>().ok().filter(|v| v.is_finite());
                 out.push((key.to_string(), value.map(|v| json!(v)).unwrap_or(Value::Null)));
             }
+            Source::Toggle(key, active) => out.push((key.to_string(), Value::Bool(*active.borrow() == 1))),
             Source::Choice(key, options, values, active) => {
                 let i = *active.borrow();
                 let value = match values {
                     Some(v) => v.get(i).cloned().unwrap_or(Value::Null),
-                    None => Value::String(options.get(i).copied().unwrap_or("").to_string()),
+                    None => Value::String(options.get(i).cloned().unwrap_or_default().to_string()),
                 };
                 out.push((key.to_string(), value));
             }
@@ -590,6 +859,7 @@ fn collect_sources(sources: &[Source], cx: &App) -> Vec<(String, Value)> {
 /// One open dialog. The root view holds `Option<DialogState>` and rebuilds only the element tree.
 pub(crate) struct DialogState {
     spec: Spec,
+    kind: Kind,
     rendered: Vec<Rendered>,
     cmds: Cmds,
     dismiss: Rc<RefCell<bool>>,
@@ -618,12 +888,15 @@ impl DialogState {
                 }
                 Field::Number { value, .. } => (Some(number_field(cx, 200.0, Some(*value), "", 1.0, Slot::None)), Rc::new(RefCell::new(0usize))),
                 Field::Choice { active, .. } => (None, Rc::new(RefCell::new(*active))),
-                Field::Note { .. } | Field::Preview { .. } | Field::Section { .. } | Field::Action { .. } => (None, Rc::new(RefCell::new(0usize))),
+                Field::Toggle { value, .. } => (None, Rc::new(RefCell::new(if *value { 1 } else { 0 }))),
+                Field::Note { .. } | Field::Preview { .. } | Field::Section { .. } | Field::Action { .. } | Field::Color { .. }
+                | Field::InsertCodes { .. } | Field::RenamePreview { .. } => (None, Rc::new(RefCell::new(0usize))),
             };
             rendered.push(Rendered { field: f.clone(), input, active });
         }
         Self {
             spec,
+            kind,
             rendered,
             cmds: cmds.clone(),
             dismiss: Rc::new(RefCell::new(false)),
@@ -664,6 +937,18 @@ impl DialogState {
     }
 
     fn height(&self) -> f32 {
+        let variable_active = self
+            .rendered
+            .iter()
+            .find_map(|r| {
+                if let Field::Choice { key, .. } = &r.field {
+                    if *key == "variable" {
+                        return Some(*r.active.borrow());
+                    }
+                }
+                None
+            })
+            .unwrap_or(0);
         let extra: f32 = self
             .spec
             .fields
@@ -671,12 +956,21 @@ impl DialogState {
             .map(|f| match f {
                 Field::Preview { .. } => 80.0,
                 Field::Section { .. } => 18.0,
+                Field::Color { .. } => 32.0,
+                // Five preview rows plus the "and N more"/error line.
+                Field::RenamePreview { names } => (names.len().min(5) + 1) as f32 * 16.0,
                 _ => 0.0,
             })
             .sum();
+        // egui hides the collection picker for a Style: count it out of the row total.
+        let visible_fields = if variable_active == 0 {
+            self.spec.fields.iter().filter(|f| !matches!(f, Field::Choice { key, .. } if *key == "collection")).count()
+        } else {
+            self.spec.fields.len()
+        };
         40.0 + 32.0
             + self.spec.message.as_ref().map(|_| 32.0).unwrap_or(0.0)
-            + self.spec.fields.len() as f32 * 32.0
+            + visible_fields as f32 * 32.0
             + extra
             + self.spec.buttons.len().div_ceil(2) as f32 * 32.0
     }
@@ -704,17 +998,21 @@ impl DialogState {
                 Field::Text { key, .. } => r.input.clone().map(|e| Source::Text(key, e)).unwrap_or(Source::Note),
                 Field::Number { key, .. } => r.input.clone().map(|e| Source::Number(key, e)).unwrap_or(Source::Note),
                 Field::Choice { key, options, values, .. } => Source::Choice(key, options.clone(), values.clone(), r.active.clone()),
-                Field::Note { .. } | Field::Preview { .. } | Field::Section { .. } | Field::Action { .. } => Source::Note,
+                Field::Toggle { key, .. } => Source::Toggle(key, r.active.clone()),
+                Field::Note { .. } | Field::Preview { .. } | Field::Section { .. } | Field::Action { .. } | Field::Color { .. }
+                | Field::InsertCodes { .. } | Field::RenamePreview { .. } => Source::Note,
             })
             .collect()
     }
 
     /// Backdrop + a **movable** window. Every piece is a shared control: `Popover` (title drag,
     /// X), the `field_row` grid, `dropdown`, `text_field` / `number_field` and `dialog_button`.
-    pub(crate) fn render(&mut self, viewport: Size<Pixels>) -> Vec<AnyElement> {
+    pub(crate) fn render(&mut self, viewport: Size<Pixels>, cx: &App) -> Vec<AnyElement> {
         let t = tokens();
         let close = self.close_fn();
         let sources = self.sources();
+        // Live field values for the Rename preview / button state (recomputed every frame).
+        let values = collect_sources(&sources, cx);
         self.viewport = viewport;
         let height = self.height();
         let at = self.place.unwrap_or_else(|| centered(viewport, self.spec.width, height));
@@ -725,11 +1023,32 @@ impl DialogState {
             body = body.child(div().w_full().text_size(pt(11.0)).text_color(rgba(t.text)).child(SharedString::from(msg.clone())));
         }
 
+        // egui hides the collection picker unless the "Variable" radio is on: mirror that. Read
+        // the live `Rendered.active` (updated by the dropdown), not the spec's initial value.
+        let variable_active = self
+            .rendered
+            .iter()
+            .find_map(|r| {
+                if let Field::Choice { key, .. } = &r.field {
+                    if *key == "variable" {
+                        return Some(*r.active.borrow());
+                    }
+                }
+                None
+            })
+            .unwrap_or(0);
+
         for r in &self.rendered {
+            // egui hides the collection picker for a Style; skip its row like egui.
+            if let Field::Choice { key, .. } = &r.field {
+                if *key == "collection" && variable_active == 0 {
+                    continue;
+                }
+            }
             let label_text = match &r.field {
                 Field::Text { label, .. } | Field::Number { label, .. } | Field::Choice { label, .. } => *label,
                 Field::Preview { label } | Field::Section { title: label } | Field::Action { label, .. } => *label,
-                Field::Note { .. } => "",
+                Field::Note { .. } | Field::Color { .. } | Field::Toggle { .. } | Field::InsertCodes { .. } | Field::RenamePreview { .. } => "",
             };
             let label = || {
                 div()
@@ -746,9 +1065,11 @@ impl DialogState {
                     let control = r.input.clone().map(|e| e.into_any_element()).unwrap_or_else(|| div().into_any_element());
                     field_row(vec![label(), control], Vec::<AnyElement>::new())
                 }
-                // A two-option choice is a binary choice: draw the kit Checkbox, not a dropdown
-                // (egui uses `widgets::checkbox` for on/off preferences).
-                Field::Choice { label, options, commands, command_params, .. } if options.len() == 2 => {
+                // A two-option choice *with a command* is a binary on/off preference: draw the kit
+                // Checkbox (egui uses `widgets::checkbox` for on/off preferences). A two-option
+                // choice *without* a command (e.g. Style/Variable, sRGB/Display P3) is a selection,
+                // not a boolean, so it falls through to the dropdown below — like egui's radios.
+                Field::Choice { label, options, commands, command_params, .. } if options.len() == 2 && commands.is_some() => {
                     let active = r.active.clone();
                     let checked = *active.borrow() == 0;
                     let cmds = self.cmds.clone();
@@ -833,6 +1154,94 @@ impl DialogState {
                         .text_color(rgba(t.text_secondary))
                         .child(SharedString::from(text.clone())),
                 ),
+                Field::Color { color } => field_row_full(
+                    div()
+                        .w_full()
+                        .h(pt(30.0))
+                        .flex()
+                        .items_center()
+                        .gap(pt(8.0))
+                        .child(div().size(pt(24.0)).rounded(pt(4.0)).bg(parse_hex(color.as_ref())))
+                        .child(div().text_size(pt(12.0)).text_color(rgba(t.text)).child(SharedString::from(color.as_ref().to_uppercase()))),
+                ),
+                Field::Toggle { label, .. } => {
+                    let active = r.active.clone();
+                    let checked = *active.borrow() == 1;
+                    let cb = Checkbox::new(SharedString::from(format!("dialog-toggle-{label}")))
+                        .label(*label)
+                        .checked(checked)
+                        .on_change(move |&next, _, _| {
+                            *active.borrow_mut() = if next { 1 } else { 0 };
+                        });
+                    field_row_full(cb)
+                }
+                Field::InsertCodes { target, codes } => {
+                    // egui's `ui.horizontal`: three buttons that append `$&` / `$n` / `$N` to
+                    // "Rename to". `TextField::set_value` is queued and flushed on the next frame.
+                    let entity = self.rendered.iter().find_map(|rr| match &rr.field {
+                        Field::Text { key, .. } if key == target => rr.input.clone(),
+                        _ => None,
+                    });
+                    let mut row = div().w_full().h(pt(24.0)).flex().items_center().gap(pt(6.0));
+                    for (label, code) in codes {
+                        let e = entity.clone();
+                        let queue = self.cmds.clone();
+                        let code = *code;
+                        row = row.child(
+                            div()
+                                .h(pt(22.0))
+                                .pl(pt(8.0))
+                                .pr(pt(8.0))
+                                .flex()
+                                .items_center()
+                                .rounded(pt(4.0))
+                                .bg(rgba(t.field))
+                                .text_size(pt(10.0))
+                                .text_color(rgba(t.text))
+                                .cursor_pointer()
+                                .hover(|s| s.bg(rgba(t.hover)))
+                                .on_mouse_down(MouseButton::Left, move |_: &MouseDownEvent, _, cx: &mut App| {
+                                    if let Some(e) = &e {
+                                        let current = e.read(cx).value(cx);
+                                        e.update(cx, |f, _| f.set_value(format!("{current}{code}")));
+                                        queue.wake();
+                                    }
+                                })
+                                .child(*label),
+                        );
+                    }
+                    field_row_full(row)
+                }
+                Field::RenamePreview { names } => {
+                    let (err, rows) = batch_rename_preview(names, &values);
+                    let mut col = div().w_full().flex().flex_col().gap(pt(2.0));
+                    if let Some(e) = err {
+                        col = col.child(div().text_size(pt(10.0)).text_color(rgba(t.danger)).child(SharedString::from(e)));
+                    } else {
+                        for (old, new) in &rows {
+                            col = col.child(
+                                div()
+                                    .w_full()
+                                    .h(pt(16.0))
+                                    .flex()
+                                    .items_center()
+                                    .gap(pt(6.0))
+                                    .child(div().text_size(pt(10.0)).text_color(rgba(t.text_secondary)).child(SharedString::from(old.clone())))
+                                    .child(div().text_size(pt(10.0)).child("->"))
+                                    .child(div().text_size(pt(10.0)).text_color(rgba(t.text)).child(SharedString::from(new.clone()))),
+                            );
+                        }
+                        if names.len() > rows.len() && !rows.is_empty() {
+                            col = col.child(
+                                div()
+                                    .text_size(pt(10.0))
+                                    .text_color(rgba(t.text_secondary))
+                                    .child(SharedString::from(figcraft_i18n::trn("and {n} more", names.len() - rows.len(), &[]))),
+                            );
+                        }
+                    }
+                    field_row_full(col)
+                }
             };
             body = body.child(row);
         }
@@ -844,9 +1253,16 @@ impl DialogState {
                 let flag = self.dismiss.clone();
                 let cmds_btn = self.cmds.clone();
                 let sources_btn = sources.clone();
+                let kind = self.kind;
                 let action = b.action.clone();
+                // egui disables Rename until `ready`. Derive it from the same pure function the
+                // submit uses, so "disabled" and "no-op" can never disagree.
+                let enabled = match &b.action {
+                    Action::Derived { .. } if kind == Kind::Rename => batch_rename_params(&json!({}), &values).is_some(),
+                    _ => true,
+                };
                 els.push(
-                    dialog_button(b.label, b.primary, move |_: &MouseDownEvent, _, cx: &mut App| {
+                    dialog_button(b.label, b.primary, enabled, move |_: &MouseDownEvent, _, cx: &mut App| {
                         match &action {
                             Action::Submit { id, base } => {
                                 let params = merge_params(base, &collect_sources(&sources_btn, cx));
@@ -859,6 +1275,11 @@ impl DialogState {
                                 cmds_btn.push(Cmd { id, params: Some(params) });
                             }
                             Action::Run { id } => cmds_btn.push(Cmd { id, params: None }),
+                            Action::Derived { base } => {
+                                if !resolve_derived(kind, &collect_sources(&sources_btn, cx), base, &cmds_btn) {
+                                    return; // not ready: keep the dialog open, like a disabled button
+                                }
+                            }
                             Action::Close => {}
                         }
                         *flag.borrow_mut() = true;
@@ -919,21 +1340,25 @@ impl DialogState {
 /// engine commands) runs that option's command with its own params. 1:1 with
 /// `ui-egui/src/dialogs.rs`'s `widgets::dropdown` + `right::menu_popup`.
 fn dropdown_field(
-    options: &[&'static str],
+    options: &[SharedString],
     commands: Option<&[&'static str]>,
     params: Option<&[Value]>,
     active: Rc<RefCell<usize>>,
     root: Entity<CanvasView>,
     queue: Cmds,
 ) -> AnyElement {
-    let current = options.get(*active.borrow()).copied().unwrap_or("");
+    let current = options.get(*active.borrow()).cloned().unwrap_or_default();
     let opts = options.to_vec();
     let cmd_list = commands.map(|c| c.to_vec());
     let param_list = params.map(|p| p.to_vec());
-    dropdown(SharedString::from(current), 0.0, None)
+    dropdown(current, 0.0, None)
         .fill()
         .on_click(move |anchor: Bounds<Pixels>, _w: &mut Window, cx: &mut App| {
-            let rows: Vec<MenuRow> = opts.iter().enumerate().map(|(i, o)| MenuRow::new(*o).checked(Some(i == *active.borrow()))).collect();
+            let rows: Vec<MenuRow> = opts
+                .iter()
+                .enumerate()
+                .map(|(i, o)| MenuRow::new(o.clone()).checked(Some(i == *active.borrow())))
+                .collect();
             let act = active.clone();
             let opts = opts.clone();
             let cmd_list = cmd_list.clone();
@@ -941,7 +1366,7 @@ fn dropdown_field(
             let q = queue.clone();
             let root = root.clone();
             let on_pick = Rc::new(move |picked: &str, _w: &mut Window, _cx: &mut App| {
-                let Some(i) = opts.iter().position(|o| *o == picked) else { return };
+                let Some(i) = opts.iter().position(|o| o.as_str() == picked) else { return };
                 *act.borrow_mut() = i;
                 if let Some(id) = cmd_list.as_ref().and_then(|c| c.get(i)) {
                     q.push(Cmd { id, params: param_list.as_ref().and_then(|p| p.get(i)).cloned() });
@@ -955,26 +1380,30 @@ fn dropdown_field(
 }
 
 /// A labelled button. `on_click` is the generic mouse-down handler shared by every dialog button.
-fn dialog_button(label: &'static str, primary: bool, on_click: impl Fn(&MouseDownEvent, &mut Window, &mut App) + 'static) -> Div {
+fn dialog_button(label: &'static str, primary: bool, enabled: bool, on_click: impl Fn(&MouseDownEvent, &mut Window, &mut App) + 'static) -> Div {
     let t = tokens();
-    div()
+    let d = div()
         .w_full()
         .h(pt(24.0))
         .rounded(pt(6.0))
-        .bg(rgba(if primary { t.accent } else { t.field }))
+        .bg(rgba(if primary && enabled { t.accent } else { t.field }))
         .flex()
         .items_center()
         .justify_center()
         .text_size(pt(11.0))
-        .text_color(rgba(if primary { t.accent_on } else { t.text }))
-        .cursor_pointer()
-        .on_mouse_down(MouseButton::Left, on_click)
-        .child(SharedString::from(label))
+        .text_color(rgba(if primary && enabled { t.accent_on } else { t.text_secondary }))
+        .child(SharedString::from(label));
+    if enabled {
+        d.cursor_pointer().on_mouse_down(MouseButton::Left, on_click)
+    } else {
+        d
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::panels::CmdQueue;
 
     #[test]
     fn every_request_kind_maps_to_a_dialog() {
@@ -1067,11 +1496,222 @@ mod tests {
     }
 
     #[test]
+    fn color_profile_radio_starts_on_current_and_offers_both_converts() {
+        // A10: 1:1 with `ui-egui/.../color_profile.rs` — the radio starts on the live current
+        // profile and both "Keep appearance" / "Keep values" run `file.colorProfile`.
+        let srgb = spec(Kind::ColorProfile, &json!({ "current": "srgb" }));
+        let p3 = spec(Kind::ColorProfile, &json!({ "current": "displayP3" }));
+        let srgb_active = srgb.fields.iter().find_map(|f| match f {
+            Field::Choice { key, active, .. } if *key == "profile" => Some(*active),
+            _ => None,
+        });
+        assert_eq!(srgb_active, Some(0), "sRGB is the current profile");
+        let p3_active = p3.fields.iter().find_map(|f| match f {
+            Field::Choice { key, active, .. } if *key == "profile" => Some(*active),
+            _ => None,
+        });
+        assert_eq!(p3_active, Some(1), "Display P3 is the current profile");
+        let converts: Vec<(String, Value)> = srgb
+            .buttons
+            .iter()
+            .filter_map(|b| match &b.action {
+                Action::Submit { id, base } if id == &"file.colorProfile" => Some((b.label.to_string(), base.clone())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(converts.len(), 2, "Keep appearance + Keep values");
+        assert!(converts.iter().any(|(_, p)| p.get("convert") == Some(&json!(true))));
+        assert!(converts.iter().any(|(_, p)| p.get("convert") == Some(&json!(false))));
+    }
+
+    #[test]
     fn params_merge_field_values_over_defaults() {
         let merged =
             merge_params(&json!({"scale": 1, "path": "default.png"}), &[("scale".to_string(), json!(2.0)), ("path".to_string(), json!("out.png"))]);
         assert_eq!(merged["scale"], json!(2.0), "field values win");
         assert_eq!(merged["path"], json!("out.png"));
         assert_eq!(merge_params(&Value::Null, &[]), json!({}), "a non-object base becomes an empty object");
+    }
+
+    /// Drive `resolve_derived` for `SampledColor` through a real queue and return what it queued.
+    fn resolve_sampled(sources: &[(String, Value)], base: &Value) -> Vec<Cmd> {
+        let wake: std::rc::Rc<dyn Fn()> = std::rc::Rc::new(|| {});
+        let q = CmdQueue::new(&wake);
+        resolve_derived(Kind::SampledColor, sources, base, &q);
+        q.drain()
+    }
+
+    #[test]
+    fn sampled_color_resolves_the_right_engine_command() {
+        // A15: 1:1 with `ui-egui/.../sampled_color.rs::create_params` — a paint style, a colour
+        // variable in its collection, or (no collection) a new collection and the variable in it.
+        // Style → style.create (a paint).
+        let style = resolve_sampled(
+            &[
+                ("name".to_string(), json!("Accent")),
+                ("variable".to_string(), json!(false)),
+                ("collection".to_string(), Value::Null),
+            ],
+            &json!({ "color": "#ff0000", "existing": [] }),
+        );
+        assert_eq!(style.len(), 1);
+        assert_eq!(style[0].id, "style.create");
+        assert_eq!(style[0].params, Some(json!({ "type": "paint", "name": "Accent", "value": "#ff0000" })));
+
+        // Variable in an existing collection → variable.create.
+        let var = resolve_sampled(
+            &[
+                ("name".to_string(), json!("Accent")),
+                ("variable".to_string(), json!(true)),
+                ("collection".to_string(), json!("col-1")),
+            ],
+            &json!({ "color": "#ff0000", "existing": [] }),
+        );
+        assert_eq!(var.len(), 1);
+        assert_eq!(var[0].id, "variable.create");
+        assert_eq!(var[0].params, Some(json!({ "collection": "col-1", "name": "Accent", "type": "color", "value": "#ff0000" })));
+
+        // Variable, no collection → command.batch (new collection + variable, $ref), one undo step.
+        let batch = resolve_sampled(
+            &[
+                ("name".to_string(), json!("Accent")),
+                ("variable".to_string(), json!(true)),
+                ("collection".to_string(), Value::Null),
+            ],
+            &json!({ "color": "#ff0000", "existing": [] }),
+        );
+        assert_eq!(batch.len(), 1);
+        assert_eq!(batch[0].id, "command.batch");
+        let cmds = batch[0].params.as_ref().unwrap().get("commands").and_then(Value::as_array).expect("a batch");
+        assert_eq!(cmds.len(), 2);
+        assert_eq!(cmds[0]["command"], json!("variable.createCollection"));
+        assert_eq!(cmds[0]["params"]["modes"], json!(["Mode 1"]));
+        assert_eq!(cmds[1]["command"], json!("variable.create"));
+        assert_eq!(cmds[1]["params"]["collection"], json!({ "$ref": "collection" }));
+
+        // Empty name → nothing queued (egui disables Create until a name is entered).
+        let none = resolve_sampled(
+            &[
+                ("name".to_string(), json!("")),
+                ("variable".to_string(), json!(false)),
+                ("collection".to_string(), Value::Null),
+            ],
+            &json!({ "color": "#ff0000", "existing": [] }),
+        );
+        assert!(none.is_empty(), "nothing is queued without a name");
+    }
+
+    #[test]
+    fn sampled_color_spec_lists_collections_and_hides_them_for_a_style() {
+        // 1:1 with the egui window: every local collection plus "New collection" (value `null`).
+        let s = spec(
+            Kind::SampledColor,
+            &json!({ "color": "#00ff00", "name": "Color 2", "variable": false, "collections": [{"id": "c1", "name": "Brand"}, {"id": "c2", "name": "Theme"}] }),
+        );
+        let collection = s.fields.iter().find_map(|f| match f {
+            Field::Choice { key, options, values, .. } if *key == "collection" => Some((options.clone(), values.clone())),
+            _ => None,
+        });
+        let (options, values) = collection.expect("the collection dropdown is present");
+        assert_eq!(options, vec![SharedString::from("Brand"), SharedString::from("Theme"), SharedString::from("New collection")]);
+        assert_eq!(values, Some(vec![json!("c1"), json!("c2"), Value::Null]));
+        // The colour swatch field carries the sampled hex.
+        assert!(s.fields.iter().any(|f| matches!(f, Field::Color { color } if color.as_ref() == "#00ff00")));
+        // Create resolves the command (a `Derived` button, not a static Submit).
+        assert!(s.buttons.iter().any(|b| matches!(&b.action, Action::Derived { .. })), "Create is a Derived button");
+    }
+
+    // ── A8: the Rename layers dialog (1:1 with ui-egui/dialogs/batch_rename.rs) ──────────
+
+    fn rename_sources(find: &str, to: &str, regex: bool, start: f64) -> Vec<(String, Value)> {
+        vec![
+            ("find".into(), json!(find)),
+            ("to".into(), json!(to)),
+            ("regex".into(), json!(regex)),
+            ("start".into(), json!(start)),
+        ]
+    }
+
+    #[test]
+    fn rename_empty_match_uses_name_and_keeps_the_injected_ids() {
+        // egui: `if b.find.is_empty() { p["name"] = b.to }`.
+        let base = json!({ "ids": [7, 8] });
+        let p = batch_rename_params(&base, &rename_sources("", "Frame $n", false, 3.0)).expect("ready");
+        assert_eq!(p["ids"], json!([7, 8]));
+        assert_eq!(p["name"], json!("Frame $n"));
+        assert_eq!(p["regex"], json!(false));
+        assert_eq!(p["start"], json!(3));
+        assert!(p.get("find").is_none() && p.get("replace").is_none());
+    }
+
+    #[test]
+    fn rename_with_a_match_uses_find_and_replace() {
+        let p = batch_rename_params(&json!({ "ids": [1] }), &rename_sources("Frame", "Rect", false, 1.0)).expect("ready");
+        assert_eq!(p["find"], json!("Frame"));
+        assert_eq!(p["replace"], json!("Rect"));
+        assert!(p.get("name").is_none(), "a match replaces occurrences, it does not rename the whole name");
+    }
+
+    #[test]
+    fn rename_disabled_for_an_invalid_regex_or_an_empty_form() {
+        // egui's `ready = rename.is_ok() && !(find.is_empty() && to.is_empty())`.
+        assert!(batch_rename_params(&json!({}), &rename_sources("(", "x", true, 1.0)).is_none(), "invalid regex");
+        assert!(batch_rename_params(&json!({}), &rename_sources("", "", false, 1.0)).is_none(), "both fields empty");
+        assert!(batch_rename_params(&json!({}), &rename_sources("", "New name", false, 1.0)).is_some());
+    }
+
+    #[test]
+    fn rename_start_is_clamped_like_the_egui_drag_value() {
+        let p = batch_rename_params(&json!({}), &rename_sources("", "X", false, 9_999_999.0)).expect("ready");
+        assert_eq!(p["start"], json!(1_000_000));
+    }
+
+    #[test]
+    fn rename_preview_uses_the_engine_for_up_and_down_numbers() {
+        let names = vec!["A".to_string(), "B".to_string(), "C".to_string()];
+        let (err, up) = batch_rename_preview(&names, &rename_sources("", "Item $n", false, 1.0));
+        assert!(err.is_none());
+        assert_eq!(up, vec![("A".into(), "Item 1".into()), ("B".into(), "Item 2".into()), ("C".into(), "Item 3".into())]);
+        let (err, down) = batch_rename_preview(&names, &rename_sources("", "Item $N", false, 1.0));
+        assert!(err.is_none());
+        assert_eq!(down, vec![("A".into(), "Item 3".into()), ("B".into(), "Item 2".into()), ("C".into(), "Item 1".into())]);
+        // Regex errors are shown instead of a preview.
+        let (err, rows) = batch_rename_preview(&names, &rename_sources("(", "x", true, 1.0));
+        assert!(err.is_some() && rows.is_empty());
+    }
+
+    #[test]
+    fn rename_preview_shows_at_most_five_rows() {
+        let names: Vec<String> = (0..8).map(|i| format!("L{i}")).collect();
+        let (_, rows) = batch_rename_preview(&names, &rename_sources("", "R$n", false, 1.0));
+        assert_eq!(rows.len(), 5, "egui previews PREVIEW_ROWS = 5 and prints 'and N more' for the rest");
+    }
+
+    #[test]
+    fn rename_spec_keeps_the_egui_field_order_and_derived_submit() {
+        let s = spec(Kind::Rename, &json!({ "ids": [1, 2], "names": ["A", "B"] }));
+        assert_eq!(s.title, figcraft_i18n::tr("Rename layers"));
+        assert_eq!(s.width, 320.0);
+        let keys: Vec<&str> = s
+            .fields
+            .iter()
+            .filter_map(|f| match f {
+                Field::Text { key, .. } | Field::Number { key, .. } | Field::Toggle { key, .. } => Some(*key),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(keys, vec!["find", "regex", "to", "start"], "Match, regex, Rename to, Start");
+        assert!(s.fields.iter().any(|f| matches!(f, Field::InsertCodes { target, codes } if *target == "to" && codes.len() == 3)));
+        assert!(s.fields.iter().any(|f| matches!(f, Field::RenamePreview { names } if names.len() == 2)));
+        assert_eq!(s.buttons.len(), 2, "Cancel + Rename");
+        assert!(s.buttons.iter().any(|b| matches!(&b.action, Action::Derived { .. })), "Rename resolves object.batchRename");
+        assert_eq!(s.buttons.iter().filter(|b| b.action == Action::Close).count(), 1, "every dialog has a way out");
+    }
+
+    #[test]
+    fn rename_is_opened_from_the_menu_instead_of_executed_with_defaults() {
+        assert_eq!(menu_action("object.batchRename"), Some(Kind::Rename));
+        assert_eq!(derived_commands(Kind::Rename), vec!["object.batchRename"]);
+        assert_eq!(derived_commands(Kind::SampledColor), vec!["style.create", "variable.create", "command.batch"]);
     }
 }

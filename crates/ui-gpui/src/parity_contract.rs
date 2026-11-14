@@ -55,6 +55,16 @@ pub const CONTRACTS: &[Contract] = &[
         // hand-written pill or to chips removes a token and fails the contract.
         requires: &["BOARD_GROUPS", "board_panel", "board_templates", "choices(", "command_for", "board.setColor", "board.setStyle"],
     },
+    Contract {
+        id: "A8",
+        // The egui Rename layers dialog: Match / regex / Rename to / three code buttons / start /
+        // a live preview, and ONE `object.batchRename`. Reverting to a single "Name" field (or
+        // `object.rename`) drops every token below and fails the contract.
+        requires: &[
+            "object.batchRename", "batch_rename_params", "BatchRename::new", "InsertCodes", "RenamePreview",
+            "find", "to", "regex", "start",
+        ],
+    },
 ];
 
 /// Every engine command a dialog can push (buttons + per-option choice commands).
@@ -73,6 +83,9 @@ fn dialog_commands() -> Vec<&'static str> {
         for b in &spec.buttons {
             match &b.action {
                 dialogs::Action::Submit { id, .. } | dialogs::Action::Run { id } | dialogs::Action::SubmitFields { id, .. } => out.push(*id),
+                // A `Derived` button resolves to real engine commands at click time; list those so
+                // `every_dialog_command_is_a_real_engine_command` still audits them.
+                dialogs::Action::Derived { .. } => out.extend(dialogs::derived_commands(kind)),
                 dialogs::Action::Close => {}
             }
         }
@@ -88,7 +101,10 @@ fn capabilities() -> BTreeSet<String> {
         let spec = dialogs::spec(kind, &empty);
         for f in &spec.fields {
             match f {
-                dialogs::Field::Text { key, .. } | dialogs::Field::Number { key, .. } | dialogs::Field::Choice { key, .. } => {
+                dialogs::Field::Text { key, .. }
+                | dialogs::Field::Number { key, .. }
+                | dialogs::Field::Choice { key, .. }
+                | dialogs::Field::Toggle { key, .. } => {
                     out.insert((*key).to_string());
                 }
                 dialogs::Field::Preview { .. } => {
@@ -101,6 +117,9 @@ fn capabilities() -> BTreeSet<String> {
                     out.insert((*label).to_string());
                     out.insert((*id).to_string());
                 }
+                dialogs::Field::Color { .. }
+                | dialogs::Field::InsertCodes { .. }
+                | dialogs::Field::RenamePreview { .. } => {}
                 dialogs::Field::Note { .. } => {}
             }
             if let dialogs::Field::Choice { commands: Some(c), .. } = f {
@@ -112,6 +131,11 @@ fn capabilities() -> BTreeSet<String> {
             match &b.action {
                 dialogs::Action::Submit { id, .. } | dialogs::Action::Run { id } | dialogs::Action::SubmitFields { id, .. } => {
                     out.insert((*id).to_string());
+                }
+                dialogs::Action::Derived { .. } => {
+                    for id in dialogs::derived_commands(kind) {
+                        out.insert(id.to_string());
+                    }
                 }
                 dialogs::Action::Close => {}
             }
@@ -165,6 +189,14 @@ fn capabilities() -> BTreeSet<String> {
     let picker_src = include_str!("board_picker.rs");
     if picker_src.contains("fn command_for") && picker_src.contains("board.template") && picker_src.contains("board.table") {
         out.insert("command_for".into());
+    }
+
+    // A8: source-level evidence that the batch-rename dialog keeps the egui shape. A single
+    // "Name" field would remove all four tokens and fail the A8 contract.
+    for token in ["batch_rename_params", "BatchRename::new", "InsertCodes", "RenamePreview"] {
+        if dialogs_src.contains(token) {
+            out.insert(token.into());
+        }
     }
 
     // C1: the GPUI label is compliant AND no egui front-end UI string still uses the retired name.

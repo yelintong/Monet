@@ -44,6 +44,9 @@ mod dock;
 
 /// 通用「按住拖动」状态机：尺寸拖动 / 浮窗整卡移动 / 对话框拖动共用一份。
 mod hold_drag;
+
+/// 无边框内联输入框：Pages / Layers / 画布标签三处重命名共用。
+mod inline_input;
 mod render_stack;
 
 /// 通用尺寸拖动状态机：左面板宽度 / 底部时间轴高度共用（thread_local + 窗口轴相对位移）。
@@ -411,19 +414,6 @@ struct InlineRename {
     ids: Vec<figcraft_doc::NodeId>,
 
     target: InlineRenameTarget,
-
-    /// Just opened: give the field the keyboard on the next frame (egui `Rename::start`).
-    start: bool,
-
-    /// Frames since opening: the focus request needs a few frames to land before we may
-
-    /// conclude the edit ended (egui keeps the field open only while it has focus).
-    frames: u8,
-
-    /// The field has had the keyboard at least once. Only then may losing focus end the rename;
-
-    /// otherwise a focus request that has not landed yet would immediately close the field.
-    was_active: bool,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -620,12 +610,8 @@ pub struct CanvasView {
     /// R4/R5: the inline rename being edited, if any.
     inline_rename: Option<InlineRename>,
 
-    /// One bare `TextEdit` shared by the canvas label, the pages row and the layers row.
-
-    /// The primitive editor has no Input shell: the row itself is the chrome, as in lizard's
-
-    /// `text_field_inline`. Built once so the caret / focus state survives across frames.
-    inline_rename_field: Entity<widgets::TextEdit>,
+    /// 三处重命名（Pages / Layers / 画布标签）共用的无边框 `InlineInput`。
+    inline_rename_field: Entity<inline_input::InlineInput>,
 
     /// Escape cancelled the inline rename: a late focus-out commit must not write the draft.
     rename_cancel: bool,
@@ -740,20 +726,9 @@ impl CanvasView {
 
         let palette_field = widgets::search_field(cx, 288.0, "", "Search actions");
 
-        // R4/R5: the one inline rename editor — the primitive TextEdit, not the shelled
-
-        // TextField. Its size comes from the row / label that hosts it.
-
-        let inline_rename_field = widgets::TextEdit::build(cx, |te, _| {
-            te.set_inset_left(0.0);
-
-            te.set_right_pad(0.0);
-
-            // Same size as the layer label it replaces: two sizes mean two line boxes, and
-            // centring each one in the row leaves the text a pixel or two lower.
-
-            te.set_font_size(px(11.0));
-        });
+        // R4/R5: 三处重命名共用的无边框输入框（Pages / Layers / 画布标签）。
+        // 真正打开时 begin_inline_rename 会再建一个带提交回调的实例。
+        let inline_rename_field = inline_input::InlineInput::build(cx, inline_input::ROW_H, String::new(), |_text, _w, _cx| {});
 
         let extra_state = panels::extra::ExtraState::new(cx, &fields.queue());
 
@@ -1367,9 +1342,7 @@ impl CanvasView {
 
         let editor = self.inline_rename_field.clone();
 
-        editor.update(cx, |te, cx| {
-            te.finish_edit(window, cx);
-        });
+        editor.update(cx, |f, cx| f.finish_edit(window, cx));
 
         if self.inline_rename.is_some() && self.inline_rename_pending.borrow().is_none() {
             // Unchanged text produces no commit, but the field still closes (egui's rule).
@@ -1689,6 +1662,50 @@ impl CanvasView {
                 let branches =
                     self.app.session.execute("branch.list", &serde_json::json!({})).ok().and_then(|v| v.as_array().cloned()).unwrap_or_default();
                 std::borrow::Cow::Owned(serde_json::json!({ "branches": branches }))
+            }
+            dialogs::Kind::ColorProfile => {
+                // A10: the engine reports the current profile for `{}` (save.rs returns
+                // `{profile, changed}` without changing anything), so `data["current"]` is the
+                // live one and the radio starts on it — 1:1 with `ui-egui/.../color_profile.rs`.
+                let current = self
+                    .app
+                    .session
+                    .execute("file.colorProfile", &serde_json::json!({}))
+                    .ok()
+                    .and_then(|v| v.get("profile").and_then(serde_json::Value::as_str).map(String::from))
+                    .unwrap_or_else(|| "srgb".to_string());
+                std::borrow::Cow::Owned(serde_json::json!({ "current": current }))
+            }
+            dialogs::Kind::SampledColor => {
+                // A15: 1:1 with `ui-egui/.../sampled_color.rs::request`: the sampled colour comes
+                // from the eyedropper request, the default name is the next free "Color N" style,
+                // and the collection dropdown lists the document's local collections (so the user
+                // can pick one or "New collection").
+                let color = data.get("color").and_then(serde_json::Value::as_str).unwrap_or("#000000").to_string();
+                let doc = self.app.session.doc().ok().cloned();
+                let collections: Vec<serde_json::Value> = doc
+                    .as_ref()
+                    .map(|d| figcraft_engine::library::local_collections(d).map(|c| serde_json::json!({ "id": c.id, "name": c.name })).collect())
+                    .unwrap_or_default();
+                let name = doc.as_ref().map(|d| d.next_name("Color")).unwrap_or_else(|| "Color 1".to_string());
+                std::borrow::Cow::Owned(serde_json::json!({ "color": color, "variable": false, "name": name, "collections": collections }))
+            }
+            dialogs::Kind::Rename => {
+                // A8: 1:1 with `ui-egui/src/dialogs/batch_rename.rs::open_batch_rename`:
+                // layers in stacking order (bottom first) and their live names, so the preview
+                // and `object.batchRename` address exactly the same layers in the same order.
+                let doc = self.app.session.doc().ok().cloned();
+                let ids: Vec<figcraft_doc::NodeId> = data
+                    .get("ids")
+                    .and_then(serde_json::Value::as_array)
+                    .map(|a| a.iter().filter_map(|v| v.as_u64().map(figcraft_doc::NodeId)).collect())
+                    .unwrap_or_else(|| self.app.session.selection());
+                let sorted = doc.as_ref().map(|d| figcraft_engine::cmd::edit::z_sorted(d, &ids)).unwrap_or(ids);
+                let names: Vec<String> = doc
+                    .as_ref()
+                    .map(|d| sorted.iter().filter_map(|i| d.node(*i).map(|n| n.name.clone())).collect())
+                    .unwrap_or_default();
+                std::borrow::Cow::Owned(serde_json::json!({ "ids": sorted, "names": names }))
             }
             _ => std::borrow::Cow::Borrowed(data),
         };
@@ -2531,90 +2548,67 @@ impl CanvasView {
 
     /// 底部中间弹一条提示，4 秒后自己消失（egui `app.toast`）。
 
-    /// Open the inline rename field over a canvas label or a layers row.
-
-    /// egui `frame_labels::rename_field` / `layers::start_rename`.
-
+    /// 打开共用的无边框内联输入框（egui `frame_labels::rename_field` / `layers::start_rename`）。
     fn begin_inline_rename(&mut self, ids: Vec<figcraft_doc::NodeId>, target: InlineRenameTarget, cx: &mut Context<Self>) {
         let name = self.app.session.ds().ok().and_then(|ds| ids.first().and_then(|i| ds.doc.node(*i)).map(|n| n.name.clone())).unwrap_or_default();
 
-        // A NEW primitive editor for every rename. Reusing one TextEdit keeps the previous
-
-        // draft in its buffer (`set_value` does not touch the buffer while editing), which made
-
-        // every double click rename the row to the first row's name.
-
+        // 每次重命名都新建一个：`TextEdit::set_value` 在编辑态不会动 buffer，复用会把上一次
+        // 的草稿带进来（表现是「第二次双击改成了第一个名字」）。
         let pending = self.inline_rename_pending.clone();
-
         let ids_for_cb = ids.clone();
-
-        let editor = widgets::TextEdit::build(cx, |te, _| {
-            te.set_inset_left(0.0);
-
-            te.set_right_pad(0.0);
-
-            te.set_value(name);
-
-            te.set_on_commit(move |text, _w, _cx| {
-                *pending.borrow_mut() = Some((target, ids_for_cb.clone(), text.trim().to_string()));
-            });
+        let height = if target == InlineRenameTarget::Label { inline_input::LABEL_H } else { inline_input::ROW_H };
+        let editor = inline_input::InlineInput::build(cx, height, name, move |text, _w, _cx| {
+            *pending.borrow_mut() = Some((target, ids_for_cb.clone(), text.trim().to_string()));
         });
 
         self.inline_rename_field = editor;
-
-        self.inline_rename = Some(InlineRename { ids, target, start: true, frames: 0, was_active: false });
-
+        self.inline_rename = Some(InlineRename { ids, target });
         self.rename_cancel = false;
-
         cx.notify();
     }
 
-    /// R4: where the field sits for a canvas label. `tool.labels` holds the label quads in *page*
-
-    /// coordinates; `to_screen` turns them into window coordinates for an absolutely positioned
-
-    /// element. Recomputed every frame so panning / zooming keeps the field on its label.
-
-    fn label_rename_rect(&self, id: Option<figcraft_doc::NodeId>) -> Option<(f32, f32, f32)> {
+    /// R4: 画布标签重命名框的位置（1:1 照抄 egui `frame_labels::rename_field`）。
+    ///
+    /// `tool.labels` 存的是**页面坐标**的四角；`to_screen` 转成「画布局部坐标」（本项目
+    /// `app.canvas.rect` 原点恒为 0），而绝对定位的元素挂在覆盖整窗的根视图上，所以最后
+    /// 必须补上 `dock().canvas_origin()`。egui 的 `canvas.rect.min` 本身就是窗口原点、
+    /// 不需要这一步 —— 这正是原来输入框位置不对的原因。
+    ///
+    /// 矩形公式逐项照抄 egui：`x = area.min.x`、`y = area.max.y - 16`、
+    /// `w = (text_w + 24).max(area.width).clamp(80, 480)`、`h = 16`（宽度用真实量算，
+    /// 不再是「字符数 × 6.5」的估算）。
+    fn label_rename_rect(&self, window: &Window, id: Option<figcraft_doc::NodeId>) -> Option<(f32, f32, f32)> {
         let id = id?;
 
         let name = self.app.session.ds().ok().and_then(|ds| ds.doc.node(id).map(|n| n.name.clone())).unwrap_or_default();
 
+        let shaped_name = name.replace(['\n', '\r'], " ");
+        let text_w = window
+            .text_system()
+            .shape_line(gpui::SharedString::from(shaped_name.clone()), px(11.0), &[window.text_style().to_run(shaped_name.len())], None)
+            .width;
+
+        let (ox, oy) = self.dock().canvas_origin();
+
         let Some(quad) = self.app.session.tool.labels.iter().find(|(i, _)| *i == id).map(|(_, q)| *q) else {
-            // `tool.labels` is only filled while the label is actually drawn (egui has the same
-
-            // dependency). If it is missing, fall back to the frame's own top-left corner so
-
-            // an inline rename is never an invisible field that has grabbed the keyboard.
-
+            // `tool.labels` 只在标签真正被画出来时填充（egui 同依赖）。缺帧时退到帧左上角，
+            // 避免开了一个看不见却抢走键盘的输入框。
             let ds = self.app.session.ds().ok()?;
-
-            let n = ds.doc.node(id)?;
-
+            let _n = ds.doc.node(id)?;
             let w = ds.doc.world_transform(id);
-
             let p = w * figcraft_geom::Point::new(0.0, 0.0);
-
             let s = self.app.to_screen(p.x, p.y);
-
-            let w = (name.chars().count() as f32 * 6.5 + 24.0).clamp(80.0, 480.0);
-
-            return Some((s.x, s.y - 20.0, w));
+            return Some(inline_input::label_rename_fallback(s.x, s.y, f32::from(text_w), ox, oy));
         };
 
         let mut min_x = f32::MAX;
-
         let mut max_x = f32::MIN;
-
         let mut max_y = f32::MIN;
 
         for p in quad {
             let s = self.app.to_screen(p.x, p.y);
-
             min_x = min_x.min(s.x);
-
             max_x = max_x.max(s.x);
-
             max_y = max_y.max(s.y);
         }
 
@@ -2622,9 +2616,7 @@ impl CanvasView {
             return None;
         }
 
-        let w = (name.chars().count() as f32 * 6.5 + 24.0).max(max_x - min_x).clamp(80.0, 480.0);
-
-        Some((min_x, max_y - 16.0, w))
+        Some(inline_input::label_rename_rect(min_x, max_x, max_y, f32::from(text_w), ox, oy))
     }
 
     pub(crate) fn toast(&mut self, text: impl Into<String>, cx: &mut Context<Self>) {
@@ -3628,14 +3620,8 @@ impl CanvasView {
             || crate::motion::clip_popover::drag_active()
     }
 
-    /// 是否有「窗口级」拖拽正在进行——即任何需要由 `on_window_drag_*` 统一接管的拖拽。
-
-    /// 根 div 的 hover/命中 handler 据此跳过，避免与窗口级双发；窗口级 handler 自身也用它
-
-    /// 做无拖拽时的早退（几乎零开销）。覆盖：画布平移/缩放/Move、多选间距/变换手柄、面板 resize、
-
-    /// 控件树拖动、整卡移动（含 resize handle）、时间轴/easing 拖拽、可复用拖拽路由器、Ctrl+右键平移。
-
+    /// 是否有「共用窗口级」拖拽正在进行。画布元素自身的 `on_mouse_move` 据此提前返回
+    /// （它只在指针悬停时触发，拖拽期间不可靠）；窗口级路由自身也用它做无拖拽早退。
     fn any_window_drag_active(&self) -> bool {
         self.dragging
             || self.pan.is_some()
@@ -3644,12 +3630,17 @@ impl CanvasView {
             || crate::resize_drag::any_active()
             || self.layer_tree.drag.is_some()
             || self.window_drag_active()
+            || self.popup_dragging()
+            || self.popup_pending()
             || self.right_pan
             || crate::drag_router::is_active()
             || crate::motion::timeline::drag_active()
             || crate::motion::easing::drag_active()
+            || crate::motion::clip_popover::drag_active()
             || self.app.selection_spacing.is_dragging()
             || self.app.handles.drag.is_some()
+            || self.app.motion_gizmo.drag.is_some()
+            || self.app.guides.drag.is_some()
     }
 
     fn end_popup_drag(&mut self) {
@@ -3682,7 +3673,8 @@ impl CanvasView {
             || self.zoom_drag.is_some()
             || self.app.selection_spacing.is_dragging()
             || self.app.handles.drag.is_some()
-            || self.app.motion_gizmo.drag.is_some();
+            || self.app.motion_gizmo.drag.is_some()
+            || self.app.guides.drag.is_some();
 
         if !active {
             return false;
@@ -3696,7 +3688,11 @@ impl CanvasView {
 
         // Ctrl+右键平移时 `Right` 也算「按住」，否则一移动就被判成松手（用户 2026-11-08）。
 
-        let held = e.pressed_button == Some(MouseButton::Left) || (self.right_pan && e.pressed_button == Some(MouseButton::Right));
+        let held = e.pressed_button == Some(MouseButton::Left)
+            || (self.right_pan && e.pressed_button == Some(MouseButton::Right))
+            // 中键按下就开始平移（`self.pan`），而画布元素的 move 在共用拖拽期间直接返回——
+            // 中键必须在这里也算「按住」，否则第一次 move 就把 `self.pan` 清掉、画布纹丝不动。
+            || (self.pan.is_some() && e.pressed_button == Some(MouseButton::Middle));
 
         if !held {
             let pos = self.local(e.position);
@@ -3742,6 +3738,11 @@ impl CanvasView {
                 let _ = canvas::handles::input(&mut self.app, pos, false, false, true, e.modifiers.shift);
             }
 
+            // 参考线拖拽也要按「抬起」语义收尾，否则窗口外松手后 st.drag 会残留。
+            if self.app.guides.drag.is_some() {
+                self.guide_input(pos, false, true, e.modifiers.alt);
+            }
+
             cx.notify();
 
             return true;
@@ -3754,6 +3755,13 @@ impl CanvasView {
         self.mods = e.modifiers;
 
         self.pointer = Some(pos);
+
+        // 标尺参考线：按下后靠 move 连续更新，指针移到画布外也不能断。
+        if self.app.guides.drag.is_some() {
+            self.guide_input(pos, false, false, e.modifiers.alt);
+            cx.notify();
+            return true;
+        }
 
         if let Some((p0, cx0, cy0)) = self.pan {
             if let Ok(ds) = self.app.session.ds_mut() {
@@ -4247,7 +4255,10 @@ impl Render for CanvasView {
             Some(std::mem::replace(&mut ds.doc, preview))
         });
 
-        let CanvasOutput { image, overview, live, painter, bg, in_flight, retired } = canvas::show(&mut self.app, &mut self.worker, ppp, &t);
+        // 正在改名的画布标签：这一帧不要再画旧名字。输入框是透明的，旧字会从底下透出来，
+        // 名字变短时还会露出旧后缀。几何（`label_rename_rect`）不受影响。
+        let renaming_label = self.inline_rename.as_ref().filter(|r| r.target == InlineRenameTarget::Label).and_then(|r| r.ids.first().copied());
+        let CanvasOutput { image, overview, live, painter, bg, in_flight, retired } = canvas::show(&mut self.app, &mut self.worker, ppp, &t, renaming_label);
 
         if let Some(real) = saved_doc
             && let Ok(ds) = self.app.session.ds_mut()
@@ -4585,9 +4596,13 @@ impl Render for CanvasView {
                     cx.notify();
                 }),
             )
-            // 移动：拖拽进度已统一由窗口级 `on_window_drag_move` 接管（见 `WindowDragTarget`
-            // 实现）；这里只做 hover 命中，拖拽进行中由 `any_window_drag_active()` 提前跳过。
+            // 移动：拖拽进度统一由共用窗口级路由接管；这里只做 hover 命中。
             .on_mouse_move(cx.listener(|this: &mut CanvasView, e: &MouseMoveEvent, _window, cx| {
+                // 任何共用拖拽进行中，元素级 move 一律不重复推进：它只在指针悬停画布时
+                // 触发，指针移到别的面板就停发（用户 2026-11-13 指出的问题）。
+                if this.any_window_drag_active() {
+                    return;
+                }
                 // A window-header drag must not run the canvas hover hit-testing (guide lines,
 
                 // selection spacing, handles, pointer send). Those walks are the expensive part
@@ -4689,11 +4704,15 @@ impl Render for CanvasView {
 
                 cx.notify();
             }))
-            // 抬起：画布级拖拽收尾（pan / zoom / 框选 / 变换手柄 / Move）已统一由窗口级
-            // `on_window_drag_up` 接管，指针移出画布 / 窗口也不中断，故此处只做兜底复位。
+            // 抬起：画布级拖拽收尾统一由共用窗口级路由接管。
             .on_mouse_up(
                 MouseButton::Left,
                 cx.listener(|this: &mut CanvasView, e: &MouseUpEvent, _window, cx| {
+                    // 窗口级 up 先于元素级 up 派发并已清掉拖拽状态，用 drag_just_ended
+                    // 防止这一帧再跑一遍画布自己的收尾（否则会重复 send(Up)）。
+                    if this.any_window_drag_active() || this.drag_just_ended {
+                        return;
+                    }
                     this.mods = e.modifiers;
 
                     let pos = this.local(e.position);
@@ -6173,7 +6192,7 @@ impl Render for CanvasView {
 
         // A19：通用对话框（遮罩 + 居中窗口）画在所有面板 / 弹层 / 整面板之上。
 
-        let dialog_el: Vec<AnyElement> = self.dialog.as_mut().map(|d| d.render(vp)).unwrap_or_default();
+        let dialog_el: Vec<AnyElement> = self.dialog.as_mut().map(|d| d.render(vp, cx)).unwrap_or_default();
 
         // 拖着文件悬在窗口上（egui `open.rs::drop_overlay`）：整窗一圈强调色 + 中间一句话，
 
@@ -6257,70 +6276,30 @@ impl Render for CanvasView {
                 .into_any_element()
         });
 
-        // R4/R5: the inline rename field. A canvas label gets an absolutely positioned field
-
-        // over the label; a layers row renders this same field *inside the row* (see
-
-        // `layer_tree::render_layer_tree`), so there is no separate overlay for that case.
-
-        let mut rename_dead = false;
-
-        if let Some(r) = self.inline_rename.as_mut() {
-            let editor = self.inline_rename_field.clone();
-
-            // GPUI can only focus an element once it has been mounted. Keep asking for the
-
-            // first few frames instead of just the first one (egui `Rename::start`).
-
-            let active_before = editor.read(cx).is_active(window);
-
-            if r.start || !active_before {
-                r.start = false;
-
-                editor.update(cx, |te, _| te.focus_editor(window));
-            }
-
-            r.frames = r.frames.saturating_add(1);
-
-            let active = editor.read(cx).is_active(window);
-
-            if active {
-                r.was_active = true;
-            } else if r.was_active {
-                // egui keeps the field open only while it has focus.
-
-                rename_dead = true;
+        // R4/R5: 三处重命名共用一个 InlineInput；焦点生命周期由组件自己管。
+        if self.inline_rename.is_some() {
+            let state = self.inline_rename_field.update(cx, |f, cx| f.poll_active(window, cx));
+            if state == inline_input::EditState::Ended {
+                self.inline_rename = None;
             }
         }
 
-        if rename_dead {
-            self.inline_rename = None;
-        }
-
+        // 画布标签：按 egui `frame_labels::rename_field` 的矩形贴在标签上，
+        // 无边框无底色，与 Pages / Layers 行的纯输入框是同一个组件。
         let inline_el: Vec<AnyElement> = match &self.inline_rename {
-            Some(r) if r.target == InlineRenameTarget::Label => match self.label_rename_rect(r.ids.first().copied()) {
-                Some((x, y, w)) => {
-                    let t = widgets::tokens();
-
-                    vec![
-                        div()
-                            .absolute()
-                            .left(px(x))
-                            .top(px(y))
-                            .w(px(w))
-                            .h(px(24.0))
-                            .on_mouse_down(MouseButton::Left, |_e, _w, cx| cx.stop_propagation())
-                            .bg(widgets::rgba(t.menu))
-                            .border_1()
-                            .border_color(widgets::rgba(t.accent))
-                            .child(self.inline_rename_field.clone())
-                            .into_any_element(),
-                    ]
-                }
-
+            Some(r) if r.target == InlineRenameTarget::Label => match self.label_rename_rect(window, r.ids.first().copied()) {
+                Some((x, y, w)) => vec![
+                    div()
+                        .absolute()
+                        .left(px(x))
+                        .top(px(y))
+                        .w(px(w))
+                        .h(px(inline_input::LABEL_H))
+                        .child(self.inline_rename_field.clone())
+                        .into_any_element(),
+                ],
                 None => Vec::new(),
             },
-
             _ => Vec::new(),
         };
 
@@ -6332,6 +6311,8 @@ impl Render for CanvasView {
 
         let drop_target = cx.entity();
 
+        // 窗口级拖拽层：paint 阶段注册窗口级监听，所有拖拽统一由它路由。
+        let drag_overlay = self.drag_layer.layer(cx.entity().downgrade());
         div()
             .size_full()
             .flex()
@@ -6401,200 +6382,45 @@ impl Render for CanvasView {
                 .w(px(1.0))
                 .h(px(1.0)),
             )
-            // 容器级 move：分隔条 resize / 整卡移动 / 控件树 / 时间轴 / easing / 可复用路由器
-            // 的拖拽进度已统一由窗口级 `on_window_drag_move` 接管；这里只更新「时间轴指针是否在
-            // bar 内」的 hover 标记，拖拽进行中由 `any_window_drag_active()` 提前跳过。
-            .on_mouse_move(cx.listener(|this: &mut CanvasView, e: &MouseMoveEvent, window, cx| {
-                // Space 在 Motion 时间轴里才播放：时间轴是窗口底部、高 motion_bar_h() 的那条。
-
+            // 时间轴 hover 标记：与拖拽无关，但仍需每次 move 更新。
+            .on_mouse_move(cx.listener(|this: &mut CanvasView, e: &MouseMoveEvent, window, _cx| {
                 let vh = f32::from(window.viewport_size().height);
-
                 crate::motion::timeline::set_pointer_in_bar(this.motion && f32::from(e.position.y) >= vh - this.motion_bar_h());
-
-                // Clip 设置弹窗的头部栏拖动：与 easing/timeline 同构，模块自持状态，
-                // 根 div 覆盖整窗，指针移出卡片仍连续。不能用 drag_router 的 pressed 判断
-                // （GPUI move 事件通常不带 pressed_button → 拖一下就 end）。
-                if crate::motion::clip_popover::drag_active() {
-                    crate::motion::clip_popover::route_move(e.position);
-                    cx.notify();
-                    return;
-                }
-
-                // Easing 曲线手柄拖拽：同样由窗口级 move 接管（相对位移，不需要元素原点）。
-
-                if crate::motion::easing::drag_active() {
-                    crate::motion::easing::route_move(e.position);
-
-                    cx.notify();
-                }
-
-                // Motion 时间轴拖拽延续：bar 自己的 on_mouse_move 只在指针悬停其命中框时触发，
-
-                // 一旦指针移出 bar（例如移到上方画布上）拖拽就断。根 div 覆盖整窗、永远悬停，故在此接管。
-
-                if crate::motion::timeline::drag_active() {
-                    if e.pressed_button != Some(MouseButton::Left) {
-                        // 按钮在窗口外松开：优雅结束（与弹窗拖拽同理），避免卡死。
-
-                        crate::motion::timeline::end_drag(&this.motion_q);
-                    } else {
-                        crate::motion::timeline::route_global_move(&this.motion_q, e.position);
-                    }
-
-                    cx.notify();
-
-                    cx.stop_propagation();
-
-                    return;
-                }
-
-                // 通用窗口拖动优先于分隔线拖动。`window_drag_active()` = 按下后标题栏整卡移动
-
-                // （含越过 3pt 死区前）或变量编辑器的 resize handle 正按住——都要在此接管，
-
-                // 指针移出最初元素后拖拽才不会断（与 motion/timeline 的 route_global_move 同理）。
-
-                if this.window_drag_active() {
-                    // GPUI only delivers mouse events inside the window. If the button was
-
-                    // released outside, no `on_mouse_up` arrives; the next move with no button
-
-                    // held ends the drag instead of leaving the card glued to the pointer.
-
-                    if e.pressed_button != Some(MouseButton::Left) {
-                        this.end_popup_drag();
-
-                        cx.notify();
-
-                        cx.stop_propagation();
-
-                        return;
-                    }
-
-                    if this.move_popup_drag(e.position, e.pressed_button == Some(MouseButton::Left)) {
-                        cx.notify();
-                    }
-
-                    cx.stop_propagation();
-
-                    return;
-                }
-
-                // 控件树拖动中：用全局指针重算落点，跳过分隔线拖动逻辑。
-
-                if this.layer_tree.drag.is_some() {
-                    this.layer_on_global_move(e.position, cx);
-
-                    return;
-                }
-
-                // 尺寸拖动的窗口级接管：与 `on_window_drag_move` 共用同一份 `route_size_drag`。
-                if this.route_size_drag(e.position, e.pressed_button == Some(MouseButton::Left)) {
-                    cx.notify();
-                    cx.stop_propagation();
-                    return;
-                }
-
-                // 右分隔条维持现状（`resizing` 状态机，左栏已迁到 thread_local）。
-                let Some(side) = this.resizing else { return };
-
-                let dx = f32::from(e.position.x) - this.drag_start_x;
-
-                let w = match side {
-                    ResizeSide::Left => this.drag_start_w + dx,
-
-                    ResizeSide::Right => this.drag_start_w - dx,
-                };
-
-                let w = w.clamp(panels::MIN_PANEL, panels::MAX_PANEL);
-
-                match side {
-                    ResizeSide::Left => this.left_w = w,
-
-                    ResizeSide::Right => this.right_w = w,
-                }
-
-                cx.notify();
             }))
-            // 抬起：面板 resize / 窗口整卡移动 / 控件树 / 时间轴 / easing / 可复用路由器的收尾
-            // 已全部由窗口级 `on_window_drag_up` 接管（指针移出面板 / 窗口也不中断），此处只做兜底。
-            .on_mouse_up(
-                MouseButton::Left,
-                cx.listener(|this: &mut CanvasView, _e: &MouseUpEvent, _window, cx| {
-                    // Clip 弹窗头部栏抬起：`WindowDragLayer` 没挂，窗口级 up 不触发，
-                    // 收尾必须落在这对真正生效的根 div move/up 上（与 easing/timeline 同式）。
-                    if crate::motion::clip_popover::drag_active() {
-                        crate::motion::clip_popover::end_drag();
-
-                        cx.notify();
-
-                        cx.stop_propagation();
-
-                        return;
-                    }
-
-                    // Easing 手柄抬起：整段拖拽收成一个 undo step。
-
-                    if crate::motion::easing::drag_active() {
-                        crate::motion::easing::end_drag();
-
-                        cx.notify();
-
-                        cx.stop_propagation();
-
-                        return;
-                    }
-
-                    // Motion 拖拽在指针移出 bar 时由根 move 接管，up 也须在此结束（bar 的 up 在指针离开时不触发）。
-
-                    if crate::motion::timeline::drag_active() {
-                        crate::motion::timeline::end_drag(&this.motion_q);
-
-                        cx.notify();
-
-                        cx.stop_propagation();
-
-                        return;
-                    }
-
-                    // 左分隔条收尾（与 timeline 同式，优先于控件树 / 面板内联路由）。
-                    // thread_local 收尾幂等；窗口外松手时这里不触发，由根 move 的下一帧兜底。
-                    let was_resize_drag = crate::resize_drag::end_any();
-
-                    // 控件树拖动结束（或左键抬起当作选中）：提交落点 / 选中。
-
-                    this.layer_drag_up(cx);
-
-                    let was_window = this.window_drag_active();
-
-                    this.end_popup_drag();
-
-                    let was_resize = this.resizing.take().is_some();
-
-                    if was_window || was_resize || was_resize_drag {
-                        cx.notify();
-                    }
-                }),
-            )
+            // 通用窗口级拖拽层：paint 阶段每帧注册 move / up / down 监听并转给
+            // `WindowDragTarget`。所有拖拽统一从这里按窗口坐标推进，不再依赖任何
+            // 元素级 `on_mouse_move`（指针移出最初的元素就停发）。
+            .child(drag_overlay)
     }
 }
 
-/// 通用窗口级拖拽派发（Kit 范式：`canvas` 覆盖层 + `window.on_mouse_event`）。
-
-///
-
-/// 把分散在两个根 div 上的「拖拽续帧 / 收尾」逻辑统一收口到这里：指针无论停在哪个子元素、
-
-/// 是否移出最初按下那个元素、甚至拖出窗口（OS 捕获范围内），事件都由窗口级监听接住，拖拽
-
-/// 不再断裂。hover / 命中（guide / spacing / handles / send）仍由各根 div 的 `on_mouse_move`
-
-/// 负责，但拖拽进行中会跳过（见 `any_window_drag_active`）。
-
+/// 通用拖拽路由：`WindowDragTarget` 的三个方法由 `WindowDragLayer` 在 paint 阶段挂到
+/// **窗口级**监听上，每帧重注册。根视图只需把这次 move / up 交给它们，所有拖拽
+/// （画布平移 / 缩放 / Move / 手柄、drag_router、时间轴、easing、尺寸分隔条、整卡移动、
+/// 控件树、clip 弹窗）都在同一处按窗口坐标推进；指针移出最初按下的元素、移到弹层上、
+/// 甚至移出窗口后回来，都不会因为元素级 `on_mouse_move` 停发而冻结。
 impl drag_manager::WindowDragTarget for CanvasView {
     fn on_window_drag_move(&mut self, e: &MouseMoveEvent, window: &mut Window, cx: &mut Context<Self>) {
-        // 画布级拖拽（平移 / 缩放 / 拖拽 Move / 多选间距手柄 / 变换手柄）沿用既有 route_canvas_drag。
+        // 没有共用拖拽时立即返回，避免每个 move 都跑一遍状态判断。
+        if !self.any_window_drag_active() {
+            return;
+        }
 
+        // Clip 弹窗头部栏：模块自持 hold_drag，按相对位移推进（不走 drag_router 的
+        // pressed 判定，GPUI 的 move 有时不带按键状态）。
+        if crate::motion::clip_popover::drag_active() {
+            // 窗口外松手收不到 MouseUp：下一次「没按住」的 move 必须把拖动收掉，
+            // 否则弹窗会跟着一个根本没按下的指针走。
+            if e.pressed_button != Some(MouseButton::Left) {
+                crate::motion::clip_popover::end_drag();
+            } else {
+                crate::motion::clip_popover::route_move(e.position);
+            }
+            cx.notify();
+            return;
+        }
+
+        // 画布级拖拽（平移 / 缩放 / 拖拽 Move / 多选间距手柄 / 变换手柄）沿用既有 route_canvas_drag。
         if self.route_canvas_drag(e, cx) {
             return;
         }
@@ -6647,7 +6473,10 @@ impl drag_manager::WindowDragTarget for CanvasView {
 
         // 指针移出最初元素后拖拽不中断（与 motion/timeline 同理）。
 
-        if self.window_drag_active() {
+        // 对话框的整卡拖动也必须走这里：只按 `window_drag_active()`（浮动变量卡）判断时，
+        // 对话框拖动只剩卡片自己的回调，指针一离开卡片就断。`move_popup_drag` 内部已经
+        // 按 active_window / dialog 分流，把 pending 一并纳进来即可。
+        if self.window_drag_active() || self.popup_pending() || self.popup_dragging() {
             if self.cancel_drag_if_not_held(e.pressed_button == Some(MouseButton::Left)) {
                 cx.notify();
 
@@ -6719,6 +6548,10 @@ impl drag_manager::WindowDragTarget for CanvasView {
 
         self.primary_down = false;
 
+        // 窗口级 up 先于各元素级 up 派发。本次事件里如果确实结束了一次共享拖拽，
+        // 后面的元素级 up 必须跳过，否则会重复 send(Up) / 重复提交。
+        self.drag_just_ended = self.any_window_drag_active();
+
         // Clip 弹窗头部栏拖动收尾：必须在画布级分支之前清掉，否则松手落在画布上时
         // 状态残留、下次移动鼠标卡片又跟着走。幂等。
         if crate::motion::clip_popover::drag_active() {
@@ -6784,14 +6617,13 @@ impl drag_manager::WindowDragTarget for CanvasView {
             return;
         }
 
-        // 控件树拖动结束（或左键抬起当作选中）。
-
-        if self.layer_tree.drag.is_some() {
-            self.layer_drag_up(cx);
-
+        // 控件树拖动结束（或左键抬起当作选中）：无论有没有拖拽都要调用，
+        // 否则单击图层行留下的 candidate 不会被消费。
+        let had_layer_drag = self.layer_tree.drag.is_some();
+        self.layer_drag_up(cx);
+        if had_layer_drag {
             self.drag_just_ended = true;
-
-            // 继续往下处理画布 / 窗口 / 分隔线收尾（与根 div 原逻辑一致：不中途 return）。
+            // 继续往下处理画布 / 窗口 / 分隔线收尾（不中途 return）。
         }
 
         // 画布级拖拽结束：pan / zoom / 框选 / 变换手柄 / 拖拽 Move。
@@ -6890,12 +6722,8 @@ impl drag_manager::WindowDragTarget for CanvasView {
     }
 
     fn on_window_drag_down(&mut self, _e: &MouseDownEvent, _window: &mut Window, _cx: &mut Context<Self>) {
-
-        // 按下起拖由各元素自身的 `on_mouse_down` 负责（画布在 canvas div、面板在各自控件、
-
-        // 标题栏在弹层头部），它们在按下时写入拖拽状态；本方法留空，避免与元素级 down 重复。
-
-        // 窗口级 down 监听仍每帧注册，便于未来把「起拖」也收口到此处。
+        // 每次按下都清掉上一次抬起的去重标记；起拖仍由各元素自身的 on_mouse_down 负责。
+        self.drag_just_ended = false;
     }
 }
 

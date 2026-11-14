@@ -161,7 +161,7 @@ pub struct CanvasOutput {
 }
 
 /// 跑一遍画布（对应原文 `canvas::show`）。
-pub fn show(app: &mut CanvasApp, worker: &mut Worker, ppp: f32, t: &Tokens) -> CanvasOutput {
+pub fn show(app: &mut CanvasApp, worker: &mut Worker, ppp: f32, t: &Tokens, renaming: Option<NodeId>) -> CanvasOutput {
     let rect = app.canvas.rect;
 
     // 视口尺寸同步：首次定尺寸时缩放到合适大小；之后**锚定左上角**。
@@ -406,7 +406,7 @@ pub fn show(app: &mut CanvasApp, worker: &mut Worker, ppp: f32, t: &Tokens) -> C
     });
 
     // 叠加层（标尺；后续的选中框/手柄/参考线/标签也在这一层）。
-    draw_overlays(app, &mut painter, t);
+    draw_overlays(app, &mut painter, t, renaming);
 
     // 拖动补丁按它这一帧覆盖的页面矩形摆放：不透明的完整场景同时擦掉旧位置、画出新位置。
     // 裁剪不再手工套 —— 补丁本身就是渲染器按当前文档（含 frame clip）画出来的。
@@ -478,7 +478,7 @@ pub(crate) fn overlay_doc(
 /// 画叠加层：标尺 + （后续）选中框/手柄/参考线/标签。
 ///
 /// 抽成公开的入口，`show()` 与无头预览用同一份代码，保证两边完全一致。
-pub(crate) fn draw_overlays(app: &mut CanvasApp, painter: &mut Painter, t: &Tokens) {
+pub(crate) fn draw_overlays(app: &mut CanvasApp, painter: &mut Painter, t: &Tokens, renaming: Option<NodeId>) {
     // 粘性悬停：与 `show()` 里那次调用一致（无头预览走这条路径，也保证 labels 正确）。
     handles::update_hover(app);
     // 文档/页面/选择换掉时撤销进行中的间距/重排手势。
@@ -510,7 +510,7 @@ pub(crate) fn draw_overlays(app: &mut CanvasApp, painter: &mut Painter, t: &Toke
     // 叠加层（选中框/手柄/尺寸/框选/参考线）——与原实现同一份画法。
     // `overlays` 同时返回每个顶层帧/section 名称标签的矩形；写入 `tool.labels`，
     // 引擎 `label_at` 据此在点击标签时选中/拖拽对应容器（照搬 `ui-egui`）。
-    app.session.tool.labels = overlays::overlays(app, painter, t, doc.clone());
+    app.session.tool.labels = overlays::overlays(app, painter, t, doc.clone(), renaming);
     // Motion 模式：选中层的运动路径（轨迹曲线）与变换手柄。画在选中框之下、
     // 评论/注解手柄之上（用户 2026-11-12：有动画就显示，播放中隐藏）。
     motion_overlay::draw(app, painter, t);

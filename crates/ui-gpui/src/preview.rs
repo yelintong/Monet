@@ -64,7 +64,7 @@ pub fn export_preview(path: &str) -> Result<(), String> {
     // 叠加层：同一套记录指令。
     let t = app.theme;
     let mut painter = Painter::new(rect);
-    draw_overlays(&mut app, &mut painter, &t);
+    draw_overlays(&mut app, &mut painter, &t, None);
 
     for op in &painter.ops {
         replay(&mut buf, W, H, op);

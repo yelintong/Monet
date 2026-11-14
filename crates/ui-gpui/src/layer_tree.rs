@@ -402,12 +402,12 @@ impl CanvasView {
             let is_cur = id == cur;
             let editing = renaming_page == Some(id) && !divider;
             let name_cell = if editing {
+                // 共用的无边框输入框自带 24pt 固定行盒和「点内部不冒泡」；
+                // 这里只补 egui `pages()` 的 8pt 左缩进。
                 div()
                     .flex_1()
                     .min_w(px(0.0))
-                    .h(pt(24.0))
                     .px(pt(8.0))
-                    // A press inside the editor must not bubble to the root's commit_edits.
                     .on_mouse_down(MouseButton::Left, |_e, _w, cx| cx.stop_propagation())
                     .child(rename_editor.clone())
                     .into_any_element()
@@ -501,7 +501,7 @@ impl CanvasView {
         // R5: the one row being renamed renders the shared inline field instead of its name.
         // The virtual list's render closure only gets `&mut App`, so the (id, field) pair has
         // to be captured here, alongside the `Entity<CanvasView>` the row callbacks use.
-        let rename: Option<(NodeId, Entity<crate::widgets::TextEdit>)> = self
+        let rename: Option<(NodeId, Entity<crate::inline_input::InlineInput>)> = self
             .inline_rename
             .as_ref()
             .filter(|r| r.target == crate::InlineRenameTarget::Layer)
@@ -553,7 +553,7 @@ impl CanvasView {
         band_color: Option<gpui::Rgba>,
         run_top: bool,
         run_bottom: bool,
-        rename_field: Option<Entity<crate::widgets::TextEdit>>,
+        rename_field: Option<Entity<crate::inline_input::InlineInput>>,
     ) -> Stateful<Div> {
         let t = tokens();
         let is_dragging = dragging == Some(r.id.0);
@@ -685,15 +685,11 @@ impl CanvasView {
         // input field itself. No hit handler while editing, so clicking the field does not
         // re-select the layer underneath it.
         let name_cell = if let Some(field) = rename_field {
+            // 与 Pages 行、画布标签完全同一个组件：固定 24pt 行盒、无边框、基线稳定。
+            // 不再套一层 h_full + items_center —— 多一层盒子就多一个让文字漂移的地方。
             div()
                 .flex_1()
                 .min_w(px(0.0))
-                // Full row height, exactly like the label it replaces: a 24 pt box inside a 32 pt
-                // row only lines up if the row centres it, and one extra box is one more place
-                // for the text to drift. Same box, same size, same centre.
-                .h_full()
-                .flex()
-                .items_center()
                 .on_mouse_down(MouseButton::Left, |_e, _w, cx| cx.stop_propagation())
                 .child(field)
         } else {

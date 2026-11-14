@@ -20,7 +20,7 @@
 //!   每帧注册一次 move / up / down 三个窗口级监听，转发给 `me` 指向视图的 [`WindowDragTarget`]
 //!   实现。拖拽不活跃时三个 handler 按 `phase` / 各自 `active` 判断后立刻 return，几乎零开销。
 
-use gpui::{IntoElement, MouseDownEvent, MouseMoveEvent, MouseUpEvent, WeakEntity, Window, canvas};
+use gpui::{AnyElement, IntoElement, MouseDownEvent, MouseMoveEvent, MouseUpEvent, WeakEntity, Window, canvas, prelude::*, px};
 
 /// 实现该 trait 的视图即可获得窗口级拖拽派发。三个方法签名与 GPUI 的
 /// `on_mouse_event` 回调一致（`ev` 是事件，`window`/`cx` 用于改写视图状态）。
@@ -45,7 +45,10 @@ impl WindowDragLayer {
     /// 用 `canvas` 元素是因为它的 paint 闭包本身就处于 Paint 阶段——`window.on_mouse_event`
     /// 内部有 `debug_assert_paint()`，必须在 paint 阶段调用（Kit 的 `root.rs` 同样是
     /// 用 `canvas(.., move |_, _, window, _| { window.on_mouse_event(...) })` 绕过这个限制）。
-    pub fn layer<E: WindowDragTarget>(&self, me: WeakEntity<E>) -> impl IntoElement {
+    /// 返回 `AnyElement`（而不是 `impl IntoElement`）：Rust 2024 的 `impl Trait` 会捕获
+    /// `&self` 的生命周期，导致调用方在整条 div 链里一直持有 `CanvasView` 的不可变借用，
+    /// 与 `render` 里其它 `&mut self` 调用冲突。
+    pub fn layer<E: WindowDragTarget>(&self, me: WeakEntity<E>) -> AnyElement {
         canvas(
             |_, _, _| {},
             move |_, _, window, _cx| {
@@ -78,5 +81,13 @@ impl WindowDragLayer {
                 });
             },
         )
+        // 1×1 绝对定位：不参与布局、不盖住任何命中区，但 paint 阶段照常跑，
+        // 所以三个窗口级监听每帧都会重新注册。
+        .absolute()
+        .top_0()
+        .left_0()
+        .w(px(1.0))
+        .h(px(1.0))
+        .into_any_element()
     }
 }
