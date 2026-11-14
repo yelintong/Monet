@@ -70,11 +70,19 @@ impl MenuAnchor {
         Self { key, live }
     }
     /// 按钮当前矩形（窗口坐标）；`None` 表示还没画过。
-    pub fn rect(&self) -> Option<Bounds<Pixels>> { self.live.get() }
+    pub fn rect(&self) -> Option<Bounds<Pixels>> {
+        self.live.get()
+    }
     /// 点击那一帧先把 `on_click` 拿到的矩形作为初值，之后由 prepaint 持续刷新。
-    pub fn seed(&self, b: Bounds<Pixels>) { self.live.set(Some(b)); }
-    pub fn key(&self) -> &str { &self.key }
-    pub(crate) fn cell(&self) -> Rc<Cell<Option<Bounds<Pixels>>>> { self.live.clone() }
+    pub fn seed(&self, b: Bounds<Pixels>) {
+        self.live.set(Some(b));
+    }
+    pub fn key(&self) -> &str {
+        &self.key
+    }
+    pub(crate) fn cell(&self) -> Rc<Cell<Option<Bounds<Pixels>>>> {
+        self.live.clone()
+    }
 }
 
 /// `MenuAnchor::new` 的便捷写法。

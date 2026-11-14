@@ -193,7 +193,10 @@ pub(super) fn rulers(app: &CanvasApp, painter: &mut Painter, t: &Tokens, doc: &D
             let color = if selected.is_some_and(|(_, _, a, b)| (a.x..b.x).contains(&x)) { muted_number_color } else { number_color };
             let galley = painter.layout_no_wrap(fmt(value), regular(9.0), color);
             let rect = Rect::from_min_size(pos2(x - galley.size().x / 2.0, top.top() + 2.0), galley.size());
-            if rect.left() >= top.left() + 2.0 && rect.right() <= top.right() - 2.0 && !top_edges.iter().any(|(edge, _)| edge.expand(3.0).intersects(rect)) {
+            if rect.left() >= top.left() + 2.0
+                && rect.right() <= top.right() - 2.0
+                && !top_edges.iter().any(|(edge, _)| edge.expand(3.0).intersects(rect))
+            {
                 painter.galley(rect.min, galley, color);
             }
         }

@@ -178,7 +178,14 @@ impl Painter {
     /// 在 `pos`（左上角）贴一段已排好的文字。
     pub fn galley(&mut self, pos: Pos2, galley: Galley, fallback_color: Color32) {
         let color = if fallback_color.a() > 0 { fallback_color } else { galley.color };
-        self.labels.push(Label { rect: Rect::from_min_size(pos, galley.size), text: galley.text, font: galley.font, color, align: Align2::LEFT_TOP, angle: None });
+        self.labels.push(Label {
+            rect: Rect::from_min_size(pos, galley.size),
+            text: galley.text,
+            font: galley.font,
+            color,
+            align: Align2::LEFT_TOP,
+            angle: None,
+        });
     }
 
     // ---------------------------------------------------------------- 输出
@@ -259,12 +266,8 @@ fn paint_circle(window: &mut Window, center: Pos2, radius: f32, fill: Color32, s
         // 全项目到处在用的最可靠图元。
         let r = radius;
         let rect = Bounds { origin: point(px(center.x - r), px(center.y - r)), size: gpui::size(px(r * 2.0), px(r * 2.0)) };
-        let quad = gpui::fill(rect, to_rgba(fill)).corner_radii(Corners {
-            top_left: px(r),
-            top_right: px(r),
-            bottom_right: px(r),
-            bottom_left: px(r),
-        });
+        let quad =
+            gpui::fill(rect, to_rgba(fill)).corner_radii(Corners { top_left: px(r), top_right: px(r), bottom_right: px(r), bottom_left: px(r) });
         window.paint_quad(quad);
     }
     if stroke.width > 0.0 && stroke.color.a() > 0 {

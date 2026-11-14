@@ -114,8 +114,7 @@ impl ToolId {
         ToolId::Stamp,
     ];
 
-
-pub fn id(self) -> &'static str {
+    pub fn id(self) -> &'static str {
         match self {
             ToolId::Move => "move",
             ToolId::Scale => "scale",
@@ -658,9 +657,7 @@ impl ToolState {
                 let ids: Vec<NodeId> = r.nodes.iter().map(|n| n.0).collect();
                 (!ids.is_empty()).then_some((ids, LiveDraw::Reshape))
             }
-            Gesture::Rotate { ids, moved: true, .. } if !ids.is_empty() => {
-                Some((ids.clone(), LiveDraw::Reshape))
-            }
+            Gesture::Rotate { ids, moved: true, .. } if !ids.is_empty() => Some((ids.clone(), LiveDraw::Reshape)),
             _ => None,
         }
     }

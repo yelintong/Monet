@@ -224,7 +224,9 @@ pub enum Act {
     SetDuration(u32),
     /// 整帧复制（右键时间轴某一时刻）：把 `from` 时刻所有 track 的真实 key（含 easing）
     /// 复制到播放头。走 engine `motion.keyframeCopy`，一个 undo 步。用户 2026-11-12 D2。
-    CopyFrame { from: u32 },
+    CopyFrame {
+        from: u32,
+    },
     /// 总时长手柄拖动中：实时把快照写进 `drag_duration`（带 snap + 滚动区），落点才真正写文档。
     SetDragDuration(Option<u32>),
     /// 总时长手柄抬起：把 `drag_duration` 提交为真正时长（一次 undo 步），并清掉滚动/快照。
@@ -255,7 +257,12 @@ pub enum Act {
     EaseLive(EaseTarget, Ease),
     EaseEnd,
     SetEasingTarget(bool),
-    CommitValue { node: NodeId, property: AnimProperty, idx: usize, value: f64 },
+    CommitValue {
+        node: NodeId,
+        property: AnimProperty,
+        idx: usize,
+        value: f64,
+    },
     SetClip(NodeId, u32, Box<Clip>),
     ScrollY(f32),
     ScrollX(f32),
@@ -267,10 +274,26 @@ pub enum Act {
     SetScrubbing(bool),
     /// A press on a clip bar / layer summary starts a drag; `orig` is the untouched model, so
     /// every move recomputes from it (never accumulate drift, egui `ClipDrag` / `LayerDrag`).
-    BeginClipDrag { node: NodeId, id: u32, edge: ClipEdge, origin_x: f32, orig: Box<Clip> },
-    BeginLayerDrag { node: NodeId, edge: ClipEdge, origin_x: f32, lo: u32, hi: u32, orig: Box<motion::NodeMotion> },
+    BeginClipDrag {
+        node: NodeId,
+        id: u32,
+        edge: ClipEdge,
+        origin_x: f32,
+        orig: Box<Clip>,
+    },
+    BeginLayerDrag {
+        node: NodeId,
+        edge: ClipEdge,
+        origin_x: f32,
+        lo: u32,
+        hi: u32,
+        orig: Box<motion::NodeMotion>,
+    },
     /// A pointer move while a drag is in progress; `pxms` is the timeline's px↔ms scale.
-    DragMove { x: f32, pxms: f32 },
+    DragMove {
+        x: f32,
+        pxms: f32,
+    },
     EndDrag,
     BeginEdit(&'static str),
     EndEdit,
@@ -354,11 +377,7 @@ pub fn value_of(doc: &Document, node: NodeId, property: AnimProperty, idx: usize
     let v = doc.node(node).and_then(|n| motion::value_at(n, property, time_ms))?;
     match v {
         AnimValue::Scalar(x) => {
-            let base = if matches!(property, AnimProperty::Rotation) {
-                doc.node(node).map(motion::base_rotation_deg).unwrap_or(0.0)
-            } else {
-                0.0
-            };
+            let base = if matches!(property, AnimProperty::Rotation) { doc.node(node).map(motion::base_rotation_deg).unwrap_or(0.0) } else { 0.0 };
             Some((x - base) * property.display_factor())
         }
         AnimValue::Vec2(p) => Some(if idx == 0 { p.x } else { p.y }),
@@ -413,15 +432,25 @@ fn set_fps(app: &mut CanvasApp, scope: NodeId, fps: u32) {
 /// 收敛到 engine 命令 `motion.keyframe`（PR#1624）：命令内部取 `keyframed_value_at`
 /// 作为新 key 的值，与本地旧闭包等价，且统一了 undo 边界与只读门控。
 pub fn add_key(app: &mut CanvasApp, node: NodeId, property: AnimProperty, time: u32) {
-    run_cmd(app, "Add keyframe", "motion.keyframe", serde_json::json!({
-        "ids": [node.0], "property": property.name(), "time": time,
-    }));
+    run_cmd(
+        app,
+        "Add keyframe",
+        "motion.keyframe",
+        serde_json::json!({
+            "ids": [node.0], "property": property.name(), "time": time,
+        }),
+    );
 }
 
 pub fn remove_key(app: &mut CanvasApp, node: NodeId, property: AnimProperty, time: u32) {
-    run_cmd(app, "Delete keyframe", "motion.keyframeDelete", serde_json::json!({
-        "node": node.0, "property": property.name(), "time": time,
-    }));
+    run_cmd(
+        app,
+        "Delete keyframe",
+        "motion.keyframeDelete",
+        serde_json::json!({
+            "node": node.0, "property": property.name(), "time": time,
+        }),
+    );
 }
 
 pub fn toggle_key(app: &mut CanvasApp, ui: &MotionUi, node: NodeId, property: AnimProperty) {
@@ -438,10 +467,20 @@ pub fn toggle_key(app: &mut CanvasApp, ui: &MotionUi, node: NodeId, property: An
 /// 收敛到 engine 命令 `motion.keyframeMove`（PR#1624）：命令把目标时刻夹在相邻 key 之间，
 /// 保证两个 key 永不共享同一时刻（本地旧版无夹紧，会拖出编辑器无法按时寻址的重叠 key）。
 /// 拖拽手势的 undo 边界仍由 `Act::BeginEdit`/`EndEdit` 的 interaction 拥有，故用 execute 直发。
-pub fn move_key(app: &mut CanvasApp, key: SelectedKey, time: u32) {
-    let _ = app.session.execute("motion.keyframeMove", &serde_json::json!({
-        "node": key.node.0, "property": key.property.name(), "time": key.time_ms, "to": time,
-    }));
+/// 返回命令**落地后的真实时间**（引擎会把 `to` 夹在相邻 key 之间，例如 500 → 399），
+/// 命令失败时返回 `None`。调用方必须用这个返回值更新选中 / 抓取状态，否则会指向一个
+/// 不存在的键（CodeRabbit：MoveKey 丢弃返回值 → 后续拖动 / 缓动编辑寻址到错误 key）。
+pub fn move_key(app: &mut CanvasApp, key: SelectedKey, time: u32) -> Option<u32> {
+    app.session
+        .execute(
+            "motion.keyframeMove",
+            &serde_json::json!({
+                "node": key.node.0, "property": key.property.name(), "time": key.time_ms, "to": time,
+            }),
+        )
+        .ok()
+        .and_then(|v| v.get("time").and_then(|t| t.as_u64()))
+        .map(|t| t as u32)
 }
 
 /// Writes a typed value into `property` at the playhead (the inspector's number fields).
@@ -468,22 +507,24 @@ pub fn commit_value(app: &mut CanvasApp, ui: &MotionUi, node: NodeId, property: 
         0.0
     };
     let next = match current {
-        Some(AnimValue::Vec2(p)) => AnimValue::Vec2(if idx == 0 {
-            figcraft_geom::Vec2::new(value, p.y)
-        } else {
-            figcraft_geom::Vec2::new(p.x, value)
-        }),
+        Some(AnimValue::Vec2(p)) => {
+            AnimValue::Vec2(if idx == 0 { figcraft_geom::Vec2::new(value, p.y) } else { figcraft_geom::Vec2::new(p.x, value) })
+        }
         Some(AnimValue::Color(c)) => AnimValue::Color(c),
-        None if matches!(property, AnimProperty::Position | AnimProperty::Scale) => AnimValue::Vec2(figcraft_geom::Vec2::new(
-            if idx == 0 { value } else { 0.0 },
-            if idx == 1 { value } else { 0.0 },
-        )),
+        None if matches!(property, AnimProperty::Position | AnimProperty::Scale) => {
+            AnimValue::Vec2(figcraft_geom::Vec2::new(if idx == 0 { value } else { 0.0 }, if idx == 1 { value } else { 0.0 }))
+        }
         _ => AnimValue::Scalar((value / property.display_factor().max(1e-6)) + base_rot),
     };
     let Ok(value) = serde_json::to_value(next) else { return };
-    run_cmd(app, "Edit animation value", "motion.autoKey", serde_json::json!({
-        "ids": [node.0], "property": property.name(), "time": time, "value": value,
-    }));
+    run_cmd(
+        app,
+        "Edit animation value",
+        "motion.autoKey",
+        serde_json::json!({
+            "ids": [node.0], "property": property.name(), "time": time, "value": value,
+        }),
+    );
 }
 
 /// Borrow-safe helper: `commit_value` already holds `&mut Document`, so re-read through the node
@@ -499,18 +540,15 @@ fn doc_node_value(doc: &Document, node: NodeId, prop: AnimProperty, time: f64) -
 /// 并受 `GESTURE_BLOCKED` 门控；`false`（EaseSet 一次性）走 `run_cmd` 自带 undo 边界。
 fn write_ease(app: &mut CanvasApp, target: EaseTarget, ease: Ease, in_gesture: bool) {
     if in_gesture && GESTURE_BLOCKED.with(|b| *b.borrow()) {
-        return
+        return;
     }
     let Ok(ease_json) = serde_json::to_value(ease) else { return };
     let (cmd, params) = match target {
-        EaseTarget::Key(k) => (
-            "motion.keyframeEase",
-            serde_json::json!({"node": k.node.0, "property": k.property.name(), "time": k.time_ms, "ease": ease_json}),
-        ),
+        EaseTarget::Key(k) => {
+            ("motion.keyframeEase", serde_json::json!({"node": k.node.0, "property": k.property.name(), "time": k.time_ms, "ease": ease_json}))
+        }
         EaseTarget::Clip(node, id) => {
-            let Some(mut clip) = app.session.doc().ok().and_then(|d| d.node(node)).and_then(|n| n.motion.clip(id)).cloned() else {
-                return
-            };
+            let Some(mut clip) = app.session.doc().ok().and_then(|d| d.node(node)).and_then(|n| n.motion.clip(id)).cloned() else { return };
             clip.easing = ease;
             let Ok(clip) = serde_json::to_value(clip) else { return };
             ("motion.clipUpdate", serde_json::json!({"node": node.0, "id": id, "clip": clip}))
@@ -526,25 +564,40 @@ fn write_ease(app: &mut CanvasApp, target: EaseTarget, ease: Ease, in_gesture: b
 /// 收敛到 engine 命令 `motion.keyframeEase`（PR#1624）：设置段起点帧的缓动。
 pub fn set_ease(app: &mut CanvasApp, key: SelectedKey, ease: Ease) {
     let Ok(ease) = serde_json::to_value(ease) else { return };
-    run_cmd(app, "Ease curve", "motion.keyframeEase", serde_json::json!({
-        "node": key.node.0, "property": key.property.name(), "time": key.time_ms, "ease": ease,
-    }));
+    run_cmd(
+        app,
+        "Ease curve",
+        "motion.keyframeEase",
+        serde_json::json!({
+            "node": key.node.0, "property": key.property.name(), "time": key.time_ms, "ease": ease,
+        }),
+    );
 }
 
 /// 收敛到 engine 命令 `motion.clip`（PR#1624）：命令内部取 next_clip_id 并 normalize。
 pub fn add_clip(app: &mut CanvasApp, ui: &MotionUi, node: NodeId, kind: ClipKind) {
     let start = ui.playhead_ms.max(0.0) as u32;
-    run_cmd(app, "Add animation", "motion.clip", serde_json::json!({
-        "kind": kind.name(), "mode": "In", "time": start, "ids": [node.0],
-    }));
+    run_cmd(
+        app,
+        "Add animation",
+        "motion.clip",
+        serde_json::json!({
+            "kind": kind.name(), "mode": "In", "time": start, "ids": [node.0],
+        }),
+    );
 }
 
 /// 收敛到 engine 命令 `motion.preset`（本地已有；PR#1624 的同名命令内部就是这段逻辑）。
 pub fn add_preset(app: &mut CanvasApp, ui: &MotionUi, node: NodeId, name: &str) {
     let start = ui.playhead_ms.max(0.0) as u32;
-    run_cmd(app, "Add animation preset", "motion.preset", serde_json::json!({
-        "preset": name, "at": start, "ids": [node.0],
-    }));
+    run_cmd(
+        app,
+        "Add animation preset",
+        "motion.preset",
+        serde_json::json!({
+            "preset": name, "at": start, "ids": [node.0],
+        }),
+    );
 }
 
 /// 收敛到 `motion.clipDelete`（PR#1624）。
@@ -555,9 +608,7 @@ pub fn remove_clip(app: &mut CanvasApp, node: NodeId, id: u32) {
 /// 收敛到 `motion.clipUpdate`（PR#1624 inspector::toggle_clip_visible）：读整条 clip、
 /// 翻转 visible、序列化整条发命令（命令侧 sanitize + normalize）。
 pub fn toggle_clip_visible(app: &mut CanvasApp, node: NodeId, id: u32) {
-    let Some(mut clip) = app.session.doc().ok().and_then(|d| d.node(node)).and_then(|n| n.motion.clip(id)).cloned() else {
-        return
-    };
+    let Some(mut clip) = app.session.doc().ok().and_then(|d| d.node(node)).and_then(|n| n.motion.clip(id)).cloned() else { return };
     clip.visible = !clip.visible;
     let Ok(clip) = serde_json::to_value(clip) else { return };
     run_cmd(app, "Show/hide animation", "motion.clipUpdate", serde_json::json!({"node": node.0, "id": id, "clip": clip}));
@@ -574,7 +625,7 @@ pub fn set_clip(app: &mut CanvasApp, node: NodeId, id: u32, clip: Clip) {
 /// `GESTURE_BLOCKED`（gate #3）为真时（只读 / 预览）丢弃这一笔。
 fn clip_dragged(app: &mut CanvasApp, ui: &mut MotionUi, node: NodeId, id: u32, edge: ClipEdge, dx_ms: i64) {
     if GESTURE_BLOCKED.with(|b| *b.borrow()) {
-        return
+        return;
     }
     let Some(drag) = ui.clip_drag.clone() else { return };
     let orig = &drag.orig;
@@ -597,7 +648,7 @@ fn clip_dragged(app: &mut CanvasApp, ui: &mut MotionUi, node: NodeId, id: u32, e
 
 fn layer_dragged(app: &mut CanvasApp, ui: &mut MotionUi, node: NodeId, edge: ClipEdge, dx_ms: i64) {
     if GESTURE_BLOCKED.with(|b| *b.borrow()) {
-        return
+        return;
     }
     let Some(drag) = ui.layer_drag.clone() else { return };
     let (lo, hi) = (drag.lo as f64, drag.hi.max(drag.lo + 1) as f64);
@@ -605,37 +656,37 @@ fn layer_dragged(app: &mut CanvasApp, ui: &mut MotionUi, node: NodeId, edge: Cli
     // undo 边界由 BeginEdit/EndEdit 的 interaction 拥有，故直发 execute 不 begin/commit。
     let mut m = drag.orig.clone();
     {
-            match edge {
-                ClipEdge::Move => {
-                    for tr in &mut m.tracks {
-                        for k in &mut tr.keys {
-                            k.time_ms = (k.time_ms as i64 + dx_ms).max(0) as u32;
-                        }
-                    }
-                    for c in &mut m.clips {
-                        c.delay_ms = (c.delay_ms as i64 + dx_ms).max(0) as u32;
+        match edge {
+            ClipEdge::Move => {
+                for tr in &mut m.tracks {
+                    for k in &mut tr.keys {
+                        k.time_ms = (k.time_ms as i64 + dx_ms).max(0) as u32;
                     }
                 }
-                ClipEdge::TrimStart | ClipEdge::TrimEnd => {
-                    let denom = (hi - lo).max(1.0);
-                    let (anchor, scale) = if edge == ClipEdge::TrimEnd {
-                        let new_hi = (hi + dx_ms as f64).max(lo + 1.0);
-                        (lo, (new_hi - lo) / denom)
-                    } else {
-                        let new_lo = (lo + dx_ms as f64).clamp(0.0, hi - 1.0);
-                        (hi, (hi - new_lo) / denom)
-                    };
-                    for tr in &mut m.tracks {
-                        for k in &mut tr.keys {
-                            k.time_ms = (anchor + (k.time_ms as f64 - anchor) * scale).max(0.0) as u32;
-                        }
-                    }
-                    for c in &mut m.clips {
-                        c.delay_ms = (anchor + (c.delay_ms as f64 - anchor) * scale).max(0.0) as u32;
-                        c.duration_ms = ((c.duration_ms as f64) * scale).max(1.0) as u32;
-                    }
+                for c in &mut m.clips {
+                    c.delay_ms = (c.delay_ms as i64 + dx_ms).max(0) as u32;
                 }
             }
+            ClipEdge::TrimStart | ClipEdge::TrimEnd => {
+                let denom = (hi - lo).max(1.0);
+                let (anchor, scale) = if edge == ClipEdge::TrimEnd {
+                    let new_hi = (hi + dx_ms as f64).max(lo + 1.0);
+                    (lo, (new_hi - lo) / denom)
+                } else {
+                    let new_lo = (lo + dx_ms as f64).clamp(0.0, hi - 1.0);
+                    (hi, (hi - new_lo) / denom)
+                };
+                for tr in &mut m.tracks {
+                    for k in &mut tr.keys {
+                        k.time_ms = (anchor + (k.time_ms as f64 - anchor) * scale).max(0.0) as u32;
+                    }
+                }
+                for c in &mut m.clips {
+                    c.delay_ms = (anchor + (c.delay_ms as f64 - anchor) * scale).max(0.0) as u32;
+                    c.duration_ms = ((c.duration_ms as f64) * scale).max(1.0) as u32;
+                }
+            }
+        }
         m.normalize();
         let Ok(motion) = serde_json::to_value(m) else { return };
         let _ = app.session.execute("motion.replace", &serde_json::json!({"node": node.0, "motion": motion}));
@@ -738,9 +789,14 @@ pub fn apply(app: &mut CanvasApp, ui: &mut MotionUi, acts: Vec<Act>) -> bool {
                 let ids = app.session.selection();
                 if !ids.is_empty() {
                     let to = ui.playhead_ms.max(0.0) as u32;
-                    run_cmd(app, "Copy frame", "motion.keyframeCopy", serde_json::json!({
-                        "from": from, "to": to, "ids": ids.iter().map(|id| id.0).collect::<Vec<_>>(),
-                    }));
+                    run_cmd(
+                        app,
+                        "Copy frame",
+                        "motion.keyframeCopy",
+                        serde_json::json!({
+                            "from": from, "to": to, "ids": ids.iter().map(|id| id.0).collect::<Vec<_>>(),
+                        }),
+                    );
                 }
             }
             Act::AddKeyAtPlayhead => {
@@ -758,17 +814,24 @@ pub fn apply(app: &mut CanvasApp, ui: &mut MotionUi, acts: Vec<Act>) -> bool {
                 }
             }
             Act::MoveKey(k, t) => {
-                move_key(app, k, t);
-                // 选中项跟着关键帧一起搬。否则拖完以后高亮留在旧时间上、缓动面板指向一个
-                // 已经不存在的键（`ui.selected` 是 inspector / easing 的唯一来源）。
-                if ui.selection.remove(&SelItem::Key(k.node, k.property, k.time_ms)) {
-                    ui.selection.insert(SelItem::Key(k.node, k.property, t));
-                }
-                if ui.selection.remove(&SelItem::Segment(k.node, k.property, k.time_ms)) {
-                    ui.selection.insert(SelItem::Segment(k.node, k.property, t));
-                }
-                if ui.selected == Some(k) {
-                    ui.selected = Some(crate::motion::SelectedKey { time_ms: t, ..k });
+                // 只有命令成功落地才更新选中：用引擎返回的**落地时间**（可能被夹紧），而不是
+                // 请求的 `t`；否则选中会指向一个不存在的键（CodeRabbit 指出）。
+                if let Some(landed) = move_key(app, k, t) {
+                    // 选中项跟着关键帧一起搬。否则拖完以后高亮留在旧时间上、缓动面板指向一个
+                    // 已经不存在的键（`ui.selected` 是 inspector / easing 的唯一来源）。
+                    if ui.selection.remove(&SelItem::Key(k.node, k.property, k.time_ms)) {
+                        ui.selection.insert(SelItem::Key(k.node, k.property, landed));
+                    }
+                    if ui.selection.remove(&SelItem::Segment(k.node, k.property, k.time_ms)) {
+                        ui.selection.insert(SelItem::Segment(k.node, k.property, landed));
+                    }
+                    if ui.selected == Some(k) {
+                        ui.selected = Some(crate::motion::SelectedKey { time_ms: landed, ..k });
+                    }
+                    // 拖拽抓取状态也要跟到**真实**时间：时间轴在输入时先乐观地写成请求时间，
+                    // 若被夹紧（例如 500 → 399），下一帧仍按请求时间找键会落空，表现为
+                    // 「拖到邻居边界后怎么拖都不动」。`apply` 在输入之后运行，这里以落地时间纠正。
+                    crate::motion::timeline::set_grabbed(Some(crate::motion::SelectedKey { time_ms: landed, ..k }));
                 }
             }
             Act::ToggleKey(n, p) => toggle_key(app, ui, n, p),
@@ -779,7 +842,15 @@ pub fn apply(app: &mut CanvasApp, ui: &mut MotionUi, acts: Vec<Act>) -> bool {
             }
             Act::SetFps(v) => {
                 let cur = doc.as_ref().and_then(|d| page.map(|pg| settings_of(d, pg).fps)).unwrap_or(60);
-                let next = if v == 0 { match cur { 24 => 30, 30 => 60, _ => 24 } } else { v.clamp(1, figcraft_doc::anim::motion::TimelineSettings::MAX_FPS) };
+                let next = if v == 0 {
+                    match cur {
+                        24 => 30,
+                        30 => 60,
+                        _ => 24,
+                    }
+                } else {
+                    v.clamp(1, figcraft_doc::anim::motion::TimelineSettings::MAX_FPS)
+                };
                 if let Some(pg) = page {
                     set_fps(app, pg, next);
                 }
@@ -872,10 +943,8 @@ pub fn apply(app: &mut CanvasApp, ui: &mut MotionUi, acts: Vec<Act>) -> bool {
                 // egui `inspector.rs:156`: 记下触发行的 rect；这里只需要顶边 y，
                 // x 由 `clip_popover::panel` 按「右栏左缘 − 8」给出。清除上次的拖动落点，
                 // 否则 `Open::At` 会盖掉锚点、把卡片停在时间轴的点击处。
-                ui.clip_anchor = Some(gpui::Bounds {
-                    origin: gpui::Point { x: gpui::px(0.0), y: gpui::px(y) },
-                    size: gpui::size(gpui::px(0.0), gpui::px(0.0)),
-                });
+                ui.clip_anchor =
+                    Some(gpui::Bounds { origin: gpui::Point { x: gpui::px(0.0), y: gpui::px(y) }, size: gpui::size(gpui::px(0.0), gpui::px(0.0)) });
                 ui.clip_at = None;
             }
             Act::MoveClipPopover(p) => ui.clip_at = Some(p),
@@ -1002,13 +1071,7 @@ mod tests {
     }
 
     fn key_at(app: &CanvasApp, node: NodeId, prop: AnimProperty, time: u32) -> Option<AnimValue> {
-        app.session
-            .doc()
-            .ok()
-            .and_then(|d| d.node(node))
-            .and_then(|n| n.motion.track(prop))
-            .and_then(|tr| tr.key_at(time))
-            .map(|k| k.value)
+        app.session.doc().ok().and_then(|d| d.node(node)).and_then(|n| n.motion.track(prop)).and_then(|tr| tr.key_at(time)).map(|k| k.value)
     }
 
     /// 用户 2026-11-12 的动画模型：画框 = 一个动画单位，框内所有组件共用一条时间轴。
@@ -1115,6 +1178,34 @@ mod tests {
 
         apply(&mut app, &mut ui, vec![Act::CloseSegmentEase]);
         assert_eq!(ui.segment_ease, None, "Close 收尾幂等");
+    }
+
+    /// CodeRabbit：拖关键帧越过邻居时，引擎把目标时间夹到邻居之前（500 → 399）。
+    /// `move_key` 必须返回**落地时间**，选中 / 抓取状态也要用它，否则指向一个不存在的键
+    /// （后续拖动 / 缓动编辑会寻址错误）。
+    #[test]
+    fn move_key_uses_the_landed_time_when_clamped_by_a_neighbor() {
+        let (mut app, node) = app_with_node();
+        let p = AnimProperty::Position;
+        add_key(&mut app, node, p, 0);
+        add_key(&mut app, node, p, 200);
+        add_key(&mut app, node, p, 400);
+
+        let mut ui = MotionUi::default();
+        let k = SelectedKey { node, property: p, time_ms: 200 };
+        ui.selected = Some(k);
+        ui.selection.insert(SelItem::Key(node, p, 200));
+
+        // 请求把 200 挪到 500：被 400 的邻居夹到 399。
+        apply(&mut app, &mut ui, vec![Act::MoveKey(k, 500)]);
+
+        let doc = app.session.doc().unwrap();
+        let tr = doc.node(node).unwrap().motion.track(p).unwrap();
+        assert!(tr.key_at(399).is_some(), "引擎把键落在夹紧后的 399");
+        assert!(tr.key_at(200).is_none(), "旧位置不再有键");
+        assert_eq!(ui.selected.map(|s| s.time_ms), Some(399), "选中跟落地时间，不是请求的 500");
+        assert!(ui.selection.contains(&SelItem::Key(node, p, 399)), "选区用落地时间");
+        assert!(!ui.selection.contains(&SelItem::Key(node, p, 500)), "不能指向不存在的键");
     }
 
     /// 整条轨道有任意帧 → `has_any_key` 为真（右侧插针空心常亮），与播放头位置无关；
@@ -1289,4 +1380,3 @@ mod tests {
         assert!(ui.preview_doc.is_some());
     }
 }
-

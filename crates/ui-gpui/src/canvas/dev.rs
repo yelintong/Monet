@@ -7,8 +7,8 @@
 //! 与 egui 的差异：`Painter` 只有「单行标签」，没有带自动换行的 `LayoutJob`，
 //! 所以便签在这里按估算字宽手动折行（最多 6 行）；卡片的投影用一层半透明矩形近似。
 
-use figcraft_engine::{annotations, dev_measurements};
 use figcraft_engine::snap::Guide;
+use figcraft_engine::{annotations, dev_measurements};
 
 use super::geom::*;
 use super::painter::{Painter, text_size};
@@ -168,11 +168,7 @@ fn paint_callout(
     painter.rect_filled(rect.translate(vec2(0.0, 2.0)).expand(3.0), CornerRadius::same(6), Color32::from_black_alpha(28));
     painter.rect_filled(rect, CornerRadius::same(6), t.panel);
     painter.rect_stroke(rect, CornerRadius::same(6), Stroke::new(1.0, if selected { accent(t) } else { t.border_strong }), StrokeKind::Inside);
-    painter.rect_filled(
-        Rect::from_min_size(rect.min + vec2(0.0, 6.0), vec2(3.0, rect.height() - 12.0)),
-        CornerRadius::same(2),
-        color,
-    );
+    painter.rect_filled(Rect::from_min_size(rect.min + vec2(0.0, 6.0), vec2(3.0, rect.height() - 12.0)), CornerRadius::same(2), color);
     let x = rect.min.x + 12.0;
     let mut y = rect.min.y + 8.0;
     if let Some(name) = &card.category {

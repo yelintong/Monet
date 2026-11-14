@@ -17,11 +17,11 @@
 //!
 //! 数据来自 [`super::data::LiveData`]（每帧从 `Session::live()` 现读），UI 不另存状态。
 
-use figcraft_i18n::tr;
 use super::data::{LiveData, PanelData};
+use crate::canvas::geom::Color32;
 use crate::panels::{Cmd, RightFields};
 use crate::widgets::{Icon, IconButton, pt, rgba, tokens};
-use crate::canvas::geom::Color32;
+use figcraft_i18n::tr;
 use gpui::{
     AnyElement, App, Bounds, Div, IntoElement, MouseButton, MouseDownEvent, PathBuilder, Pixels, Point, SharedString, Window, div, prelude::*, px,
 };
@@ -72,19 +72,25 @@ fn people(f: &RightFields, live: &LiveData) -> Div {
         let cmds = f.cmds.clone();
         let root = f.root.clone();
         let spotlighting = live.spotlighting;
-        row = row.child(div().id("right-me-avatar").cursor_pointer().on_mouse_down(MouseButton::Left, move |_: &MouseDownEvent, window, cx: &mut App| {
-            let Some(root) = root.clone() else { return };
-            let p = window.mouse_position();
-            let anchor = Bounds { origin: p, size: gpui::size(px(1.0), px(0.0)) };
-            let label = if spotlighting { tr("Stop spotlighting") } else { tr("Spotlight me") };
-            let rows = vec![crate::widgets::MenuRow::new(label)];
-            let cmds = cmds.clone();
-            let on = !spotlighting;
-            let on_pick = Rc::new(move |_: &str, _w: &mut Window, _cx: &mut App| {
-                cmds.push(Cmd { id: "collab.spotlight", params: Some(json!({ "on": on })) });
-            });
-            root.update(cx, |cv, cx| cv.open_menu(anchor, Some(200.0), rows, on_pick, cx));
-        }).child(me));
+        row = row.child(
+            div()
+                .id("right-me-avatar")
+                .cursor_pointer()
+                .on_mouse_down(MouseButton::Left, move |_: &MouseDownEvent, window, cx: &mut App| {
+                    let Some(root) = root.clone() else { return };
+                    let p = window.mouse_position();
+                    let anchor = Bounds { origin: p, size: gpui::size(px(1.0), px(0.0)) };
+                    let label = if spotlighting { tr("Stop spotlighting") } else { tr("Spotlight me") };
+                    let rows = vec![crate::widgets::MenuRow::new(label)];
+                    let cmds = cmds.clone();
+                    let on = !spotlighting;
+                    let on_pick = Rc::new(move |_: &str, _w: &mut Window, _cx: &mut App| {
+                        cmds.push(Cmd { id: "collab.spotlight", params: Some(json!({ "on": on })) });
+                    });
+                    root.update(cx, |cv, cx| cv.open_menu(anchor, Some(200.0), rows, on_pick, cx));
+                })
+                .child(me),
+        );
     } else {
         row = row.child(me);
     }
@@ -199,7 +205,7 @@ fn present(f: &RightFields) -> Div {
             let Some(root) = root.clone() else { return };
             let p = window.mouse_position();
             // `widgets::menu` 对零尺寸锚点直接不画，所以给 1×0 的锚点（贴在指针下方 4 pt）。
-        let anchor = Bounds { origin: p, size: gpui::size(px(1.0), px(0.0)) };
+            let anchor = Bounds { origin: p, size: gpui::size(px(1.0), px(0.0)) };
             let rows = vec![
                 crate::widgets::MenuRow::new(tr("Present")).trail(crate::main_menu::shortcut_text("proto.present").unwrap_or_default()),
                 crate::widgets::MenuRow::new(tr("Preview")),
@@ -245,13 +251,7 @@ fn share_button(f: &RightFields, live: &LiveData, t: &crate::theme::Tokens) -> g
             let anchor = Bounds { origin, size: gpui::size(px(1.0), px(0.0)) };
             root.update(cx, |cv, cx| cv.open_share(anchor, cx));
         })
-        .child(
-            div()
-                .text_size(pt(11.5))
-                .font_weight(gpui::FontWeight::SEMIBOLD)
-                .text_color(rgba(t.accent_on))
-                .child(tr("Share")),
-        )
+        .child(div().text_size(pt(11.5)).font_weight(gpui::FontWeight::SEMIBOLD).text_color(rgba(t.accent_on)).child(tr("Share")))
 }
 
 /// 一个填充的 ▶（egui 用 `closed_line` 画的三角形；GPUI 这里自绘三角形，不新增图标）。
@@ -281,7 +281,12 @@ fn play_glyph(size: f32, color: Color32) -> impl IntoElement {
 ///
 /// 与 egui 的差异只在「控件形态」：egui 是一整块带输入框的卡片，GPUI 这里是同一张
 /// `menu` 卡片里的行按钮（输入框那套 join/端口/密钥属于高级设置，尚未搬）。
-pub(crate) fn share_card(anchor: Bounds<Pixels>, live: &LiveData, cmds: &crate::panels::Cmds, dismiss: Rc<dyn Fn(&mut Window, &mut App)>) -> AnyElement {
+pub(crate) fn share_card(
+    anchor: Bounds<Pixels>,
+    live: &LiveData,
+    cmds: &crate::panels::Cmds,
+    dismiss: Rc<dyn Fn(&mut Window, &mut App)>,
+) -> AnyElement {
     let t = tokens();
     let title = if live.active { tr("Live session") } else { tr("Share this file") };
     let mut col = div().flex().flex_col().gap(pt(2.0)).w(pt(284.0));
@@ -359,10 +364,7 @@ pub(crate) fn share_card(anchor: Bounds<Pixels>, live: &LiveData, cmds: &crate::
     }
 
     // 底部：egui 的 Export… 行还没搬（GPUI 没有导出预览窗口），这里就不放假按钮。
-    crate::widgets::menu(anchor)
-        .width(crate::widgets::Width::Min(300.0))
-        .show(|| col.into_any_element())
-        .unwrap_or_else(|| div().into_any_element())
+    crate::widgets::menu(anchor).width(crate::widgets::Width::Min(300.0)).show(|| col.into_any_element()).unwrap_or_else(|| div().into_any_element())
 }
 
 /// 弹层里的状态行（egui `share_popover` 里那个 `(line, col)` 的 `line`）。
@@ -404,9 +406,7 @@ fn menu_row(label: &'static str, trail: Option<String>, on_click: impl Fn(&Mouse
         .hover(|s| s.bg(rgba(t.menu_hover)))
         .on_mouse_down(MouseButton::Left, on_click)
         .child(div().flex_1().min_w(pt(0.0)).whitespace_nowrap().child(label))
-        .when_some(trail, |d, tr| {
-            d.child(div().ml(pt(8.0)).text_color(rgba(t.menu_dim)).whitespace_nowrap().child(SharedString::from(tr)))
-        })
+        .when_some(trail, |d, tr| d.child(div().ml(pt(8.0)).text_color(rgba(t.menu_dim)).whitespace_nowrap().child(SharedString::from(tr))))
 }
 
 /// 「Copy …」一行：点了把 `text` 放进剪贴板再关掉弹层。
@@ -424,19 +424,12 @@ fn copy_row(label: &'static str, text: &str, cmds: &crate::panels::Cmds, dismiss
 /// 弹层里的一行说明文字。
 fn note(text: &str) -> impl IntoElement {
     let t = tokens();
-    div()
-        .px(pt(8.0))
-        .py(pt(4.0))
-        .text_size(pt(11.0))
-        .text_color(rgba(t.menu_dim))
-        .child(SharedString::from(text.to_string()))
+    div().px(pt(8.0)).py(pt(4.0)).text_size(pt(11.0)).text_color(rgba(t.menu_dim)).child(SharedString::from(text.to_string()))
 }
 
 /// `#RRGGBB` → `Color32`（会话里的人色；解析不了就退回中灰）。
 fn parse_color(s: &str) -> Color32 {
-    figcraft_color::Color::from_hex_or_name(s)
-        .map(crate::widgets::swatch::color32)
-        .unwrap_or(Color32::from_rgb(0x9B, 0x9B, 0x9B))
+    figcraft_color::Color::from_hex_or_name(s).map(crate::widgets::swatch::color32).unwrap_or(Color32::from_rgb(0x9B, 0x9B, 0x9B))
 }
 
 /// 头像上的字色：底色亮就用黑字（egui `text_on`）。

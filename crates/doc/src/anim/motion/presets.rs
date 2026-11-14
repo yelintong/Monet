@@ -5,9 +5,9 @@
 
 use super::clip::{Clip, ClipDirection, ClipKind, ClipMode, ClipRepeat};
 use super::easing::Ease;
-use figcraft_geom::Vec2;
 use ClipDirection::*;
 use ClipMode::{In, Out};
+use figcraft_geom::Vec2;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum PresetGroup {
@@ -215,8 +215,14 @@ mod tests {
     fn library_matches_the_figma_list() {
         let names = |g| presets_in(g).map(|p| p.name).collect::<Vec<_>>();
         assert_eq!(names(PresetGroup::Basic), ["Position", "Scale", "Rotation", "Size", "Opacity"]);
-        assert_eq!(names(PresetGroup::Enter), ["Burst", "Ignite", "Sweep", "Slam", "Descend", "Magnify", "Glide", "Drop", "Reveal", "Rise", "Tip", "Feather"]);
-        assert_eq!(names(PresetGroup::Cycle), ["Crank", "Press", "Pop", "Scoot", "Spin", "Flip", "Tick", "Creep", "Float", "Orbit", "Breathe", "Pulse"]);
+        assert_eq!(
+            names(PresetGroup::Enter),
+            ["Burst", "Ignite", "Sweep", "Slam", "Descend", "Magnify", "Glide", "Drop", "Reveal", "Rise", "Tip", "Feather"]
+        );
+        assert_eq!(
+            names(PresetGroup::Cycle),
+            ["Crank", "Press", "Pop", "Scoot", "Spin", "Flip", "Tick", "Creep", "Float", "Orbit", "Breathe", "Pulse"]
+        );
         assert_eq!(
             names(PresetGroup::Exit),
             ["Launch", "Vanish", "Flick", "Swipe", "Poof", "Deflate", "Fling", "Splat", "Evaporate", "Recede", "Sink", "Tumble"]

@@ -21,7 +21,7 @@
 //!
 //! 已有正确实现的拖拽（motion 时间轴、弹窗整卡移动）不必改动；新拖拽和遗漏的旧拖拽都走这里。
 
-use gpui::{App, Point, Pixels, Window};
+use gpui::{App, Pixels, Point, Window};
 
 /// 一个已注册的拖拽。`on_move` 收到指针位置 + 真实按键状态；`on_end` 在松手 / 窗口外松手时提交。
 struct Entry {

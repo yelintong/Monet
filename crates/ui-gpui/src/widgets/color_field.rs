@@ -166,14 +166,8 @@ impl IntoElement for ColorField {
         // `alpha_cell` row (44 pt number + 24 × 24 unit) — the frozen design, not a hand-built
         // replacement layout. `bare` removes the shell (so the disabled row has no background
         // at all); the slot itself is NEVER hidden.
-        let input = Input::new(self.width)
-            .lead(Slot::None)
-            .lead_w(SLOT)
-            .trail(Slot::None)
-            .trail_w(trail_w)
-            .trail_pad(UNIT_PAD)
-            .alpha_cell(true)
-            .bare(bound);
+        let input =
+            Input::new(self.width).lead(Slot::None).lead_w(SLOT).trail(Slot::None).trail_w(trail_w).trail_pad(UNIT_PAD).alpha_cell(true).bare(bound);
         let frame = input.layout(SLOT, trail_w);
 
         // ── lead: the 16 pt swatch centred in its 24 pt cell (`slot_swatch`) ───────────────

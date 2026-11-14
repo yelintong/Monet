@@ -20,9 +20,7 @@
 //!   每帧注册一次 move / up / down 三个窗口级监听，转发给 `me` 指向视图的 [`WindowDragTarget`]
 //!   实现。拖拽不活跃时三个 handler 按 `phase` / 各自 `active` 判断后立刻 return，几乎零开销。
 
-use gpui::{
-    canvas, IntoElement, MouseDownEvent, MouseMoveEvent, MouseUpEvent, WeakEntity, Window,
-};
+use gpui::{IntoElement, MouseDownEvent, MouseMoveEvent, MouseUpEvent, WeakEntity, Window, canvas};
 
 /// 实现该 trait 的视图即可获得窗口级拖拽派发。三个方法签名与 GPUI 的
 /// `on_mouse_event` 回调一致（`ev` 是事件，`window`/`cx` 用于改写视图状态）。

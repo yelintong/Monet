@@ -108,16 +108,7 @@ pub fn drag_active(h: Handle) -> bool {
 ///
 /// 双击判定不依赖 GPUI 的 `click_count`：拖拽可能让两次 click 落在不同元素 id 上导致它丢失；
 /// 时间 + 窗口坐标更稳，且与两套旧实现逐字一致。
-pub fn begin(
-    h: Handle,
-    sign: f32,
-    start_size: f32,
-    start_pos: f32,
-    min: f32,
-    max: f32,
-    win_x: f32,
-    win_y: f32,
-) -> bool {
+pub fn begin(h: Handle, sign: f32, start_size: f32, start_pos: f32, min: f32, max: f32, win_x: f32, win_y: f32) -> bool {
     let i = idx(h);
     DRAG.with(|slots| {
         let mut hold = HoldDrag::new(0.0);
@@ -126,11 +117,9 @@ pub fn begin(
     });
     let now = Instant::now();
     let double = LAST_PRESS.with(|slots| {
-        slots[i].borrow().is_some_and(|(t, x, y)| {
-            now.duration_since(t) < Duration::from_millis(400)
-                && (x - win_x).abs() < 4.0
-                && (y - win_y).abs() < 4.0
-        })
+        slots[i]
+            .borrow()
+            .is_some_and(|(t, x, y)| now.duration_since(t) < Duration::from_millis(400) && (x - win_x).abs() < 4.0 && (y - win_y).abs() < 4.0)
     });
     LAST_PRESS.with(|slots| *slots[i].borrow_mut() = Some((now, win_x, win_y)));
     double

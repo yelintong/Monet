@@ -106,12 +106,7 @@ impl TypIcon {
 /// 与 `icon::paint` 同式：把字形画成 `size` px 的元素，颜色由 `text_color` 注入。
 pub fn paint(icon: TypIcon, color: impl Into<gpui::Rgba>, size: f32) -> impl IntoElement {
     let rgba: gpui::Rgba = color.into();
-    svg()
-        .path(icon.asset_path())
-        .w(gpui::px(size))
-        .h(gpui::px(size))
-        .flex_none()
-        .text_color(Hsla::from(rgba))
+    svg().path(icon.asset_path()).w(gpui::px(size)).h(gpui::px(size)).flex_none().text_color(Hsla::from(rgba))
 }
 
 #[cfg(test)]

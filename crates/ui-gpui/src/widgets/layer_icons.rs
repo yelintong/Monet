@@ -60,12 +60,7 @@ pub static ASSETS: &[(&str, &[u8])] = &[
 
 /// Draw one layer glyph in a single ink colour, at its native 16 pt size.
 pub fn paint(icon: LayerIcon, color: gpui::Rgba, size: f32) -> impl IntoElement {
-    svg()
-        .path(icon.path())
-        .w(px(size))
-        .h(px(size))
-        .flex_none()
-        .text_color(Hsla::from(color))
+    svg().path(icon.path()).w(px(size)).h(px(size)).flex_none().text_color(Hsla::from(color))
 }
 
 /// AssetSource hook: map `layer/<stem>.svg` onto the embedded bytes.

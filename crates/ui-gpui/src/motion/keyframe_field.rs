@@ -12,18 +12,18 @@
 //! The Motion inspector's keyframe field: one `Input` template with a diamond in its trailing
 //! slot. Any panel that needs "a value plus an action button" can reuse [`KeyframeField`].
 
-use figcraft_i18n::tr_noop;
-use figcraft_i18n::tr;
 use figcraft_doc::anim::motion::AnimProperty;
 use figcraft_doc::{Document, NodeId};
+use figcraft_i18n::tr;
+use figcraft_i18n::tr_noop;
 use gpui::{App, Context, Div, Entity, MouseButton, Render, Window, div, prelude::*};
 
 use crate::motion::{Act, MotionUi, Queue, has_any_key, has_key, value_of};
 use crate::widgets::icon::{Icon, paint as paint_icon};
 use crate::widgets::input::Slot;
+use crate::widgets::input::slot_child;
 use crate::widgets::input::template::{Input, Parts};
 use crate::widgets::input::text_edit::TextEdit;
-use crate::widgets::input::slot_child;
 use crate::widgets::{FIELD_H, SLOT, pt, rgba, tokens};
 
 /// The inspector's fields, in the reference's order. The last three are the reused Design
@@ -154,12 +154,7 @@ impl Render for KeyframeField {
 
         // ONE layout — the `Input` template owns lead/edit/trail widths. No hand-rolled flex row,
         // no computed column widths: the template measures the slots and fills the rest with edit.
-        let input = Input::new(self.width)
-            .lead(self.lead.clone())
-            .trail(trail)
-            .trail_w(SLOT)
-            .numeric(true)
-            .lead_click(false);
+        let input = Input::new(self.width).lead(self.lead.clone()).trail(trail).trail_w(SLOT).numeric(true).lead_click(false);
         let frame = input.measure(window);
         let edit = self.edit.clone().into_any_element();
         let el: Div = input.paint(&frame, Parts { lead: slot_child(&self.lead), edit: Some(edit), trail: None, alpha: None, unit: None });
@@ -180,10 +175,7 @@ pub struct KeyframeFields {
 
 impl KeyframeFields {
     pub fn new(cx: &mut App, width: f32, queue: &Queue) -> Self {
-        let fields = FIELDS
-            .iter()
-            .map(|(p, i, lead)| KeyframeField::build(cx, width, *p, *i, lead, queue.clone()))
-            .collect();
+        let fields = FIELDS.iter().map(|(p, i, lead)| KeyframeField::build(cx, width, *p, *i, lead, queue.clone())).collect();
         Self { fields, last_col: std::cell::Cell::new(width) }
     }
 
@@ -201,10 +193,7 @@ impl KeyframeFields {
     }
 
     pub fn get(&self, property: AnimProperty, idx: usize) -> Option<Entity<KeyframeField>> {
-        FIELDS
-            .iter()
-            .position(|(p, i, _)| *p == property && *i == idx)
-            .and_then(|i| self.fields.get(i).cloned())
+        FIELDS.iter().position(|(p, i, _)| *p == property && *i == idx).and_then(|i| self.fields.get(i).cloned())
     }
 
     /// Push the document's values into every field for this frame.
@@ -213,5 +202,4 @@ impl KeyframeFields {
             f.update(cx, |field, cx| field.sync(cx, doc, ui, node));
         }
     }
-
 }

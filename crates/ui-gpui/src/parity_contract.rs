@@ -221,11 +221,7 @@ mod tests {
     fn every_board_toolbar_command_is_a_real_engine_command() {
         for g in crate::toolbar::BOARD_GROUPS {
             let id = format!("tool.{}", g.tools.first().map(|t| t.0.id()).unwrap_or("move"));
-            assert!(
-                figcraft_engine::find_command(&id).is_some(),
-                "toolbar group `{}` pushes `{id}`, which is not registered in the engine",
-                g.key
-            );
+            assert!(figcraft_engine::find_command(&id).is_some(), "toolbar group `{}` pushes `{id}`, which is not registered in the engine", g.key);
         }
         let last = figcraft_engine::board_templates::TEMPLATES.len();
         for i in [0, last] {

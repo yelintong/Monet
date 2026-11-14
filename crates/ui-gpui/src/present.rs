@@ -9,12 +9,12 @@
 //! 与 egui 的差异：没有独立 Present 窗口 / 设备外壳 / hotspot 高亮 / 缩放档位 / Inspect 侧栏；
 //! 这里是一个覆盖窗口的演示层，保留播放、导航、过渡、退出这几条主行为。
 
-use figcraft_i18n::tr;
 use crate::app::CanvasApp;
 use crate::canvas::render_worker::screen_image;
 use crate::widgets::{Icon, IconButton, pt, rgba, tokens};
-use figcraft_doc::{Document, NodeId};
 use figcraft_doc::proto::{Action, AnimationOp, Transition, Trigger};
+use figcraft_doc::{Document, NodeId};
+use figcraft_i18n::tr;
 use gpui::{Div, ImageSource, MouseButton, SharedString, Stateful, div, img, prelude::*, px};
 use std::collections::BTreeMap;
 use std::time::Instant;
@@ -110,8 +110,7 @@ impl PresentState {
                 }
             }
         }
-        let in_transition = self.from.is_some()
-            && now.duration_since(self.transition_start).as_secs_f64() * 1000.0 < self.transition_ms as f64;
+        let in_transition = self.from.is_some() && now.duration_since(self.transition_start).as_secs_f64() * 1000.0 < self.transition_ms as f64;
         if !in_transition {
             self.from = None;
         }
@@ -253,11 +252,7 @@ fn pick_hotspot(doc: &Document, spots: &[(NodeId, figcraft_geom::Rect)], at: (f6
         if !r.contains(p) {
             return None;
         }
-        doc.node(*id)?
-            .interactions
-            .iter()
-            .position(|it| it.trigger == trigger)
-            .map(|k| (*id, k))
+        doc.node(*id)?.interactions.iter().position(|it| it.trigger == trigger).map(|k| (*id, k))
     })
 }
 
@@ -294,13 +289,7 @@ fn frame_image(doc: &Document, id: NodeId, scale: f64, time_ms: f64) -> Option<(
     let bounds = figcraft_render::export_bounds(&evaluated, id)?;
     let place = Place { scale, img_w: w as f64, img_h: h as f64, page_x0: bounds.x0, page_y0: bounds.y0 };
     let tex = screen_image(&pix, doc.color_profile);
-    Some((
-        img(ImageSource::Render(tex))
-            .w(px(w as f32))
-            .h(px(h as f32))
-            .into_any_element(),
-        place,
-    ))
+    Some((img(ImageSource::Render(tex)).w(px(w as f32)).h(px(h as f32)).into_any_element(), place))
 }
 
 /// 覆盖率层（全屏）：顶栏 + 帧图 +（过渡时）上一帧。
@@ -321,9 +310,7 @@ pub fn render(app: &CanvasApp, state: &PresentState) -> Stateful<Div> {
         stage = stage.child(el);
     } else {
         PLACE.with(|p| p.set(None));
-        stage = stage.child(
-            div().text_size(pt(13.0)).text_color(rgba(t.text_secondary)).child(tr("This frame cannot be rendered")),
-        );
+        stage = stage.child(div().text_size(pt(13.0)).text_color(rgba(t.text_secondary)).child(tr("This frame cannot be rendered")));
     }
     // 过渡：用引擎 `poses()` 的 alpha/offset 摆上一帧（SmartAnimate 的淡入 / 位移）。
     if let Some(from) = state.from {
@@ -337,37 +324,47 @@ pub fn render(app: &CanvasApp, state: &PresentState) -> Stateful<Div> {
     }
 
     let mut bar = div()
-        .flex_none().h(px(BAR_H as f32)).w_full().flex().flex_row().items_center().gap(pt(8.0)).px(pt(16.0))
-        .bg(rgba(t.panel)).border_b_1().border_color(rgba(t.border));
-    let play = IconButton::new(if state.playing { Icon::Check } else { Icon::ChevronRight })
-        .on_click(|_, _, _| ACTION.with(|a| a.set(1)));
+        .flex_none()
+        .h(px(BAR_H as f32))
+        .w_full()
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap(pt(8.0))
+        .px(pt(16.0))
+        .bg(rgba(t.panel))
+        .border_b_1()
+        .border_color(rgba(t.border));
+    let play = IconButton::new(if state.playing { Icon::Check } else { Icon::ChevronRight }).on_click(|_, _, _| ACTION.with(|a| a.set(1)));
     let back = IconButton::new(Icon::ChevronLeft).on_click(|_, _, _| ACTION.with(|a| a.set(2)));
     let exit = IconButton::new(Icon::Close).on_click(|_, _, _| ACTION.with(|a| a.set(3)));
     bar = bar
         .child(play)
         .child(back)
-        .child(div().flex_1().min_w(px(0.0)).text_size(pt(11.0)).font_weight(gpui::FontWeight::SEMIBOLD).text_color(rgba(t.text)).child(SharedString::from(name)))
+        .child(
+            div()
+                .flex_1()
+                .min_w(px(0.0))
+                .text_size(pt(11.0))
+                .font_weight(gpui::FontWeight::SEMIBOLD)
+                .text_color(rgba(t.text))
+                .child(SharedString::from(name)),
+        )
         .child(div().text_size(pt(10.0)).text_color(rgba(t.text_secondary)).child(SharedString::from(format!("{:.2}s", state.time_ms / 1000.0))))
         .child(exit);
 
-    div()
-        .id("present-layer")
-        .absolute().top(px(0.0)).left(px(0.0)).size_full()
-        .flex().flex_col()
-        .bg(gpui::rgb(0x141414))
-        .child(bar)
-        .child(
-            stage.on_mouse_down(MouseButton::Left, |e, window, _cx| {
-                // 记下点击的窗口点与视口尺寸；sync 帧据此反算 page 坐标并做子图层命中。
-                // 顶栏 `h(pt(40))`：本项目的 `pt(p)=px(p)`，即 1pt=1px，故物理高就是 40px。
-                let vp = window.viewport_size();
-                let pos = (f64::from(e.position.x), f64::from(e.position.y));
-                let vp = (f64::from(vp.width), f64::from(vp.height));
-                let bar_h = BAR_H;
-                CLICK_POS.with(|c| c.set(Some((pos, vp, bar_h))));
-                CLICK.with(|c| c.set(true));
-            }),
-        )
+    div().id("present-layer").absolute().top(px(0.0)).left(px(0.0)).size_full().flex().flex_col().bg(gpui::rgb(0x141414)).child(bar).child(
+        stage.on_mouse_down(MouseButton::Left, |e, window, _cx| {
+            // 记下点击的窗口点与视口尺寸；sync 帧据此反算 page 坐标并做子图层命中。
+            // 顶栏 `h(pt(40))`：本项目的 `pt(p)=px(p)`，即 1pt=1px，故物理高就是 40px。
+            let vp = window.viewport_size();
+            let pos = (f64::from(e.position.x), f64::from(e.position.y));
+            let vp = (f64::from(vp.width), f64::from(vp.height));
+            let bar_h = BAR_H;
+            CLICK_POS.with(|c| c.set(Some((pos, vp, bar_h))));
+            CLICK.with(|c| c.set(true));
+        }),
+    )
 }
 
 thread_local! {
@@ -407,7 +404,6 @@ pub fn consume_click(doc: &Document, st: &mut PresentState) -> bool {
     true
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -418,8 +414,8 @@ mod tests {
 
     #[test]
     fn playback_advances_and_wraps_at_the_page_duration() {
-        use figcraft_doc::anim::motion::TimelineSettings;
         use figcraft_doc::NodeKind;
+        use figcraft_doc::anim::motion::TimelineSettings;
         // D3：loop=false 到头停帧，回绕只发生在 looping=true。这里显式设一个循环页。
         let mut d = doc();
         let page = d.first_page().unwrap();
@@ -441,8 +437,8 @@ mod tests {
     /// D3 Control：one-shot（loop=false）播到头停在末帧并退出播放态，不再续帧。
     #[test]
     fn one_shot_stops_at_the_end_and_stops_requesting_frames() {
-        use figcraft_doc::anim::motion::TimelineSettings;
         use figcraft_doc::NodeKind;
+        use figcraft_doc::anim::motion::TimelineSettings;
         let mut d = Document::new("present-one-shot");
         let page = d.first_page().unwrap();
         let frame = d.create(page, NodeKind::Frame, "Card", 0.0, 0.0, 100.0, 100.0).unwrap();
@@ -467,8 +463,8 @@ mod tests {
     /// 页面），不再无条件用整页时长。这是 per-frame 动画组在演示侧的落点。
     #[test]
     fn playback_wraps_at_the_frame_duration_not_the_page() {
-        use figcraft_doc::anim::motion::TimelineSettings;
         use figcraft_doc::NodeKind;
+        use figcraft_doc::anim::motion::TimelineSettings;
         let mut d = Document::new("present-frame");
         let page = d.first_page().unwrap();
         let frame = d.create(page, NodeKind::Frame, "Card", 0.0, 0.0, 100.0, 100.0).unwrap();
@@ -486,8 +482,8 @@ mod tests {
     /// 演示里的组件真的随时间动（而不只是 GIF）。这里验证求值链对当前画框作用域成立。
     #[test]
     fn evaluate_bakes_the_frames_subtree_at_time() {
-        use figcraft_doc::anim::motion::{AnimProperty, AnimValue, Ease};
         use figcraft_doc::NodeKind;
+        use figcraft_doc::anim::motion::{AnimProperty, AnimValue, Ease};
         let mut d = Document::new("present-eval");
         let page = d.first_page().unwrap();
         let frame = d.create(page, NodeKind::Frame, "Card", 0.0, 0.0, 100.0, 100.0).unwrap();
@@ -581,9 +577,7 @@ mod tests {
             easing: Easing::EaseOut,
             delay_ms: 0,
         });
-        d.timelines.insert(frame, figcraft_doc::anim::motion::TimelineSettings {
-            duration_ms: 1000, fps: 60, looping: false,
-        });
+        d.timelines.insert(frame, figcraft_doc::anim::motion::TimelineSettings { duration_ms: 1000, fps: 60, looping: false });
         (d, frame)
     }
 
@@ -620,9 +614,7 @@ mod tests {
         let a = d.create(page, NodeKind::Frame, "A", 0.0, 0.0, 100.0, 100.0).unwrap();
         let b = d.create(page, NodeKind::Frame, "B", 200.0, 0.0, 100.0, 100.0).unwrap();
         for f in [a, b] {
-            d.timelines.insert(f, figcraft_doc::anim::motion::TimelineSettings {
-                duration_ms: 1000, fps: 60, looping: false,
-            });
+            d.timelines.insert(f, figcraft_doc::anim::motion::TimelineSettings { duration_ms: 1000, fps: 60, looping: false });
         }
         d.get_mut(a).unwrap().interactions.push(Interaction {
             trigger: Trigger::OnClick,
@@ -653,9 +645,7 @@ mod tests {
         let a = d.create(page, NodeKind::Frame, "A", 0.0, 0.0, 100.0, 100.0).unwrap();
         let b = d.create(page, NodeKind::Frame, "B", 200.0, 0.0, 100.0, 100.0).unwrap();
         for f in [a, b] {
-            d.timelines.insert(f, figcraft_doc::anim::motion::TimelineSettings {
-                duration_ms: 1000, fps: 60, looping: false,
-            });
+            d.timelines.insert(f, figcraft_doc::anim::motion::TimelineSettings { duration_ms: 1000, fps: 60, looping: false });
         }
         // B 的动画被预先起播、此刻挂起在 600ms。
         let mut p = PresentState::new(a, false);
@@ -718,11 +708,7 @@ mod tests {
         // 两个重叠层都是 hotspot，cover 后画（更上层）。
         d.get_mut(frame).unwrap().interactions.push(it(vec![Action::Back]));
         d.get_mut(btn).unwrap().interactions.push(it(vec![Action::Back]));
-        d.get_mut(cover).unwrap().interactions.push(Interaction {
-            trigger: Trigger::MouseDown,
-            actions: vec![Action::Back],
-            ..it(vec![])
-        });
+        d.get_mut(cover).unwrap().interactions.push(Interaction { trigger: Trigger::MouseDown, actions: vec![Action::Back], ..it(vec![]) });
         let spots = figcraft_engine::proto_run::hotspots(&d, frame);
         // cover 只有 MouseDown（无 OnClick）→ 点击穿透到更下面的 btn（最上层的 OnClick）。
         let hit = pick_hotspot(&d, &spots, (20.0, 20.0), Trigger::OnClick);
@@ -746,9 +732,7 @@ mod tests {
             easing: Easing::EaseOut,
             delay_ms: 0,
         });
-        d.timelines.insert(frame, figcraft_doc::anim::motion::TimelineSettings {
-            duration_ms: 1000, fps: 60, looping: true,
-        });
+        d.timelines.insert(frame, figcraft_doc::anim::motion::TimelineSettings { duration_ms: 1000, fps: 60, looping: true });
         // 1:1 缩放，图片 400×200，page 原点 (0,0)。窗口 1000×800、顶栏 40 → 图片 origin (300, 320)。
         (d, frame, btn, place(1.0, 400.0, 200.0, 0.0, 0.0))
     }

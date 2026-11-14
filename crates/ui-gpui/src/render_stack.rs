@@ -21,13 +21,7 @@ where
     F: FnOnce() -> R + Send,
 {
     std::thread::scope(|s| {
-        std::thread::Builder::new()
-            .name("figcraft-render-once".into())
-            .stack_size(figcraft_render::RENDER_STACK)
-            .spawn_scoped(s, f)
-            .ok()?
-            .join()
-            .ok()
+        std::thread::Builder::new().name("figcraft-render-once".into()).stack_size(figcraft_render::RENDER_STACK).spawn_scoped(s, f).ok()?.join().ok()
     })
 }
 

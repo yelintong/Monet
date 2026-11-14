@@ -23,10 +23,10 @@
 //! 菜单项圆角 5、行高 28（egui `allocate_exact_size(vec2(w, 28.0))`）、文字从行左 28pt 起
 //! （勾选列）。
 
-use figcraft_i18n::tr_noop;
-use figcraft_i18n::tr;
 use crate::widgets::menu::MenuRow;
 use crate::widgets::{AimAction, MenuAim, TEXT_PT, pt, rgba, tokens};
+use figcraft_i18n::tr;
+use figcraft_i18n::tr_noop;
 use gpui::{AnyElement, App, Bounds, MouseButton, Pixels, Point, Window, div, point, prelude::*, px, size};
 use std::cell::Cell;
 use std::rc::Rc;
@@ -35,8 +35,19 @@ use std::time::Instant;
 /// 顶层菜单名——**逐字照 `ui-egui/src/menus.rs::TOP_MENUS`**（顺序、个数都不许改）。
 /// 它们同时是 `figcraft_engine::catalog::MENU` 里 `menu` 路径的第一段。
 /// 注意 `MENU` 里还有一组 `Tools`，那是工具栏的，不属于主菜单。
-pub(crate) const TOP_MENUS: [&'static str; 11] =
-    [tr_noop("File"), tr_noop("Edit"), tr_noop("View"), tr_noop("Object"), tr_noop("Text"), tr_noop("Arrange"), tr_noop("Vector"), tr_noop("Plugins"), tr_noop("Preferences"), tr_noop("Libraries"), tr_noop("Help")];
+pub(crate) const TOP_MENUS: [&'static str; 11] = [
+    tr_noop("File"),
+    tr_noop("Edit"),
+    tr_noop("View"),
+    tr_noop("Object"),
+    tr_noop("Text"),
+    tr_noop("Arrange"),
+    tr_noop("Vector"),
+    tr_noop("Plugins"),
+    tr_noop("Preferences"),
+    tr_noop("Libraries"),
+    tr_noop("Help"),
+];
 
 /// 菜单行高（egui `menus/tree.rs:257` 的 28）。
 const ROW_H: f32 = 28.0;

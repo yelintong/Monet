@@ -6,9 +6,9 @@
 //! 差异（GPUI 侧适配）：文字用 GPUI 文本元素渲染，不能像 egui 那样把已画出的图元整体旋转，
 //! 因此旋转帧的标签仍放在几何算出的角点，但保持水平（记为已知限制）。
 
-use figcraft_i18n::tr;
 use figcraft_doc::{Document, NodeId, NodeKind};
 use figcraft_geom::Point;
+use figcraft_i18n::tr;
 
 use super::geom::*;
 use super::painter::Painter;

@@ -98,11 +98,9 @@ fn shape_path_at(shape: BoardShape, size: f32, origin: Point<Pixels>) -> Option<
             PathEl::MoveTo(p) => b.move_to(at(origin, p.x as f32, p.y as f32)),
             PathEl::LineTo(p) => b.line_to(at(origin, p.x as f32, p.y as f32)),
             PathEl::QuadTo(c, p) => b.curve_to(at(origin, p.x as f32, p.y as f32), at(origin, c.x as f32, c.y as f32)),
-            PathEl::CurveTo(c1, c2, p) => b.cubic_bezier_to(
-                at(origin, p.x as f32, p.y as f32),
-                at(origin, c1.x as f32, c1.y as f32),
-                at(origin, c2.x as f32, c2.y as f32),
-            ),
+            PathEl::CurveTo(c1, c2, p) => {
+                b.cubic_bezier_to(at(origin, p.x as f32, p.y as f32), at(origin, c1.x as f32, c1.y as f32), at(origin, c2.x as f32, c2.y as f32))
+            }
             PathEl::ClosePath => b.close(),
         }
     }
@@ -289,13 +287,7 @@ pub(crate) fn choice_mark(mark: Mark, size: f32, ink: gpui::Rgba) -> AnyElement 
     match mark {
         Mark::Color(c) => {
             let t = tokens();
-            div()
-                .size(px(size))
-                .rounded(px(4.0))
-                .bg(rgba(color_of(c)))
-                .border_1()
-                .border_color(rgba(t.border))
-                .into_any_element()
+            div().size(px(size)).rounded(px(4.0)).bg(rgba(color_of(c))).border_1().border_color(rgba(t.border)).into_any_element()
         }
         Mark::Shape(s) => canvas(
             move |_, _, _| (),
@@ -308,11 +300,8 @@ pub(crate) fn choice_mark(mark: Mark, size: f32, ink: gpui::Rgba) -> AnyElement 
         .size(px(size))
         .into_any_element(),
         Mark::Stamp(s) => {
-            let parts: Vec<(figcraft_geom::BezPath, bool)> = s
-                .mark()
-                .iter()
-                .filter_map(|m| figcraft_geom::BezPath::from_svg(m.d).ok().map(|b| (b, m.filled)))
-                .collect();
+            let parts: Vec<(figcraft_geom::BezPath, bool)> =
+                s.mark().iter().filter_map(|m| figcraft_geom::BezPath::from_svg(m.d).ok().map(|b| (b, m.filled))).collect();
             let disc = color_of(s.color());
             canvas(
                 move |_, _, _| (),
@@ -323,16 +312,8 @@ pub(crate) fn choice_mark(mark: Mark, size: f32, ink: gpui::Rgba) -> AnyElement 
                     let o = point(bounds.origin.x + px(w / 2.0 - r), bounds.origin.y + px(h / 2.0 - r));
                     // A square whose four corners are r **is** the same circle, and it is the one
                     // primitive a filled Bézier circle can't spoil (see `canvas::painter`).
-                    let quad = gpui::fill(
-                        gpui::Bounds { origin: o, size: gpui::size(px(r * 2.0), px(r * 2.0)) },
-                        rgba(disc),
-                    )
-                    .corner_radii(gpui::Corners {
-                        top_left: px(r),
-                        top_right: px(r),
-                        bottom_right: px(r),
-                        bottom_left: px(r),
-                    });
+                    let quad = gpui::fill(gpui::Bounds { origin: o, size: gpui::size(px(r * 2.0), px(r * 2.0)) }, rgba(disc))
+                        .corner_radii(gpui::Corners { top_left: px(r), top_right: px(r), bottom_right: px(r), bottom_left: px(r) });
                     window.paint_quad(quad);
                     outline_marks(&parts, figcraft_doc::STAMP_SIZE, r * 2.0, gpui::rgb(0xffffff), 3.0, o, window);
                 },
@@ -358,18 +339,12 @@ fn outline_marks(
     let s = box_size / size as f32;
     let o = point(origin.x + px(box_size / 2.0 - size as f32 * s / 2.0), origin.y + px(box_size / 2.0 - size as f32 * s / 2.0));
     for (path, filled) in parts {
-        let mut b = if *filled {
-            gpui::PathBuilder::fill()
-        } else {
-            gpui::PathBuilder::stroke(px((width * s).max(0.5)))
-        };
+        let mut b = if *filled { gpui::PathBuilder::fill() } else { gpui::PathBuilder::stroke(px((width * s).max(0.5))) };
         for el in path.elements() {
             match *el {
                 PathEl::MoveTo(p) => b.move_to(at(o, p.x as f32 * s, p.y as f32 * s)),
                 PathEl::LineTo(p) => b.line_to(at(o, p.x as f32 * s, p.y as f32 * s)),
-                PathEl::QuadTo(c, p) => {
-                    b.curve_to(at(o, p.x as f32 * s, p.y as f32 * s), at(o, c.x as f32 * s, c.y as f32 * s))
-                }
+                PathEl::QuadTo(c, p) => b.curve_to(at(o, p.x as f32 * s, p.y as f32 * s), at(o, c.x as f32 * s, c.y as f32 * s)),
                 PathEl::CurveTo(c1, c2, p) => b.cubic_bezier_to(
                     at(o, p.x as f32 * s, p.y as f32 * s),
                     at(o, c1.x as f32 * s, c1.y as f32 * s),
@@ -390,7 +365,16 @@ fn divider(t: &crate::theme::Tokens) -> impl IntoElement {
 
 /// A small toggle button (`cell` square) with `el` inside.
 fn cell_button(id: impl Into<gpui::ElementId>, el: impl IntoElement) -> gpui::Stateful<Div> {
-    div().id(id).size(px(CELL)).flex().items_center().justify_center().rounded(px(5.0)).cursor_pointer().hover(|s| s.bg(rgba(tokens().hover))).child(el)
+    div()
+        .id(id)
+        .size(px(CELL))
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded(px(5.0))
+        .cursor_pointer()
+        .hover(|s| s.bg(rgba(tokens().hover)))
+        .child(el)
 }
 
 /// The bar above a board selection, while nothing is being dragged and the file can be edited.
@@ -534,16 +518,7 @@ pub(crate) fn bar(app: &crate::CanvasApp, cmds: Cmds, shape_open: &Rc<RefCell<bo
     }
 
     let mut root = div().absolute().left(px(x)).top(px(y)).child(
-        div()
-            .h(px(HEIGHT))
-            .flex()
-            .flex_row()
-            .items_center()
-            .rounded(px(10.0))
-            .bg(rgba(t.panel))
-            .border_1()
-            .border_color(rgba(t.border))
-            .child(row),
+        div().h(px(HEIGHT)).flex().flex_row().items_center().rounded(px(10.0)).bg(rgba(t.panel)).border_1().border_color(rgba(t.border)).child(row),
     );
     // The shape grid, above the bar.
     if *shape_open.borrow() {
@@ -570,14 +545,7 @@ pub(crate) fn bar(app: &crate::CanvasApp, cmds: Cmds, shape_open: &Rc<RefCell<bo
                         }),
                 );
             }
-            root = root.child(
-                div()
-                    .absolute()
-                    .bottom(px(HEIGHT + 4.0))
-                    .left(px(0.0))
-                    .w(px(SHAPE_COLUMNS as f32 * (CELL + 2.0) + 12.0))
-                    .child(grid),
-            );
+            root = root.child(div().absolute().bottom(px(HEIGHT + 4.0)).left(px(0.0)).w(px(SHAPE_COLUMNS as f32 * (CELL + 2.0) + 12.0)).child(grid));
         }
     }
     // The connector cap / style popovers, above the bar.

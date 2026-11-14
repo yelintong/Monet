@@ -589,7 +589,8 @@ fn draw_layer(ctx: &Ctx, pix: &mut Pixmap, n: &Node, parent_xf: Affine, depth: u
     let outline = ctx.outline_mode || ctx.outlined.contains(&id);
     if n.is_mask || n.opacity <= 0.0 && n.visible {
         return;
-    }    if !n.visible {
+    }
+    if !n.visible {
         // Outline mode can show hidden layers too (nothing of them is culled: a hidden layer
         // isn't counted in its parent's bounds).
         if outline && ctx.outline.hidden {

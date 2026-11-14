@@ -15,8 +15,8 @@ use std::io::{Cursor, Write};
 
 use base64::Engine as _;
 use figcraft_doc::Document;
-use figcraft_doc::anim::motion::{TimelineSettings, evaluate};
 use figcraft_doc::NodeId;
+use figcraft_doc::anim::motion::{TimelineSettings, evaluate};
 use figcraft_geom::Rect;
 use figcraft_render::{Pixmap, View};
 use image::codecs::gif::{GifEncoder, Repeat};
@@ -25,8 +25,8 @@ use serde_json::{Value, json};
 use zip::ZipWriter;
 use zip::write::SimpleFileOptions;
 
-use crate::{Result, Session, bad};
 use crate::params::*;
+use crate::{Result, Session, bad};
 
 /// Largest side of an exported animation in pixels.
 pub const MAX_SIDE: u32 = 8192;
@@ -93,12 +93,7 @@ impl Animation {
         let page = if is_page { node } else { doc.page_of(node)? };
         let scale = if scale.is_finite() { scale.clamp(0.05, 16.0) } else { 1.0 };
         // Per-frame timeline first: a frame's own entry wins over the page's.
-        let timeline = doc
-            .timelines
-            .get(&node)
-            .or_else(|| doc.timelines.get(&page))
-            .copied()
-            .unwrap_or_default();
+        let timeline = doc.timelines.get(&node).or_else(|| doc.timelines.get(&page)).copied().unwrap_or_default();
         let mut bounds: Option<Rect> = None;
         let samples = 24u32;
         for i in 0..=samples {
@@ -178,8 +173,7 @@ pub fn encode_gif(frames: &[Pixmap], delays_ms: &[u32], repeating: bool) -> Resu
         let mut imgs = Vec::with_capacity(frames.len());
         for (pix, ms) in frames.iter().zip(delays_ms.iter()) {
             let (w, h) = (pix.width(), pix.height());
-            let img = RgbaImage::from_raw(w, h, figcraft_render::to_rgba8(pix))
-                .ok_or_else(|| bad("motion.export", "gif frame size mismatch"))?;
+            let img = RgbaImage::from_raw(w, h, figcraft_render::to_rgba8(pix)).ok_or_else(|| bad("motion.export", "gif frame size mismatch"))?;
             imgs.push(Frame::from_parts(img, 0, 0, Delay::from_numer_denom_ms((*ms).max(10), 1)));
         }
         enc.encode_frames(imgs).map_err(|e| bad("motion.export", format!("gif encode: {e}")))?;
@@ -276,8 +270,11 @@ pub fn run(s: &mut Session, p: &Value) -> Result<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use figcraft_doc::{NodeKind, anim::motion::{AnimProperty, AnimValue, Ease}};
     use figcraft_doc::geom::Vec2;
+    use figcraft_doc::{
+        NodeKind,
+        anim::motion::{AnimProperty, AnimValue, Ease},
+    };
 
     fn animated_doc() -> (Document, NodeId, NodeId) {
         let mut d = Document::new("t");

@@ -8,8 +8,8 @@
 
 #![allow(dead_code)]
 
-use figcraft_i18n::tr;
 use crate::canvas::geom::Color32;
+use figcraft_i18n::tr;
 
 /// Monet 的品牌强调色。Figma `them` 集合给出蓝/绿/黄/粉；绿沿用现有 Monet 身份，故为默认。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

@@ -111,7 +111,9 @@ mod view_state;
 pub use derived::{changed_nodes, normalize};
 pub use doc_state::{DocState, History, HistoryEntry, Interaction, PREVIEW_READ_ONLY, Preedit, TextEdit, VersionPreview};
 pub use error::{EngineError, Result, bad};
-pub use prefs::{Clipboard, DefaultProps, MAX_RECENT_ACTIONS, Prefs, UI_SCALE_MAX, UI_SCALE_MIN, UI_SCALE_SIZES, UiRequest, VariablesLayout, clamp_ui_scale};
+pub use prefs::{
+    Clipboard, DefaultProps, MAX_RECENT_ACTIONS, Prefs, UI_SCALE_MAX, UI_SCALE_MIN, UI_SCALE_SIZES, UiRequest, VariablesLayout, clamp_ui_scale,
+};
 pub use session::Forward;
 pub use view_state::ViewState;
 
@@ -371,9 +373,9 @@ mod html_codegen_tests;
 #[cfg(test)]
 mod huge_stroke_tests;
 #[cfg(test)]
-mod id_params_behaviour_tests;
-#[cfg(test)]
 mod icon_tests;
+#[cfg(test)]
+mod id_params_behaviour_tests;
 #[cfg(test)]
 mod image_crop_tests;
 #[cfg(test)]

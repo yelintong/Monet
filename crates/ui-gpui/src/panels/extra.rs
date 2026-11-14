@@ -24,7 +24,6 @@
 //!   样式 `style.apply` 到当前选区。
 //! - Shortcuts：分组下拉 + 搜索，键位全部来自引擎 `KEYS`/`GESTURES`，一个不手抄。
 
-use figcraft_i18n::tr;
 use crate::app::CanvasApp;
 use crate::panels::{Cmd, Cmds};
 use crate::widgets::{
@@ -35,6 +34,7 @@ use figcraft_doc::NodeKind;
 use figcraft_doc::styles::{Style, StyleKind};
 use figcraft_engine::components::default_variant;
 use figcraft_engine::keymap::{GESTURES, Group, KEYS, Platform};
+use figcraft_i18n::tr;
 use gpui::{
     App, Bounds, ClickEvent, Div, Entity, Hsla, ImageSource, IntoElement, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point,
     RenderImage, SharedString, Window, canvas, div, img, prelude::*, px, rgb,
@@ -769,8 +769,10 @@ fn compare_body(app: &CanvasApp, cmds: &Cmds, state: &ExtraState, id: Option<fig
     // 控制行：Compare with + 并排/叠加切换。
     let opts: Vec<Option<String>> = std::iter::once(None).chain(ds.versions.iter().map(|v| Some(v.id.clone()))).collect();
     let cur_idx = opts.iter().position(|o| o == &chosen).unwrap_or(0);
-    let cur_name =
-        chosen.as_ref().and_then(|v| ds.versions.iter().find(|x| &x.id == v).map(|x| x.name.clone())).unwrap_or_else(|| tr("When marked ready").into());
+    let cur_name = chosen
+        .as_ref()
+        .and_then(|v| ds.versions.iter().find(|x| &x.id == v).map(|x| x.name.clone()))
+        .unwrap_or_else(|| tr("When marked ready").into());
     let vstate = state.dev_version.clone();
     let vwake = cmds.clone();
     let mut version_dd = Dropdown::new(SharedString::from(cur_name), 200.0, None).fill();
@@ -1238,7 +1240,6 @@ fn action_card(icon: Icon, title: &'static str, sub: &'static str, id: &'static 
         .on_mouse_down(MouseButton::Left, move |_e, _, _| c.push(Cmd { id, params: None }))
 }
 
-
 fn note(text: &'static str) -> Div {
     let t = tokens();
     div().w_full().p(pt(16.0)).text_size(pt(11.0)).text_color(rgba(t.text_secondary)).child(SharedString::from(text))
@@ -1313,12 +1314,7 @@ mod tests {
     /// 四块面板的标题 / 变体都能构造（防止 ui_requests 分派时漏分支）。
     #[test]
     fn every_extra_kind_has_a_title() {
-        for k in [
-            ExtraKind::Shortcuts,
-            ExtraKind::Versions,
-            ExtraKind::DevCompare { id: None, version: Some("v1".into()) },
-            ExtraKind::Home,
-        ] {
+        for k in [ExtraKind::Shortcuts, ExtraKind::Versions, ExtraKind::DevCompare { id: None, version: Some("v1".into()) }, ExtraKind::Home] {
             assert!(!k.title().is_empty());
         }
     }

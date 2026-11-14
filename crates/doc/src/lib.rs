@@ -479,11 +479,7 @@ impl Document {
     /// defaults. Export (`Animation::new`) already uses this exact chain; the motion editor reads
     /// through here too, so the timeline it edits is the one export produces.
     pub fn timeline_settings_for(&self, scope: NodeId) -> crate::anim::motion::TimelineSettings {
-        self.timelines
-            .get(&scope)
-            .or_else(|| self.page_of(scope).and_then(|p| self.timelines.get(&p)))
-            .copied()
-            .unwrap_or_default()
+        self.timelines.get(&scope).or_else(|| self.page_of(scope).and_then(|p| self.timelines.get(&p))).copied().unwrap_or_default()
     }
 
     pub fn first_page(&self) -> Option<NodeId> {
@@ -626,7 +622,10 @@ impl Document {
         let Some(n) = self.node(id) else { return Affine::IDENTITY };
         let mut t = n.transform;
         let mut parent = n.parent;
-        while let Some(p) = parent.and_then(|p| self.node(p)).filter(|p| p.kind.bounds_follow_children()) {
+        // A restored snapshot can leave a parent chain that loops (a frame whose parent is its own
+        // child). Walk each node once so the chain ends instead of spinning forever.
+        let mut seen = std::collections::BTreeSet::from([id]);
+        while let Some(p) = parent.and_then(|p| self.node(p)).filter(|p| p.kind.bounds_follow_children() && seen.insert(p.id)) {
             t = p.transform * t;
             parent = p.parent;
         }
@@ -806,11 +805,20 @@ impl Document {
     /// What `n`'s visible children show, together: each mask's run within the mask's bounds.
     fn children_render_bounds(&self, n: &Node, depth: usize) -> Option<Rect> {
         let shown = |i: &NodeId| self.node(*i).is_some_and(|c| c.visible && !c.is_mask);
+        // A file can list the same child more than once (a merge, or a snapshot restored mid-write).
+        // Bounds union idempotently, so visiting each child once is both correct and what keeps a
+        // list doubled at every level from walking 2^depth paths.
+        let mut seen: std::collections::BTreeSet<NodeId> = std::collections::BTreeSet::new();
         let mut out: Option<Rect> = None;
         for run in self.paint_runs(n) {
             let ids = n.children.get(run).unwrap_or(&[]);
             let mask = ids.first().copied().filter(|m| self.node(*m).is_some_and(|c| c.is_mask && c.visible));
-            let r = ids.iter().filter(|i| shown(i)).filter_map(|i| self.render_bounds_at(*i, depth)).reduce(|a, b| a.union(b));
+            let r = ids
+                .iter()
+                .filter(|i| shown(i))
+                .filter(|i| seen.insert(**i))
+                .filter_map(|i| self.render_bounds_at(*i, depth))
+                .reduce(|a, b| a.union(b));
             let r = match mask {
                 Some(m) => r.zip(self.render_bounds_at(m, depth)).map(|(a, b)| a.intersect(b)).filter(|x| x.width() > 0.0 && x.height() > 0.0),
                 None => r,
@@ -889,7 +897,15 @@ impl Document {
             let nid = self.alloc_id();
             map.insert(n.id, nid);
         }
-        self.paste_nodes(&src_nodes, &map, id, parent, index)
+        let new_root = self.paste_nodes(&src_nodes, &map, id, parent, index)?;
+        // A duplicated frame must keep its own per-frame timeline settings instead of silently
+        // inheriting the page's (CodeRabbit). Copy any entry from the source to its copy.
+        for (old, new) in &map {
+            if let Some(t) = self.timelines.get(old).copied() {
+                self.timelines.insert(*new, t);
+            }
+        }
+        Ok(new_root)
     }
 
     /// Deep-copy each of `ids`' subtrees to the end of `parent`, in order, returning the new root
@@ -906,7 +922,15 @@ impl Document {
             }
             trees.push((id, src_nodes));
         }
-        trees.into_iter().map(|(id, src_nodes)| self.paste_nodes(&src_nodes, &map, id, parent, None)).collect()
+        let out: Vec<NodeId> =
+            trees.into_iter().map(|(id, src_nodes)| self.paste_nodes(&src_nodes, &map, id, parent, None)).collect::<DocResult<Vec<NodeId>>>()?;
+        // Same as `duplicate_into`: carry per-frame timeline settings onto the copies.
+        for (old, new) in &map {
+            if let Some(t) = self.timelines.get(old).copied() {
+                self.timelines.insert(*new, t);
+            }
+        }
+        Ok(out)
     }
 
     /// Insert copies of `nodes` (a subtree rooted at `root`, from this or another document) with ids
@@ -1213,7 +1237,16 @@ impl Document {
         // gone or is no longer a valid scope (a plain layer can't own a timeline). Frames are kept
         // alongside pages so per-frame settings survive a load/repair cycle; a frame with no entry
         // of its own falls back to its page's settings at read time.
-        self.timelines.retain(|k, _| self.nodes.get(k).is_some_and(|n| n.is_page() || n.kind.is_frame_like()));
+        // Timeline settings belong to a page, a frame, or a **standalone top-level node**: the
+        // motion editor's `scope_of` returns a node outside any frame as its own scope, so its
+        // settings must survive a load/repair cycle instead of being dropped (CodeRabbit).
+        self.timelines.retain(|k, _| {
+            self.nodes.get(k).is_some_and(|n| {
+                n.is_page()
+                    || n.kind.is_frame_like()
+                    || n.parent.is_some_and(|p| self.nodes.get(&p).is_some_and(|pn| pn.is_page()))
+            })
+        });
         for (k, n) in self.nodes.iter() {
             if n.is_page() && !self.pages.contains(k) && Some(*k) != store {
                 self.pages.push(*k);
@@ -1307,7 +1340,11 @@ impl Document {
 fn remap_action(a: &mut proto::Action, map: &BTreeMap<NodeId, NodeId>) {
     use proto::Action::*;
     match a {
-        Navigate { dest, .. } | ScrollTo { dest, .. } | OpenOverlay { dest, .. } | SwapOverlay { dest } | ChangeTo { dest }
+        Navigate { dest, .. }
+        | ScrollTo { dest, .. }
+        | OpenOverlay { dest, .. }
+        | SwapOverlay { dest }
+        | ChangeTo { dest }
         | Animation { dest, .. } => {
             if let Some(m) = map.get(dest) {
                 *dest = *m;

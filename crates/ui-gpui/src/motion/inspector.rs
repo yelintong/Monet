@@ -10,10 +10,10 @@
 //! Transform, Layout, Appearance — every animatable value is a [`KeyframeField`] (one
 //! `Input` template whose trailing slot carries the add/remove-keyframe diamond).
 
-use figcraft_i18n::tr;
 use figcraft_doc::anim::motion::ClipKind;
 use figcraft_doc::anim::motion::PresetGroup;
 use figcraft_doc::{Document, NodeId};
+use figcraft_i18n::tr;
 use gpui::{AnyElement, App, Div, MouseButton, SharedString, Stateful, Window, div, prelude::*, px};
 
 use crate::motion::keyframe_field::{FIELDS, KeyframeField, KeyframeFields};
@@ -63,9 +63,7 @@ pub fn panel(
     // user kept pointing at; the card is the one place that edits it now.
 
     let Some(layer) = selected_layer(doc, ui, selection) else {
-        body = body.child(
-            div().px(pt(16.0)).py(pt(12.0)).text_size(pt(11.0)).text_color(rgba(t.text_secondary)).child(tr("Select a layer")),
-        );
+        body = body.child(div().px(pt(16.0)).py(pt(12.0)).text_size(pt(11.0)).text_color(rgba(t.text_secondary)).child(tr("Select a layer")));
         return wrap(body);
     };
 
@@ -90,15 +88,14 @@ pub fn panel(
         });
         plus_root.update(cx, |cv, cx| cv.open_menu(anchor, None, rows, on_pick, cx));
     });
-    let mut anim_section = panel_section(tr("Animation"))
-        .header_trail(
-            div()
-                .flex()
-                .flex_row()
-                .gap(pt(4.0))
-                .child(IconButton::new(Icon::ComponentSet).active(presets_open).on_click(move |_, _, _| q.push(Act::SetPresetsOpen(!presets_open))))
-                .child(plus),
-        );
+    let mut anim_section = panel_section(tr("Animation")).header_trail(
+        div()
+            .flex()
+            .flex_row()
+            .gap(pt(4.0))
+            .child(IconButton::new(Icon::ComponentSet).active(presets_open).on_click(move |_, _, _| q.push(Act::SetPresetsOpen(!presets_open))))
+            .child(plus),
+    );
 
     // clip 行**就是统一网格的行**（egui `row(ui, ROW_H)`）：每条一个 `field_row_full_trailing`，
     // 和 Transform/Layout 各行共用 `1fr | 1fr | 24×2` 列轨道。这样左右 PAD=16、行高 ROW_H=32、
@@ -128,14 +125,10 @@ pub fn panel(
 
     // ── Layout: W | H + proportions lock as the trailing 24 pt control ─────────
     let locked = doc.node(layer).is_some_and(|n| n.constrain_proportions);
-    body = body.child(
-        panel_section(tr("Layout"))
-            .child(sublabel_row2(tr("Width"), tr("Height")))
-            .child(field_row(
-                vec![field(fields, 5).into_any_element(), field(fields, 6).into_any_element()],
-                vec![IconButton::new(if locked { Icon::LinkOn } else { Icon::LinkOff }).active(locked).into_any_element()],
-            )),
-    );
+    body = body.child(panel_section(tr("Layout")).child(sublabel_row2(tr("Width"), tr("Height"))).child(field_row(
+        vec![field(fields, 5).into_any_element(), field(fields, 6).into_any_element()],
+        vec![IconButton::new(if locked { Icon::LinkOn } else { Icon::LinkOff }).active(locked).into_any_element()],
+    )));
     body = body.child(separator());
 
     // ── Appearance ────────────────────────────────────────────────────────────
@@ -216,10 +209,10 @@ fn clips_rows(doc: &Document, ui: &MotionUi, queue: &Queue, layer: NodeId) -> Ve
                 q.push(Act::OpenClipPopover(layer, c.id));
             })
             .child(div().flex_1().min_w(px(0.0)).text_size(pt(11.0)).text_color(rgba(t.text)).child(label));
-        let eye = IconButton::new(if c.visible { Icon::Eye } else { Icon::EyeOff }).size(20.0)
+        let eye = IconButton::new(if c.visible { Icon::Eye } else { Icon::EyeOff })
+            .size(20.0)
             .on_click(move |_, _, _| q2.push(Act::ToggleClipVisible(layer, c.id)));
-        let minus = IconButton::new(Icon::Minus).size(20.0)
-            .on_click(move |_, _, _| q3.push(Act::DeleteClip(layer, c.id)));
+        let minus = IconButton::new(Icon::Minus).size(20.0).on_click(move |_, _, _| q3.push(Act::DeleteClip(layer, c.id)));
         rows.push(field_row_full_trailing(block, vec![eye, minus]));
     }
     rows

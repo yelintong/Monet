@@ -37,7 +37,11 @@ impl Session {
     /// What a marquee starting at page point `p` selects inside: the top-level frame it starts in
     /// (its children), or the focus view's frame.
     pub(crate) fn marquee_within(&self, p: Point) -> Result<Option<NodeId>> {
-        let (doc, page) = (self.doc()?, self.page()?);
+        // 命中几何跟随「画面上显示的那份」文档（动画模式的 `display_doc`），与 `Session::hit`
+        // 一致；否则看得见的画框（预览求值后位置不同）会框不中（CodeRabbit）。
+        let display = self.display_doc.clone();
+        let doc = display.as_deref().unwrap_or(self.doc()?);
+        let page = self.page()?;
         let within = frame_at(doc, page, p, &[]).filter(|f| doc.node(*f).is_some_and(|n| n.parent == Some(page)));
         let within = within.filter(|f| doc.world_bounds(*f).is_some_and(|b| b.contains(p)));
         Ok(self.ds()?.focused().or(within))
@@ -46,7 +50,10 @@ impl Session {
     /// The selection a marquee over page rect `r` makes from `base` (what was selected before):
     /// the layers it touches (`deep`: nested ones too); `additive` (Shift) toggles them.
     pub(crate) fn marquee_selection(&self, r: Rect, within: Option<NodeId>, deep: bool, base: &[NodeId], additive: bool) -> Result<Vec<NodeId>> {
-        let (doc, page) = (self.doc()?, self.page()?);
+        // 几何查询用显示文档（`display_doc`），与 `Session::hit` 一致；返回的 id 仍写回源 session。
+        let display = self.display_doc.clone();
+        let doc = display.as_deref().unwrap_or(self.doc()?);
+        let page = self.page()?;
         let mut hits =
             if deep { figcraft_doc::geometry::marquee_deep(doc, page, r) } else { figcraft_doc::geometry::marquee_select(doc, page, r, within) };
         if let Some(f) = self.ds()?.focused() {
@@ -246,8 +253,7 @@ impl Session {
                 // 画框本体的悬停只在「按下去真能选中它」时才算：顶层非自动布局 frame 的本体
                 // 和画布一样（按下是框选），悬它显示描边会骗人——那种框只认标题。
                 hover = label_at(&doc, page, &self.tool.labels, ev.p()).or_else(|| {
-                    leaf.filter(|l| ev.cmd || !super::frame_background(&doc, page, *l))
-                        .map(|leaf| select_target(&doc, leaf, &sel, ev.cmd))
+                    leaf.filter(|l| ev.cmd || !super::frame_background(&doc, page, *l)).map(|leaf| select_target(&doc, leaf, &sel, ev.cmd))
                 });
                 // Alt over a selected layer: a drag from here duplicates it.
                 if ev.alt && !self.tool.dev_mode && tool == ToolId::Move && hover.is_some_and(|h| sel.contains(&h) && !locked_in(&doc, h)) {

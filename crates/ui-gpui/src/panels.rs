@@ -5,8 +5,6 @@
 //! are introduced. The right panel restores the egui Design panel's section order; sections whose
 //! controls have not been ported yet are shown as greyed (`Dim`) headers with an empty body.
 
-use figcraft_i18n::tr_noop;
-use figcraft_i18n::tr;
 use crate::CanvasView;
 use crate::canvas::geom::Color32;
 use crate::widgets::menu::MenuRow;
@@ -15,14 +13,16 @@ use crate::widgets::{
     sublabel_row, sublabel_row2, tokens,
 };
 use figcraft_color::BlendMode;
+use figcraft_i18n::tr;
+use figcraft_i18n::tr_noop;
 use gpui::{App, Div, Entity, SharedString, Stateful, Window, div, prelude::*, px};
 use serde_json::Value;
 use std::rc::Rc;
 
-/// 右栏高级设置子模块（描边/效果等的高级弹层占位）。源码抄自 `ui-egui::panels::right`，见各文件。
-pub(crate) mod right;
 /// 四块整面板（Shortcuts / Versions / Dev compare / Assets），由引擎 `ui_requests` 打开的浮层。
 pub(crate) mod extra;
+/// 右栏高级设置子模块（描边/效果等的高级弹层占位）。源码抄自 `ui-egui::panels::right`，见各文件。
+pub(crate) mod right;
 
 /// A field's width before the panel reports its own (`col_width(280)`).
 pub(crate) const DEFAULT_COL: f32 = 108.0;
@@ -433,11 +433,7 @@ pub(crate) mod visibility {
     /// * 全是 Text → 四个 Text 专属按钮，普通动作一个都不画（`return`）。
     /// * 其余 → 普通图层动作；单选形状额外多一个 Edit object。
     pub fn header_actions(s: &HeaderSel) -> HeaderActions {
-        let base = HeaderActions {
-            type_menu: kind_menu(s.is_frame, s.is_group),
-            swap_orientation: s.is_frame,
-            ..HeaderActions::default()
-        };
+        let base = HeaderActions { type_menu: kind_menu(s.is_frame, s.is_group), swap_orientation: s.is_frame, ..HeaderActions::default() };
         if s.points_selected || s.is_component {
             return base;
         }
@@ -529,11 +525,15 @@ pub(crate) struct RightFields {
     selection_colors_hover: std::rc::Rc<std::cell::RefCell<bool>>,
     /// 右栏当前标签：0 = Design，1 = Prototype，2 = Inspect（egui `app.ui.right_tab`）。纯 UI 状态，不进文档。
     right_tab: std::rc::Rc<std::cell::RefCell<u8>>,
-    /// Local styles 文件夹：正在重命名的文件夹路径（egui `folder_rename_id` 临时值）；`None` = 没在改名。
-    /// 复用同一个通用 `TextField`（`local_style_rename_input`）做内联重命名输入框。
-    local_style_renaming: std::rc::Rc<std::cell::RefCell<Option<String>>>,
+    /// Local styles 文件夹：正在重命名的文件夹（egui `folder_rename_id` 临时值）；`None` = 没在改名。
+    /// 键是 **(样式类型, 文件夹路径)**：text 与 paint 可以各有 `Brand/Colors`，只按 path 会让
+    /// 两行同时进入编辑态、共用同一个输入框。复用通用 `TextField`（`local_style_rename_input`）。
+    local_style_renaming: std::rc::Rc<std::cell::RefCell<Option<(String, String)>>>,
     /// Local styles 文件夹内联重命名输入框（egui `rename_field`）；提交即 `style.renameFolder`。
     local_style_rename_input: Entity<TextField>,
+    /// 重命名输入框是否**曾经**进入过编辑态。用来区分「刚打开、焦点还没生效」与「编辑真的
+    /// 结束了」：只有后者才清 `local_style_renaming`（否则会在打开的第一帧就自己关掉）。
+    local_style_rename_seen: std::rc::Rc<std::cell::RefCell<bool>>,
     /// Local styles 文件夹的折叠态（egui `folded_id`）：键为 `"<type>/<folder path>"`。
     local_style_folded: std::rc::Rc<std::cell::RefCell<std::collections::HashSet<String>>>,
     /// A3: the Comments panel's local state (filter / sort / search / open thread).
@@ -630,14 +630,7 @@ pub(crate) struct RightFields {
 
 /// Like [`nf_set`], but for line-height / letter-spacing style fields whose value may be `Auto`
 /// (an empty edit → `"AUTO"`) or a percent (`"120%"`). Routes through the command channel.
-fn nf_spacing(
-    cx: &mut App,
-    lead: &'static str,
-    step: f64,
-    key: &'static str,
-    cmds: &Cmds,
-    wake: &std::rc::Rc<dyn Fn()>,
-) -> Entity<TextField> {
+fn nf_spacing(cx: &mut App, lead: &'static str, step: f64, key: &'static str, cmds: &Cmds, wake: &std::rc::Rc<dyn Fn()>) -> Entity<TextField> {
     let cmds = cmds.clone();
     let wake = wake.clone();
     TextField::build(cx, DEFAULT_COL, move |tf, _| {
@@ -648,11 +641,7 @@ fn nf_spacing(
             let val = if t.is_empty() {
                 serde_json::json!("AUTO")
             } else if let Ok(v) = t.trim_end_matches('%').trim().parse::<f64>() {
-                if t.ends_with('%') {
-                    serde_json::json!(format!("{}%", v))
-                } else {
-                    serde_json::json!(v)
-                }
+                if t.ends_with('%') { serde_json::json!(format!("{}%", v)) } else { serde_json::json!(v) }
             } else {
                 return;
             };
@@ -791,10 +780,7 @@ fn nf_scale(
                 return;
             }
             let factor = factor.clamp(0.01, 100.0);
-            cmds.push(Cmd {
-                id: "transform.scale",
-                params: Some(serde_json::json!({ "factor": factor, "cx": c.cx, "cy": c.cy })),
-            });
+            cmds.push(Cmd { id: "transform.scale", params: Some(serde_json::json!({ "factor": factor, "cx": c.cx, "cy": c.cy })) });
         });
     })
 }
@@ -910,7 +896,7 @@ impl RightFields {
             }));
         }
         let scale_ctx = std::rc::Rc::new(std::cell::RefCell::new(crate::panels::right::data::ScaleData::default()));
-        let local_style_renaming = std::rc::Rc::new(std::cell::RefCell::new(None::<String>));
+        let local_style_renaming = std::rc::Rc::new(std::cell::RefCell::new(None::<(String, String)>));
         let mut fields = Self {
             x: n(cx, "X", 0.0, "", 1.0, Some(Prop::X)),
             y: n(cx, "Y", 0.0, "", 1.0, Some(Prop::Y)),
@@ -940,17 +926,20 @@ impl RightFields {
             selection_colors_hover: std::rc::Rc::new(std::cell::RefCell::new(false)),
             right_tab: std::rc::Rc::new(std::cell::RefCell::new(0u8)),
             local_style_renaming: local_style_renaming.clone(),
+            local_style_rename_seen: std::rc::Rc::new(std::cell::RefCell::new(false)),
             local_style_rename_input: TextField::build(cx, DEFAULT_COL, {
                 let renaming = local_style_renaming.clone();
                 let cmds = cmds.clone();
                 move |tf, _| {
                     tf.set_on_commit(move |text: &str, _window, _cx| {
-                        let Some(folder) = renaming.borrow_mut().take() else { return };
+                        // 状态是 (类型, 路径)：类型必须传给引擎，否则同名文件夹下
+                        // 其它类型的样式会被一起改名。
+                        let Some((ty, folder)) = renaming.borrow_mut().take() else { return };
                         let name = text.trim().to_string();
                         if name.is_empty() || name == folder {
                             return;
                         }
-                        cmds.push(Cmd { id: "style.renameFolder", params: Some(serde_json::json!({ "folder": folder, "name": name })) });
+                        cmds.push(Cmd { id: "style.renameFolder", params: Some(serde_json::json!({ "folder": folder, "name": name, "type": ty })) });
                     });
                 }
             }),
@@ -1176,12 +1165,7 @@ impl RightFields {
     ) -> Entity<TextField> {
         let slot = slot.min(WGSL_PARAM_FIELDS - 1);
         if let Some(c) = self.wgsl_param_ctx.borrow_mut().get_mut(slot) {
-            *c = Some(WgslParamEdit {
-                binding: binding.clone(),
-                field: spec.field.clone(),
-                min: spec.min,
-                max: spec.max,
-            });
+            *c = Some(WgslParamEdit { binding: binding.clone(), field: spec.field.clone(), min: spec.min, max: spec.max });
         }
         if let Some(e) = self.wgsl_param_fields.get(slot) {
             let shown = format!("{}", value);
@@ -1650,10 +1634,7 @@ mod rail_active_tests {
             for vo in [false, true] {
                 for vf in [false, true] {
                     let (f, a, v) = rail_active(lt, vo, vf);
-                    assert!(
-                        (f as u8) + (a as u8) + (v as u8) <= 1,
-                        "left_tab={lt} open={vo} full={vf} -> file={f} assets={a} vars={v}"
-                    );
+                    assert!((f as u8) + (a as u8) + (v as u8) <= 1, "left_tab={lt} open={vo} full={vf} -> file={f} assets={a} vars={v}");
                 }
             }
         }
@@ -1722,33 +1703,12 @@ pub(crate) fn left_rail(
         // The product mark fills more of its 32 pt cell than a regular glyph does.
         .child(IconButton::new(Icon::Logo).id("rail-menu").size(RAIL_BTN).glyph(24.0).on_click(on_menu))
         // ② 16 pt 分隔带，中间一条 1 px 横线（egui：`y += 16.0` 之前画 `line_segment`）。
-        .child(
-            div()
-                .flex_none()
-                .h(pt(16.0))
-                .w_full()
-                .flex()
-                .items_center()
-                .justify_center()
-                .child(div().w(pt(16.0)).h(pt(1.0)).bg(rgba(t.border))),
-        )
+        .child(div().flex_none().h(pt(16.0)).w_full().flex().items_center().justify_center().child(div().w(pt(16.0)).h(pt(1.0)).bg(rgba(t.border))))
         // ③ File / Assets / Variables：每项 56 pt —— 32×32 图标格 + 下面 9 pt 的文字标签。
         //    egui 的 rail 是**带文字**的，之前这里只有图标（而且三个都是占位圆点）。
-        .child(rail_item(
-            "rail-file",
-            Icon::Page,
-            tr("File"),
-            file_active,
-            Some(Box::new(on_file)),
-        ))
+        .child(rail_item("rail-file", Icon::Page, tr("File"), file_active, Some(Box::new(on_file))))
         .child(rail_item("rail-assets", Icon::Assets, tr("Assets"), assets_active, Some(Box::new(on_assets))))
-        .child(rail_item(
-            "rail-variables",
-            Icon::Variables,
-            tr("Variables"),
-            variables_tab,
-            Some(Box::new(on_variables)),
-        ))
+        .child(rail_item("rail-variables", Icon::Variables, tr("Variables"), variables_tab, Some(Box::new(on_variables))))
 }
 
 /// 竖条的一项：56 pt 高的整列可点，32×32 的图标格（悬停/选中底色）+ 下面 9 pt 的文字
@@ -1834,10 +1794,10 @@ pub(crate) fn right_panel(
         div()
             .id("right-panel")
             .flex_none()
-        .h_full()
-        .flex()
-        .flex_col()
-        .bg(rgba(t.panel))
+            .h_full()
+            .flex()
+            .flex_col()
+            .bg(rgba(t.panel))
             // 48 pt 顶栏（头像 / Present / Share）：egui `right.rs:103-127` 画在 tabs 之上，
             // 且 Motion 模式下同样保留。以前只有 lib.rs 的 Motion 分支画了它，普通右栏漏掉，
             // 于是退出 Motion 后整条头像/分享栏就「消失」了。这里补回，与 Motion 分支同序。
@@ -1875,7 +1835,7 @@ pub(crate) fn right_panel(
     if sel.empty {
         // `view_bar` 已有下边框，这里不再补一条线。
         // egui `page_section` 是三节（Page / Local variables / Local styles），节间各一条线。
-        let secs = right::sections::page(f, data, row_w, &mut n, cx);
+        let secs = right::sections::page(f, data, row_w, &mut n, window, cx);
         let last = secs.len().saturating_sub(1);
         for (i, sec) in secs.into_iter().enumerate() {
             body = body.child(sec);
@@ -1943,8 +1903,14 @@ pub(crate) fn right_panel(
                     cmds.push(Cmd { id: NAMES[(base + i).min(5)], params: None });
                 })
             };
-            let h = bar(&[(Icon::AlignLeft, tr("Align left")), (Icon::AlignHCenter, tr("Align horizontal centers")), (Icon::AlignRight, tr("Align right"))], 0);
-            let v = bar(&[(Icon::AlignTop, tr("Align top")), (Icon::AlignVCenter, tr("Align vertical centers")), (Icon::AlignBottom, tr("Align bottom"))], 3);
+            let h = bar(
+                &[(Icon::AlignLeft, tr("Align left")), (Icon::AlignHCenter, tr("Align horizontal centers")), (Icon::AlignRight, tr("Align right"))],
+                0,
+            );
+            let v = bar(
+                &[(Icon::AlignTop, tr("Align top")), (Icon::AlignVCenter, tr("Align vertical centers")), (Icon::AlignBottom, tr("Align bottom"))],
+                3,
+            );
             // egui `right.rs::position_fields`: `if sel.len() > 2 { DistributeH }`。
             // 少于 3 个图层时这个按钮**根本不画**，不是画出来再禁用。此前这里无条件显示，
             // 是「按钮什么时候显示 / 什么时候隐藏没接好」最直白的一处。
@@ -1971,15 +1937,12 @@ pub(crate) fn right_panel(
             // `rotate_row`: the three 24 pt cells under "Rotation" (`position_fields`'s
             // `widgets::segmented`): Rotate 90° / Flip H / Flip V — each a `object.*` command.
             let rot_cmds = f.cmds.clone();
-            let rotate = Segmented::icons(&[
-                (Icon::Rotate, tr("Rotate 90° right")),
-                (Icon::FlipH, tr("Flip horizontal")),
-                (Icon::FlipV, tr("Flip vertical")),
-            ])
-            .on_pick(move |i: usize, _w: &mut Window, _cx: &mut App| {
-                const C: [&str; 3] = ["object.rotateRight", "object.flipH", "object.flipV"];
-                rot_cmds.push(Cmd { id: C[i.min(2)], params: None });
-            });
+            let rotate =
+                Segmented::icons(&[(Icon::Rotate, tr("Rotate 90° right")), (Icon::FlipH, tr("Flip horizontal")), (Icon::FlipV, tr("Flip vertical"))])
+                    .on_pick(move |i: usize, _w: &mut Window, _cx: &mut App| {
+                        const C: [&str; 3] = ["object.rotateRight", "object.flipH", "object.flipV"];
+                        rot_cmds.push(Cmd { id: C[i.min(2)], params: None });
+                    });
             let mut pos_sec = PanelSection::new(tr("Position"));
             if let Some(b) = distribute_btn {
                 pos_sec = pos_sec.header_trail(b);
@@ -2027,15 +1990,13 @@ pub(crate) fn right_panel(
                     (tr("Center").into(), "node.set", serde_json::json!({ "props": { "constraints": { "vertical": "center" } } })),
                     (tr("Scale").into(), "node.set", serde_json::json!({ "props": { "constraints": { "vertical": "scale" } } })),
                 ];
-                pos_sec
-                    .child(sublabel_row(tr("Constraints")))
-                    .child(field_row(
-                        vec![
-                            right::sections::pick_dropdown(f, pretty_h(data.constraints_h), col, h_opts),
-                            right::sections::pick_dropdown(f, pretty_v(data.constraints_v), col, v_opts),
-                        ],
-                        Vec::<IconButton>::new(),
-                    ))
+                pos_sec.child(sublabel_row(tr("Constraints"))).child(field_row(
+                    vec![
+                        right::sections::pick_dropdown(f, pretty_h(data.constraints_h), col, h_opts),
+                        right::sections::pick_dropdown(f, pretty_v(data.constraints_v), col, v_opts),
+                    ],
+                    Vec::<IconButton>::new(),
+                ))
             } else {
                 pos_sec
             };
@@ -2155,73 +2116,73 @@ pub(crate) fn auto_layout_section(
             LayoutDir::None => None,
         };
         let dir_cmds = f.cmds.clone();
-        let dir = Segmented::icons(&[
-            (Icon::AlignVCenter, tr("Vertical")),
-            (Icon::AlignHCenter, tr("Horizontal")),
-            (Icon::ViewGrid, tr("Grid")),
-        ])
-        .active(active)
-        .on_pick(move |i: usize, _w: &mut Window, _cx: &mut App| {
-            let m = match i {
-                0 => "vertical",
-                1 => "horizontal",
-                2 => "grid",
-                _ => return,
-            };
-            dir_cmds.push(Cmd { id: "node.set", params: Some(serde_json::json!({ "props": { "layout": m } })) });
-        });
+        let dir = Segmented::icons(&[(Icon::AlignVCenter, tr("Vertical")), (Icon::AlignHCenter, tr("Horizontal")), (Icon::ViewGrid, tr("Grid"))])
+            .active(active)
+            .on_pick(move |i: usize, _w: &mut Window, _cx: &mut App| {
+                let m = match i {
+                    0 => "vertical",
+                    1 => "horizontal",
+                    2 => "grid",
+                    _ => return,
+                };
+                dir_cmds.push(Cmd { id: "node.set", params: Some(serde_json::json!({ "props": { "layout": m } })) });
+            });
         sec = sec.child(sublabel_row(tr("Layout"))).child(field_row_full(dir));
     }
 
     if with_dimensions {
-    // ② Dimensions（egui `dimensions`：**无条件**显示）。
-    let dims = data.dimensions.clone().unwrap_or_default();
-    right::sections::dim_trail_menu(f, cx, &f.w, true, &dims);
-    right::sections::dim_trail_menu(f, cx, &f.h, false, &dims);
-    let lock_cmds = f.cmds.clone();
-    let lock_on = dims.constrain;
-    let constrain =
-        IconButton::new(if lock_on { Icon::LinkOn } else { Icon::LinkOff }).size(24.0).active(lock_on).on_click(move |_e, _w, _cx| {
-            lock_cmds.push(Cmd { id: "node.set", params: Some(serde_json::json!({ "props": { "constrainProportions": !lock_on } })) });
-        });
-    sec = sec.child(sublabel_row(tr("Dimensions"))).child(field_row(vec![f.w.clone(), f.h.clone()], vec![constrain]));
-    // 选中文字时的「调整大小」三格（用户 2026-11-11：从 Typography 段移到 Layout 段）。
-    // 值仍是 `textAutoResize`，与 Typography 之前那个下拉同一条命令。
-    if let Some(t) = data.text.as_ref() {
-        let active = match t.auto_resize {
-            Some("widthAndHeight") => Some(0usize),
-            Some("height") => Some(1),
-            Some("none") => Some(2),
-            _ => None,
-        };
-        let cmds = f.cmds.clone();
-        let seg = crate::widgets::segmented::Segmented::new(vec![
-            crate::widgets::segmented::SegItem::text(tr("Auto width")),
-            crate::widgets::segmented::SegItem::text(tr("Auto height")),
-            crate::widgets::segmented::SegItem::text(tr("Fixed")),
-        ])
-        .active(active)
-        .on_pick(move |i: usize, _w: &mut Window, _cx: &mut App| {
-            let v = match i { 0 => "widthAndHeight", 1 => "height", 2 => "none", _ => return };
-            cmds.push(Cmd { id: "node.set", params: Some(serde_json::json!({ "props": { "textAutoResize": v } })) });
-        });
-        sec = sec.child(sublabel_row(tr("Resizing"))).child(field_row_full(seg));
-    }
-    // Min/Max：仅当该轴已设值、或刚从 sizing 菜单 Add 时才显示（egui `limit_row_v`）。
-    let lo = *f.limit_open.borrow();
-    let any_min = dims.min_w.is_some() || dims.min_h.is_some() || lo[0] || lo[2];
-    let any_max = dims.max_w.is_some() || dims.max_h.is_some() || lo[1] || lo[3];
-    if any_max {
-        let left = if dims.max_w.is_some() || lo[1] { f.dim_max_w.clone().into_any_element() } else { div().into_any_element() };
-        let right = if dims.max_h.is_some() || lo[3] { f.dim_max_h.clone().into_any_element() } else { div().into_any_element() };
-        sec = sec.child(sublabel_row2(tr("Max W"), tr("Max H"))).child(field_row(vec![left, right], Vec::<IconButton>::new()));
-    }
-    if any_min {
-        let left = if dims.min_w.is_some() || lo[0] { f.dim_min_w.clone().into_any_element() } else { div().into_any_element() };
-        let right = if dims.min_h.is_some() || lo[2] { f.dim_min_h.clone().into_any_element() } else { div().into_any_element() };
-        sec = sec.child(sublabel_row2(tr("Min W"), tr("Min H"))).child(field_row(vec![left, right], Vec::<IconButton>::new()));
-    }
-
+        // ② Dimensions（egui `dimensions`：**无条件**显示）。
+        let dims = data.dimensions.clone().unwrap_or_default();
+        right::sections::dim_trail_menu(f, cx, &f.w, true, &dims);
+        right::sections::dim_trail_menu(f, cx, &f.h, false, &dims);
+        let lock_cmds = f.cmds.clone();
+        let lock_on = dims.constrain;
+        let constrain =
+            IconButton::new(if lock_on { Icon::LinkOn } else { Icon::LinkOff }).size(24.0).active(lock_on).on_click(move |_e, _w, _cx| {
+                lock_cmds.push(Cmd { id: "node.set", params: Some(serde_json::json!({ "props": { "constrainProportions": !lock_on } })) });
+            });
+        sec = sec.child(sublabel_row(tr("Dimensions"))).child(field_row(vec![f.w.clone(), f.h.clone()], vec![constrain]));
+        // 选中文字时的「调整大小」三格（用户 2026-11-11：从 Typography 段移到 Layout 段）。
+        // 值仍是 `textAutoResize`，与 Typography 之前那个下拉同一条命令。
+        if let Some(t) = data.text.as_ref() {
+            let active = match t.auto_resize {
+                Some("widthAndHeight") => Some(0usize),
+                Some("height") => Some(1),
+                Some("none") => Some(2),
+                _ => None,
+            };
+            let cmds = f.cmds.clone();
+            let seg = crate::widgets::segmented::Segmented::new(vec![
+                crate::widgets::segmented::SegItem::text(tr("Auto width")),
+                crate::widgets::segmented::SegItem::text(tr("Auto height")),
+                crate::widgets::segmented::SegItem::text(tr("Fixed")),
+            ])
+            .active(active)
+            .on_pick(move |i: usize, _w: &mut Window, _cx: &mut App| {
+                let v = match i {
+                    0 => "widthAndHeight",
+                    1 => "height",
+                    2 => "none",
+                    _ => return,
+                };
+                cmds.push(Cmd { id: "node.set", params: Some(serde_json::json!({ "props": { "textAutoResize": v } })) });
+            });
+            sec = sec.child(sublabel_row(tr("Resizing"))).child(field_row_full(seg));
+        }
+        // Min/Max：仅当该轴已设值、或刚从 sizing 菜单 Add 时才显示（egui `limit_row_v`）。
+        let lo = *f.limit_open.borrow();
+        let any_min = dims.min_w.is_some() || dims.min_h.is_some() || lo[0] || lo[2];
+        let any_max = dims.max_w.is_some() || dims.max_h.is_some() || lo[1] || lo[3];
+        if any_max {
+            let left = if dims.max_w.is_some() || lo[1] { f.dim_max_w.clone().into_any_element() } else { div().into_any_element() };
+            let right = if dims.max_h.is_some() || lo[3] { f.dim_max_h.clone().into_any_element() } else { div().into_any_element() };
+            sec = sec.child(sublabel_row2(tr("Max W"), tr("Max H"))).child(field_row(vec![left, right], Vec::<IconButton>::new()));
+        }
+        if any_min {
+            let left = if dims.min_w.is_some() || lo[0] { f.dim_min_w.clone().into_any_element() } else { div().into_any_element() };
+            let right = if dims.min_h.is_some() || lo[2] { f.dim_min_h.clone().into_any_element() } else { div().into_any_element() };
+            sec = sec.child(sublabel_row2(tr("Min W"), tr("Min H"))).child(field_row(vec![left, right], Vec::<IconButton>::new()));
+        }
     }
 
     // ③ 对齐 picker + 间距 + 内边距（egui `alignment` / `spacing`，仅 has_al）。
@@ -2311,7 +2272,6 @@ pub(crate) fn auto_layout_section(
     sec = right::sections::grid_track_rows(f, data, cx, n, sec);
     sec.into_any_element()
 }
-
 
 /// The bottom animation bar (skeleton — header only).
 pub(crate) fn animation_bar() -> Div {

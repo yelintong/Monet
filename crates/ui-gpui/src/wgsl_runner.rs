@@ -110,7 +110,9 @@ pub fn passes_for(doc: &Document, page: NodeId, view: &figcraft_render::View, ti
         let Some(binding) = crate::wgsl_material::WgslMaterialBinding::from_json(json) else { continue };
         let Some(r) = doc.bounds_of(&[id]) else { continue };
         let (w, h) = (r.width(), r.height());
-        if w <= 0.0 || h <= 0.0 { continue; }
+        if w <= 0.0 || h <= 0.0 {
+            continue;
+        }
         let (cx, cy) = ((r.x0 + r.x1) / 2.0, (r.y0 + r.y1) / 2.0);
         let radii = n.corners.radii;
         let smoothing = n.corners.smoothing;
@@ -125,7 +127,9 @@ pub fn passes_for(doc: &Document, page: NodeId, view: &figcraft_render::View, ti
         let (nx1, ny1) = (x0.max(x1), y0.max(y1));
         let (sx0, sy0) = (nx0.max(0.0), ny0.max(0.0));
         let (sx1, sy1) = (nx1.min(cw), ny1.min(ch));
-        if sx1 - sx0 <= 1.0 || sy1 - sy0 <= 1.0 { continue; }
+        if sx1 - sx0 <= 1.0 || sy1 - sy0 <= 1.0 {
+            continue;
+        }
         // The window **covers whole pixels**: `floor` its start, `ceil` its end.
         //
         // Truncating (`as u32`) made the window up to a pixel narrower than the node, while the
@@ -135,7 +139,9 @@ pub fn passes_for(doc: &Document, page: NodeId, view: &figcraft_render::View, ti
         // a strict 1:1 map again, so the sampled position moves continuously with the node.
         let (px0, py0) = (sx0.floor(), sy0.floor());
         let (px1, py1) = (sx1.ceil().min(cw), sy1.ceil().min(ch));
-        if px1 - px0 < 1.0 || py1 - py0 < 1.0 { continue; }
+        if px1 - px0 < 1.0 || py1 - py0 < 1.0 {
+            continue;
+        }
         let rect_px = [px0 as u32, py0 as u32, (px1 - px0) as u32, (py1 - py0) as u32];
         let rw = f64::from(rect_px[2]);
         let rh = f64::from(rect_px[3]);
@@ -151,7 +157,7 @@ pub fn passes_for(doc: &Document, page: NodeId, view: &figcraft_render::View, ti
         // whichever it declares in its uniform struct; the rest are simply ignored by the packer.
         let mut ex = fx::EngineExports::default();
         ex.set("resolution", vec![rw, rh]); // node region size in device pixels
-        ex.set("nodeSize", vec![w, h]);      // node size in document units
+        ex.set("nodeSize", vec![w, h]); // node size in document units
         ex.set("quad", vec![w / 2.0, h / 2.0, cx, cy]);
         ex.set("canvasSize", vec![canvas_w, canvas_h]);
         ex.set("nodeOrigin", vec![r.x0, r.y0]);
@@ -237,7 +243,9 @@ fn node_visible(doc: &Document, id: NodeId) -> bool {
     let mut cur = Some(id);
     while let Some(nid) = cur {
         let Some(n) = doc.node(nid) else { return false };
-        if !n.visible { return false; }
+        if !n.visible {
+            return false;
+        }
         cur = n.parent;
     }
     true
@@ -302,7 +310,9 @@ pub fn fields_for_rect(w: u32, h: u32, node: (f32, f32), origin: (f32, f32), rad
 /// A `band` of infinity keeps the historic exact field (used by the tests that check the encoding).
 pub fn fields_for_rect_banded(w: u32, h: u32, node: (f32, f32), origin: (f32, f32), radii_px: [f32; 4], band: f32) -> Vec<u8> {
     let mut out = vec![0u8; (w * h * 8) as usize];
-    if w == 0 || h == 0 || node.0 <= 0.0 || node.1 <= 0.0 { return out; }
+    if w == 0 || h == 0 || node.0 <= 0.0 || node.1 <= 0.0 {
+        return out;
+    }
     let half = (node.0 * 0.5, node.1 * 0.5);
     let most = half.0.min(half.1);
     let r = radii_px.map(|v| if v.is_finite() { v.clamp(0.0, most) } else { 0.0 });
@@ -341,9 +351,11 @@ pub fn fields_for_rect_banded(w: u32, h: u32, node: (f32, f32), origin: (f32, f3
             }
             if qy.abs() < half.1 - b {
                 out[row_start..row_start + stride].copy_from_slice(&row_core);
-                from = 0; to = core.start; // left side band
+                from = 0;
+                to = core.start; // left side band
                 exact_run(&mut out, y, w, from, to, origin, half, &r);
-                from = core.end; to = w;   // right side band
+                from = core.end;
+                to = w; // right side band
                 exact_run(&mut out, y, w, from, to, origin, half, &r);
                 continue;
             }
@@ -358,7 +370,9 @@ pub fn fields_for_rect_banded(w: u32, h: u32, node: (f32, f32), origin: (f32, f3
 
 /// Write `len` pixels of one settled value into a row buffer.
 fn write_run(row: &mut [u8], x0: u32, x1: u32, sd: f32, coverage: f32) {
-    if x1 <= x0 { return; }
+    if x1 <= x0 {
+        return;
+    }
     let mut px = [0u8; 8];
     figcraft_render::glass::half_at(&mut px[0..2], sd);
     figcraft_render::glass::half_at(&mut px[2..4], 0.5);
@@ -372,14 +386,21 @@ fn write_run(row: &mut [u8], x0: u32, x1: u32, sd: f32, coverage: f32) {
 
 /// Exact distance + inward normal + coverage for `x0..x1` of row `y`.
 fn exact_run(out: &mut [u8], y: u32, w: u32, x0: u32, x1: u32, origin: (f32, f32), half: (f32, f32), r: &[f32; 4]) {
-    if x1 <= x0 { return; }
+    if x1 <= x0 {
+        return;
+    }
     for x in x0..x1 {
         let qx = origin.0 + x as f32 + 0.5 - half.0;
         let qy = origin.1 + y as f32 + 0.5 - half.1;
-        let corner = if qx < 0.0 && qy < 0.0 { r[0] }
-            else if qx >= 0.0 && qy < 0.0 { r[1] }
-            else if qx >= 0.0 && qy >= 0.0 { r[2] }
-            else { r[3] };
+        let corner = if qx < 0.0 && qy < 0.0 {
+            r[0]
+        } else if qx >= 0.0 && qy < 0.0 {
+            r[1]
+        } else if qx >= 0.0 && qy >= 0.0 {
+            r[2]
+        } else {
+            r[3]
+        };
         let (sd, nx, ny) = rounded_rect_sdf(qx, qy, half.0, half.1, corner);
         let coverage = (0.5 - sd).clamp(0.0, 1.0);
         let i = ((y as usize * w as usize + x as usize) * 8) as usize;
@@ -423,10 +444,11 @@ fn shader_info(id: &str) -> Option<ShaderInfo> {
     let reg = fx::shared().lock().unwrap_or_else(|e| e.into_inner());
     let scan = reg.scan(id)?;
     let code = reg.source_code(id)?.to_string();
-    let vertex = scan.entries.iter().find(|e| e.stage == "vertex").map(|e| e.name.clone())
-        .or_else(|| scan.generic_entries.first().cloned())?;
+    let vertex = scan.entries.iter().find(|e| e.stage == "vertex").map(|e| e.name.clone()).or_else(|| scan.generic_entries.first().cloned())?;
     let fragments: Vec<String> = scan.entries.iter().filter(|e| e.stage == "fragment").map(|e| e.name.clone()).collect();
-    if fragments.is_empty() { return None; }
+    if fragments.is_empty() {
+        return None;
+    }
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     code.hash(&mut hasher);
     let bindings = scan.bindings.iter().map(|b| (b.group, b.binding, b.name.clone(), b.ty.clone(), b.uniform)).collect();
@@ -450,8 +472,12 @@ struct Compiled {
     resource_binds: Vec<(u32, u32, &'static str)>,
 }
 
-fn is_fields_name(name: &str) -> bool { name.eq_ignore_ascii_case("fields") || name.eq_ignore_ascii_case("sdf") }
-fn is_sampler_ty(ty: &str) -> bool { ty.trim() == "sampler" || ty.contains("sampler") }
+fn is_fields_name(name: &str) -> bool {
+    name.eq_ignore_ascii_case("fields") || name.eq_ignore_ascii_case("sdf")
+}
+fn is_sampler_ty(ty: &str) -> bool {
+    ty.trim() == "sampler" || ty.contains("sampler")
+}
 
 fn compile(device: &wgpu::Device, info: &ShaderInfo, canvas: (u32, u32), format: wgpu::TextureFormat) -> Result<Compiled, String> {
     let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -469,7 +495,10 @@ fn compile(device: &wgpu::Device, info: &ShaderInfo, canvas: (u32, u32), format:
         if *is_uniform {
             let size = 256u64; // generous: covers every generic export + control set we pack.
             let buf = device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some(name), size, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false,
+                label: Some(name),
+                size,
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
             });
             ubufs.push((name.clone(), buf));
             ubind.push((name.clone(), *g, *b));
@@ -482,7 +511,9 @@ fn compile(device: &wgpu::Device, info: &ShaderInfo, canvas: (u32, u32), format:
     }
 
     for g in 0..=max_group {
-        let entries: Vec<wgpu::BindGroupLayoutEntry> = info.bindings.iter()
+        let entries: Vec<wgpu::BindGroupLayoutEntry> = info
+            .bindings
+            .iter()
             .filter(|b| b.0 == g)
             .filter_map(|(_, b, _, ty, is_uniform)| {
                 let t = if *is_uniform {
@@ -490,22 +521,34 @@ fn compile(device: &wgpu::Device, info: &ShaderInfo, canvas: (u32, u32), format:
                 } else if is_sampler_ty(ty) {
                     wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering)
                 } else if ty.contains("texture_2d") {
-                    wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: true }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false }
-                } else { return None };
+                    wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    }
+                } else {
+                    return None;
+                };
                 Some(wgpu::BindGroupLayoutEntry { binding: *b, visibility: wgpu::ShaderStages::VERTEX_FRAGMENT, ty: t, count: None })
-            }).collect();
-        layouts.push(device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: Some("universal material group"), entries: &entries }));
+            })
+            .collect();
+        layouts
+            .push(device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: Some("universal material group"), entries: &entries }));
     }
     let layout_refs: Vec<Option<&wgpu::BindGroupLayout>> = layouts.iter().map(Some).collect();
     let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-        label: Some("universal material"), bind_group_layouts: &layout_refs, immediate_size: 0,
+        label: Some("universal material"),
+        bind_group_layouts: &layout_refs,
+        immediate_size: 0,
     });
     let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
-        mag_filter: wgpu::FilterMode::Linear, min_filter: wgpu::FilterMode::Linear,
+        mag_filter: wgpu::FilterMode::Linear,
+        min_filter: wgpu::FilterMode::Linear,
         // Trilinear: a shader that samples the backdrop at a mip level gets the reduction *and* a
         // linear upsample, which is Figma's frost chain (downsample → upsample) in one call.
         mipmap_filter: wgpu::MipmapFilterMode::Linear,
-        address_mode_u: wgpu::AddressMode::ClampToEdge, address_mode_v: wgpu::AddressMode::ClampToEdge,
+        address_mode_u: wgpu::AddressMode::ClampToEdge,
+        address_mode_v: wgpu::AddressMode::ClampToEdge,
         ..Default::default()
     });
     // Contract: run the first fragment entry as a full-coverage pass. Shaders needing several passes
@@ -517,7 +560,9 @@ fn compile(device: &wgpu::Device, info: &ShaderInfo, canvas: (u32, u32), format:
         layout: Some(&layout),
         vertex: wgpu::VertexState { module: &module, entry_point: Some(&info.vertex), compilation_options: Default::default(), buffers: &[] },
         fragment: Some(wgpu::FragmentState {
-            module: &module, entry_point: Some(fragment), compilation_options: Default::default(),
+            module: &module,
+            entry_point: Some(fragment),
+            compilation_options: Default::default(),
             targets: &[Some(wgpu::ColorTargetState { format, blend: Some(wgpu::BlendState::ALPHA_BLENDING), write_mask: wgpu::ColorWrites::ALL })],
         }),
         primitive: wgpu::PrimitiveState { topology: wgpu::PrimitiveTopology::TriangleList, ..Default::default() },
@@ -529,7 +574,14 @@ fn compile(device: &wgpu::Device, info: &ShaderInfo, canvas: (u32, u32), format:
     Ok(Compiled { hash: info.hash, canvas, module, layout, layouts, sampler, pipeline, ubufs, ubind, resource_binds })
 }
 
-struct Out { w: u32, h: u32, padded: u32, texture: wgpu::Texture, view: wgpu::TextureView, readback: wgpu::Buffer }
+struct Out {
+    w: u32,
+    h: u32,
+    padded: u32,
+    texture: wgpu::Texture,
+    view: wgpu::TextureView,
+    readback: wgpu::Buffer,
+}
 
 /// One in-flight asynchronous readback. A `COPY_DST | MAP_READ` buffer can be written by the GPU
 /// *or* read by the CPU, never both at once (see the `Buffer` docs): once `map_async` is pending we
@@ -573,13 +625,25 @@ const ASYNC_SLOTS: usize = 3;
 /// given, and it is kept per node: rebuilding it (with its pyramid) on every zoom frame was the
 /// other half of that cost. `levels` holds a single-level view of each level so it can be used as a
 /// render target.
-struct Backdrop { w: u32, h: u32, texture: wgpu::Texture, view: wgpu::TextureView, levels: Vec<(u32, u32, wgpu::TextureView)> }
+struct Backdrop {
+    w: u32,
+    h: u32,
+    texture: wgpu::Texture,
+    view: wgpu::TextureView,
+    levels: Vec<(u32, u32, wgpu::TextureView)>,
+}
 
 /// One node's `fields` texture, kept across frames. Its `key` covers everything the bytes were
 /// derived from (device size, sub-pixel window origin, radii, scale), so a pane that did not move or
 /// resize skips **both** the SDF rebuild and the upload. Rebuilding a 4 MP signed-distance field
 /// every frame was several milliseconds of pure CPU that no layer change could explain.
-struct FieldTex { key: u64, w: u32, h: u32, texture: wgpu::Texture, view: wgpu::TextureView }
+struct FieldTex {
+    key: u64,
+    w: u32,
+    h: u32,
+    texture: wgpu::Texture,
+    view: wgpu::TextureView,
+}
 
 /// How many mip levels a `w` × `h` texture has: level `L` is the backdrop reduced by `2^L`.
 fn mip_levels(w: u32, h: u32) -> u32 {
@@ -649,7 +713,12 @@ fn fs(@builtin(position) pos : vec4<f32>) -> @location(0) vec4<f32> {
 "#;
 
 /// The staging texture a pass's children are uploaded into before being blended back on top.
-struct OverlayTex { w: u32, h: u32, texture: wgpu::Texture, view: wgpu::TextureView }
+struct OverlayTex {
+    w: u32,
+    h: u32,
+    texture: wgpu::Texture,
+    view: wgpu::TextureView,
+}
 
 /// One step of a composite, in z order.
 pub enum Step<'a> {
@@ -679,7 +748,10 @@ fn composite_region(steps: &[Step<'_>], w: u32, h: u32) -> Option<[u32; 4]> {
         });
     };
     for s in steps {
-        let rect = match s { Step::Pass(p) => p.rect_px, Step::Over { rect, .. } => *rect };
+        let rect = match s {
+            Step::Pass(p) => p.rect_px,
+            Step::Over { rect, .. } => *rect,
+        };
         if let Some([x, y, rw, rh]) = clip_rect(rect, w, h) {
             add(x, y, x + rw, y + rh);
         }
@@ -694,7 +766,9 @@ fn clip_rect([rx, ry, rw, rh]: [u32; 4], w: u32, h: u32) -> Option<[u32; 4]> {
     let y0 = ry.min(h);
     let x1 = rx.saturating_add(rw).min(w);
     let y1 = ry.saturating_add(rh).min(h);
-    if x1 <= x0 || y1 <= y0 { return None; }
+    if x1 <= x0 || y1 <= y0 {
+        return None;
+    }
     Some([x0, y0, x1 - x0, y1 - y0])
 }
 
@@ -704,8 +778,12 @@ fn field_key(p: &RunPass, rw: u32, rh: u32) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
     (rw, rh).hash(&mut h);
-    for v in [p.node_px.0, p.node_px.1, p.origin_px.0, p.origin_px.1] { v.to_bits().hash(&mut h); }
-    for r in p.radii_px { r.to_bits().hash(&mut h); }
+    for v in [p.node_px.0, p.node_px.1, p.origin_px.0, p.origin_px.1] {
+        v.to_bits().hash(&mut h);
+    }
+    for r in p.radii_px {
+        r.to_bits().hash(&mut h);
+    }
     h.finish()
 }
 
@@ -742,24 +820,36 @@ pub struct WgslRunner {
 }
 
 /// Built once: the 2×2 box reduction used to generate the backdrop's mip chain on the GPU.
-struct Downsampler { layout: wgpu::BindGroupLayout, pipeline: wgpu::RenderPipeline, sampler: wgpu::Sampler }
+struct Downsampler {
+    layout: wgpu::BindGroupLayout,
+    pipeline: wgpu::RenderPipeline,
+    sampler: wgpu::Sampler,
+}
 /// Built once: the pipeline that draws a pass's children above its finished material.
-struct Overlay { layout: wgpu::BindGroupLayout, pipeline: wgpu::RenderPipeline }
+struct Overlay {
+    layout: wgpu::BindGroupLayout,
+    pipeline: wgpu::RenderPipeline,
+}
 
-fn make_fullscreen_pipeline(device: &wgpu::Device, label: &str, code: &str, layout: &wgpu::BindGroupLayout, blend: Option<wgpu::BlendState>, format: wgpu::TextureFormat) -> wgpu::RenderPipeline {
-    let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-        label: Some(label),
-        source: wgpu::ShaderSource::Wgsl(code.into()),
-    });
-    let gl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-        label: Some(label), bind_group_layouts: &[Some(layout)], immediate_size: 0,
-    });
+fn make_fullscreen_pipeline(
+    device: &wgpu::Device,
+    label: &str,
+    code: &str,
+    layout: &wgpu::BindGroupLayout,
+    blend: Option<wgpu::BlendState>,
+    format: wgpu::TextureFormat,
+) -> wgpu::RenderPipeline {
+    let module = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some(label), source: wgpu::ShaderSource::Wgsl(code.into()) });
+    let gl =
+        device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some(label), bind_group_layouts: &[Some(layout)], immediate_size: 0 });
     device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some(label),
         layout: Some(&gl),
         vertex: wgpu::VertexState { module: &module, entry_point: Some("vs"), compilation_options: Default::default(), buffers: &[] },
         fragment: Some(wgpu::FragmentState {
-            module: &module, entry_point: Some("fs"), compilation_options: Default::default(),
+            module: &module,
+            entry_point: Some("fs"),
+            compilation_options: Default::default(),
             targets: &[Some(wgpu::ColorTargetState { format, blend, write_mask: wgpu::ColorWrites::ALL })],
         }),
         primitive: wgpu::PrimitiveState { topology: wgpu::PrimitiveTopology::TriangleList, ..Default::default() },
@@ -775,9 +865,11 @@ impl WgslRunner {
         let instance = wgpu::Instance::default();
         let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
             power_preference: wgpu::PowerPreference::HighPerformance,
-            force_fallback_adapter: false, compatible_surface: None,
+            force_fallback_adapter: false,
+            compatible_surface: None,
             apply_limit_buckets: false,
-        })).ok()?;
+        }))
+        .ok()?;
         let adapter_info = adapter.get_info();
         let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
             label: Some("figcraft-universal-wgsl"),
@@ -786,85 +878,134 @@ impl WgslRunner {
             memory_hints: wgpu::MemoryHints::Performance,
             trace: wgpu::Trace::Off,
             experimental_features: wgpu::ExperimentalFeatures::disabled(),
-        })).ok()?;
+        }))
+        .ok()?;
 
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("universal filter"),
-            mag_filter: wgpu::FilterMode::Linear, min_filter: wgpu::FilterMode::Linear,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
             mipmap_filter: wgpu::MipmapFilterMode::Linear,
-            address_mode_u: wgpu::AddressMode::ClampToEdge, address_mode_v: wgpu::AddressMode::ClampToEdge,
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
             ..Default::default()
         });
         let tex_entry = wgpu::BindGroupLayoutEntry {
-            binding: 0, visibility: wgpu::ShaderStages::FRAGMENT,
-            ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: true }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false },
+            binding: 0,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Texture {
+                sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                view_dimension: wgpu::TextureViewDimension::D2,
+                multisampled: false,
+            },
             count: None,
         };
         let samp_entry = wgpu::BindGroupLayoutEntry {
-            binding: 1, visibility: wgpu::ShaderStages::FRAGMENT,
-            ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering), count: None,
+            binding: 1,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+            count: None,
         };
-        let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("fullscreen pair"), entries: &[tex_entry, samp_entry],
-        });
+        let layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: Some("fullscreen pair"), entries: &[tex_entry, samp_entry] });
         let mips = Downsampler {
             pipeline: make_fullscreen_pipeline(&device, "universal downsample", DOWNSAMPLE_WGSL, &layout, Some(wgpu::BlendState::REPLACE), FORMAT),
             layout: device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: Some("fullscreen pair"), entries: &[wgpu::BindGroupLayoutEntry {
-                    binding: 0, visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: true }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false },
-                    count: None,
-                }, wgpu::BindGroupLayoutEntry {
-                    binding: 1, visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering), count: None,
-                }],
+                label: Some("fullscreen pair"),
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            multisampled: false,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                        count: None,
+                    },
+                ],
             }),
             sampler: device.create_sampler(&wgpu::SamplerDescriptor {
-                label: Some("universal nearest"), mag_filter: wgpu::FilterMode::Nearest, min_filter: wgpu::FilterMode::Nearest,
+                label: Some("universal nearest"),
+                mag_filter: wgpu::FilterMode::Nearest,
+                min_filter: wgpu::FilterMode::Nearest,
                 mipmap_filter: wgpu::MipmapFilterMode::Nearest,
-                address_mode_u: wgpu::AddressMode::ClampToEdge, address_mode_v: wgpu::AddressMode::ClampToEdge,
+                address_mode_u: wgpu::AddressMode::ClampToEdge,
+                address_mode_v: wgpu::AddressMode::ClampToEdge,
                 ..Default::default()
             }),
         };
         let over = Overlay {
-            layout: device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: Some("overlay pair"), entries: &[tex_entry, samp_entry] }),
+            layout: device
+                .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: Some("overlay pair"), entries: &[tex_entry, samp_entry] }),
             pipeline: make_fullscreen_pipeline(&device, "universal overlay", OVER_WGSL, &layout, Some(wgpu::BlendState::ALPHA_BLENDING), FORMAT),
         };
         Some(Self {
-            device, queue, cache: HashMap::new(), out: None,
-            backdrop: HashMap::new(), fields: HashMap::new(), overlays: Vec::new(),
-            mips, over, over_sampler: sampler, stale_at: None, adapter_info,
-            async_slots: Vec::new(), next_async_id: 0,
+            device,
+            queue,
+            cache: HashMap::new(),
+            out: None,
+            backdrop: HashMap::new(),
+            fields: HashMap::new(),
+            overlays: Vec::new(),
+            mips,
+            over,
+            over_sampler: sampler,
+            stale_at: None,
+            adapter_info,
+            async_slots: Vec::new(),
+            next_async_id: 0,
         })
     }
 
-    pub fn adapter_info(&self) -> &wgpu::AdapterInfo { &self.adapter_info }
+    pub fn adapter_info(&self) -> &wgpu::AdapterInfo {
+        &self.adapter_info
+    }
 
     fn ensure_out(&mut self, w: u32, h: u32) {
-        if self.out.as_ref().is_some_and(|o| o.w == w && o.h == h) { return; }
+        if self.out.as_ref().is_some_and(|o| o.w == w && o.h == h) {
+            return;
+        }
         let padded = (w * 4).div_ceil(COPY_ALIGN) * COPY_ALIGN;
         let texture = self.device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("universal output canvas"), size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
-            mip_level_count: 1, sample_count: 1, dimension: wgpu::TextureDimension::D2, format: FORMAT,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC | wgpu::TextureUsages::COPY_DST, view_formats: &[],
+            label: Some("universal output canvas"),
+            size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: FORMAT,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
         });
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
         let readback = self.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("universal readback"), size: (padded * h) as u64,
-            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ, mapped_at_creation: false,
+            label: Some("universal readback"),
+            size: (padded * h) as u64,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
         });
         self.out = Some(Out { w, h, padded, texture, view, readback });
     }
 
     /// Make sure `n` staging textures exist at the canvas size — one per `Over` step in this frame.
     fn ensure_overlays(&mut self, n: usize, w: u32, h: u32) {
-        if self.overlays.len() > n { self.overlays.truncate(n); }
+        if self.overlays.len() > n {
+            self.overlays.truncate(n);
+        }
         while self.overlays.len() < n {
             let t = self.make_overlay(w, h);
             self.overlays.push(t);
         }
         for i in 0..self.overlays.len() {
-            if self.overlays[i].w == w && self.overlays[i].h == h { continue; }
+            if self.overlays[i].w == w && self.overlays[i].h == h {
+                continue;
+            }
             let t = self.make_overlay(w, h);
             self.overlays[i] = t;
         }
@@ -872,8 +1013,12 @@ impl WgslRunner {
 
     fn make_overlay(&self, w: u32, h: u32) -> OverlayTex {
         let texture = self.device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("universal overlay"), size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
-            mip_level_count: 1, sample_count: 1, dimension: wgpu::TextureDimension::D2, format: OVERLAY_FORMAT,
+            label: Some("universal overlay"),
+            size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: OVERLAY_FORMAT,
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
             view_formats: &[],
         });
@@ -894,8 +1039,12 @@ impl WgslRunner {
         // level than the one above, so following `dpr` to the texture's own chain costs almost
         // nothing.
         let texture = self.device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("universal backdrop"), size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
-            mip_level_count: count, sample_count: 1, dimension: wgpu::TextureDimension::D2, format: FORMAT,
+            label: Some("universal backdrop"),
+            size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+            mip_level_count: count,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: FORMAT,
             usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::RENDER_ATTACHMENT,
             view_formats: &[],
         });
@@ -926,9 +1075,14 @@ impl WgslRunner {
             return changed;
         }
         let texture = self.device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("universal fields"), size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
-            mip_level_count: 1, sample_count: 1, dimension: wgpu::TextureDimension::D2, format: FIELDS_FORMAT,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST, view_formats: &[],
+            label: Some("universal fields"),
+            size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: FIELDS_FORMAT,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
         });
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
         self.fields.insert(node, FieldTex { key, w, h, texture, view });
@@ -949,7 +1103,9 @@ impl WgslRunner {
         }
         for (effect, node, info) in needed {
             match compile(&self.device, &info, (w, h), FORMAT) {
-                Ok(c) => { self.cache.insert((effect, node), c); }
+                Ok(c) => {
+                    self.cache.insert((effect, node), c);
+                }
                 // A shader that fails to compile silently leaves the CPU image on screen, which
                 // looks exactly like "the material does nothing". Say so once per pass.
                 Err(e) => eprintln!("universal material '{effect}' failed to compile: {e}"),
@@ -957,19 +1113,22 @@ impl WgslRunner {
         }
         // Hot reload means reading and hashing every shader; on a per-pass, per-frame path that was
         // pure overhead. Twice a second is still instant to a person editing the file.
-        if self.stale_at.is_some_and(|t| t.elapsed().as_millis() < 500) { return; }
+        if self.stale_at.is_some_and(|t| t.elapsed().as_millis() < 500) {
+            return;
+        }
         self.stale_at = Some(std::time::Instant::now());
-        let stale: Vec<(String, u64)> = self.cache.iter()
-            .filter(|(k, c)| shader_info(&k.0).map(|s| s.hash != c.hash).unwrap_or(true))
-            .map(|(k, _)| k.clone()).collect();
-        for k in stale { self.cache.remove(&k); }
+        let stale: Vec<(String, u64)> =
+            self.cache.iter().filter(|(k, c)| shader_info(&k.0).map(|s| s.hash != c.hash).unwrap_or(true)).map(|(k, _)| k.clone()).collect();
+        for k in stale {
+            self.cache.remove(&k);
+        }
     }
 
     /// Composite materials over the CPU canvas. `canvas` is straight BGRA, top-down; the result is
     /// straight BGRA of the same size. `None` on any failure (the caller keeps the CPU image).
     pub fn composite(&mut self, canvas: &[u8], w: u32, h: u32, passes: &[RunPass]) -> Option<Vec<u8>> {
         let steps: Vec<Step<'_>> = passes.iter().map(Step::Pass).collect();
-        self.composite_steps(canvas, w, h, &steps)
+        self.composite_steps(canvas, w, h, &steps, None)
     }
 
     /// One composite, in z order. A `Step::Pass` reads **the composite so far** as its backdrop, so a
@@ -984,8 +1143,8 @@ impl WgslRunner {
     /// spliced back into `canvas`. Kept byte-for-byte identical for the drag patch and overview
     /// paths (which must show this frame's material *now*). The refined path uses
     /// [`Self::submit_async`] + [`Self::poll_ready`] instead.
-    pub fn composite_steps(&mut self, canvas: &[u8], w: u32, h: u32, steps: &[Step<'_>]) -> Option<Vec<u8>> {
-        let (region, padded) = self.encode_submit(canvas, w, h, steps, None)?;
+    pub fn composite_steps(&mut self, canvas: &[u8], w: u32, h: u32, steps: &[Step<'_>], shade: Option<[u32; 4]>) -> Option<Vec<u8>> {
+        let (region, padded) = self.encode_submit(canvas, w, h, steps, None, shade)?;
         self.map_region(w, h, region, padded, canvas)
     }
 
@@ -1001,13 +1160,11 @@ impl WgslRunner {
     /// soon as frame N is submitted: the GPU consumes the queue in order and never reads a texture
     /// that a later frame has overwritten. The **readback** is the one resource that cannot be
     /// reused until its `map_async` completes and it is unmapped — hence the per-frame slot.
-    fn encode_submit(
-        &mut self,
-        canvas: &[u8], w: u32, h: u32, steps: &[Step<'_>],
-        readback: Option<&wgpu::Buffer>,
-    ) -> Option<([u32; 4], u32)> {
+    fn encode_submit(&mut self, canvas: &[u8], w: u32, h: u32, steps: &[Step<'_>], readback: Option<&wgpu::Buffer>, shade: Option<[u32; 4]>) -> Option<([u32; 4], u32)> {
         let expected = (w as usize) * (h as usize) * 4;
-        if steps.is_empty() || w == 0 || h == 0 || canvas.len() < expected { return None; }
+        if steps.is_empty() || w == 0 || h == 0 || canvas.len() < expected {
+            return None;
+        }
         self.ensure_out(w, h);
         let over_count = steps.iter().filter(|s| matches!(s, Step::Over { .. })).count();
         self.ensure_overlays(over_count, w, h);
@@ -1027,7 +1184,12 @@ impl WgslRunner {
                 seed[y * row..(y + 1) * row].copy_from_slice(&canvas[src..src + row]);
             }
             self.queue.write_texture(
-                wgpu::TexelCopyTextureInfo { texture: &out.texture, mip_level: 0, origin: wgpu::Origin3d { x: gx, y: gy, z: 0 }, aspect: wgpu::TextureAspect::All },
+                wgpu::TexelCopyTextureInfo {
+                    texture: &out.texture,
+                    mip_level: 0,
+                    origin: wgpu::Origin3d { x: gx, y: gy, z: 0 },
+                    aspect: wgpu::TextureAspect::All,
+                },
                 &seed,
                 wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(gw * 4), rows_per_image: Some(gh) },
                 wgpu::Extent3d { width: gw, height: gh, depth_or_array_layers: 1 },
@@ -1053,9 +1215,10 @@ impl WgslRunner {
             // outline's bytes come from the node's geometry: always upload those, they are cheap to
             // send and a stale one would be a wrong shape.
             let upload = changed || p.field_bytes.is_some();
-            if !upload { continue; }
-            let bytes = p.field_bytes.clone()
-                .unwrap_or_else(|| fields_for_rect_banded(rw, rh, p.node_px, p.origin_px, p.radii_px, p.field_band));
+            if !upload {
+                continue;
+            }
+            let bytes = p.field_bytes.clone().unwrap_or_else(|| fields_for_rect_banded(rw, rh, p.node_px, p.origin_px, p.radii_px, p.field_band));
             if let Some(fd) = self.fields.get(&p.node.0) {
                 self.queue.write_texture(
                     wgpu::TexelCopyTextureInfo { texture: &fd.texture, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
@@ -1075,7 +1238,9 @@ impl WgslRunner {
                     let slot = over_at;
                     over_at += 1;
                     let [rx, ry, rw, rh] = *rect;
-                    if rw == 0 || rh == 0 || pixels.len() < (rw as usize) * (rh as usize) * 4 { continue; }
+                    if rw == 0 || rh == 0 || pixels.len() < (rw as usize) * (rh as usize) * 4 {
+                        continue;
+                    }
                     let Some([ox, oy, ow, oh]) = clip_rect(*rect, w, h) else { continue };
                     let ovl = self.overlays.get(slot)?;
                     let out = self.out.as_ref()?;
@@ -1091,7 +1256,12 @@ impl WgslRunner {
                         // shader samples it at `pos.xy / size`, so the texture has to line up with
                         // the canvas or the children land at the wrong place.
                         self.queue.write_texture(
-                            wgpu::TexelCopyTextureInfo { texture: &ovl.texture, mip_level: 0, origin: wgpu::Origin3d { x: ox, y: oy, z: 0 }, aspect: wgpu::TextureAspect::All },
+                            wgpu::TexelCopyTextureInfo {
+                                texture: &ovl.texture,
+                                mip_level: 0,
+                                origin: wgpu::Origin3d { x: ox, y: oy, z: 0 },
+                                aspect: wgpu::TextureAspect::All,
+                            },
                             &crop,
                             wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(ow * 4), rows_per_image: Some(oh) },
                             wgpu::Extent3d { width: ow, height: oh, depth_or_array_layers: 1 },
@@ -1106,12 +1276,18 @@ impl WgslRunner {
                         ],
                     });
                     let att = [Some(wgpu::RenderPassColorAttachment {
-                        view: &out.view, depth_slice: None, resolve_target: None,
+                        view: &out.view,
+                        depth_slice: None,
+                        resolve_target: None,
                         ops: wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store },
                     })];
                     let mut rp = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
-                        label: Some("universal overlay pass"), color_attachments: &att, depth_stencil_attachment: None,
-                        timestamp_writes: None, occlusion_query_set: None, multiview_mask: None,
+                        label: Some("universal overlay pass"),
+                        color_attachments: &att,
+                        depth_stencil_attachment: None,
+                        timestamp_writes: None,
+                        occlusion_query_set: None,
+                        multiview_mask: None,
                     });
                     rp.set_viewport(ox as f32, oy as f32, ow as f32, oh as f32, 0.0, 1.0);
                     rp.set_scissor_rect(ox, oy, ow, oh);
@@ -1130,8 +1306,18 @@ impl WgslRunner {
                     // Backdrop: copy the composited-so-far canvas into level 0, then build the rest of
                     // the pyramid on the GPU. This copy is what makes layered materials correct.
                     enc.copy_texture_to_texture(
-                        wgpu::TexelCopyTextureInfo { texture: &out.texture, mip_level: 0, origin: wgpu::Origin3d { x: rx, y: ry, z: 0 }, aspect: wgpu::TextureAspect::All },
-                        wgpu::TexelCopyTextureInfo { texture: &bd.texture, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+                        wgpu::TexelCopyTextureInfo {
+                            texture: &out.texture,
+                            mip_level: 0,
+                            origin: wgpu::Origin3d { x: rx, y: ry, z: 0 },
+                            aspect: wgpu::TextureAspect::All,
+                        },
+                        wgpu::TexelCopyTextureInfo {
+                            texture: &bd.texture,
+                            mip_level: 0,
+                            origin: wgpu::Origin3d::ZERO,
+                            aspect: wgpu::TextureAspect::All,
+                        },
                         wgpu::Extent3d { width: rw, height: rh, depth_or_array_layers: 1 },
                     );
                     for l in 1..bd.levels.len() {
@@ -1152,12 +1338,18 @@ impl WgslRunner {
                         // The viewport covers everything this level holds, so there is nothing to
                         // load: clearing is cheaper than pulling the old contents back in.
                         let att = [Some(wgpu::RenderPassColorAttachment {
-                            view: dv, depth_slice: None, resolve_target: None,
+                            view: dv,
+                            depth_slice: None,
+                            resolve_target: None,
                             ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT), store: wgpu::StoreOp::Store },
                         })];
                         let mut rp = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
-                            label: Some("universal downsample pass"), color_attachments: &att, depth_stencil_attachment: None,
-                            timestamp_writes: None, occlusion_query_set: None, multiview_mask: None,
+                            label: Some("universal downsample pass"),
+                            color_attachments: &att,
+                            depth_stencil_attachment: None,
+                            timestamp_writes: None,
+                            occlusion_query_set: None,
+                            multiview_mask: None,
                         });
                         rp.set_viewport(0.0, 0.0, vw as f32, vh as f32, 0.0, 1.0);
                         rp.set_scissor_rect(0, 0, vw, vh);
@@ -1175,7 +1367,9 @@ impl WgslRunner {
                     // One bind group per declared group, assigning each binding by its contract kind.
                     let mut built: Vec<(u32, wgpu::BindGroup)> = Vec::new();
                     for g in 0..ci.layouts.len() as u32 {
-                        let entries: Vec<wgpu::BindGroupEntry> = ci.resource_binds.iter()
+                        let entries: Vec<wgpu::BindGroupEntry> = ci
+                            .resource_binds
+                            .iter()
                             .filter(|(gr, _, _)| *gr == g)
                             .filter_map(|(_, b, kind)| {
                                 let resource = match *kind {
@@ -1191,23 +1385,45 @@ impl WgslRunner {
                             }))
                             .collect();
                         let bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-                            label: Some("universal bind group"), layout: &ci.layouts[g as usize], entries: &entries,
+                            label: Some("universal bind group"),
+                            layout: &ci.layouts[g as usize],
+                            entries: &entries,
                         });
                         built.push((g, bg));
                     }
 
                     let att = [Some(wgpu::RenderPassColorAttachment {
-                        view: &out.view, depth_slice: None, resolve_target: None,
+                        view: &out.view,
+                        depth_slice: None,
+                        resolve_target: None,
                         ops: wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store },
                     })];
                     let mut rp = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
-                        label: Some("universal glass pass"), color_attachments: &att, depth_stencil_attachment: None,
-                        timestamp_writes: None, occlusion_query_set: None, multiview_mask: None,
+                        label: Some("universal glass pass"),
+                        color_attachments: &att,
+                        depth_stencil_attachment: None,
+                        timestamp_writes: None,
+                        occlusion_query_set: None,
+                        multiview_mask: None,
                     });
                     rp.set_viewport(rx as f32, ry as f32, rw as f32, rh as f32, 0.0, 1.0);
-                    rp.set_scissor_rect(rx, ry, rw, rh);
+                    // 底图仍覆盖整个 pass 区域（视口外那一圈要给透镜采样），但**着色**只做可见视口：
+                    // 那一圈不在屏幕上，逐像素跑 shader 只会把一帧拖到 250ms。
+                    let scissor = shade.and_then(|s| {
+                        let x0 = s[0].max(rx);
+                        let y0 = s[1].max(ry);
+                        let x1 = (s[0] + s[2]).min(rx + rw);
+                        let y1 = (s[1] + s[3]).min(ry + rh);
+                        (x1 > x0 && y1 > y0).then_some((x0, y0, x1 - x0, y1 - y0))
+                    });
+                    match scissor {
+                        Some((sx, sy, sw, sh)) => rp.set_scissor_rect(sx, sy, sw, sh),
+                        None => rp.set_scissor_rect(rx, ry, rw, rh),
+                    }
                     rp.set_pipeline(&ci.pipeline);
-                    for (g, bg) in &built { rp.set_bind_group(*g, bg, &[]); }
+                    for (g, bg) in &built {
+                        rp.set_bind_group(*g, bg, &[]);
+                    }
                     rp.draw(0..3, 0..1);
                 }
             }
@@ -1219,8 +1435,16 @@ impl WgslRunner {
             let out = self.out.as_ref()?;
             let target = readback.unwrap_or(&out.readback);
             enc.copy_texture_to_buffer(
-                wgpu::TexelCopyTextureInfo { texture: &out.texture, mip_level: 0, origin: wgpu::Origin3d { x: gx, y: gy, z: 0 }, aspect: wgpu::TextureAspect::All },
-                wgpu::TexelCopyBufferInfo { buffer: target, layout: wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(padded), rows_per_image: Some(gh) } },
+                wgpu::TexelCopyTextureInfo {
+                    texture: &out.texture,
+                    mip_level: 0,
+                    origin: wgpu::Origin3d { x: gx, y: gy, z: 0 },
+                    aspect: wgpu::TextureAspect::All,
+                },
+                wgpu::TexelCopyBufferInfo {
+                    buffer: target,
+                    layout: wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(padded), rows_per_image: Some(gh) },
+                },
                 wgpu::Extent3d { width: gw, height: gh, depth_or_array_layers: 1 },
             );
         }
@@ -1276,7 +1500,9 @@ impl WgslRunner {
     fn map_region(&self, w: u32, h: u32, region: [u32; 4], padded: u32, base: &[u8]) -> Option<Vec<u8>> {
         let out = self.out.as_ref()?;
         let (tx, rx) = std::sync::mpsc::channel();
-        out.readback.slice(..).map_async(wgpu::MapMode::Read, move |r| { let _ = tx.send(r); });
+        out.readback.slice(..).map_async(wgpu::MapMode::Read, move |r| {
+            let _ = tx.send(r);
+        });
         let _ = self.device.poll(wgpu::PollType::Wait { submission_index: None, timeout: None });
         let _ = rx.recv();
         self.splice_mapped(&out.readback, w, h, region, padded, base)
@@ -1315,14 +1541,12 @@ impl WgslRunner {
         while self.async_slots.len() < ASYNC_SLOTS {
             // A 256-byte placeholder; `grow_slot` reallocates to the real region size on first use.
             let buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("universal async readback"), size: 256,
+                label: Some("universal async readback"),
+                size: 256,
                 usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
                 mapped_at_creation: false,
             });
-            self.async_slots.push(ReadbackSlot {
-                buffer, w: 0, h: 0, padded: 0, region: [0; 4],
-                frame_id: None, map_rx: None, in_use: false,
-            });
+            self.async_slots.push(ReadbackSlot { buffer, w: 0, h: 0, padded: 0, region: [0; 4], frame_id: None, map_rx: None, in_use: false });
         }
     }
 
@@ -1337,7 +1561,8 @@ impl WgslRunner {
         let i = self.async_slots.iter().position(|s| !s.in_use)?;
         if self.async_slots[i].buffer.size() < need {
             self.async_slots[i].buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("universal async readback (grown)"), size: need,
+                label: Some("universal async readback (grown)"),
+                size: need,
                 usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
                 mapped_at_creation: false,
             });
@@ -1353,9 +1578,11 @@ impl WgslRunner {
     ///
     /// Returns `None` if there is no free slot (all ASYNC_SLOTS frames still in flight), or on the
     /// same encode conditions `composite_steps` refuses. In both cases the canvas is untouched.
-    pub fn submit_async(&mut self, canvas: &[u8], w: u32, h: u32, steps: &[Step<'_>]) -> Option<u64> {
+    pub fn submit_async(&mut self, canvas: &[u8], w: u32, h: u32, steps: &[Step<'_>], shade: Option<[u32; 4]>) -> Option<u64> {
         let expected = (w as usize) * (h as usize) * 4;
-        if steps.is_empty() || w == 0 || h == 0 || canvas.len() < expected { return None; }
+        if steps.is_empty() || w == 0 || h == 0 || canvas.len() < expected {
+            return None;
+        }
         let [gx, gy, gw, gh] = composite_region(steps, w, h)?;
         let padded = (gw * 4).div_ceil(256) * 256;
         let i = self.acquire_slot(padded, gh)?;
@@ -1366,9 +1593,12 @@ impl WgslRunner {
         // Clone the buffer handle out: `encode_submit` needs `&mut self`, which cannot coexist with
         // a borrow into `self.async_slots`. Both handles point at the same GPU allocation.
         let buffer = self.async_slots[i].buffer.clone();
-        let (region, padded) = match self.encode_submit(canvas, w, h, steps, Some(&buffer)) {
+        let (region, padded) = match self.encode_submit(canvas, w, h, steps, Some(&buffer), shade) {
             Some(v) => v,
-            None => { self.async_slots[i].in_use = false; return None; }
+            None => {
+                self.async_slots[i].in_use = false;
+                return None;
+            }
         };
 
         // One channel per frame. `tx` goes to the map callback (which only signals); `rx` is stored
@@ -1377,11 +1607,16 @@ impl WgslRunner {
         {
             let s = &mut self.async_slots[i];
             s.in_use = true;
-            s.w = w; s.h = h; s.padded = padded; s.region = region;
+            s.w = w;
+            s.h = h;
+            s.padded = padded;
+            s.region = region;
             s.frame_id = Some(id);
             s.map_rx = Some(rx);
         }
-        buffer.slice(..).map_async(wgpu::MapMode::Read, move |r| { let _ = tx.send(r); });
+        buffer.slice(..).map_async(wgpu::MapMode::Read, move |r| {
+            let _ = tx.send(r);
+        });
         Some(id)
     }
 
@@ -1398,10 +1633,7 @@ impl WgslRunner {
     /// then triages every completed submission. A frame that is still on the GPU simply yields
     /// `Timeout`, which we ignore; its callback fires on a later pump.
     pub fn pump(&self) {
-        let _ = self.device.poll(wgpu::PollType::Wait {
-            submission_index: None,
-            timeout: Some(std::time::Duration::ZERO),
-        });
+        let _ = self.device.poll(wgpu::PollType::Wait { submission_index: None, timeout: Some(std::time::Duration::ZERO) });
     }
 
     /// Collect the pixels of frame `id` if they are ready, or `None` if it is still in flight.
@@ -1429,14 +1661,18 @@ impl WgslRunner {
                     self.async_slots[i].buffer.unmap();
                 }
                 let s = &mut self.async_slots[i];
-                s.in_use = false; s.frame_id = None; s.map_rx = None;
+                s.in_use = false;
+                s.frame_id = None;
+                s.map_rx = None;
                 out
             }
             // Map failed, or the sender was dropped: hand the slot back but report nothing, so the
             // caller keeps its last good picture. A failed map leaves the buffer unmapped.
             Ok(Err(_)) | Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                 let s = &mut self.async_slots[i];
-                s.in_use = false; s.frame_id = None; s.map_rx = None;
+                s.in_use = false;
+                s.frame_id = None;
+                s.map_rx = None;
                 None
             }
             Err(std::sync::mpsc::TryRecvError::Empty) => None,
@@ -1447,7 +1683,6 @@ impl WgslRunner {
     pub fn in_flight(&self) -> usize {
         self.async_slots.iter().filter(|s| s.in_use).count()
     }
-
 }
 
 #[cfg(test)]
@@ -1566,9 +1801,7 @@ mod tests {
     fn passes_for_finds_a_bound_frame() {
         let mut doc = figcraft_doc::Document::default();
         let page = doc.pages[0];
-        let f = doc
-            .create(page, figcraft_doc::NodeKind::Frame, "F", 10.0, 20.0, 100.0, 80.0)
-            .expect("a frame");
+        let f = doc.create(page, figcraft_doc::NodeKind::Frame, "F", 10.0, 20.0, 100.0, 80.0).expect("a frame");
         let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets/wgsl/glass.wgsl");
         let binding = crate::wgsl_material::WgslMaterialBinding::new(path.to_string_lossy());
         doc.get_mut(f).expect("the frame").plugin_data.insert(crate::wgsl_material::BINDING_KEY.into(), binding.to_json());
@@ -1594,9 +1827,7 @@ mod tests {
     fn glass_depth_is_scale_invariant() {
         let mut doc = figcraft_doc::Document::default();
         let page = doc.pages[0];
-        let f = doc
-            .create(page, figcraft_doc::NodeKind::Frame, "F", 0.0, 0.0, 220.0, 140.0)
-            .expect("a frame");
+        let f = doc.create(page, figcraft_doc::NodeKind::Frame, "F", 0.0, 0.0, 220.0, 140.0).expect("a frame");
         let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets/wgsl/glass.wgsl");
         let binding = crate::wgsl_material::WgslMaterialBinding::new(path.to_string_lossy());
         doc.get_mut(f).expect("the frame").plugin_data.insert(crate::wgsl_material::BINDING_KEY.into(), binding.to_json());
@@ -1631,12 +1862,12 @@ mod tests {
         // The bend band, expressed per device pixel, scales with zoom; but divided by the device
         // resolution (i.e. as a fraction of the node) it must be identical — that is what the eye
         // sees, and what makes zooming leave the glass unchanged.
-        assert!((rd1 / res1 - rd2 / res2).abs() < 1e-5,
-            "depth px / node width must not depend on zoom: {} vs {}", rd1 / res1, rd2 / res2);
-        assert!((bev1 / res1 - bev2 / res2).abs() < 1e-5,
-            "bevel px / node width must not depend on zoom: {} vs {}", bev1 / res1, bev2 / res2);
-        assert!((rd1 - 20.0).abs() < 1e-3 && (bev1 - 1.0).abs() < 1e-3,
-            "at 1x, Depth 20 -> a 20 px reach and a 1 px band, with no fudge factor: {rd1}, {bev1}");
+        assert!((rd1 / res1 - rd2 / res2).abs() < 1e-5, "depth px / node width must not depend on zoom: {} vs {}", rd1 / res1, rd2 / res2);
+        assert!((bev1 / res1 - bev2 / res2).abs() < 1e-5, "bevel px / node width must not depend on zoom: {} vs {}", bev1 / res1, bev2 / res2);
+        assert!(
+            (rd1 - 20.0).abs() < 1e-3 && (bev1 - 1.0).abs() < 1e-3,
+            "at 1x, Depth 20 -> a 20 px reach and a 1 px band, with no fudge factor: {rd1}, {bev1}"
+        );
     }
 
     /// The bug this fixes: the panel lets Depth go to 100, but a 100-document-unit reach on a small
@@ -1651,13 +1882,10 @@ mod tests {
         let probe = |node_w: f64, node_h: f64, notch: f64, zoom: f64| -> (f32, f32) {
             let mut doc = figcraft_doc::Document::default();
             let page = doc.pages[0];
-            let f = doc
-                .create(page, figcraft_doc::NodeKind::Frame, "F", 0.0, 0.0, node_w, node_h)
-                .expect("a frame");
+            let f = doc.create(page, figcraft_doc::NodeKind::Frame, "F", 0.0, 0.0, node_w, node_h).expect("a frame");
             let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets/wgsl/glass.wgsl");
             let params = [("u.depth".to_string(), notch)].into_iter().collect();
-            let binding = crate::wgsl_material::WgslMaterialBinding::new(path.to_string_lossy())
-                .with_params(params);
+            let binding = crate::wgsl_material::WgslMaterialBinding::new(path.to_string_lossy()).with_params(params);
             doc.get_mut(f).expect("the frame").plugin_data.insert(crate::wgsl_material::BINDING_KEY.into(), binding.to_json());
             let view = figcraft_render::View { origin: (0.0, 0.0), scale: zoom, width: 2000, height: 1600 };
             let passes = passes_for(&doc, page, &view, 0.0);
@@ -1670,8 +1898,7 @@ mod tests {
         // Small node, Depth 100: packed depth must be the node-short-side cap, not 100.
         let (depth, _) = probe(80.0, 60.0, 100.0, 1.0);
         let cap = 60.0_f64 * figcraft_doc::Glass::DEPTH_REACH_FRAC;
-        assert!((f64::from(depth) - cap).abs() < 1e-3,
-            "Depth 100 on a 60px-short node -> packed u.depth {cap}, got {depth}");
+        assert!((f64::from(depth) - cap).abs() < 1e-3, "Depth 100 on a 60px-short node -> packed u.depth {cap}, got {depth}");
         assert!(depth < 100.0, "a 60px node must never pack a 100px reach");
 
         // And it stays in document units: same node at 2x packs the same u.depth (dpr carries zoom).
@@ -1740,9 +1967,7 @@ mod tests {
         let mut doc = figcraft_doc::Document::default();
         let page = doc.pages[0];
         // A 100×100 frame at (10,20) rendered into a 64×64 view hangs past both edges.
-        let f = doc
-            .create(page, figcraft_doc::NodeKind::Frame, "F", 10.0, 20.0, 100.0, 100.0)
-            .expect("a frame");
+        let f = doc.create(page, figcraft_doc::NodeKind::Frame, "F", 10.0, 20.0, 100.0, 100.0).expect("a frame");
         let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets/wgsl/glass.wgsl");
         let binding = crate::wgsl_material::WgslMaterialBinding::new(path.to_string_lossy());
         doc.get_mut(f).expect("the frame").plugin_data.insert(crate::wgsl_material::BINDING_KEY.into(), binding.to_json());
@@ -1771,16 +1996,21 @@ mod tests {
         let _gpu = GPU_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let mut runner = match WgslRunner::new() {
             Some(r) => r,
-            None => { eprintln!("no GPU adapter — skipping universal glass pixel test"); return; }
+            None => {
+                eprintln!("no GPU adapter — skipping universal glass pixel test");
+                return;
+            }
         };
         let (w, h) = (64u32, 64u32);
         // Straight RGBA scene: left half red, right half blue, fully opaque.
         let mut scene = vec![0u8; (w * h * 4) as usize];
-        for y in 0..h { for x in 0..w {
-            let i = ((y * w + x) * 4) as usize;
-            let c = if x < 32 { [200, 40, 40, 255] } else { [40, 40, 200, 255] };
-            scene[i..i + 4].copy_from_slice(&c);
-        }}
+        for y in 0..h {
+            for x in 0..w {
+                let i = ((y * w + x) * 4) as usize;
+                let c = if x < 32 { [200, 40, 40, 255] } else { [40, 40, 200, 255] };
+                scene[i..i + 4].copy_from_slice(&c);
+            }
+        }
         let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets/wgsl/glass.wgsl");
         let eid = crate::wgsl_material::ensure_loaded(&path.to_string_lossy());
         // Pack u with the universal exports (resolution = node device-pixel size) + declared params.
@@ -1822,18 +2052,25 @@ mod tests {
         // Assert what must hold: the effect visibly changes a meaningful number of pixels inside
         // the node (frost + rim light + dispersion + edge refraction) and changes nothing outside.
         let mut changed = 0usize;
-        for y in 16..48 { for x in 16..48 {
-            if px(&out, x, y) != px(&scene, x, y) { changed += 1; }
-        }}
-        assert!(
-            changed > 64,
-            "glass must visibly change the node's pixels (frost/rim/dispersion/refraction): {changed} px changed"
-        );
+        for y in 16..48 {
+            for x in 16..48 {
+                if px(&out, x, y) != px(&scene, x, y) {
+                    changed += 1;
+                }
+            }
+        }
+        assert!(changed > 64, "glass must visibly change the node's pixels (frost/rim/dispersion/refraction): {changed} px changed");
         let mut outside_changed = 0usize;
-        for y in 0..h { for x in 0..w {
-            if (16..48).contains(&x) && (16..48).contains(&y) { continue; }
-            if px(&out, x, y) != px(&scene, x, y) { outside_changed += 1; }
-        }}
+        for y in 0..h {
+            for x in 0..w {
+                if (16..48).contains(&x) && (16..48).contains(&y) {
+                    continue;
+                }
+                if px(&out, x, y) != px(&scene, x, y) {
+                    outside_changed += 1;
+                }
+            }
+        }
         assert_eq!(outside_changed, 0, "the pass must not touch pixels outside the node rect");
     }
 
@@ -1844,16 +2081,13 @@ mod tests {
     /// untouched, only the shape input widens.
     #[test]
     fn arbitrary_outlines_get_real_shape_fields() {
-        use figcraft_doc::VectorNetwork;
         use figcraft_doc::NodeKind;
+        use figcraft_doc::VectorNetwork;
         let mut doc = figcraft_doc::Document::default();
         let page = doc.pages[0];
 
         // A triangle vector path, bound to the same material a rectangle would use.
-        let net = VectorNetwork::from_points(
-            &[Point::new(20.0, 10.0), Point::new(110.0, 130.0), Point::new(10.0, 130.0)],
-            true,
-        );
+        let net = VectorNetwork::from_points(&[Point::new(20.0, 10.0), Point::new(110.0, 130.0), Point::new(10.0, 130.0)], true);
         let v = doc.create(page, NodeKind::Vector { network: net }, "V", 0.0, 0.0, 120.0, 140.0).expect("a vector");
         let rect = doc.create(page, NodeKind::Rectangle, "R", 0.0, 0.0, 100.0, 100.0).expect("a rect");
 
@@ -1943,15 +2177,8 @@ mod tests {
         let outline = (path, FillRule::Winding);
         // The same numbers in both: Depth 20 document px is a 20 px reach and the renderer's fixed
         // 1 px band — the built-in effect and the material must agree on what a value *means*.
-        let g = figcraft_doc::Glass {
-            light_angle: 135.0,
-            light_intensity: 0.0,
-            refraction: 0.4,
-            depth: 20.0,
-            dispersion: 0.25,
-            frost: 8.0,
-            splay: 0.0,
-        };
+        let g =
+            figcraft_doc::Glass { light_angle: 135.0, light_intensity: 0.0, refraction: 0.4, depth: 20.0, dispersion: 0.25, frost: 8.0, splay: 0.0 };
         let frame = EffectFrame { shape: &outline, back: &back, pad, size: (w, h), xf: Affine::IDENTITY, scale: 1.0 };
         let cpu = figcraft_render::glass::glass(&g, frame, None).expect("the CPU glass renders");
 
@@ -2065,7 +2292,10 @@ mod tests {
         let p95 = sorted[sorted.len() * 95 / 100];
         eprintln!(
             "CPU vs GPU glass: all mean {mean:.2}, p95 {p95:.2}, worst {:.2} at ({}, {}); flat interior mean {imean:.2} max {imax:.2} ({} px)",
-            worst.2, worst.0, worst.1, inner.len()
+            worst.2,
+            worst.0,
+            worst.1,
+            inner.len()
         );
         eprintln!("  straight-edge band (corners excluded): mean {bmean:.2} max {bmax:.2} ({} px)", band.len());
         // The flat interior (past the curve) has to match: nothing there bends or lights, so the
@@ -2144,9 +2374,7 @@ mod tests {
         let reg = reg.lock().unwrap_or_else(|e| e.into_inner());
         let params = reg.params(&eid);
         assert_eq!(params.len(), 7, "the panel has seven sliders: {params:?}");
-        let row = |field: &str| {
-            params.iter().find(|p| p.field == field).unwrap_or_else(|| panic!("missing {field}"))
-        };
+        let row = |field: &str| params.iter().find(|p| p.field == field).unwrap_or_else(|| panic!("missing {field}"));
         // (field, min, max, step, default) — the engine's `Glass` model, which *is* Figma's API
         // shape (`Glass::BOUND_FIELDS` lists the API names: lightAngle, lightIntensity, refraction,
         // depth, dispersion, radius, splay). Depth and frost are lengths in document px.
@@ -2174,8 +2402,8 @@ mod tests {
     /// gets geometry it can actually shade".
     #[test]
     fn passes_for_carries_real_outline_fields_for_shapes() {
-        use figcraft_doc::VectorNetwork;
         use figcraft_doc::NodeKind;
+        use figcraft_doc::VectorNetwork;
         let mut doc = figcraft_doc::Document::default();
         let page = doc.pages[0];
         let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets/wgsl/glass.wgsl");
@@ -2183,9 +2411,7 @@ mod tests {
             let b = crate::wgsl_material::WgslMaterialBinding::new(path.to_string_lossy());
             d.get_mut(id).expect("node").plugin_data.insert(crate::wgsl_material::BINDING_KEY.into(), b.to_json());
         };
-        let net = VectorNetwork::from_points(&[
-            Point::new(20.0, 10.0), Point::new(110.0, 130.0), Point::new(10.0, 130.0),
-        ], true);
+        let net = VectorNetwork::from_points(&[Point::new(20.0, 10.0), Point::new(110.0, 130.0), Point::new(10.0, 130.0)], true);
         let v = doc.create(page, NodeKind::Vector { network: net }, "V", 0.0, 0.0, 120.0, 140.0).expect("a vector");
         let rect = doc.create(page, NodeKind::Rectangle, "R", 0.0, 0.0, 100.0, 100.0).expect("a rect");
         bind(&mut doc, v);
@@ -2270,11 +2496,8 @@ mod tests {
         };
         // Straight RGBA (the overlay's format): opaque red everywhere.
         let red = vec![255u8, 0, 0, 255].repeat((w * h) as usize);
-        let steps = [
-            Step::Over { pixels: &red, rect: [0, 0, w, h] },
-            Step::Pass(&pass),
-        ];
-        let out = runner.composite_steps(&canvas, w, h, &steps).expect("composite");
+        let steps = [Step::Over { pixels: &red, rect: [0, 0, w, h] }, Step::Pass(&pass)];
+        let out = runner.composite_steps(&canvas, w, h, &steps, None).expect("composite");
         // Read back as BGRA: red = channel 2.
         let i = ((16 * w + 16) * 4) as usize;
         assert!(out[i + 2] > 100, "the glass interior shows the layer below it: {:?}", &out[i..i + 4]);
@@ -2325,10 +2548,12 @@ mod tests {
         let banded = t_band.elapsed().as_secs_f64() * 1000.0;
         eprintln!("1080p fields: exact {exact:.2} ms, banded(30px) {banded:.2} ms");
         // Warm up: upload, compile, allocate.
-        let _ = runner.composite_steps(&scene, w, h, &steps);
+        let _ = runner.composite_steps(&scene, w, h, &steps, None);
         let n = 12;
         let t0 = std::time::Instant::now();
-        for _ in 0..n { let _ = runner.composite_steps(&scene, w, h, &steps).expect("composite"); }
+        for _ in 0..n {
+            let _ = runner.composite_steps(&scene, w, h, &steps, None).expect("composite");
+        }
         let per = t0.elapsed().as_secs_f64() * 1000.0 / f64::from(n);
         eprintln!("1920x1080 full-window glass composite: {per:.2} ms/frame (upload + SDF(free) + skyline + readback)");
         assert!(per < 200.0, "a full-window pass must not cost hundreds of milliseconds: {per} ms");
@@ -2349,11 +2574,8 @@ mod tests {
         // Each layer is its own box (8×8, stride 8) — the `Step::Over` contract.
         let red: Vec<u8> = [255u8, 0, 0, 255].repeat(8 * 8);
         let green: Vec<u8> = [0u8, 255, 0, 255].repeat(8 * 8);
-        let steps = [
-            Step::Over { pixels: &red, rect: [0, 0, 8, h] },
-            Step::Over { pixels: &green, rect: [8, 0, 8, h] },
-        ];
-        let out = runner.composite_steps(&canvas, w, h, &steps).expect("composite");
+        let steps = [Step::Over { pixels: &red, rect: [0, 0, 8, h] }, Step::Over { pixels: &green, rect: [8, 0, 8, h] }];
+        let out = runner.composite_steps(&canvas, w, h, &steps, None).expect("composite");
         let at = |x: u32, y: u32| -> [u8; 4] {
             let i = ((y * w + x) * 4) as usize;
             [out[i], out[i + 1], out[i + 2], out[i + 3]]
@@ -2382,8 +2604,7 @@ mod tests {
                 if a[0].abs() <= 28.0 {
                     // Within the band the two must agree on distance, normal and coverage.
                     for c in 0..4 {
-                        assert!((a[c] - b[c]).abs() < 2e-3,
-                            "banded differs inside the band at ({x},{y}) channel {c}: {:?} vs {:?}", a, b);
+                        assert!((a[c] - b[c]).abs() < 2e-3, "banded differs inside the band at ({x},{y}) channel {c}: {:?} vs {:?}", a, b);
                     }
                     checked += 1;
                 } else if a[0] > 31.0 {
@@ -2411,7 +2632,7 @@ mod tests {
         let canvas = vec![0u8; (w * h * 4) as usize];
         let block: Vec<u8> = [255u8, 0, 0, 255].repeat(8 * 8);
         let steps = [Step::Over { pixels: &block, rect: [20, 10, 8, 8] }];
-        let out = runner.composite_steps(&canvas, w, h, &steps).expect("composite");
+        let out = runner.composite_steps(&canvas, w, h, &steps, None).expect("composite");
         let at = |x: u32, y: u32| -> [u8; 4] {
             let i = ((y * w + x) * 4) as usize;
             [out[i], out[i + 1], out[i + 2], out[i + 3]]
@@ -2438,9 +2659,16 @@ mod tests {
             // private clone so this helper's params never escape its own scope.
             let mut local = reg.clone();
             for (field, value) in [
-                ("u.light_angle", 135.0), ("u.light_int", 0.0), ("u.refraction", 0.4),
-                ("u.depth", 16.0), ("u.dispersion", 0.25), ("u.frost", 6.0), ("u.splay", 0.0),
-            ] { let _ = local.set_param(&eid, field, value); }
+                ("u.light_angle", 135.0),
+                ("u.light_int", 0.0),
+                ("u.refraction", 0.4),
+                ("u.depth", 16.0),
+                ("u.dispersion", 0.25),
+                ("u.frost", 6.0),
+                ("u.splay", 0.0),
+            ] {
+                let _ = local.set_param(&eid, field, value);
+            }
             let mut ex = fx::EngineExports::default();
             ex.set("resolution", vec![f64::from(w), f64::from(h)]);
             ex.set("dpr", vec![1.0]);
@@ -2449,9 +2677,14 @@ mod tests {
             local.uniform_bytes_for(&eid, "u", &ex).expect("pack u uniform")
         };
         RunPass {
-            effect: eid, node: NodeId(7), rect_px: [8, 8, w - 16, h - 16],
-            radii_px: [10.0; 4], node_px: ((w - 16) as f32, (h - 16) as f32),
-            origin_px: (0.0, 0.0), field_bytes: None, field_band: f32::INFINITY,
+            effect: eid,
+            node: NodeId(7),
+            rect_px: [8, 8, w - 16, h - 16],
+            radii_px: [10.0; 4],
+            node_px: ((w - 16) as f32, (h - 16) as f32),
+            origin_px: (0.0, 0.0),
+            field_bytes: None,
+            field_band: f32::INFINITY,
             uniforms: vec![("u".into(), u_bytes)],
             dpr: 1.0,
         }
@@ -2459,11 +2692,13 @@ mod tests {
 
     fn striped_scene(w: u32, h: u32) -> Vec<u8> {
         let mut scene = vec![0u8; (w * h * 4) as usize];
-        for y in 0..h { for x in 0..w {
-            let i = ((y * w + x) * 4) as usize;
-            let c = if (x / 6) % 2 == 0 { [210, 55, 55, 255] } else { [45, 80, 210, 255] };
-            scene[i..i + 4].copy_from_slice(&c);
-        }}
+        for y in 0..h {
+            for x in 0..w {
+                let i = ((y * w + x) * 4) as usize;
+                let c = if (x / 6) % 2 == 0 { [210, 55, 55, 255] } else { [45, 80, 210, 255] };
+                scene[i..i + 4].copy_from_slice(&c);
+            }
+        }
         scene
     }
 
@@ -2475,25 +2710,35 @@ mod tests {
         let _gpu = GPU_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let mut runner = match WgslRunner::new() {
             Some(r) => r,
-            None => { eprintln!("no GPU adapter — skipping async/sync equivalence"); return; }
+            None => {
+                eprintln!("no GPU adapter — skipping async/sync equivalence");
+                return;
+            }
         };
         let (w, h) = (64u32, 64u32);
         let canvas = striped_scene(w, h);
         let pass = glass_pass(w, h);
         let steps = [Step::Pass(&pass)];
 
-        let sync = runner.composite_steps(&canvas, w, h, &steps).expect("sync composite");
-        let id = runner.submit_async(&canvas, w, h, &steps).expect("async submit");
+        let sync = runner.composite_steps(&canvas, w, h, &steps, None).expect("sync composite");
+        let id = runner.submit_async(&canvas, w, h, &steps, None).expect("async submit");
         // Collect with a bounded pump loop — never spin forever if a broken driver never fires.
         let mut async_out = None;
         for _ in 0..2000 {
-            if let Some(out) = runner.poll_ready(id, &canvas) { async_out = Some(out); break; }
+            if let Some(out) = runner.poll_ready(id, &canvas) {
+                async_out = Some(out);
+                break;
+            }
             std::thread::yield_now();
         }
         let async_out = async_out.expect("async map callback fires and pixels are collected");
         assert_eq!(async_out.len(), sync.len(), "same image size");
         let mut diff = 0usize;
-        for (a, b) in sync.iter().zip(async_out.iter()) { if a != b { diff += 1; } }
+        for (a, b) in sync.iter().zip(async_out.iter()) {
+            if a != b {
+                diff += 1;
+            }
+        }
         assert_eq!(diff, 0, "async path must be pixel-for-pixel identical to sync: {diff} bytes differ");
         assert_eq!(runner.in_flight(), 0, "collected frame releases its slot");
     }
@@ -2506,7 +2751,10 @@ mod tests {
         let _gpu = GPU_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let mut runner = match WgslRunner::new() {
             Some(r) => r,
-            None => { eprintln!("no GPU adapter — skipping non-blocking test"); return; }
+            None => {
+                eprintln!("no GPU adapter — skipping non-blocking test");
+                return;
+            }
         };
         let (w, h) = (48u32, 48u32);
         let canvas = striped_scene(w, h);
@@ -2514,14 +2762,17 @@ mod tests {
         let steps = [Step::Pass(&pass)];
 
         let t = std::time::Instant::now();
-        let id = runner.submit_async(&canvas, w, h, &steps).expect("async submit");
+        let id = runner.submit_async(&canvas, w, h, &steps, None).expect("async submit");
         let submit_ms = t.elapsed().as_secs_f64() * 1000.0;
         assert!(submit_ms < 50.0, "submit_async returns without waiting for the GPU: {submit_ms:.1}ms");
         assert_eq!(runner.in_flight(), 1, "the submitted frame owns one slot");
 
         let mut collected = None;
         for _ in 0..2000 {
-            if let Some(out) = runner.poll_ready(id, &canvas) { collected = Some(out); break; }
+            if let Some(out) = runner.poll_ready(id, &canvas) {
+                collected = Some(out);
+                break;
+            }
             std::thread::yield_now();
         }
         assert!(collected.is_some(), "the frame is eventually collected");
@@ -2537,7 +2788,10 @@ mod tests {
         let _gpu = GPU_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let mut runner = match WgslRunner::new() {
             Some(r) => r,
-            None => { eprintln!("no GPU adapter — skipping async ring test"); return; }
+            None => {
+                eprintln!("no GPU adapter — skipping async ring test");
+                return;
+            }
         };
         let (w, h) = (32u32, 32u32);
         // A tiny Over layer so the region is small and several frames fit comfortably; the point is
@@ -2550,28 +2804,36 @@ mod tests {
         for k in 0..ASYNC_SLOTS {
             let mut base = vec![0u8; (w * h * 4) as usize];
             // A distinct flat colour per frame, visible everywhere outside the Over region.
-            for px in base.chunks_exact_mut(4) { px.copy_from_slice(&[k as u8 * 40, 10, 200, 255]); }
-            let id = runner.submit_async(&base, w, h, &steps).expect("a free slot exists");
-            ids.push(id); bases.push(base);
+            for px in base.chunks_exact_mut(4) {
+                px.copy_from_slice(&[k as u8 * 40, 10, 200, 255]);
+            }
+            let id = runner.submit_async(&base, w, h, &steps, None).expect("a free slot exists");
+            ids.push(id);
+            bases.push(base);
         }
         assert_eq!(runner.in_flight(), ASYNC_SLOTS, "all slots occupied");
         let extra = vec![7u8; (w * h * 4) as usize];
-        assert!(runner.submit_async(&extra, w, h, &steps).is_none(), "full ring refuses a new frame instead of blocking or evicting");
+        assert!(runner.submit_async(&extra, w, h, &steps, None).is_none(), "full ring refuses a new frame instead of blocking or evicting");
 
         // Collect every frame and confirm its outside-region pixels come from *its* base.
         for (id, base) in ids.into_iter().zip(bases.into_iter()) {
             let mut out = None;
             for _ in 0..2000 {
-                if let Some(o) = runner.poll_ready(id, &base) { out = Some(o); break; }
+                if let Some(o) = runner.poll_ready(id, &base) {
+                    out = Some(o);
+                    break;
+                }
                 std::thread::yield_now();
             }
             let out = out.expect("frame collected");
             let want = [base[0], base[1], base[2], base[3]];
             let i = ((h - 1) * w + (w - 1)) * 4; // far from the [4,4,4,4] region
-            assert_eq!([out[i as usize], out[i as usize + 1], out[i as usize + 2], out[i as usize + 3]], want,
-                "frame {id} keeps its own base outside the region");
+            assert_eq!(
+                [out[i as usize], out[i as usize + 1], out[i as usize + 2], out[i as usize + 3]],
+                want,
+                "frame {id} keeps its own base outside the region"
+            );
         }
         assert_eq!(runner.in_flight(), 0, "draining the ring frees every slot");
     }
-
 }

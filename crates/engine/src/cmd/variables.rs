@@ -362,22 +362,13 @@ fn move_collection(s: &mut Session, p: &Value) -> Result<Value> {
     let cmd = "variable.moveCollection";
     let doc = s.doc_mut()?;
     let id = req_string(cmd, p, "collection")?;
-    let from = doc
-        .variables
-        .collections
-        .iter()
-        .position(|c| c.id == id || c.name == id)
-        .ok_or_else(|| bad(cmd, "no such collection"))?;
+    let from = doc.variables.collections.iter().position(|c| c.id == id || c.name == id).ok_or_else(|| bad(cmd, "no such collection"))?;
     let c = doc.variables.collections.remove(from);
     let at = match p.get("before") {
         None | Some(Value::Null) => doc.variables.collections.len(),
         Some(Value::String(b)) => {
             let b = b.trim();
-            doc.variables
-                .collections
-                .iter()
-                .position(|x| x.id == b || x.name == b)
-                .ok_or_else(|| bad(cmd, "`before` names no collection"))?
+            doc.variables.collections.iter().position(|x| x.id == b || x.name == b).ok_or_else(|| bad(cmd, "`before` names no collection"))?
         }
         Some(_) => return Err(bad(cmd, "before: a collection id or name, or null")),
     };

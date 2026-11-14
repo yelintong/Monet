@@ -54,11 +54,7 @@ pub fn content_width(viewport_w: f32) -> f32 {
 
 /// 最大化按钮图标：已最大化时画还原（上游 `WinRestore`）。
 pub fn maximize_icon(maximized: bool) -> Icon {
-    if maximized {
-        Icon::WinRestore
-    } else {
-        Icon::WinMaximize
-    }
+    if maximized { Icon::WinRestore } else { Icon::WinMaximize }
 }
 
 /// 一个窗口控制按钮：hover 底色，关闭键 hover 变红。命中区交给平台，动作由系统执行。
@@ -105,13 +101,7 @@ pub fn title_bar(content: impl IntoElement, maximized: bool) -> Div {
         // Do NOT put `Drag` on the whole bar: that makes the OS treat the entire title bar as
         // HTCAPTION and swallows clicks on the Home button and the tabs. Only the left padding and
         // a short strip before the window controls are drag regions.
-        .child(
-            div()
-                .flex_none()
-                .w(pt(LEFT_PAD))
-                .h_full()
-                .window_control_area(WindowControlArea::Drag),
-        )
+        .child(div().flex_none().w(pt(LEFT_PAD)).h_full().window_control_area(WindowControlArea::Drag))
         .child(div().flex_1().min_w(pt(0.0)).h_full().flex().items_center().child(content))
         .child(div().flex_none().w(pt(8.0)).h_full().window_control_area(WindowControlArea::Drag))
         .child(min)

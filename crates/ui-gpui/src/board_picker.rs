@@ -93,11 +93,7 @@ pub(crate) fn card(pics: &Pictures, i: usize) -> gpui::Stateful<Div> {
         .overflow_hidden();
     let tex = tpl.and_then(|tpl| pics.borrow().get(tpl.id).cloned().flatten());
     frame = match tex {
-        Some(tex) => frame.child(
-            img(ImageSource::Render(tex))
-                .max_w(px(CARD_W - 8.0 - 12.0))
-                .max_h(px(PICTURE_H - 12.0)),
-        ),
+        Some(tex) => frame.child(img(ImageSource::Render(tex)).max_w(px(CARD_W - 8.0 - 12.0)).max_h(px(PICTURE_H - 12.0))),
         // The table (and a template whose picture couldn't be drawn): its mark.
         None => frame.child(icon::paint(if tpl.is_some() { Icon::Templates } else { Icon::Table }, rgba(t.icon), 32.0)),
     };
@@ -166,10 +162,7 @@ pub(crate) fn picker(pics: &Pictures, on_card: Rc<dyn Fn(usize, &mut gpui::Windo
     let mut grid = div().flex().flex_row().flex_wrap().gap(pt(GAP)).w(pt(COLUMNS as f32 * (CARD_W + GAP) - GAP));
     for i in 0..count {
         let on_card = on_card.clone();
-        grid = grid.child(
-            card(pics, i)
-                .on_mouse_down(gpui::MouseButton::Left, move |_: &gpui::MouseDownEvent, w, cx| on_card(i, w, cx)),
-        );
+        grid = grid.child(card(pics, i).on_mouse_down(gpui::MouseButton::Left, move |_: &gpui::MouseDownEvent, w, cx| on_card(i, w, cx)));
     }
     div()
         .w(pt(w))
