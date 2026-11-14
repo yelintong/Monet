@@ -792,6 +792,13 @@ struct LastComposite {
     base: Arc<RenderImage>,
     key: u64,
     image: Arc<RenderImage>,
+    /// The page this composite was made for. A fallback must only hand back a raster for the same
+    /// scene: after a successful page A, switching to a same-size page B whose material fails must
+    /// not show page A's glass under page B's `Done`.
+    page: NodeId,
+    /// The viewport it was made for — a pan/zoom changes which pixels are under the glass, so a
+    /// same-size raster of a different view is not the same picture either.
+    view: View,
 }
 
 /// Everything a composite reads besides its page image, hashed. `time` is not hashed on purpose:
@@ -865,11 +872,16 @@ fn apply_wgsl_materials(mats: &mut Materials, doc: &Document, page: NodeId, done
     }
     // 仍然失败：绝不把材质节点画回它的填充色（那正是"玻璃突然变成一块纯色"的观感）。保住上一张
     // 合成图——几何可能差一帧，但仍是玻璃。只有连上一张都没有（首帧就失败/画布尺寸变了）才退回 CPU。
-    if let Some(last) = mats.last_composite.as_ref().map(|l| l.image.clone()) {
-        let (want, got) = (done.image.size(0), last.size(0));
-        if want.width == got.width && want.height == got.height {
+    // 上一张合成图只有在**同一个页面、同一个视口、同尺寸**时才是这一帧的合法替身。换了页面 / 平移
+    // 缩放之后，同尺寸的旧图会把 A 页的玻璃当成 B 页交出去（元数据却是 B 页的）。对不上就宁可走
+    // CPU 兜底，也不交一张错位的图。
+    if let Some(last) = mats.last_composite.as_ref() {
+        let v = &done.view;
+        let same_view = last.view.origin == v.origin && last.view.scale == v.scale && last.view.width == v.width && last.view.height == v.height;
+        let (want, got) = (done.image.size(0), last.image.size(0));
+        if last.page == page && same_view && want.width == got.width && want.height == got.height {
             eprintln!("[material] COMPOSITE FAILED page={page:?}: keeping the last good raster");
-            done.image = last;
+            done.image = last.image.clone();
             return;
         }
     }
@@ -1003,7 +1015,7 @@ fn try_apply_wgsl_materials(mats: &mut Materials, doc: &Document, page: NodeId, 
     let ok = composited.as_ref().is_some_and(|out| out.len() >= expected) && drawn == total;
     if ok && let Some(out) = composited {
         done.image = wrap_bgra(w, h, out);
-        mats.last_composite = Some(LastComposite { base: base_image, key, image: done.image.clone() });
+        mats.last_composite = Some(LastComposite { base: base_image, key, image: done.image.clone(), page, view: done.view.clone() });
     }
     if render_log() {
         // 谁调的这条整页合成（画布 / 兜底缩略图 / 预览）看 `at`：一度把缩略图那次当成了主画布，
@@ -1153,7 +1165,7 @@ fn collect_ready(mats: &std::sync::Arc<std::sync::Mutex<Materials>>, pending: &m
         // 收齐的这张就是「这张底图 + 这组 passes」的合成结果：记下来，下一帧输入没变就直接用它。
         let base = pf.done.image.clone();
         pf.done.image = wrap_bgra(pf.w, pf.h, pixels);
-        guard.last_composite = Some(LastComposite { base, key: pf.key, image: pf.done.image.clone() });
+        guard.last_composite = Some(LastComposite { base, key: pf.key, image: pf.done.image.clone(), page: pf.done.page, view: pf.done.view.clone() });
         ready.push(pf.done);
     }
 }
@@ -1348,34 +1360,33 @@ impl Renders {
             done.image = prev.clone();
         }
         self.last_image = Some(done.image.clone());
-        // 这一帧在 `draw_layer` 里登记的层，现在算出来装回板上：下一帧直接画，不再等。
+        // 这一帧在 `draw_layer` 里登记的层算出来装回板上，再把「栅格出现在画之前」的复用缓存丢掉
+        // 重画——**反复**做：重画本身可能给上层材质排新的请求（下层刚画进去，上层的底图就变了），
+        // 而静止画布不一定还有下一帧，排了就永远没人收（上层材质停在旧图或空白）。所以有界地
+        // 「drain → 重画」直到一轮不再产出新栅格；静止帧没产出，不付这份代价。
         #[cfg(feature = "gpu")]
-        let mut produced = 0usize;
-        #[cfg(feature = "gpu")]
-        if let Some(board) = job.shade.as_ref() {
-            if render_log() { eprintln!("[shade] drain pending={}", board.pending()); }
-            let mut mats = self.mats.lock().unwrap_or_else(|e| e.into_inner());
-            if mats.runner.is_none() {
-                mats.runner = crate::wgsl_runner::WgslRunner::new();
+        {
+            const MAX_SHADE_PASSES: usize = 4;
+            for _ in 0..MAX_SHADE_PASSES {
+                let Some(board) = job.shade.as_ref() else { break };
+                let produced = {
+                    let mut mats = self.mats.lock().unwrap_or_else(|e| e.into_inner());
+                    if mats.runner.is_none() {
+                        mats.runner = crate::wgsl_runner::WgslRunner::new();
+                    }
+                    mats.runner.as_mut().map_or(0, |runner| crate::shade_gpu::shade_pending(board, runner, &job.doc))
+                };
+                if produced == 0 {
+                    break;
+                }
+                self.full.clear();
+                done = guarded(&mut self.full, |r| run(job, &job.view, r, false, None))?;
+                self.last = Some((job.uid, job.page, job.view.scale));
+                if done.work == Work::Full {
+                    self.full_ms = done.ms;
+                }
+                self.last_image = Some(done.image.clone());
             }
-            if let Some(runner) = mats.runner.as_mut() {
-                produced = crate::shade_gpu::shade_pending(board, runner, &job.doc);
-            }
-        }
-        // 刚算出的栅格不在 `done` 里（那一帧是在栅格存在之前画的）。而 worker 算完**并不保证**
-        // 还有下一帧：画布静止时一帧都不再渲染，栅格就永远停在板上没人画——这正是「玻璃/材质
-        // 在静止画面上消失」的根因（也解释了截图里 rail 请求 ok=1/1 却洋红=0）。所以把复用缓存
-        // 丢掉、当帧再画一次：这次 `shader_layer` 正好命中刚装上去的栅格，材质就进到本帧交付的
-        // 图里。只有真的产出新栅格才重画（静止帧没产出，不付这份代价）。
-        #[cfg(feature = "gpu")]
-        if produced > 0 {
-            self.full.clear();
-            done = guarded(&mut self.full, |r| run(job, &job.view, r, false, None))?;
-            self.last = Some((job.uid, job.page, job.view.scale));
-            if done.work == Work::Full {
-                self.full_ms = done.ms;
-            }
-            self.last_image = Some(done.image.clone());
         }
         Some(done)
     }

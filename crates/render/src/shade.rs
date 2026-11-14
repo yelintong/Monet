@@ -74,6 +74,10 @@ pub struct ShadeRequest {
 pub struct Shaded {
     pub key: u64,
     pub pixmap: Pixmap,
+    /// Where this window's top-left sits inside the node, in device pixels. Two bands of one node
+    /// can share a size but sit at different origins; the fallback keeps this so it never hands a
+    /// band another band's raster (that would shift the glass by the origin difference).
+    pub origin_px: (f32, f32),
 }
 
 /// Per-frame bridge between [`crate::draw`] (producer) and a GPU backend (consumer).
@@ -91,8 +95,11 @@ pub struct ShadeBoard {
     ready: Mutex<HashMap<(NodeId, u64), Arc<Shaded>>>,
     /// Insertion order of `ready`, oldest first, for eviction.
     order: Mutex<VecDeque<(NodeId, u64)>>,
-    /// The newest raster of each node, whatever its key (a miss draws it, so a pane never blinks).
-    latest: Mutex<HashMap<NodeId, Arc<Shaded>>>,
+    /// The newest raster of each **window** (`node` + size + `origin_px`), whatever its key — a
+    /// miss draws it, so a pane never blinks. Keyed by window, not by node: two bands of one node
+    /// can match on size alone while covering different windows, and handing a band another band's
+    /// raster shifts the glass. Bounded to nodes that still hold a `ready` entry (see [`Self::put`]).
+    latest: Mutex<HashMap<(NodeId, u64), Arc<Shaded>>>,
     requests: Mutex<Vec<ShadeRequest>>,
     stats: Mutex<ShadeStats>,
 }
@@ -194,12 +201,15 @@ impl ShadeBoard {
     }
 
     /// Install a finished raster under its own key. Several rasters of one node coexist (one per
-    /// band); the oldest is evicted once [`CACHE_LIMIT`] is reached.
+    /// band); the oldest is evicted once [`CACHE_LIMIT`] is reached. Eviction also drops the node's
+    /// fallback entries once its last `ready` raster is gone, so `latest` cannot keep a pixel buffer
+    /// alive after the cache stopped accounting for it.
     pub fn put(&self, node: NodeId, shaded: Shaded) {
         let key = shaded.key;
+        let win = window_id((shaded.pixmap.width(), shaded.pixmap.height()), shaded.origin_px);
         let arc = Arc::new(shaded);
         self.ready.lock().unwrap_or_else(|e| e.into_inner()).insert((node, key), arc.clone());
-        self.latest.lock().unwrap_or_else(|e| e.into_inner()).insert(node, arc);
+        self.latest.lock().unwrap_or_else(|e| e.into_inner()).insert((node, win), arc);
         // Never hold `order` while taking `ready` (or the two lock orders deadlock): collect what
         // fell out of the queued window first, then drop it from the map.
         let evicted: Vec<(NodeId, u64)> = {
@@ -214,10 +224,17 @@ impl ShadeBoard {
             out
         };
         if !evicted.is_empty() {
-            let mut ready = self.ready.lock().unwrap_or_else(|e| e.into_inner());
-            for old in &evicted {
-                ready.remove(old);
-            }
+            // Nodes that still have a `ready` raster after eviction keep their fallback windows;
+            // the rest lose every fallback, bounding `latest` together with `ready`.
+            let still: std::collections::HashSet<NodeId> = {
+                let mut ready = self.ready.lock().unwrap_or_else(|e| e.into_inner());
+                for old in &evicted {
+                    ready.remove(old);
+                }
+                ready.keys().map(|(n, _)| *n).collect()
+            };
+            let mut latest = self.latest.lock().unwrap_or_else(|e| e.into_inner());
+            latest.retain(|(n, _), _| still.contains(n));
         }
     }
 
@@ -225,16 +242,19 @@ impl ShadeBoard {
     pub fn forget(&self, node: NodeId) {
         self.ready.lock().unwrap_or_else(|e| e.into_inner()).retain(|(n, _), _| *n != node);
         self.order.lock().unwrap_or_else(|e| e.into_inner()).retain(|(n, _)| *n != node);
-        self.latest.lock().unwrap_or_else(|e| e.into_inner()).remove(&node);
+        self.latest.lock().unwrap_or_else(|e| e.into_inner()).retain(|(n, _), _| *n != node);
     }
 
-    /// The newest raster for `node` **of this exact size**. A stale layer is what a miss draws: the
-    /// pane keeps its last glass for the frame or two a new one takes, instead of blinking out.
+    /// The newest raster for `node` **of this exact window** (size and origin). A stale layer is
+    /// what a miss draws: the pane keeps its last glass for the frame or two a new one takes,
+    /// instead of blinking out.
     ///
-    /// The size has to match: with several bands of one node in flight, a raster of another band is
-    /// a different window at a different origin, and blitting it here would shift the glass.
-    pub fn latest(&self, node: NodeId, size: (u32, u32)) -> Option<Arc<Shaded>> {
-        let s = self.latest.lock().unwrap_or_else(|e| e.into_inner()).get(&node).cloned()?;
+    /// Both the size and the origin have to match: with several bands of one node in flight, a
+    /// raster of another band is the same size at a different origin, and blitting it here would
+    /// shift the glass. An equal size does not mean the same window.
+    pub fn latest(&self, node: NodeId, size: (u32, u32), origin: (f32, f32)) -> Option<Arc<Shaded>> {
+        let win = window_id(size, origin);
+        let s = self.latest.lock().unwrap_or_else(|e| e.into_inner()).get(&(node, win)).cloned()?;
         (s.pixmap.width() == size.0 && s.pixmap.height() == size.1).then_some(s)
     }
 
@@ -264,6 +284,18 @@ pub fn shade_key(spec: &ShaderSpec, size: (u32, u32), origin_px: (f32, f32), rad
         v.to_bits().hash(&mut h);
     }
     backdrop.hash(&mut h);
+    h.finish()
+}
+
+/// Identity of a material **window** — a node's layer size plus where its top-left sits inside the
+/// node. `latest` keys the fallback by this instead of by size alone: two bands of one node can be
+/// the same size at different origins, and a fallback must never cross them.
+fn window_id(size: (u32, u32), origin_px: (f32, f32)) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    size.hash(&mut h);
+    origin_px.0.to_bits().hash(&mut h);
+    origin_px.1.to_bits().hash(&mut h);
     h.finish()
 }
 
@@ -349,7 +381,7 @@ mod tests {
         let n = NodeId(7);
         let pixmap = Pixmap::new(4, 2).unwrap();
         assert!(b.ready(n, 1).is_none());
-        b.put(n, Shaded { key: 1, pixmap });
+        b.put(n, Shaded { key: 1, pixmap, origin_px: (0.0, 0.0) });
         assert!(b.ready(n, 1).is_some(), "same key: cached");
         assert!(b.ready(n, 2).is_none(), "a new backdrop invalidates the raster");
         assert_eq!(b.take_stats(), ShadeStats { hits: 1, misses: 2 });
@@ -361,11 +393,11 @@ mod tests {
     fn a_miss_hands_back_the_layer_s_last_raster() {
         let b = board();
         let n = NodeId(7);
-        assert!(b.latest(n, (4, 2)).is_none(), "nothing drawn yet: the first frame is empty");
-        b.put(n, Shaded { key: 1, pixmap: Pixmap::new(4, 2).unwrap() });
+        assert!(b.latest(n, (4, 2), (0.0, 0.0)).is_none(), "nothing drawn yet: the first frame is empty");
+        b.put(n, Shaded { key: 1, pixmap: Pixmap::new(4, 2).unwrap(), origin_px: (0.0, 0.0) });
         assert!(b.ready(n, 2).is_none(), "a new key is a miss");
-        assert_eq!(b.latest(n, (4, 2)).map(|s| s.key), Some(1), "a stale raster beats a blank frame");
-        assert!(b.latest(n, (4, 9)).is_none(), "another band's window is a different raster");
+        assert_eq!(b.latest(n, (4, 2), (0.0, 0.0)).map(|s| s.key), Some(1), "a stale raster beats a blank frame");
+        assert!(b.latest(n, (4, 9), (0.0, 0.0)).is_none(), "another band's window is a different raster");
     }
 
     /// A tall pane is rendered in bands, so one node asks for several rasters in one frame, at
@@ -374,8 +406,8 @@ mod tests {
     fn bands_of_one_layer_keep_their_own_rasters() {
         let b = board();
         let n = NodeId(7);
-        b.put(n, Shaded { key: 1, pixmap: Pixmap::new(4, 2).unwrap() });
-        b.put(n, Shaded { key: 2, pixmap: Pixmap::new(4, 3).unwrap() });
+        b.put(n, Shaded { key: 1, pixmap: Pixmap::new(4, 2).unwrap(), origin_px: (0.0, 0.0) });
+        b.put(n, Shaded { key: 2, pixmap: Pixmap::new(4, 3).unwrap(), origin_px: (0.0, 0.0) });
         assert_eq!(b.ready(n, 1).map(|s| s.pixmap.height()), Some(2), "the first band is still there");
         assert_eq!(b.ready(n, 2).map(|s| s.pixmap.height()), Some(3), "and so is the second");
         assert_eq!(b.cached(), 2, "two windows, two entries");

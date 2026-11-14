@@ -75,7 +75,7 @@ fn per_layer_material_is_painted_on_the_second_frame_at_every_zoom() {
         let mut keys = Vec::new();
         for r in &reqs {
             keys.push((r.key, r.size));
-            board.put(node, Shaded { key: r.key, pixmap: magenta_of(r.size.0, r.size.1) });
+            board.put(node, Shaded { key: r.key, pixmap: magenta_of(r.size.0, r.size.1), origin_px: r.origin_px });
         }
 
         // Frame 2 must hit the cache and paint the material over the node's device rect.
@@ -122,7 +122,7 @@ fn per_layer_material_is_painted_without_banding_too() {
     let reqs: Vec<_> = board.take_requests().into_iter().filter(|r| r.node == node).collect();
     assert_eq!(reqs.len(), 1, "one unbanded render, one request");
     for r in &reqs {
-        board.put(node, Shaded { key: r.key, pixmap: magenta_of(r.size.0, r.size.1) });
+        board.put(node, Shaded { key: r.key, pixmap: magenta_of(r.size.0, r.size.1), origin_px: r.origin_px });
     }
     let pix = figcraft_render::render_view_single(&doc, doc.pages[0], &view, &opts).expect("frame 2");
     let m = count_magenta(&to_rgba8(&pix));
@@ -165,7 +165,7 @@ fn retained_two_frames_still_show_the_material() {
         let reqs: Vec<_> = board.take_requests().into_iter().filter(|r| r.node == node).collect();
         assert!(!reqs.is_empty(), "scale {scale}: frame 1 must request");
         for r in &reqs {
-            board.put(node, Shaded { key: r.key, pixmap: magenta_of(r.size.0, r.size.1) });
+            board.put(node, Shaded { key: r.key, pixmap: magenta_of(r.size.0, r.size.1), origin_px: r.origin_px });
         }
         // Frame 2, WITHOUT clearing: the reuse cache thinks nothing changed and hands back the
         // pre-material image. This is the bug — and why an idle canvas never shows the material.

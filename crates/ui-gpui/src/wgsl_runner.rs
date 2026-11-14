@@ -1207,7 +1207,7 @@ impl WgslRunner {
         //    steady rect uploads nothing at all.
         for step in steps {
             let Step::Pass(p) = step else { continue };
-            let Some([_, _, rw, rh]) = clip_rect(p.rect_px, w, h) else { continue };
+            let Some([rx, ry, rw, rh]) = clip_rect(p.rect_px, w, h) else { continue };
             self.ensure_backdrop(p.node.0, rw, rh, p.dpr);
             let key = field_key(p, rw, rh);
             let changed = self.ensure_field(p.node.0, rw, rh, key);
@@ -1218,15 +1218,54 @@ impl WgslRunner {
             if !upload {
                 continue;
             }
-            let bytes = p.field_bytes.clone().unwrap_or_else(|| fields_for_rect_banded(rw, rh, p.node_px, p.origin_px, p.radii_px, p.field_band));
-            if let Some(fd) = self.fields.get(&p.node.0) {
+            let Some(fd) = self.fields.get(&p.node.0) else { continue };
+            if let Some(full) = &p.field_bytes {
                 self.queue.write_texture(
                     wgpu::TexelCopyTextureInfo { texture: &fd.texture, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
-                    &bytes,
+                    full,
                     wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(rw * 8), rows_per_image: Some(rh) },
                     wgpu::Extent3d { width: rw, height: rh, depth_or_array_layers: 1 },
                 );
+                continue;
             }
+            // A rect's field is analytic, and the pass only **shades** the visible viewport (the
+            // scissor), so the field is only ever read there. Generating the whole overscanned
+            // window costs a 90 MB buffer per frame (11.2M px × 8 B ≈ 210 ms of the 245 ms encode);
+            // the off-screen ring is never sampled. Generate just the visible sub-rect, at its
+            // offset inside the window, and upload that.
+            let sub = shade.and_then(|s| {
+                let x0 = s[0].max(rx);
+                let y0 = s[1].max(ry);
+                let x1 = (s[0] + s[2]).min(rx + rw);
+                let y1 = (s[1] + s[3]).min(ry + rh);
+                (x1 > x0 && y1 > y0).then_some((x0, y0, x1 - x0, y1 - y0))
+            });
+            let (sx, sy, sw, sh) = match sub {
+                Some((x0, y0, w0, h0)) => (x0 - rx, y0 - ry, w0, h0),
+                None => (0, 0, rw, rh),
+            };
+            if sw == 0 || sh == 0 {
+                continue;
+            }
+            let bytes = fields_for_rect_banded(
+                sw,
+                sh,
+                p.node_px,
+                (p.origin_px.0 + sx as f32, p.origin_px.1 + sy as f32),
+                p.radii_px,
+                p.field_band,
+            );
+            self.queue.write_texture(
+                wgpu::TexelCopyTextureInfo {
+                    texture: &fd.texture,
+                    mip_level: 0,
+                    origin: wgpu::Origin3d { x: sx, y: sy, z: 0 },
+                    aspect: wgpu::TextureAspect::All,
+                },
+                &bytes,
+                wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(sw * 8), rows_per_image: Some(sh) },
+                wgpu::Extent3d { width: sw, height: sh, depth_or_array_layers: 1 },
+            );
         }
 
         // 4. One command buffer for the whole stack, submitted once.

@@ -791,7 +791,7 @@ fn shader_layer(
     });
     // 没算出来就用这一层上一张：拖动材质本身时键每帧都换，画空白会闪。第一次见到这个节点
     // 时它本来就没有上一张，那一帧仍然是空的。
-    board.latest(n.id, (lw, lh)).map(|s| s.pixmap.clone())
+    board.latest(n.id, (lw, lh), origin).map(|s| s.pixmap.clone())
 }
 
 /// Node `n`'s backdrop effects through its backdrop outline `sh`, for its `size` layer at `at` on

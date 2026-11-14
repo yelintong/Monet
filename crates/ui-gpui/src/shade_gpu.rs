@@ -62,7 +62,7 @@ pub fn shade_pending(board: &ShadeBoard, runner: &mut crate::wgsl_runner::WgslRu
         };
         crate::canvas::render_worker::rgba_to_bgra(&mut out);
         let Some(pixmap) = premultiplied(&out, w, h) else { continue };
-        board.put(req.node, Shaded { key: req.key, pixmap });
+        board.put(req.node, Shaded { key: req.key, pixmap, origin_px: req.origin_px });
         done += 1;
     }
     if crate::canvas::render_worker::render_log() {

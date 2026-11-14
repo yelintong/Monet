@@ -271,10 +271,21 @@ fn band_spans(doc: &Document, page: NodeId, view: &View, opts: &Options, band_h:
         }
         return out;
     }
-    // Every material edge is a cut point; between two of them, a span that lies inside a material
-    // range stays whole and everything else is sliced as usual.
+    // Merge overlapping / touching material ranges **before** cutting. Two materials covering
+    // [100,500] and [300,700] form one contiguous [100,700] span; cutting at 300 and 500 would split
+    // both into extra windows (O(N²) shader windows for staggered materials) for nothing.
+    ranges.sort_unstable();
+    let mut merged: Vec<(u32, u32)> = Vec::with_capacity(ranges.len());
+    for &(a, b) in &ranges {
+        match merged.last_mut() {
+            Some(last) if a <= last.1 => last.1 = last.1.max(b),
+            _ => merged.push((a, b)),
+        }
+    }
+    // Every merged material edge is a cut point; between two of them, a span that lies inside a
+    // merged range stays whole and everything else is sliced as usual.
     let mut cuts: Vec<u32> = vec![0, h];
-    for (a, b) in &ranges {
+    for (a, b) in &merged {
         cuts.push(*a);
         cuts.push(*b);
     }
@@ -286,7 +297,7 @@ fn band_spans(doc: &Document, page: NodeId, view: &View, opts: &Options, band_h:
         if b <= a {
             continue;
         }
-        if ranges.iter().any(|(lo, hi)| *lo <= a && b <= *hi) {
+        if merged.iter().any(|(lo, hi)| *lo <= a && b <= *hi) {
             out.push((a, b - a));
             continue;
         }
