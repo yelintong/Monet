@@ -89,6 +89,9 @@ mod main_menu;
 /// 点锚定的菜单卡片：右键菜单与工具栏飞出菜单共用的一套行模型。
 mod menu_card;
 
+/// 所有菜单共用的一套规格：行高 24、分隔线通边、白色百分比墨色（用户 2026-11-14）。
+mod menu_metrics;
+
 /// B2: the Actions palette's data (tabs, Recents, grouped commands, ranking). No widgets here.
 mod palette;
 
@@ -6016,7 +6019,7 @@ impl Render for CanvasView {
                         palette_sel,
                         x,
                         y + 40.0,
-                        w - 16.0,
+                        w,
                         pick,
                         hover,
                         std::rc::Rc::new(|_, _, _| {}),
@@ -6024,7 +6027,7 @@ impl Render for CanvasView {
                         vh,
                     );
 
-                    let list = div().id("palette-list").flex_1().min_h(px(0.0)).w_full().overflow_y_scroll().children(if palette_count == 0 {
+                    let list = div().id("palette-list").flex_1().min_h(px(0.0)).w_full().mx(widgets::pt(8.0)).overflow_y_scroll().children(if palette_count == 0 {
                         vec![
                             div()
                                 .p(widgets::pt(8.0))

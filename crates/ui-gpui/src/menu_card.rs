@@ -27,7 +27,7 @@ use std::rc::Rc;
 
 /// The card's inset (egui `menu_frame`: `Margin::same(8)`). The fill, the 13 pt corners and the
 /// shadow come from [`crate::widgets::menu_surface`] — one definition for every popup.
-const PAD: f32 = 8.0;
+const PAD: f32 = crate::menu_metrics::MENU_PAD;
 /// A menu item's own radius (egui `rect_filled(r, CornerRadius::same(5), …)`).
 const ITEM_RADIUS: f32 = 5.0;
 /// The check column: egui's label starts at `r.min.x + 28.0`.
@@ -36,8 +36,8 @@ const CHECK_W: f32 = 28.0;
 const ICON_X: f32 = 24.0;
 const ICON_SIZE: f32 = 16.0;
 const ICON_LABEL_X: f32 = 48.0;
-/// A separator's height: `my(4) + 1 + my(4)`.
-const SEP_H: f32 = 9.0;
+/// A separator's height, shared by every menu: 4 + 1 + 4.
+const SEP_H: f32 = crate::menu_metrics::MENU_SEP_H;
 
 /// 一行菜单的模型：画布右键菜单、工具栏飞出菜单、Actions palette 共用。
 /// （2026-11-06 恢复：该文件被并行编辑误删了这一段，而 `lib.rs` / `toolbar.rs` /
@@ -180,7 +180,7 @@ pub(crate) fn rows(
     let mut y = top + PAD;
     for (i, item) in items.iter().enumerate() {
         if item.separator_before {
-            out.push(div().my(pt(4.0)).h(pt(1.0)).w_full().bg(rgba(t.border)).into_any_element());
+            out.push(crate::menu_metrics::divider(width).into_any_element());
             y += SEP_H;
         }
         let key = item.key.clone();
@@ -197,10 +197,11 @@ pub(crate) fn rows(
             .flex_row()
             .items_center()
             .rounded(pt(ITEM_RADIUS))
+            .px(pt(PAD))
             .pl(pt(inset))
             .pr(pt(10.0))
             .text_size(pt(TEXT_PT))
-            .text_color(rgba(if item.disabled { t.menu_dim } else { t.menu_text }));
+            .text_color(if item.disabled { rgba(t.menu_dim) } else { crate::menu_metrics::ink() });
         if !item.disabled {
             row = row.hover(|s| s.bg(rgba(t.menu_hover))).cursor_pointer();
             let hover = on_hover.clone();
@@ -229,19 +230,24 @@ pub(crate) fn rows(
             }));
         }
         if let Some(icon) = item.icon {
-            row = row.child(div().absolute().left(pt(ICON_X)).top(pt(0.0)).h(pt(row_h)).flex().items_center().child(paint_icon(
-                icon,
-                rgba(if item.disabled { t.menu_dim } else { t.menu_text }),
-                ICON_SIZE,
-            )));
+            let color = if item.disabled { rgba(t.menu_dim) } else { crate::menu_metrics::ink() };
+            // A shape-tool mark is a 24 pt vector: the icon column is 24 pt wide, so let the
+            // vector keep its own size instead of forcing it into ICON_SIZE (which would also
+            // scale the shared 1 pt stroke).
+            let mark = if crate::widgets::icon::is_shape_tool(icon) {
+                crate::widgets::icon::paint_tool(icon, color).into_any_element()
+            } else {
+                paint_icon(icon, color, ICON_SIZE).into_any_element()
+            };
+            row = row.child(div().absolute().left(pt(ICON_X)).top(pt(0.0)).h(pt(row_h)).flex().items_center().child(mark));
         }
         row = row.child(div().flex_1().min_w(pt(0.0)).overflow_hidden().whitespace_nowrap().child(item.label.clone()));
         if has_sub {
-            row = row.child(div().ml(pt(MENU_TRAIL_GAP)).whitespace_nowrap().text_color(rgba(t.menu_dim)).child("▸"));
+            row = row.child(div().ml(pt(MENU_TRAIL_GAP)).whitespace_nowrap().text_color(crate::menu_metrics::trail_ink()).child("▸"));
         } else if let Some(trail) = &item.trail {
             // `用户 2026-11-06`：无快捷键就不预留占位（避免「项内右侧空一截」）。
             if !trail.is_empty() {
-                row = row.child(div().ml(pt(MENU_TRAIL_GAP)).whitespace_nowrap().text_color(rgba(t.menu_dim)).child(trail.clone()));
+                row = row.child(div().ml(pt(MENU_TRAIL_GAP)).whitespace_nowrap().text_color(crate::menu_metrics::trail_ink()).child(trail.clone()));
             }
         }
         out.push(row.into_any_element());
@@ -316,13 +322,14 @@ pub(crate) fn card(
 mod tests {
     use super::*;
 
-    /// The flyout sits above its trigger, so the card's height must be predictable from the rows:
-    /// chrome 8 + 8, one 32 pt row each, a divider 9 above its row.
+    /// The card's height must be predictable from the rows: 8 + 8 chrome, shared 24 pt rows,
+    /// and one shared 9 pt divider.
     #[test]
     fn card_height_is_chrome_plus_rows() {
         let rows = vec![Item::new("a", "A"), Item::new("b", "B"), Item::new("c", "C").separator_before()];
-        assert_eq!(height(&rows, 32.0), 16.0 + 3.0 * 32.0 + 9.0);
-        assert_eq!(height(&[], 32.0), 16.0);
+        let h = crate::menu_metrics::MENU_ROW_H;
+        assert_eq!(height(&rows, h), 2.0 * PAD + 3.0 * h + SEP_H);
+        assert_eq!(height(&[], h), 2.0 * PAD);
     }
 
     /// The label's inset: a checked row puts it after the 28 pt check column, a tool row after the

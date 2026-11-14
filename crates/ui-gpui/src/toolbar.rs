@@ -46,8 +46,9 @@ const PILL_H: f32 = 48.0;
 const MODE_GLYPH: f32 = 14.0;
 /// Draw · Design · Animation · Inspect.
 const MODE_CELLS: usize = 4;
-/// A flyout row's height (`ui-egui/src/toolbar.rs::flyout`: `item_h = 32.0`).
-pub(crate) const FLYOUT_ROW_H: f32 = 32.0;
+/// A flyout row's height: every menu shares `menu_metrics::MENU_ROW_H` (24 pt), which also
+/// matches the shape-tool marks' natural 24x24 viewBox.
+pub(crate) const FLYOUT_ROW_H: f32 = crate::menu_metrics::MENU_ROW_H;
 
 /// A tool group: its key (the flyout's identity), the tools it holds and the mark it shows.
 pub(crate) struct Group {
@@ -465,7 +466,15 @@ fn tool_cell(id: &'static str, icon: Icon, active: bool, tip: SharedString, on_c
         .on_mouse_down(MouseButton::Left, move |_: &MouseDownEvent, w, cx| on_click(w, cx));
     // 当前工具格：accent 实心；其余格子悬停为灰底。不加描边（圆角外圈的淡边是「虚边」）。
     cell = if active { cell.bg(rgba(t.accent)) } else { cell.hover(|s| s.bg(rgba(t.hover))) };
-    cell.child(paint_icon(icon, rgba(if active { t.accent_on } else { t.icon }), GLYPH))
+    let color = rgba(if active { t.accent_on } else { t.icon });
+    // Shape-tool marks are 24 pt vectors: let them occupy their own size instead of forcing them
+    // into GLYPH, which would scale their (shared 1 pt) stroke up or down.
+    let mark = if crate::widgets::icon::is_shape_tool(icon) {
+        crate::widgets::icon::paint_tool(icon, color).into_any_element()
+    } else {
+        paint_icon(icon, color, GLYPH).into_any_element()
+    };
+    cell.child(mark)
 }
 
 /// "Rectangle  R": the tooltip text for a tool (`ui-egui`'s `format!("{}  {}", label, shortcut)`).

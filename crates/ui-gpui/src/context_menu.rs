@@ -17,7 +17,7 @@ use figcraft_i18n::tr;
 use figcraft_i18n::tr_noop;
 
 /// A context menu row's height (egui allocates 28 pt per row).
-pub(crate) const ROW_H: f32 = 28.0;
+pub(crate) const ROW_H: f32 = crate::menu_metrics::MENU_ROW_H;
 /// The card's width: wide enough for "Wrap in new section" plus a shortcut (egui's `MENU_W`).
 pub(crate) const WIDTH: f32 = 240.0;
 
