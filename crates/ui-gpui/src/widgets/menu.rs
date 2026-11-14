@@ -155,7 +155,6 @@ pub fn menu_popup_in(
             .flex_row()
             .items_center()
             .rounded(pt(5.0))
-            .px(pt(crate::menu_metrics::MENU_PAD))
             .text_color(crate::menu_metrics::ink())
             .text_size(pt(crate::widgets::TEXT_PT))
             .hover(|s| s.bg(rgba(t.menu_hover)))

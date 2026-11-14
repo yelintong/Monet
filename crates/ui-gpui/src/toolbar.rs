@@ -235,7 +235,13 @@ pub(crate) fn flyout_items(groups: &[Group], key: &str, current: ToolId) -> Vec<
     g.tools
         .iter()
         .map(|(tool, icon)| {
-            Item::new(tool.id(), figcraft_i18n::tr(tool.label())).icon(*icon).checked(Some(*tool == current)).trail(pretty_shortcut(tool.shortcut()))
+            let is_current = *tool == current;
+            Item::new(tool.id(), figcraft_i18n::tr(tool.label()))
+                .icon(*icon)
+                .checked(Some(is_current))
+                // 当前工具那一行把 hover 底色常亮（用户 2026-11-14：只有勾、没有颜色）。
+                .active_fill(is_current)
+                .trail(pretty_shortcut(tool.shortcut()))
         })
         .collect()
 }
@@ -524,6 +530,16 @@ mod tests {
         assert_eq!(rows[3].id, "ellipse");
         assert!(rows.iter().all(|r| r.icon.is_some()));
         assert!(flyout_items(GROUPS, "nope", ToolId::Move).is_empty());
+    }
+
+    /// The checked tool keeps the hover fill lit (用户 2026-11-14：只有勾、没有颜色)。
+    #[test]
+    fn the_checked_tool_keeps_the_hover_fill_lit() {
+        let rows = flyout_items(GROUPS, "shape", ToolId::Ellipse);
+        assert_eq!(rows.iter().filter(|r| r.active_fill).count(), 1);
+        assert!(rows.iter().all(|r| r.active_fill == (r.checked == Some(true))));
+        // 其它菜单构造的是普通 Item —— 不显式打开就没有任何行常亮。
+        assert!(!crate::menu_card::Item::new("plain", "Plain").active_fill);
     }
 
     /// Every group's flyout ticks the tool its own cell shows — even the groups that do not hold

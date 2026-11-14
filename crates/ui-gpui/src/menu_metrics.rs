@@ -55,6 +55,9 @@ mod tests {
     fn every_menu_row_is_24_and_the_palette_is_white_percentages() {
         assert_eq!(MENU_ROW_H, 24.0);
         assert_eq!(MENU_SEP_H, 9.0);
+        // 卡片的水平内边距必须留在 `menu_surface()` 上：选中/hover 高亮画在整个 w_full
+        // 行盒上，把它挪到行内会让色块顶到卡片左右边缘（用户 2026-11-14 的回归）。
+        assert_eq!(MENU_PAD, 8.0);
         assert!((ink().a - 0.9).abs() < 0.01);
         assert!((trail_ink().a - 0.7).abs() < 0.01);
         assert!((divider_ink().a - 0.1).abs() < 0.01);

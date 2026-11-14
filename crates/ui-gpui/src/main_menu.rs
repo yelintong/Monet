@@ -393,7 +393,6 @@ pub(crate) fn render(
                 .flex_row()
                 .items_center()
                 .rounded(pt(ITEM_RADIUS))
-                .px(pt(PAD))
                 .text_color(crate::menu_metrics::ink())
                 .text_size(pt(TEXT_PT))
                 .on_mouse_move(move |_e, window, cx| hover(li, ri, window, cx))

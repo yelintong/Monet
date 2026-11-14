@@ -50,6 +50,9 @@ pub struct Item {
     pub key: SharedString,
     pub label: SharedString,
     pub checked: Option<bool>,
+    /// 让这一行常亮 **hover 底色**（工具栏 flyout 用它标出当前工具）。默认 `false`：
+    /// 右键菜单 / Actions palette 等其它菜单的勾选行保持原样，不因勾选而常亮。
+    pub active_fill: bool,
     pub disabled: bool,
     pub icon: Option<Icon>,
     pub trail: Option<SharedString>,
@@ -64,6 +67,7 @@ impl Item {
             key: SharedString::from(id),
             label: label.into(),
             checked: None,
+            active_fill: false,
             disabled: false,
             icon: None,
             trail: None,
@@ -82,6 +86,11 @@ impl Item {
     }
     pub fn checked(mut self, c: Option<bool>) -> Self {
         self.checked = c;
+        self
+    }
+    /// Keep this row lit with the hover fill (the toolbar flyout's current tool).
+    pub fn active_fill(mut self, on: bool) -> Self {
+        self.active_fill = on;
         self
     }
     pub fn icon(mut self, i: Icon) -> Self {
@@ -197,7 +206,6 @@ pub(crate) fn rows(
             .flex_row()
             .items_center()
             .rounded(pt(ITEM_RADIUS))
-            .px(pt(PAD))
             .pl(pt(inset))
             .pr(pt(10.0))
             .text_size(pt(TEXT_PT))
@@ -217,8 +225,11 @@ pub(crate) fn rows(
                 }
             });
         }
-        // The keyboard-highlighted row (palette Up/Down) wears the hover fill.
-        if selected == Some(i) && !item.disabled {
+        // The keyboard-highlighted row (palette Up/Down) and an explicitly lit row (the toolbar
+        // flyout's checked tool) both wear the *hover* fill — the very same `t.menu_hover` as
+        // `.hover(...)` above, just always on. Other menus never set `active_fill`, so their
+        // checked rows stay plain (no behaviour change outside the toolbar).
+        if (selected == Some(i) || item.active_fill) && !item.disabled {
             row = row.bg(rgba(t.menu_hover));
         }
         // The check mark and the icon are absolutely placed so the label's own inset stays exact.
