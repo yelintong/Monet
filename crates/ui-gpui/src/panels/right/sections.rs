@@ -288,8 +288,172 @@ pub(crate) fn icon_cmd(icon: Icon, cmd_id: &'static str, params: Value, f: &Righ
     })
 }
 
-/// 把 sizing 菜单挂到 W/H 字段的 **trail 槽**（egui `number_field_mixed_menu`）：右端一个
-/// chevron，点开是 Fixed/Hug/Fill + Add min/max + Remove + Apply variable。不是独立控件。
+/// 一个**可绑定变量**的数值字段（`variable_ui.rs::bindable` / `variable_button` 的 GPUI 版）。
+///
+/// 原版只有三条规则，这里逐条照搬：
+/// 1. **不是所有框都能绑**：只有 `variable.bind` 白名单里的字段（`width` / `height` /
+///    `opacity` / `cornerRadius` / `gap` / `padding*` / `fontSize` …）才用这个包装；
+///    X / Y / Rotation / 矢量点的坐标在原版里是 `widgets::number_field_mixed`（`binding`
+///    传 `None`），**永远不出变量按钮**，调用方不要把它们包进来。
+/// 2. **未绑定**：字段右端**只在指针停在这一行时**出现 18 pt 的「应用变量」按钮
+///    （`variable_button` 第一句就是 `if !ui.rect_contains_pointer(rect) { return false }`），
+///    点开的是变量列表窗口。
+/// 3. **已绑定**：字段整个换成显示变量名的 chip（点开换绑），行尾悬停出解绑图标
+///    （`bound_field`：名字在中间、`Detach` 在尾槽）。
+///
+/// 调用方注意：右端那个槽在原文里是**两个互斥的东西**（`widgets.rs::number_field_impl` 末尾）。
+/// `menu`（sizing 菜单）优先——W/H 在 auto layout / auto layout 子层 / 文本上时右端是 chevron 或
+/// `Hug`/`Fill` 字样，此时**不画变量按钮**；只有 `menu` 为空（普通形状的 W/H、opacity、gap…）
+/// 才有上面第 2 条的变量按钮。已绑定时是函数最前面的早退分支，整格换 chip，与 auto layout 无关。
+pub(crate) fn bindable(
+    f: &RightFields,
+    field: &'static str,
+    bound: Option<&str>,
+    vars: &[String],
+    el: gpui::AnyElement,
+) -> gpui::AnyElement {
+    let t = tokens();
+    let hovered = *f.bind_hover.borrow() == Some(field);
+    let hover = f.bind_hover.clone();
+    let root = f.root.clone();
+
+    let inner: gpui::AnyElement = match bound {
+        // ── 已绑定：变量名 chip（点开换绑）+ 尾部解绑 ─────────────────────────────────
+        Some(name) => {
+            let short: SharedString = name.rsplit('/').next().unwrap_or(name).to_string().into();
+            let popups = f.popups();
+            let queue = f.queue();
+            let list: Vec<String> = vars.to_vec();
+            let cmds = f.cmds.clone();
+            let mut chip = div()
+                .w_full()
+                .h(pt(crate::widgets::FIELD_H))
+                .rounded(pt(4.0))
+                .bg(rgba(t.hover))
+                .border_1()
+                .border_color(rgba(t.border))
+                .flex()
+                .flex_row()
+                .items_center()
+                .overflow_hidden()
+                .pl(pt(8.0))
+                .pr(pt(4.0))
+                .text_size(pt(crate::widgets::TEXT_PT))
+                .text_color(rgba(t.text))
+                .cursor_pointer()
+                .on_mouse_down(MouseButton::Left, move |_e, window, cx: &mut App| {
+                    let rows = list
+                        .iter()
+                        .map(|v| (v.clone(), "variable.bind", json!({ "field": field, "variable": v })))
+                        .collect::<Vec<(String, &'static str, Value)>>();
+                    open_list_window(
+                        popups.clone(),
+                        queue.clone(),
+                        cx,
+                        window.mouse_position(),
+                        ListWindow::Variables,
+                        SharedString::from(tr("Variables")),
+                        rows,
+                    );
+                })
+                .child(div().flex_1().min_w(px(0.0)).overflow_hidden().child(short));
+            if hovered {
+                chip = chip.child(
+                    div()
+                        .size(pt(18.0))
+                        .flex_none()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .rounded(pt(4.0))
+                        .hover(|s| s.bg(rgba(t.selected_row)))
+                        .cursor_pointer()
+                        .on_mouse_down(MouseButton::Left, move |_e, _w, cx: &mut App| {
+                            cx.stop_propagation();
+                            cmds.push(Cmd { id: "variable.bind", params: Some(json!({ "field": field, "variable": Value::Null })) });
+                        })
+                        .child(crate::widgets::icon::paint(Icon::Detach, rgba(t.text_secondary), 12.0)),
+                );
+            }
+            chip.into_any_element()
+        }
+        // ── 未绑定：字段本身 + 悬停才出现的「应用变量」按钮 ────────────────────────────
+        None => {
+            let mut cell = div().w_full().h(pt(crate::widgets::FIELD_H)).relative().child(el);
+            if hovered {
+                let popups = f.popups();
+                let queue = f.queue();
+                let list: Vec<String> = vars.to_vec();
+                cell = cell.child(
+                    div()
+                        .absolute()
+                        .right(px(0.0))
+                        .top(px(0.0))
+                        .w(pt(24.0))
+                        .h_full()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .cursor_pointer()
+                        .on_mouse_down(MouseButton::Left, move |_e, window, cx: &mut App| {
+                            cx.stop_propagation();
+                            let rows = list
+                                .iter()
+                                .map(|v| (v.clone(), "variable.bind", json!({ "field": field, "variable": v })))
+                                .collect::<Vec<(String, &'static str, Value)>>();
+                            open_list_window(
+                                popups.clone(),
+                                queue.clone(),
+                                cx,
+                                window.mouse_position(),
+                                ListWindow::Variables,
+                                SharedString::from(tr("Variables")),
+                                rows,
+                            );
+                        })
+                        .child(crate::widgets::variable_button()),
+                );
+            }
+            cell.into_any_element()
+        }
+    };
+
+    // 悬停态只驱动这一行自己的重绘：`bind_hover` 一变就 notify（与 `text_field.rs` 的
+    // `trail_hover` 同一套做法，不用全局状态）。
+    div()
+        .id(gpui::ElementId::Name(SharedString::from(format!("bind-hover-{field}"))))
+        .relative()
+        .w_full()
+        .h_full()
+        .flex()
+        .items_center()
+        .child(inner)
+        .on_hover(move |h: &bool, _w, cx: &mut App| {
+            let cur = *hover.borrow();
+            let next = if *h {
+                Some(field)
+            } else if cur == Some(field) {
+                None
+            } else {
+                cur
+            };
+            if next != cur {
+                *hover.borrow_mut() = next;
+                if let Some(r) = root.clone() {
+                    r.update(cx, |_v, cx| cx.notify());
+                }
+            }
+        })
+        .into_any_element()
+}
+
+/// 把 sizing 菜单挂到 W/H 字段的 **trail 槽**（`layout_panel.rs::dimensions` 的 sizing 下拉）。
+///
+/// **原版不是「什么时候都是下拉」**：`dimensions()` 先在 `!(has_al || parent_al || is_text)`
+/// 时直接 `return`，sizing 行根本不画；菜单项也只有 `Fixed`、`Hug contents`（`has_al || is_text`）、
+/// `Fill container`（`can_fill`）、`Add min/max` / `Remove min and max`（`can_limit`）。
+/// 这份条件由 [`super::data::DimensionsData`] 的 `can_hug` / `can_fill` / `can_limit` 带下来，
+/// 三者皆否时调用方必须走 [`dim_trail_off`]——W/H 就是纯数值框。
 pub(crate) fn dim_trail_menu(
     f: &RightFields,
     cx: &mut App,
@@ -303,11 +467,11 @@ pub(crate) fn dim_trail_menu(
     let sizing_key: &'static str = if horizontal { "sizingH" } else { "sizingV" };
     let min_key: &'static str = if horizontal { "minWidth" } else { "minHeight" };
     let max_key: &'static str = if horizontal { "maxWidth" } else { "maxHeight" };
-    let (has_min, has_max) = if horizontal {
-        (dims.min_w.is_some() || limit_open.borrow()[0], dims.max_w.is_some() || limit_open.borrow()[1])
-    } else {
-        (dims.min_h.is_some() || limit_open.borrow()[2], dims.max_h.is_some() || limit_open.borrow()[3])
-    };
+    // 尺寸本身：`Add min/max` 用当前 W/H 当初始值（egui `set_props(json!({axis.min: current}))`）。
+    let current = if horizontal { dims.w } else { dims.h };
+    let (has_min, has_max) = if horizontal { (dims.min_w.is_some(), dims.max_w.is_some()) } else { (dims.min_h.is_some(), dims.max_h.is_some()) };
+    let any_limit = has_min || has_max;
+    let (can_hug, can_fill, can_limit) = (dims.can_hug, dims.can_fill, dims.can_limit);
     // egui `dim_field`：Fill/Hug 时 trail 显示对应单词，否则一个 chevron。
     let cur = if horizontal { dims.sizing_w } else { dims.sizing_h };
     let trail_slot = match cur {
@@ -315,28 +479,37 @@ pub(crate) fn dim_trail_menu(
         Some("hug") => crate::widgets::Slot::Text(SharedString::from(tr("Hug"))),
         _ => crate::widgets::Slot::Icon(Icon::ChevronDown),
     };
+    // egui `dim_field`：`dim`（Hug / Fill，尺寸由布局算出来）时数值以 50% 墨色读，普通 Fixed 全色。
+    let dim_value = matches!(cur, Some("fill") | Some("hug"));
     field.update(cx, move |tf, _| {
+        tf.set_dim(dim_value);
         tf.set_trail(trail_slot);
         let cmds = cmds.clone();
         let root = root.clone();
         let limit_open = limit_open.clone();
         tf.set_on_trail(move |pos: Point<Pixels>, _w, cx: &mut App| {
             let Some(root) = root.clone() else { return };
-            let mut rows: Vec<MenuRow> = vec![MenuRow::new(tr("Fixed")), MenuRow::new(tr("Hug contents")), MenuRow::new(tr("Fill container"))];
-            if !has_min {
-                rows.push(MenuRow::new(tr("Add min")));
+            // 菜单项照 egui `dimensions`：自己能不能 Hug / Fill / 加限值决定列哪些。
+            let mut rows: Vec<MenuRow> = vec![MenuRow::new(tr("Fixed"))];
+            if can_hug {
+                rows.push(MenuRow::new(tr("Hug contents")));
             }
-            if !has_max {
-                rows.push(MenuRow::new(tr("Add max")));
+            if can_fill {
+                rows.push(MenuRow::new(tr("Fill container")));
             }
-            if has_min || has_max {
-                rows.push(MenuRow::new(if has_min && has_max {
-                    "Remove limits"
-                } else if has_min {
-                    "Remove min"
-                } else {
-                    "Remove max"
-                }));
+            if can_limit {
+                let mut grouped = false;
+                if !has_min {
+                    rows.push(MenuRow::new(tr("Add min")).separator());
+                    grouped = true;
+                }
+                if !has_max {
+                    let row = MenuRow::new(tr("Add max"));
+                    rows.push(if grouped { row } else { row.separator() });
+                }
+                if any_limit {
+                    rows.push(MenuRow::new(tr("Remove min and max")).separator());
+                }
             }
             let cmds = cmds.clone();
             let limit_open = limit_open.clone();
@@ -349,36 +522,39 @@ pub(crate) fn dim_trail_menu(
                     "Hug contents" => push("node.set", json!({ "props": { sizing_key: "hug" } })),
                     "Fill container" => push("node.set", json!({ "props": { sizing_key: "fill" } })),
                     "Add min" => {
-                        let i = if horizontal { 0 } else { 2 };
-                        limit_open.borrow_mut()[i] = true;
+                        // egui 直接把当前尺寸写成 min；`limit_open` 只是让行在文档回推前先出现。
+                        push("node.set", json!({ "props": { min_key: current.unwrap_or(0.0) } }));
+                        limit_open.borrow_mut()[if horizontal { 0 } else { 2 }] = true;
                     }
                     "Add max" => {
-                        let i = if horizontal { 1 } else { 3 };
-                        limit_open.borrow_mut()[i] = true;
+                        push("node.set", json!({ "props": { max_key: current.unwrap_or(0.0) } }));
+                        limit_open.borrow_mut()[if horizontal { 1 } else { 3 }] = true;
                     }
-                    "Remove limits" => {
+                    "Remove min and max" => {
                         push("node.set", json!({ "props": { min_key: Value::Null, max_key: Value::Null } }));
                         let (a, b) = if horizontal { (0, 1) } else { (2, 3) };
                         limit_open.borrow_mut()[a] = false;
                         limit_open.borrow_mut()[b] = false;
                     }
-                    "Remove min" => {
-                        push("node.set", json!({ "props": { min_key: Value::Null } }));
-                        limit_open.borrow_mut()[if horizontal { 0 } else { 2 }] = false;
-                    }
-                    "Remove max" => {
-                        push("node.set", json!({ "props": { max_key: Value::Null } }));
-                        limit_open.borrow_mut()[if horizontal { 1 } else { 3 }] = false;
-                    }
                     _ => {}
                 }
-                // 仅翻转 `limit_open` 的项（Add/Remove min/max）没有推命令，必须主动唤醒视图，
-                // 否则 min/max 字段行要等到下一次别的重绘才出现。
+                // 仅翻转 `limit_open` 的项没有推命令时也要重绘，否则 min/max 行要等下一次重绘。
                 cmds.wake();
             });
             let anchor = Bounds { origin: pos, size: size(px(0.0), px(0.0)) };
             root.update(cx, |cv, cx| cv.open_menu(anchor, Some(200.0), rows, on_pick, cx));
         });
+    });
+}
+
+/// 摘掉 W/H 的 sizing 菜单（`layout_panel.rs::dimensions` 提前 `return` 的那条路）。
+///
+/// 图层既不能 Hug 也不能 Fill（普通矩形 / 椭圆 / 分组）时，W/H 在原版里就是两个**纯数值框**：
+/// 没有 chevron、没有 `Hug`/`Fill` 文字、点右端不弹菜单。
+pub(crate) fn dim_trail_off(cx: &mut App, field: &gpui::Entity<crate::widgets::TextField>) {
+    field.update(cx, |tf, _| {
+        tf.set_dim(false);
+        tf.clear_trail();
     });
 }
 
@@ -823,7 +999,11 @@ pub(crate) fn paints(
             // 第二行 = 描边对齐下拉 + **线宽字段** + 独立边宽 + 高级描边（egui `paints.rs`:
             // `dropdown(align, half)` 之后紧跟 `number_field_mixed("strokeWeight", …, weight_w)`）。
             sec = sec.child(field_row(
-                vec![pick_dropdown(f, align, col, rows).into_any_element(), f.stroke_weight.clone().into_any_element()],
+                vec![
+                    pick_dropdown(f, align, col, rows).into_any_element(),
+                    // 线宽可绑变量（`paints.rs::stroke`：`variable_ui::number_field_mixed(..., "strokeWeight", ...)`）。
+                    bindable(f, "strokeWeight", d.bound.get("strokeWeight").map(String::as_str), &d.number_variables, f.stroke_weight.clone().into_any_element()),
+                ],
                 vec![sides, dots],
             ));
         }
@@ -1103,7 +1283,10 @@ pub(crate) fn selection_colors(
     _window: &mut Window,
     cx: &mut App,
 ) -> Option<gpui::AnyElement> {
-    if d.selection_colors.len() < 2 {
+    // 上游 `selection_colors.rs::section`（Figma 实测）：两种不同颜色显示这一节；
+    // 只有一种颜色时，**选中的图层带子级**（frame / group / component / instance）也要显示。
+    // 之前只判 `len() < 2`，于是「画框里只有一个组件、一个颜色」整节消失。
+    if d.selection_colors.len() < 2 && !(d.selection_colors.len() == 1 && d.selection_has_children) {
         return None;
     }
     let t = tokens();
@@ -1523,7 +1706,15 @@ pub(crate) fn appearance(
     let mut sec = PanelSection::new(tr("Appearance"))
         .header_trail(icon_row(vec![eye, bind, blend]))
         .child(sublabel_row2(tr("Opacity"), tr("Corner radius")))
-        .child(field_row(vec![opacity.clone(), corner.clone()], Vec::<IconButton>::new()));
+        .child(field_row(
+            vec![
+                // Opacity / corner radius 都是原版白名单里可绑定的数值字段
+                // （`paints.rs::appearance` 用 `variable_ui::number_field_mixed`）。
+                bindable(f, "opacity", d.bound.get("opacity").map(String::as_str), &d.number_variables, opacity.clone().into_any_element()),
+                bindable(f, "cornerRadius", d.bound.get("cornerRadius").map(String::as_str), &d.number_variables, corner.clone().into_any_element()),
+            ],
+            Vec::<IconButton>::new(),
+        ));
     // 仅当 header 的 blend 开关打开时才显示 blend-mode 下拉行（egui `blend_open`）。
     if *f.blend_open.borrow() {
         // 显示走 `tr`，**写回值必须是英文 serde 名**（`blend` 只认 `Normal` / `Multiply` …）。
@@ -1584,7 +1775,11 @@ pub(crate) fn typography(f: &RightFields, d: &PanelData) -> PanelSection {
         None => tr("Mixed").to_string(),
     };
     sec = sec.child(field_row(
-        vec![pick_dropdown(f, style_label, 160.0, styles).into_any_element(), f.font_size.clone().into_any_element()],
+        vec![
+            pick_dropdown(f, style_label, 160.0, styles).into_any_element(),
+            // 字号可绑变量（`typography/fields.rs`：`variable_ui::number_field(..., "fontSize", ...)`）。
+            bindable(f, "fontSize", d.bound.get("fontSize").map(String::as_str), &d.number_variables, f.font_size.clone().into_any_element()),
+        ],
         Vec::<IconButton>::new(),
     ));
 
@@ -2809,7 +3004,9 @@ pub(crate) fn page(f: &RightFields, d: &PanelData, row_w: f32, n: &mut usize, wi
             params: json!({}),
             key: "opacity",
             scale: 100.0,
-            string_value: false,
+            // 只读标签（「100 %」），不是可编辑数值：`string_value: true` 让 `row_field`
+            // 认领时清掉数值行为，尾部的「%」便不会被拖拽 scrub 改成一个不生效的数字。
+            string_value: true,
             paint: None,
             nest: None,
             nest_key: None,

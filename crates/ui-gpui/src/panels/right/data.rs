@@ -129,6 +129,15 @@ pub struct DimensionsData {
     pub max_w: Option<f64>,
     pub min_h: Option<f64>,
     pub max_h: Option<f64>,
+    /// W/H 上**有没有** sizing 下拉：egui `dimensions` 的 `has_al || parent_al || is_text`。
+    /// 不成立时 W/H 是纯数值框（原版在这里提前 `return`）。
+    pub can_size: bool,
+    /// W/H 能不能选 `Hug contents`：egui `dimensions` 的 `has_al || is_text`。
+    pub can_hug: bool,
+    /// 能不能选 `Fill container`：`parent_al && !absolute`（egui 的 `can_fill`）。
+    pub can_fill: bool,
+    /// 能不能加 / 删 min、max：`has_al || can_fill`（egui 的 `can_limit`）。
+    pub can_limit: bool,
 }
 
 /// 选中文本节点的排版快照（egui `typography/fields.rs`）。
@@ -1217,6 +1226,10 @@ pub struct PanelData {
     pub grids: Option<Vec<GridRow>>,
     pub exports: Option<Vec<ExportRow>>,
     pub selection_colors: Vec<SelectionColorRow>,
+    /// 选中的顶层图层里**有没有带子级的**（frame / group / component / instance）。
+    /// 上游 `selection_colors.rs::section`：两组不同颜色才显示；只有一组时，若选中的层有子级
+    /// 也显示（「画框里只有一个组件、一个颜色」也要列出那一行）。
+    pub selection_has_children: bool,
     /// 当前文档快照的 uid（lizard `ds.uid`）：Selection colors 的展开态按文档分档存，
     /// 切换文档时各自记住自己的开合状态，而不是共用一个全局布尔。
     pub doc_uid: u64,
@@ -1558,8 +1571,9 @@ pub fn read(doc: &Document, ids: &[NodeId], page: Option<NodeId>, ready_filter: 
             .collect()
     });
 
-    // ── Selection colors（`selection_colors.rs::section`，至少两组才显示） ──
+    // ── Selection colors（`selection_colors.rs::section`：两组不同颜色，或一组且选中的层有子级） ──
     d.selection_colors = selection_colors(doc, ids);
+    d.selection_has_children = ids.iter().any(|id| doc.node(*id).is_some_and(|n| !n.children.is_empty()));
 
     // ── Variable modes（`paints.rs::variable_modes`，仅 frame-like） ──
     if ids.iter().all(|i| doc.node(*i).is_some_and(|n| n.kind.is_frame_like())) {
@@ -1651,6 +1665,15 @@ pub fn read(doc: &Document, ids: &[NodeId], page: Option<NodeId>, ready_filter: 
         figcraft_doc::Sizing::Hug => "hug",
         figcraft_doc::Sizing::Fill => "fill",
     };
+    // egui `layout_panel.rs::dimensions` 的三个前提：能不能 Hug、能不能 Fill、能不能加 min/max。
+    // **三者都不成立时 W/H 就是纯数值框**，不挂 sizing 菜单（原版 `dimensions` 在这里 `return`）。
+    let nodes: Vec<&figcraft_doc::Node> = ids.iter().filter_map(|i| doc.node(*i)).collect();
+    let has_al = !nodes.is_empty() && nodes.iter().all(|n| n.layout.is_some());
+    let all_text = !nodes.is_empty() && nodes.iter().all(|n| matches!(n.kind, figcraft_doc::NodeKind::Text(_)));
+    let parent_al = !nodes.is_empty() && nodes.iter().all(|n| n.parent.and_then(|p| doc.node(p)).is_some_and(|p| p.layout.is_some()));
+    let can_fill = parent_al && nodes.iter().all(|n| !n.child_layout.absolute);
+    let can_hug = has_al || all_text;
+    let can_limit = has_al || can_fill;
     d.dimensions = Some(DimensionsData {
         w: common(doc, ids, |n| r2(n.width)),
         h: common(doc, ids, |n| r2(n.height)),
@@ -1661,6 +1684,10 @@ pub fn read(doc: &Document, ids: &[NodeId], page: Option<NodeId>, ready_filter: 
         max_w: common(doc, ids, |n| n.child_layout.max_w).flatten(),
         min_h: common(doc, ids, |n| n.child_layout.min_h).flatten(),
         max_h: common(doc, ids, |n| n.child_layout.max_h).flatten(),
+        can_size: has_al || parent_al || all_text,
+        can_hug,
+        can_fill,
+        can_limit,
     });
 
     // ── Constraints（`right.rs::position_fields` 的 Constraints 子节）──
@@ -1945,6 +1972,82 @@ mod tests {
             assert_eq!(row.ty, ty, "the row carries the type the menu adds");
             assert_eq!(row.effect.get("type").and_then(|v| v.as_str()), Some(ty), "serialised effect keeps its type");
         }
+    }
+
+    /// 原版 `layout_panel.rs::dimensions` 的前提条件：W/H 上的 sizing 下拉**不是什么时候都有**。
+    /// `dimensions()` 在 `!(has_al || parent_al || is_text)` 时直接 return，菜单项也只有
+    /// `Fixed` + `Hug`（`has_al || is_text`）+ `Fill`（`can_fill`）+ min/max（`can_limit`）。
+    #[test]
+    fn dimension_sizing_menu_only_for_layers_that_can_hug_or_fill() {
+        let mut s = Session::with_document(Document::new("dims"));
+        let r = s.execute("shape.rectangle", &json!({ "x": 0.0, "y": 0.0, "width": 64.0, "height": 64.0 })).expect("rect");
+        let rect: NodeId = serde_json::from_value(r["id"].clone()).expect("id");
+
+        // 普通矩形：既不是容器也不在 auto layout 里 → W/H 就是纯数值框。
+        let d = read(s.doc().expect("doc"), &[rect], None, 0).dimensions.expect("dimensions");
+        assert!(!d.can_size, "a plain rectangle has no sizing dropdown");
+        assert!(!d.can_hug && !d.can_fill && !d.can_limit, "nor any sizing choice");
+
+        // 自己开自动布局 → 能 Hug、能加限值，但自己不在父级 auto layout 里，不能 Fill。
+        let f = s.execute("frame.create", &json!({ "x": 200.0, "y": 0.0, "width": 200.0, "height": 200.0 })).expect("frame");
+        let frame: NodeId = serde_json::from_value(f["id"].clone()).expect("id");
+        s.execute("node.set", &json!({ "ids": [frame], "props": { "layout": "vertical" } })).expect("auto layout");
+        let d = read(s.doc().expect("doc"), &[frame], None, 0).dimensions.expect("dimensions");
+        assert!(d.can_size && d.can_hug && d.can_limit, "an auto layout frame can hug and take limits");
+        assert!(!d.can_fill, "a frame that is not itself in an auto layout cannot fill");
+
+        // auto layout 容器里的子层：能 Fill，不能 Hug（自己不是容器）。
+        let child: NodeId = serde_json::from_value(r["id"].clone()).expect("id");
+        s.execute("node.reparent", &json!({ "ids": [child], "parent": frame })).expect("reparent");
+        let d = read(s.doc().expect("doc"), &[child], None, 0).dimensions.expect("dimensions");
+        assert!(d.can_size, "a child of an auto layout frame offers sizing");
+        assert!(d.can_fill, "it can fill its container");
+        assert!(!d.can_hug, "but it is not a container, so it cannot hug");
+        assert!(d.can_limit, "and it can take min/max");
+    }
+
+    /// 能绑变量的字段集合由**界面**决定（`variable.bind` 命令本身对任何真实属性都放行，
+    /// 包括 `x`；原版是 `widgets::number_field_mixed` 传 `binding: None` 才不给 X/Y 按钮）。
+    /// 这条锁住两件事：白名单字段（`width`）绑定后名字真的到得了右栏；可绑变量列表按类型分开。
+    #[test]
+    fn bound_number_fields_reach_the_panel() {
+        let mut s = Session::with_document(Document::new("bind"));
+        let r = s.execute("shape.rectangle", &json!({ "x": 0.0, "y": 0.0, "width": 64.0, "height": 64.0 })).expect("rect");
+        let id: NodeId = serde_json::from_value(r["id"].clone()).expect("id");
+        s.execute("variable.createCollection", &json!({ "name": "Tokens" })).expect("collection");
+        s.execute("variable.create", &json!({ "collection": "Tokens", "name": "Space/Small", "type": "number", "value": 12.0 }))
+            .expect("variable");
+        s.execute("variable.bind", &json!({ "ids": [id], "field": "width", "variable": "Space/Small" })).expect("width binds");
+        let d = read(s.doc().expect("doc"), &[id], None, 0);
+        assert_eq!(d.bound.get("width").map(String::as_str), Some("Space/Small"), "the bound name reaches the panel");
+        assert!(d.number_variables.iter().any(|v| v == "Space/Small"), "and the picker lists number variables");
+        // 未绑的字段不出现在 `bound` 里 —— 面板据此决定画数值框还是变量 chip。
+        assert!(!d.bound.contains_key("height"), "an unbound field has no chip");
+    }
+
+    /// 上游 `selection_colors.rs::section` 的显示条件（Figma 实测）：**两种不同颜色**显示这一节；
+    /// **只有一种颜色**时，只要选中的图层带子级（frame / group / component / instance）也显示。
+    /// 之前只判 `len() < 2`，于是「画框里只有一个组件、一个颜色」整节消失。
+    #[test]
+    fn selection_colors_show_for_one_colour_when_the_selection_has_children() {
+        let mut s = Session::with_document(Document::new("sel-colors"));
+        let f = s.execute("frame.create", &json!({ "x": 0.0, "y": 0.0, "width": 200.0, "height": 200.0 })).expect("frame");
+        let frame: NodeId = serde_json::from_value(f["id"].clone()).expect("id");
+        let r = s.execute("shape.rectangle", &json!({ "width": 64.0, "height": 64.0 })).expect("rect");
+        let child: NodeId = serde_json::from_value(r["id"].clone()).expect("id");
+        s.execute("node.reparent", &json!({ "ids": [child], "parent": frame })).expect("reparent");
+        s.execute("fill.set", &json!({ "id": child, "color": "#ffffff" })).expect("child fill");
+        s.execute("fill.set", &json!({ "id": frame, "color": "#ffffff" })).expect("frame fill");
+
+        // 框 + 唯一子层同色：只有一组，但选中的框有子级 → 这一节要出现。
+        let d = read(s.doc().expect("doc"), &[frame], None, 0);
+        assert_eq!(d.selection_colors.len(), 1, "both layers share one colour");
+        assert!(d.selection_has_children, "the frame has children");
+
+        // 单独选那个矩形：还是只有一组，但它没有子级 → 按上游条件不出现。
+        let d = read(s.doc().expect("doc"), &[child], None, 0);
+        assert_eq!(d.selection_colors.len(), 1);
+        assert!(!d.selection_has_children, "a leaf has no children");
     }
 
     /// 导出是引擎级能力：只调 `file.export {ids, format, path}`，文件就该由引擎写到磁盘。

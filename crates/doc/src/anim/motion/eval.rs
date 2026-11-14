@@ -277,6 +277,31 @@ pub fn keyframed_value_at(node: &Node, property: AnimProperty, t_ms: f64) -> Opt
     node.motion.track(property).and_then(|tr| tr.value_at(t)).or_else(|| base_value(node, property))
 }
 
+/// `node`'s Position at `t_ms` with the **easing curves removed** — the value the motion path is
+/// drawn from.
+///
+/// Easing (back curves, springs) decides *how fast* the object travels along its path, and it can
+/// overshoot in time; the drawn path must not change with it (user 2026-11-14). Tracks use
+/// [`Track::value_at_linear`] and clips [`Clip::value_linear_at`]; composition is the same as
+/// [`value_at`].
+pub fn path_position_at(node: &Node, t_ms: f64) -> Vec2 {
+    let t = if t_ms.is_finite() { t_ms.max(0.0) } else { 0.0 };
+    let mut pos = node
+        .motion
+        .track(AnimProperty::Position)
+        .filter(|tr| tr.visible)
+        .and_then(|tr| tr.value_at_linear(t))
+        .and_then(|v| v.vec2())
+        .unwrap_or_else(|| base_position(node));
+    for c in node.motion.clips.iter().filter(|c| c.visible) {
+        if c.kind == ClipKind::Position {
+            let v = c.value_linear_at(t);
+            pos = Vec2::new(pos.x + v.x, pos.y + v.y);
+        }
+    }
+    pos
+}
+
 /// Ids of the nodes below `page` (and the page itself) that have keyframes or clips, in paint order.
 pub fn animated_nodes(doc: &Document, page: NodeId) -> Vec<NodeId> {
     doc.subtree(page).into_iter().filter(|id| doc.node(*id).is_some_and(|n| !n.motion.is_empty())).collect()

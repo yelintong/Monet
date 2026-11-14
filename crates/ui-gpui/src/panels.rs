@@ -609,6 +609,9 @@ pub(crate) struct RightFields {
     /// Dimensions 的 min/max 行是否显示（`[minW, maxW, minH, maxH]`）。egui 用 `limit_open`
     /// 临时标记：只有已设值、或刚从 sizing 菜单里 Add 的行才显示，默认隐藏。
     limit_open: std::rc::Rc<std::cell::RefCell<[bool; 4]>>,
+    /// 可绑定变量的数值字段里，指针**现在停在哪一个**（`variable.bind` 的 field key）。
+    /// 原版「应用变量」按钮只在 `rect_contains_pointer` 时才画，这里用一份共享的悬停态实现。
+    bind_hover: std::rc::Rc<std::cell::RefCell<Option<&'static str>>>,
     /// The blend-mode dropdown's current label (egui's `dropdown` row). Clicking opens the menu.
     blend_label: std::cell::RefCell<SharedString>,
     /// Blend-mode row reveal (egui `paints.rs::appearance`'s `blend_open` local flag): the
@@ -1028,6 +1031,7 @@ impl RightFields {
             row_ctx,
             last_rows: std::cell::RefCell::new((0..ROW_EDITORS).map(|_| None).collect()),
             limit_open: std::rc::Rc::new(std::cell::RefCell::new([false; 4])),
+            bind_hover: std::rc::Rc::new(std::cell::RefCell::new(None)),
             cmds,
             editors: Vec::new(),
         };
@@ -1186,8 +1190,32 @@ impl RightFields {
     /// 认领一个列表行编辑器：绑定本帧的提交目标，且只在显示值变化时写入。
     /// 返回可用于 `ColorField` 等组件的 `TextEdit` 实体。
     pub(crate) fn row_field(&self, cx: &mut App, slot: usize, value: &str, ctx: RowEditCtx) -> Entity<TextEdit> {
+        // 只有「透明度」这一行是 0..100 的百分比、且尾部带可拖的「%」；其余数值行（时长、
+        // 宽高、内边距…）范围各异，绝不能套 0..100，保持原来的纯文本提交即可。
+        let opacity = !ctx.string_value && ctx.key == "opacity" && (ctx.scale - 100.0).abs() < f64::EPSILON;
         if let Some(c) = self.row_ctx.borrow_mut().get_mut(slot) {
             *c = Some(ctx);
+        }
+        // 池里的编辑器跨行复用，必须每次按本行语义把状态重置干净，否则上一行留下的状态会粘到
+        // 复用它下一行上：页面背景那行把「100 %」设成 `readonly` 标签，粘到 Fill 行就表现为
+        // 透明度打不了字；透明度行没有 `set_numeric`，`scrub_by` 一进来就 return，拖 `%` 无效。
+        if let Some(e) = self.row_editors.get(slot) {
+            e.update(cx, |te, _| {
+                te.set_readonly(false);
+                if opacity {
+                    // 透明度：右对齐、贴住 24 pt「%」格，允许 0..100 的拖动/方向键/范围夹紧。
+                    te.set_align(crate::widgets::input::TextAlign::Right);
+                    te.set_right_pad(0.0);
+                    te.set_numeric("", 1.0);
+                    te.set_range(Some(0.0), Some(100.0));
+                } else {
+                    // hex / 文本 / 其它数值行：左对齐，清掉数值行为，避免把 "000000" 这类
+                    // 当数字夹成 "0"，也避免把时长/宽高错误地夹进 0..100。
+                    te.set_align(crate::widgets::input::TextAlign::Left);
+                    te.set_right_pad(8.0);
+                    te.clear_numeric();
+                }
+            });
         }
         let mut last = self.last_rows.borrow_mut();
         if last.get(slot).and_then(|v| v.as_deref()) != Some(value) {
@@ -2046,8 +2074,8 @@ pub(crate) fn right_panel(
         // ── Effects（egui `effects.rs::effects`：类型下拉 + 显隐/删除 + 添加）──
         .child(effects_sec)
         .child(sep());
-    // ── Selection colors（egui `selection_colors.rs::section`）：只有一组颜色时整节不画，
-    //    也**不留线**（否则它和 Effects 结尾那条线会挨成两条）。
+    // ── Selection colors（egui `selection_colors.rs::section`）：两种不同颜色、或一组颜色且
+    //    选中的层带子级时才画；不画时也**不留线**（否则它和 Effects 结尾那条线会挨成两条）。
     if let Some(s) = sel_colors_sec {
         body = body.child(s).child(sep());
     }
@@ -2133,15 +2161,41 @@ pub(crate) fn auto_layout_section(
     if with_dimensions {
         // ② Dimensions（egui `dimensions`：**无条件**显示）。
         let dims = data.dimensions.clone().unwrap_or_default();
-        right::sections::dim_trail_menu(f, cx, &f.w, true, &dims);
-        right::sections::dim_trail_menu(f, cx, &f.h, false, &dims);
+        // 原版 `dimensions`：只有「自己是 auto layout 容器 / 在 auto layout 里 / 是文本」这三种
+        // 图层才有 sizing 下拉；普通形状的 W/H 是纯数值框（用户 2026-11-14 指出此前「什么时候
+        // 都是下拉框」）。
+        if dims.can_size {
+            right::sections::dim_trail_menu(f, cx, &f.w, true, &dims);
+            right::sections::dim_trail_menu(f, cx, &f.h, false, &dims);
+        } else {
+            right::sections::dim_trail_off(cx, &f.w);
+            right::sections::dim_trail_off(cx, &f.h);
+        }
         let lock_cmds = f.cmds.clone();
         let lock_on = dims.constrain;
         let constrain =
             IconButton::new(if lock_on { Icon::LinkOn } else { Icon::LinkOff }).size(24.0).active(lock_on).on_click(move |_e, _w, _cx| {
                 lock_cmds.push(Cmd { id: "node.set", params: Some(serde_json::json!({ "props": { "constrainProportions": !lock_on } })) });
             });
-        sec = sec.child(sublabel_row(tr("Dimensions"))).child(field_row(vec![f.w.clone(), f.h.clone()], vec![constrain]));
+        // 右端那个按钮在原文里是**互斥**的两个东西（`widgets.rs::number_field_impl` 末尾）：
+        //   `if let Some(word) = menu { sizing 菜单 }` → 在 auto layout 里就轮到 sizing 菜单，
+        //   变量按钮根本不会画；`else if binding.is_some() { variable_button }` → 只有不在 auto
+        //   layout 的图层才在悬停时露出变量按钮。
+        // 已绑定（`binding == Some(Some(name))`）是函数最前面的早退分支：整格换成变量 chip，
+        // 与 in_al 无关，所以绑定时仍然走 `bindable`（它的已绑定分支只画 chip）。
+        let w_bound = data.bound.get("width").map(String::as_str);
+        let h_bound = data.bound.get("height").map(String::as_str);
+        let w_el = if w_bound.is_none() && dims.can_size {
+            f.w.clone().into_any_element()
+        } else {
+            right::sections::bindable(f, "width", w_bound, &data.number_variables, f.w.clone().into_any_element())
+        };
+        let h_el = if h_bound.is_none() && dims.can_size {
+            f.h.clone().into_any_element()
+        } else {
+            right::sections::bindable(f, "height", h_bound, &data.number_variables, f.h.clone().into_any_element())
+        };
+        sec = sec.child(sublabel_row(tr("Dimensions"))).child(field_row(vec![w_el, h_el], vec![constrain]));
         // 选中文字时的「调整大小」三格（用户 2026-11-11：从 Typography 段移到 Layout 段）。
         // 值仍是 `textAutoResize`，与 Typography 之前那个下拉同一条命令。
         if let Some(t) = data.text.as_ref() {
@@ -2208,6 +2262,22 @@ pub(crate) fn auto_layout_section(
         // 右列：gap / cross_gap 各自占一个 `ROW_H`(32) 高的网格行，内部把 24pt 的字段
         // **垂直居中**（上下各留 4pt）——这是「32 网格 / 24 内容」的标准对齐，不能 `items_start`
         // 把内容整体顶上去。`flex_col` + `items_start` 让整列从顶部排成两个 32 行。
+        // gap / crossGap 也是白名单字段（原版 `layout_panel.rs::spacing` 用
+        // `variable_ui::number_field_or(..., "gap"/"crossGap", ...)`）。
+        let gap_el = right::sections::bindable(
+            f,
+            "gap",
+            data.bound.get("gap").map(String::as_str),
+            &data.number_variables,
+            f.gap.clone().into_any_element(),
+        );
+        let cross_el = right::sections::bindable(
+            f,
+            "crossGap",
+            data.bound.get("crossGap").map(String::as_str),
+            &data.number_variables,
+            f.cross_gap.clone().into_any_element(),
+        );
         let right_col = if two_gaps {
             div()
                 .w_full()
@@ -2216,8 +2286,8 @@ pub(crate) fn auto_layout_section(
                 .flex_col()
                 .items_start()
                 .gap(pt(0.0))
-                .child(div().w_full().h(pt(crate::widgets::ROW_H)).flex().items_center().child(f.gap.clone().into_any_element()))
-                .child(div().w_full().h(pt(crate::widgets::ROW_H)).flex().items_center().child(f.cross_gap.clone().into_any_element()))
+                .child(div().w_full().h(pt(crate::widgets::ROW_H)).flex().items_center().child(gap_el))
+                .child(div().w_full().h(pt(crate::widgets::ROW_H)).flex().items_center().child(cross_el))
         } else {
             div()
                 .w_full()
@@ -2226,7 +2296,7 @@ pub(crate) fn auto_layout_section(
                 .flex_col()
                 .items_start()
                 .gap(pt(0.0))
-                .child(div().w_full().h(pt(crate::widgets::ROW_H)).flex().items_center().child(f.gap.clone().into_any_element()))
+                .child(div().w_full().h(pt(crate::widgets::ROW_H)).flex().items_center().child(gap_el))
         };
         // Gap 行右侧那颗 dots（egui `layout_panel::settings_toggle` 的 "Advanced"）：
         // 打开的是通用窗口弹层「Layout」，不再是旧版的一串下拉菜单。
@@ -2264,7 +2334,23 @@ pub(crate) fn auto_layout_section(
                 .child(field_row(vec![f.pad_l.clone(), f.pad_t.clone()], Vec::<IconButton>::new()))
                 .child(field_row(vec![f.pad_r.clone(), f.pad_b.clone()], vec![toggle]));
         } else {
-            sec = sec.child(field_row(vec![f.pad_h.clone(), f.pad_v.clone()], vec![toggle]));
+            // 水平 / 垂直内边距同样可绑变量（`paddingHorizontal` / `paddingVertical`）。
+            // 独立四边是「一个数组一起提交」，原版也没有逐边绑定，这里保持纯数值。
+            let pad_h_el = right::sections::bindable(
+                f,
+                "paddingHorizontal",
+                data.bound.get("paddingHorizontal").map(String::as_str),
+                &data.number_variables,
+                f.pad_h.clone().into_any_element(),
+            );
+            let pad_v_el = right::sections::bindable(
+                f,
+                "paddingVertical",
+                data.bound.get("paddingVertical").map(String::as_str),
+                &data.number_variables,
+                f.pad_v.clone().into_any_element(),
+            );
+            sec = sec.child(field_row(vec![pad_h_el, pad_v_el], vec![toggle]));
         }
     }
     // ④ 网格轨道（egui `layout_panel.rs::tracks`，只在 grid frame 上出现）：

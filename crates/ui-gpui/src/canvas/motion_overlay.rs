@@ -2,7 +2,9 @@
 //!
 //! 移植自 desigma `crates/desigma-app/src/motion/inspector/overlay.rs`（`paint_overlay`），
 //! 并按用户 2026-11-12 的规格补齐交互：
-//! - 路径：按时间轴帧率对选中层的 `Position` 逐帧采样，画细线 + 采样点 + 关键帧菱形。
+//! - 路径：**只由空间信息**决定（关键帧位置 + 关键帧空间手柄），有手柄走三次贝塞尔、
+//!   没手柄走直线，采样用的是**几何参数**而不是时间——缓动/弹簧只决定物体沿这条线走多快，
+//!   绝不改线的形状（用户 2026-11-14）。
 //!   **轨迹钉死在静态文档坐标系**（父链/尺寸取未评估的源文档），拖播放头时不会跟着漂。
 //! - 手柄：圆环（旋转）/ 绿箭头（沿局部 X 移动）/ 粉箭头（沿局部 Y 移动）/ 箭头根部两个
 //!   缩放块。两根轴按**动画 Rotation 相对设计角的增量**旋转：设计里斜 45°、动画增量为 0
@@ -177,9 +179,31 @@ fn centre_at(app: &CanvasApp, doc: &Document, id: NodeId, pos: figcraft_geom::Ve
 }
 
 /// `id` 在 `t_ms` 的运动路径上的点（关键帧 + clip 预设都算），静态父链。
+///
+/// **不含缓动**（见 [`position_value`]）：轨迹、菱形、手柄锚点全用同一个空间量。
 fn path_point(app: &CanvasApp, src: &Document, id: NodeId, t_ms: f64) -> Option<Pos2> {
-    let AnimValue::Vec2(pos) = motion::value_at(src.node(id)?, AnimProperty::Position, t_ms)? else { return None };
-    centre_at(app, src, id, pos)
+    centre_at(app, src, id, position_value(src, id, t_ms)?)
+}
+
+/// `id` 在 `t_ms` 的 Position **值**（页面坐标，含 clip 位移），不转屏幕。
+///
+/// 用 [`motion::path_position_at`]（**取掉缓动**）：画轨迹时段的端点也只取空间量，
+/// 缓动/弹簧的过冲不会把线拉出关键帧（用户 2026-11-14）。
+fn position_value(src: &Document, id: NodeId, t_ms: f64) -> Option<figcraft_geom::Vec2> {
+    Some(motion::path_position_at(src.node(id)?, t_ms))
+}
+
+/// 关键帧 `t_ms` 那一端的**非零空间手柄**（相对该关键帧值的页面偏移）。
+///
+/// 「精确为 (0,0)」按直线处理（照矢量路径的 `Segment::is_straight`）——零手柄的三次贝塞尔
+/// **不等于**线性插值，会把直线画弯（用户 2026-11-12）。
+fn handle_at(src: &Document, id: NodeId, t_ms: f64, end: End) -> Option<[f64; 2]> {
+    let k = src.node(id)?.motion.track(AnimProperty::Position)?.key_at(t_ms as u32)?;
+    let h = match end {
+        End::Out => k.out_handle,
+        End::In => k.in_handle,
+    }?;
+    (h[0] != 0.0 || h[1] != 0.0).then_some(h)
 }
 
 /// gizmo 中心：层在**当前播放头**画在哪（含自身/clip 位移），手柄跟着它走。
@@ -393,12 +417,15 @@ fn paint(painter: &mut Painter, app: &CanvasApp, st: &State, src: &Document, g: 
 
     // ── 轨迹：静态父链 + 各时刻的 Position。拖播放头时这条线钉死不动。
     //
-    // **有关键帧时，相邻关键帧之间直接画直线**：Position 是线性插值，两点之间必是直线，
-    // 采样只会引入视觉噪声（用户 2026-11-12 反复说"线就是弯的"）。纯 clip 才采样。
+    // **轨迹只由空间信息决定**：段的两端取关键帧位置，段内的形状只由两端的**空间手柄**
+    // 决定，采样参数是几何参数 u∈0..1，**不是时间**。缓动（EaseOutBack 的 y=1.45、
+    // EaseInOutBack 的 y=-0.5/1.4、弹簧）只决定物体沿这条线走多快，改缓动不该改线的形状；
+    // 以前按时间采样、把 `easing.ease(p)` 当贝塞尔参数，过冲的 p 会把线拉出关键帧之外
+    // （用户 2026-11-14：「动画的路径线应该和时间/缓动曲线无关」）。
     let key_times: Vec<f64> =
         node.motion.track(AnimProperty::Position).map(|tr| tr.keys.iter().map(|k| f64::from(k.time_ms)).collect()).unwrap_or_default();
     if key_times.is_empty() {
-        // 纯 clip：clip 的位移可能非线性，按帧率采样。
+        // 纯 clip：位移由 clip 的时间函数给出，只能按帧率采样（clip 自身的几何）。
         let step = (1000.0 / f64::from(st.fps.max(1))).max(1.0);
         let mut pts: Vec<Pos2> = Vec::new();
         let mut at = f64::from(t0);
@@ -418,24 +445,39 @@ fn paint(painter: &mut Painter, app: &CanvasApp, st: &State, src: &Document, g: 
         times.push(f64::from(t1));
         times.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
         times.dedup_by(|a, b| (*a - *b).abs() < 0.5);
-        // 每段采样 24 点：**没手柄时点共线（看着就是直线），有手柄时沿贝塞尔**，
-        // 这样画出来的路径和物体实际运动严格一致（用户 2026-11-12：改完手柄后对不上，
-        // 因为我之前图省事把段画成了直线）。
+        // 每段按几何参数均匀取 24 点：没手柄 = 直线；有手柄 = 沿三次贝塞尔（与物体实际
+        // 走的空间曲线一致，用户 2026-11-12「改完手柄后对不上」）。
         const STEPS: usize = 24;
         for pair in times.windows(2) {
             let (ta, tb) = (pair[0], pair[1]);
             if tb - ta < 0.5 {
                 continue;
             }
-            let mut prev = path_point(app, src, g.node, ta);
-            for i in 1..=STEPS {
-                let t = ta + (tb - ta) * i as f64 / STEPS as f64;
-                if let Some(q) = path_point(app, src, g.node, t) {
-                    if let Some(p) = prev {
-                        painter.line_segment([p, q], s(accent, 1.0));
-                    }
-                    prev = Some(q);
+            let (Some(va), Some(vb)) = (position_value(src, g.node, ta), position_value(src, g.node, tb)) else { continue };
+            let (Some(pa), Some(pb)) = (centre_at(app, src, g.node, va), centre_at(app, src, g.node, vb)) else { continue };
+            let (ho, hi) = (handle_at(src, g.node, ta, End::Out), handle_at(src, g.node, tb, End::In));
+            if ho.is_none() && hi.is_none() {
+                if pa.distance(pb) > 0.01 {
+                    painter.line_segment([pa, pb], s(accent, 1.0));
                 }
+                continue;
+            }
+            let (h1, h2) = (ho.unwrap_or([0.0, 0.0]), hi.unwrap_or([0.0, 0.0]));
+            let (x0, y0, x3, y3) = (va.x, va.y, vb.x, vb.y);
+            let (x1, y1) = (x0 + h1[0], y0 + h1[1]);
+            let (x2, y2) = (x3 + h2[0], y3 + h2[1]);
+            let mut prev = pa;
+            for i in 1..=STEPS {
+                let u = i as f64 / STEPS as f64;
+                let t = 1.0 - u;
+                let (w0, w1, w2, w3) = (t * t * t, 3.0 * t * t * u, 3.0 * t * u * u, u * u * u);
+                let v = figcraft_geom::Vec2::new(
+                    x0 * w0 + x1 * w1 + x2 * w2 + x3 * w3,
+                    y0 * w0 + y1 * w1 + y2 * w2 + y3 * w3,
+                );
+                let Some(q) = centre_at(app, src, g.node, v) else { continue };
+                painter.line_segment([prev, q], s(accent, 1.0));
+                prev = q;
             }
         }
     }
@@ -816,7 +858,113 @@ mod tests {
         assert!((b0.x - a0.x).abs() > 1.0, "Position 关键帧确实画出了一条线");
     }
 
-    /// 设计角 45°、动画无 Rotation 增量 → 两根轴是屏幕正方向（向左 / 向上）。
+    /// 轨迹线**只由空间信息决定**：把同一段的缓动换成会过冲的 back / 弹簧，画出来的点
+    /// 必须逐点相同（用户 2026-11-14：「动画的路径线应该和时间/缓动曲线无关」）。
+    ///
+    /// 回归锁：以前按时间采样、把 `easing.ease(p)` 当贝塞尔参数，过冲的 p（EaseOutBack 的
+    /// y=1.45、EaseInOutBack 的 y=-0.5/1.4、弹簧振荡）会把线拉出关键帧之外。
+    #[test]
+    fn path_shape_ignores_the_easing_curve() {
+        /// 画一遍，取轨迹线（accent 色、1pt 的 `Line`）的所有端点；顺带给出两端的理论位置。
+        fn drawn(ease: Ease) -> (Vec<Pos2>, Pos2, Pos2) {
+            let (mut app, dot) = app_with_motion();
+            {
+                let ds = app.session.ds_mut().expect("ds");
+                let tr = Arc::make_mut(&mut ds.doc).node_mut(dot).unwrap().motion.ensure_track(AnimProperty::Position);
+                tr.keys.iter_mut().find(|k| k.time_ms == 0).unwrap().easing = ease;
+            }
+            on(&mut app, 500.0);
+            let src = app.session.ds().expect("ds").doc.clone();
+            let a = path_point(&app, &src, dot, 0.0).expect("起点");
+            let b = path_point(&app, &src, dot, 1000.0).expect("终点");
+            app.pointer = Some(pos2(-100.0, -100.0)); // 别 hover 出手柄线
+            let mut painter = Painter::new(app.canvas.rect);
+            let theme = app.theme;
+            draw(&app, &mut painter, &theme);
+            let accent = app.accent();
+            let mut pts = Vec::new();
+            for o in &painter.ops {
+                if let Op::Line { a, b, stroke } = o
+                    && stroke.color == accent
+                    && (stroke.width - 1.0).abs() < 1e-6
+                {
+                    pts.push(*a);
+                    pts.push(*b);
+                }
+            }
+            (pts, a, b)
+        }
+
+        let bbox = |pts: &[Pos2]| {
+            pts.iter().fold((f32::MAX, f32::MIN, f32::MAX, f32::MIN), |(x0, x1, y0, y1), p| {
+                (x0.min(p.x), x1.max(p.x), y0.min(p.y), y1.max(p.y))
+            })
+        };
+
+        let (linear, a, b) = drawn(Ease::Linear);
+        assert!(!linear.is_empty(), "轨迹要画出来，否则这条测试没有约束力");
+        for ease in [Ease::EaseInOutBack, Ease::EaseOutBack, Ease::SpringBouncy, Ease::EaseIn] {
+            let (pts, _, _) = drawn(ease);
+            assert_eq!(pts, linear, "{ease:?} 不该改变轨迹的点（形状/长度都与缓动无关）");
+        }
+        // 没有空间手柄 → 直线，且恰好止于两个关键帧，不外溢。
+        let (lx0, lx1, ly0, ly1) = bbox(&linear);
+        let (ex0, ex1, ey0, ey1) = bbox(&[a, b]);
+        for (got, want, axis) in [(lx0, ex0, "x0"), (lx1, ex1, "x1"), (ly0, ey0, "y0"), (ly1, ey1, "y1")] {
+            assert!((got - want).abs() < 0.01, "轨迹 {axis} 应与关键帧端点一致：{got} vs {want}");
+        }
+    }
+
+    /// 有空间手柄时轨迹仍然与缓动无关（贝塞尔形状来自手柄，采样参数是几何参数）。
+    #[test]
+    fn curved_path_shape_ignores_the_easing_curve() {
+        fn drawn(ease: Ease) -> Vec<Pos2> {
+            let (mut app, dot) = app_with_motion();
+            {
+                let ds = app.session.ds_mut().expect("ds");
+                let tr = Arc::make_mut(&mut ds.doc).node_mut(dot).unwrap().motion.ensure_track(AnimProperty::Position);
+                {
+                    let k = tr.keys.iter_mut().find(|k| k.time_ms == 0).unwrap();
+                    k.easing = ease;
+                    // 只给 out 端一个手柄：段内曲线明显偏离弦（对称 S 形会在中点落回弦上，
+                    // 测不出「手柄有没有生效」）。
+                    k.out_handle = Some([40.0, -80.0]);
+                }
+            }
+            on(&mut app, 500.0);
+            app.pointer = Some(pos2(-100.0, -100.0));
+            let mut painter = Painter::new(app.canvas.rect);
+            let theme = app.theme;
+            draw(&app, &mut painter, &theme);
+            let accent = app.accent();
+            let mut pts = Vec::new();
+            for o in &painter.ops {
+                if let Op::Line { a, b, stroke } = o
+                    && stroke.color == accent
+                    && (stroke.width - 1.0).abs() < 1e-6
+                {
+                    pts.push(*a);
+                    pts.push(*b);
+                }
+            }
+            pts
+        }
+
+        let linear = drawn(Ease::Linear);
+        assert!(linear.len() > 4, "有手柄时该按贝塞尔采样出多个点：{}", linear.len());
+        for ease in [Ease::EaseInOutBack, Ease::SpringBouncy] {
+            assert_eq!(drawn(ease), linear, "{ease:?} 不该改变曲线形状");
+        }
+        // 曲线：点集必须明显偏离两端连线（否则手柄没生效，前两条等式断言会失去意义）。
+        let (a, b) = (linear[0], *linear.last().unwrap());
+        let chord = b - a;
+        let dev = linear
+            .iter()
+            .map(|p| (*p - a).dot(vec2(-chord.y, chord.x)).abs() / a.distance(b).max(1e-6))
+            .fold(0.0f32, f32::max);
+        assert!(dev > 5.0, "手柄应把轨迹拉弯，实际最大偏离弦 {dev}px");
+    }
+
     #[test]
     fn design_rotation_does_not_rotate_the_arrows() {
         let (mut app, dot) = app_with_motion();

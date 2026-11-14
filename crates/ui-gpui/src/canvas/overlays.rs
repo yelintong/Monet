@@ -23,7 +23,7 @@ fn cubic_at(p0: Pos2, p1: Pos2, p2: Pos2, p3: Pos2, t: f32) -> Pos2 {
 }
 
 /// 矢量编辑叠加层（照抄 `ui-egui/src/canvas/overlays.rs::vector_overlay`）：
-/// 贝塞尔段（采样成折线）+ 手柄线 + 方形点（hover 放大、选中 accent）。
+/// 贝塞尔段（采样成折线）+ 手柄线 + 圆点（hover 放大、选中 accent）。
 ///
 /// 用户 2026-11-12：进入矢量编辑后必须能看到每个节点的手柄、能点中它们。
 fn vector_overlay(
@@ -67,15 +67,22 @@ fn vector_overlay(
         painter.circle_filled(b, r, if on { accent } else { Color32::WHITE });
         painter.circle_stroke(b, r, s(accent, 1.0));
     }
-    // 顶点：方形（hover 放大、选中 accent）。
+    // 顶点：**真正的圆点**（hover 放大、选中 accent）。egui/lizard 用 7/9 pt 方块配
+    // `CornerRadius::same(5)`，egui 会把圆角截到半边长、看起来就是圆；但 GPUI 的
+    // `rect_filled` 只把 radius 原样交给 `paint_quad`（`painter.rs::corners`），
+    // 7 pt 方块配 5 pt 圆角仍然是圆角方块，不会变成圆——这就是上一版「照抄 egui 写法
+    // 却还是方的」的原因。钢笔态本来就走 `circle_filled`，所以这里统一用圆形绘制。
     for (i, v) in o.vertices.iter().enumerate() {
         let p = sp(v);
         let hovered = matches!(hover, Some(VHit::Vertex { index }) if index == i);
-        let half = if hovered { 4.5 } else { 3.5 };
-        let r = Rect::from_min_max(pos2(p.x - half, p.y - half), pos2(p.x + half, p.y + half));
+        let r = if hovered { 4.5 } else { 3.5 };
         let on = o.selected_vertices.contains(&i);
-        painter.rect_filled(r, CornerRadius::same(2), if on { accent } else { Color32::WHITE });
-        painter.rect_stroke(r, CornerRadius::same(2), s(accent, 1.0), StrokeKind::Inside);
+        painter.circle_filled(p, r, if on { accent } else { Color32::WHITE });
+        painter.circle_stroke(p, r, s(accent, 1.0));
+        // 锚点环（egui `vector_overlay`: `circle_stroke(p, 7.5, …)`）。
+        if o.anchor == Some(i) {
+            painter.circle_stroke(p, 7.5, s(accent, 1.0));
+        }
     }
 }
 
@@ -351,8 +358,11 @@ pub(super) fn overlays(app: &CanvasApp, painter: &mut Painter, t: &Tokens, doc: 
     if !ov.pen.is_empty() {
         let pts: Vec<Pos2> = ov.pen.iter().map(|[x, y]| app.to_screen(*x, *y)).collect();
         if app.session.tool.tool == ToolId::Pencil {
-            // 将要生成的笔画：用它的颜色与粗细（缩到很小时至少 1px）。
-            let (color, weight) = figcraft_engine::tools::PENCIL_STROKE;
+            // 将要生成的笔画：用 `tool.drawStyle` 的颜色与粗细（缩到很小时至少 1px），
+            // 与 `pencil_finish` 真正写入文档的笔触一致（lizard `drawing_toolbar`）。
+            let tool = app.session.tool.tool;
+            let style = app.session.tool.draw_style(tool).cloned().unwrap_or_default();
+            let (color, weight) = (style.color(), style.weight(tool));
             painter.add_shape(pts, false, Color32::TRANSPARENT, s(crate::theme::doc_c32(color), ((weight * zoom) as f32).max(1.0)));
         } else {
             for [x0, y0, x1, y1] in &ov.pen_handles {
@@ -474,12 +484,12 @@ fn shape_overlay(app: &CanvasApp, painter: &mut Painter, col: Color32) {
     }
 }
 
-/// 贝塞尔控制点：小方块。
+/// 贝塞尔控制点：半径 `size` 的**圆点**（egui/lizard 的 `bezier_handle` 都是
+/// `circle_filled` + `circle_stroke`，矢量编辑与钢笔绘制共用同一形状）。
 fn bezier_handle(painter: &mut Painter, a: Pos2, b: Pos2, size: f32, col: Color32) {
     painter.line_segment([a, b], stroke(col.gamma_multiply(0.6), 1.0));
-    let r = Rect::from_center_size(b, vec2(size, size));
-    painter.rect_filled(r, CornerRadius::same(1), Color32::WHITE);
-    painter.rect_stroke(r, CornerRadius::same(1), stroke(Color32::from_gray(0), 1.0), StrokeKind::Inside);
+    painter.circle_filled(b, size, Color32::WHITE);
+    painter.circle_stroke(b, size, stroke(Color32::from_gray(0), 1.0));
 }
 
 /// 变换框（屏幕四角 tl、tr、br、bl）：`outline` 时画轮廓，前 `handles` 个角手柄，

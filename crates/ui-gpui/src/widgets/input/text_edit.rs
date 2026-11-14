@@ -203,6 +203,12 @@ impl TextEdit {
     pub fn set_number_config(&mut self, cfg: NumberConfig) {
         self.number = Some(cfg);
     }
+    /// Drop the numeric behaviour (a pooled slot reused by a hex / label row): no pointer scrub,
+    /// no arrow stepping, no range clamp. The value it already holds is left untouched.
+    pub fn clear_numeric(&mut self) {
+        self.input.set_suffix("");
+        self.number = None;
+    }
     /// 设置允许的输入范围（含端点），并把当前值夹进去。
     /// 在 `set_numeric` / `set_number_config` **之后**调用，否则会被后写的配置覆盖。
     pub fn set_range(&mut self, min: Option<f64>, max: Option<f64>) {

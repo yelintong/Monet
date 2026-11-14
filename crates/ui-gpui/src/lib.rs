@@ -532,6 +532,13 @@ pub struct CanvasView {
     /// 工具栏里打开着的飞出菜单（组的 key）；`None` 表示没开。
     tool_flyout: Option<&'static str>,
 
+    /// 矢量编辑工具栏的「更多」下拉是否展开（Figma `Vector editing` secondary toolbelt）。
+    vector_more: bool,
+
+    /// 真正的 Draw 模式。模式是状态，不是「当前工具恰好是铅笔/钢笔」；Design 里点出钢笔
+    /// 仍是 Design，不该冒出 Draw 专属的宽度设置栏。
+    draw_mode: bool,
+
     /// 画板的 Design 面板是否展开（`ui-egui` 的 `app.ui.board_panel`）。画板没有原型、也没有
 
     /// Dev Mode，右栏默认收起，工具栏最右的按钮 / `view.design` 是它的开关。
@@ -797,6 +804,10 @@ impl CanvasView {
             last_panel: None,
 
             tool_flyout: None,
+
+            vector_more: false,
+
+            draw_mode: false,
 
             board_panel: false,
 
@@ -2772,9 +2783,12 @@ impl CanvasView {
             toolbar::Intent::Tool(id) => {
                 // A tool picked from the row closes the flyout: it could otherwise hang over the
 
-                // cell that just changed.
+                // cell that just changed. The vector-edit "More" dropdown (shape builder lives
+                // there) closes the same way.
 
                 self.tool_flyout = None;
+
+                self.vector_more = false;
 
                 if matches!(self.popup, Some(Popup::Flyout { .. })) {
                     self.popup = None;
@@ -2829,8 +2843,68 @@ impl CanvasView {
                 cx.notify();
             }
 
+            toolbar::Intent::VectorTool(id) => {
+                // Figma's secondary toolbelt: an icon+label button, or a row in "More".
+                self.vector_more = false;
+                self.run_command("vector.edit.tool", serde_json::json!({ "tool": id }), cx);
+                cx.notify();
+            }
+
+            toolbar::Intent::VectorDone => {
+                self.vector_more = false;
+                self.run_command("vector.edit.end", serde_json::json!({}), cx);
+            }
+
+            toolbar::Intent::VectorMore => {
+                self.vector_more = !self.vector_more;
+                cx.notify();
+            }
+
+            toolbar::Intent::DrawColor => {
+                let tool = self.app.session.tool.tool;
+                let current = self
+                    .app
+                    .session
+                    .tool
+                    .draw_style(tool)
+                    .map(|s| crate::widgets::swatch::color32(s.color()))
+                    .unwrap_or_else(|| Color32::from_rgb(0, 0, 0));
+                let me = cx.entity();
+                let on_pick: std::rc::Rc<dyn Fn(Color32, &mut Window, &mut App)> = std::rc::Rc::new(move |c, _w, cx| {
+                    me.update(cx, |cv, cx| {
+                        cv.run_command("tool.drawStyle", serde_json::json!({ "color": c.to_hex() }), cx);
+                    });
+                });
+                self.open_color(window.mouse_position(), current, on_pick, cx);
+            }
+
+            toolbar::Intent::DrawWeight(w) => {
+                self.run_command("tool.drawStyle", serde_json::json!({ "weight": w }), cx);
+            }
+
+            toolbar::Intent::DrawLine(id) => {
+                self.run_command("tool.drawStyle", serde_json::json!({ "tool": "pencil", "lineStyle": id }), cx);
+            }
+
+            toolbar::Intent::DrawPreset(preset) => {
+                self.run_command("tool.drawStyle", serde_json::json!({ "preset": preset }), cx);
+            }
+
+            toolbar::Intent::DrawDone => {
+                self.run_command("tool.set", serde_json::json!({ "tool": "move" }), cx);
+            }
+
+            toolbar::Intent::DrawBrush => {
+                // No `ToolId::Brush` in this engine: the illustrated Brush nib activates the
+                // pencil with its ink brush preset — the same path the Draw toolbar's presets use.
+                self.run_command("tool.set", serde_json::json!({ "tool": "pencil" }), cx);
+                self.run_command("tool.drawStyle", serde_json::json!({ "preset": "ink" }), cx);
+            }
+
             toolbar::Intent::Mode(i) => {
                 let tool = self.app.session.tool.tool;
+                // Only the Draw segment owns the Draw toolbar. Every other segment leaves it.
+                self.draw_mode = i == 0;
 
                 match i {
                     // Draw: the pencil, with the timeline put away.
@@ -4388,8 +4462,16 @@ impl Render for CanvasView {
                 // `.cursor(style)` 按 hitbox 悬停生效，和 egui 的 `resp.hovered()` 等价。
 
                 // IME：每帧在 paint 阶段重新登记输入处理器（与 GPUI 的文本元素同一机制）。
-
                 if text_editing {
+                    // `Window::handle_input` 只在 `focus_handle.is_focused()` 时才真的登记
+                    // `PlatformInputHandler`，没登记的话 `WM_CHAR` 与键盘的 `key_char` 派发都会
+                    // 在 `with_input_handler(..).take()?` 处被静默丢弃 —— 表现就是「双击文字
+                    // 进得了编辑态、光标也在闪，但一个字符都打不进去」。编辑文字期间画布本来就
+                    // 该独占键盘（和 egui 那边文本编辑态一致），所以这里补一次聚焦兜底。
+                    if !ime_focus.is_focused(window) {
+                        window.focus(&ime_focus);
+                    }
+
                     window.handle_input(&ime_focus, ElementInputHandler::new(b, ime_entity.clone()), cx);
                 }
 
@@ -5104,70 +5186,118 @@ impl Render for CanvasView {
 
                 if this.app.session.ds().is_ok_and(|d| d.text_edit.is_some()) {
                     let m = e.keystroke.modifiers;
+                    let cmd = m.platform || m.control;
 
-                    // Text edit: Cmd/Ctrl+Z(-Shift) ends the edit, then undo/redo.
+                    // **这里绝对不能 `stop_propagation()`。** GPUI 的 Windows 后端
+                    // （`platform/windows/events.rs::handle_keydown_msg`）是：
+                    //   let handled = !func(input).propagate;   // func = 应用层 on_key_down
+                    //   if handled { Some(0) } else { TranslateMessage(..); Some(1) }
+                    // 也就是说**只有事件仍在冒泡时才调 `TranslateMessage`**，系统的 `WM_CHAR`
+                    // 才被生产出来。一旦在这里停止冒泡，`WM_CHAR` 根本不会出现，
+                    // 同时 `replay_pending_input` 里那次 `key_char` 派发也被 `!cx.propagate_event`
+                    // 跳过 —— 两条字符入口一起关死，表现就是「能聚焦、能进编辑、打不进字」。
+                    //
+                    // 所以按键照常冒泡，只在 `replace_text_in_range` 里把 GPUI 额外派发的那一次
+                    // `key_char` 认出来丢掉（见那里的注释）。
 
-                    if (m.platform || m.control) && e.keystroke.key.as_str() == "z" {
-                        let _ = figcraft_engine::textedit::end(&mut this.app.session);
-
-                        let id = if m.shift { "edit.redo" } else { "edit.undo" };
-
-                        let _ = this.app.session.execute(id, &serde_json::json!({}));
-
+                    // 组合中（preedit 已建立）：按键归 IME（Enter 选候选 / Escape 取消）。
+                    // 上游 `text_key_event` 的第一条就是「组合里一个键都不处理」。
+                    if this.app.session.ds().ok().and_then(|d| d.text_edit.as_ref()).is_some_and(|te| te.preedit.is_some()) {
                         cx.notify();
-
                         return;
                     }
 
-                    let word = m.control || m.alt;
+                    // 剪贴板。上游这三个是独立事件 `Event::Copy` / `Event::Cut` / `Event::Paste`
+                    // （`copy_or_cut` / `insert_text`），GPUI 没有对应的输入事件，只能从按键里接，
+                    // 且必须先于下面的命令表，否则被文本编辑分支吞掉。
+                    if cmd && matches!(e.keystroke.key.as_str(), "c" | "x" | "v") {
+                        if e.keystroke.key.as_str() == "v" {
+                            // 上游 `Event::Paste(t) => insert_text(app, ctx, t)`。
+                            if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text())
+                                && !text.is_empty()
+                            {
+                                let _ = figcraft_engine::textedit::insert(&mut this.app.session, &text);
+                            }
+                        } else {
+                            // 上游 `copy_or_cut`：有选中文字才写剪贴板；cut 再删掉选区。
+                            if let Some(text) = figcraft_engine::textedit::selected_text(&this.app.session).filter(|t| !t.is_empty()) {
+                                cx.write_to_clipboard(gpui::ClipboardItem::new_string(text));
+                            }
+                            if e.keystroke.key.as_str() == "x" {
+                                let _ = figcraft_engine::textedit::key(&mut this.app.session, "Delete", false, false, false);
+                            }
+                        }
+                        cx.notify();
+                        return;
+                    }
 
-                    let line = m.platform || m.control;
-
-                    let named = match e.keystroke.key.as_str() {
-                        "backspace" => Some("Backspace"),
-
-                        "delete" => Some("Delete"),
-
-                        "enter" => Some("Enter"),
-
-                        "escape" => Some("Escape"),
-
-                        "tab" => Some("Tab"),
-
-                        "left" => Some("Left"),
-
-                        "right" => Some("Right"),
-
-                        "up" => Some("Up"),
-
-                        "down" => Some("Down"),
-
-                        "home" => Some("Home"),
-
-                        "end" => Some("End"),
-
-                        _ => None,
-                    };
-
-                    if let Some(name) = named {
-                        let _ = figcraft_engine::textedit::key(&mut this.app.session, name, m.shift, word, line);
-                    } else if !m.platform
-                        && !m.control
-                        && let Some(c) = e.keystroke.key_char.clone()
-                    {
-                        // 正在 IME 组合（preedit 已建立）时，文字由 `EntityInputHandler` 接管，
-
-                        // 这里不再插字，避免重复（见 `impl EntityInputHandler for CanvasView`）。
-
-                        let composing = this.app.session.ds().ok().and_then(|d| d.text_edit.as_ref()).is_some_and(|te| te.preedit.is_some());
-
-                        if !composing {
-                            let _ = figcraft_engine::textedit::insert(&mut this.app.session, &c);
+                    // 带修饰键的键先走文本编辑区的命令表（上游 `text_shortcut` →
+                    // `keymap::lookup(Context::Text)`）：粗体、斜体、下划线、列表缩进、字号字距……
+                    if m.platform || m.control || m.alt {
+                        let held = figcraft_engine::keymap::Mods { shift: m.shift, alt: m.alt, cmd: m.platform, ctrl: m.control };
+                        let key = canonical_key(&e.keystroke.key);
+                        if let Some(binding) =
+                            figcraft_engine::keymap::lookup(figcraft_engine::keymap::Platform::current(), figcraft_engine::keymap::Context::Text, &key, held)
+                        {
+                            run_binding(&mut this.app, binding.id);
+                            cx.notify();
+                            return;
                         }
                     }
 
-                    cx.notify();
+                    // `Cmd/Ctrl + Z`（Shift 为 redo）：先退出编辑，再撤销（上游同段）。
+                    if cmd && e.keystroke.key.as_str() == "z" {
+                        let _ = figcraft_engine::textedit::end(&mut this.app.session);
+                        let id = if m.shift { "edit.redo" } else { "edit.undo" };
+                        let _ = this.app.session.execute(id, &serde_json::json!({}));
+                        cx.notify();
+                        return;
+                    }
 
+                    // `Cmd/Ctrl + Enter`：结束编辑（上游 `if name == "Enter" && m.command`）。
+                    if cmd && e.keystroke.key.as_str() == "enter" {
+                        let _ = figcraft_engine::textedit::end(&mut this.app.session);
+                        cx.notify();
+                        return;
+                    }
+
+                    // 具名键（上游 `text_key_name`；`Cmd+A` 也在那张表里）。
+                    let name = match e.keystroke.key.as_str() {
+                        "backspace" => Some("Backspace"),
+                        "delete" => Some("Delete"),
+                        "enter" => Some("Enter"),
+                        "escape" => Some("Escape"),
+                        "tab" => Some("Tab"),
+                        "left" => Some("Left"),
+                        "right" => Some("Right"),
+                        "up" => Some("Up"),
+                        "down" => Some("Down"),
+                        "home" => Some("Home"),
+                        "end" => Some("End"),
+                        "a" if cmd => Some("SelectAll"),
+                        _ => None,
+                    };
+                    if let Some(name) = name {
+                        let (word, line) = figcraft_engine::keymap::text_motion(
+                            figcraft_engine::keymap::Platform::current(),
+                            name,
+                            figcraft_engine::keymap::Mods { shift: m.shift, alt: m.alt, cmd: m.platform, ctrl: m.control },
+                        );
+                        let _ = figcraft_engine::textedit::key(&mut this.app.session, name, m.shift, word, line);
+                    }
+
+                    // **可打印字符这里一个都不插。** 上游只认 `Event::Text`——平台的字符流。
+                    // GPUI 在 Windows 上把这次字符流放在 `window.rs::replay_pending_input` 里：
+                    // 按键派发完、事件仍在冒泡时，它把 `keystroke.key_char` 送给
+                    // `EntityInputHandler::replace_text_in_range`。`key_char` 是带键盘状态算的，
+                    // 实测 Shift+D 得到 `"D"`，大小写与输入法都对。所以这里只让它冒泡，别再插一遍。
+                    //
+                    // 也别在这里 `stop_propagation()`：`handle_keydown_msg` 里
+                    // `if handled { .. } else { TranslateMessage(..) }`，停止冒泡会让系统侧的
+                    // 字符翻译一起被跳过；而 `replay_pending_input` 同样看 `cx.propagate_event`，
+                    // 两处一起失效就是「能进编辑、打不进字」。
+
+                    cx.notify();
                     return;
                 }
 
@@ -5382,10 +5512,40 @@ impl Render for CanvasView {
             self.app.session.active_read_only(),
             canvas_x,
             canvas_w,
-            on_intent,
+            on_intent.clone(),
             board,
             self.board_panel,
+            self.draw_mode,
+            self.app.session.tool.pencil_brush.is_some(),
         );
+
+        // Vector edit keeps the main pill and puts its own toolbar 8 pt above it, laid out like
+        // Figma's `Vector editing` secondary toolbelt. The engine owns the current VTool.
+        let vector_more = self.vector_more;
+        let vector_bar = self
+            .app
+            .session
+            .ds()
+            .ok()
+            .and_then(|ds| ds.vector_edit.as_ref().map(|ve| ve.tool))
+            .map(|vtool| toolbar::vector_edit_bar(vtool, vector_more, canvas_x, canvas_w, on_intent.clone()));
+
+        // Draw mode (the segment before Design) owns a toolbar too (lizard `drawing_toolbar`).
+        // It is gated on the **mode**, not on the tool: picking Pen/Pencil inside Design must not
+        // reveal the stroke-width controls. Vector edit wins when both could apply.
+        let draw_bar = if vector_bar.is_some() || !self.draw_mode {
+            None
+        } else {
+            let t = self.app.session.tool.tool;
+            if matches!(t, figcraft_engine::ToolId::Pencil | figcraft_engine::ToolId::Pen) {
+                self.app.session.tool.draw_style(t).map(|style| {
+                    let brush = self.app.session.tool.pencil_brush.as_ref().map(|b| b.preset.to_string());
+                    toolbar::drawing_bar(t, style, brush.as_deref(), canvas_x, canvas_w, on_intent.clone())
+                })
+            } else {
+                None
+            }
+        };
 
         // Motion 打开时右栏换成 Motion inspector（宽 413）；否则仍是 Design 面板。
 
@@ -5490,7 +5650,12 @@ impl Render for CanvasView {
             })
             .child(dbg_tint(canvas, dbg, 0x30A46C))
             .when(show_right, |d| d.child(dbg_tint(right_el, dbg, 0x0091FF)))
-            .when(!ui_hidden, |d| d.child(bar))
+            .when(!ui_hidden, |d| {
+                let mut d = d.child(bar);
+                if let Some(vb) = vector_bar { d = d.child(vb); }
+                if let Some(db) = draw_bar { d = d.child(db); }
+                d
+            })
             // 4px 命中覆盖条必须最后绘制：后绘制的 hitbox 先命中，才压得住画布 / 面板。
             .when(show_sidebars, |d| {
                 d.child(self.divider_hotspot(ResizeSide::Left, viewport_w, cx)).child(self.divider_hotspot(ResizeSide::Right, viewport_w, cx))
@@ -5597,7 +5762,7 @@ impl Render for CanvasView {
 
             let canvas_h = self.app.canvas.rect.height();
 
-            let bar_w = toolbar::width(toolbar::groups(board), board);
+            let bar_w = toolbar::width(toolbar::groups(board), board, self.draw_mode);
 
             // 画布原点 y = 标题栏高度；弹层挂在 root 上用窗口坐标，必须加回这个原点，
             // 否则 flyout / palette 整体上移 40pt。
@@ -7079,8 +7244,9 @@ impl EntityInputHandler for CanvasView {
     }
 
     fn replace_text_in_range(&mut self, _: Option<Range<usize>>, text: &str, _: &mut Window, _: &mut Context<Self>) {
-        // 组合中上屏：交给 insert_ime_commit（清 preedit）；否则普通输入交给 insert。
-
+        // 平台字符流唯一的落地口（= 上游 `Event::Text` / `ImeEvent::Commit`）。
+        // 组合中上屏交给 `insert_ime_commit`（清 preedit）；否则普通输入交给 `insert`。
+        // `on_key_down` 那边**不再插任何可打印字符**，所以这里不需要去重。
         let composing = self.app.session.ds().ok().and_then(|d| d.text_edit.as_ref()).is_some_and(|te| te.preedit.is_some());
 
         if composing {
