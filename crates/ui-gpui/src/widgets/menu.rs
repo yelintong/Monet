@@ -88,7 +88,8 @@ pub fn menu_popup(
 /// 抽成纯函数，好让「行 28pt / 分隔行 9pt」这条规则有数值断言守着——以前手工估计时
 /// 分隔符和卡片 8pt padding 都漏算，靠近屏幕底部时最后几项就溢出去了。
 pub(crate) fn menu_metrics(rows: &[MenuRow]) -> (f32, f32) {
-    let rows_h = rows.len() as f32 * 28.0 + rows.iter().filter(|r| r.separator_before).count() as f32 * 9.0;
+    let rows_h = rows.len() as f32 * crate::menu_metrics::MENU_ROW_H
+        + rows.iter().filter(|r| r.separator_before).count() as f32 * crate::menu_metrics::MENU_SEP_H;
     let content_w = rows
         .iter()
         .map(|r| {
@@ -114,9 +115,8 @@ pub fn menu_popup_in(
     vh: f32,
 ) -> AnyElement {
     let t = tokens();
-    // `MENU_ROW_H = 28`（`ui-egui/src/menus/tree.rs:351` 的 `allocate_exact_size(vec2(w, 28.0))`）。
-    // 原为 24，与 egui 的 28 不一致 —— 2026-11-05 用户规定外框规格时一并纠正。
-    let row_h = pt(28.0);
+    // Every menu uses the one shared 24 pt row (user 2026-11-14).
+    let row_h = pt(crate::menu_metrics::MENU_ROW_H);
     // `MENU_MIN_W = 48`: a menu is never narrower than this, whatever its trigger.
     let width = width_override.unwrap_or_else(|| f32::from(anchor.size.width).max(48.0));
     // ⛔ 不要在这里加 `.w_full()`：卡片的宽度是 `min_w(width)` + 内容撑开（**不定宽**），
@@ -128,12 +128,15 @@ pub fn menu_popup_in(
     // 交给通用 `Menu` 做防溢出用的两个测量值（真实内容高度 / 最宽行估算宽）。
     // 以前这里根本没传，`rows_h` 默认 0，`fit_vertical` 于是从不滚动、也不上移。
     let (rows_h, content_w) = menu_metrics(&rows);
+    // `Width::Min(width)` over the natural width is the full card width (padding included):
+    // that is what a full-bleed divider has to cover.
+    let card_w = (content_w + 2.0 * crate::menu_metrics::MENU_PAD).max(width);
 
     // 这个菜单里**有**可勾选的行才留 28pt 勾选列；一条都没有就不留（否则左边白空一条缩进）。
     let has_check = rows.iter().any(|r| r.checked.is_some());
     for r in rows {
         if r.separator_before {
-            col = col.child(div().my(pt(4.0)).h(pt(1.0)).w_full().bg(rgba(t.border)));
+            col = col.child(crate::menu_metrics::divider(card_w));
         }
         // ⛔ 勾选列是**固定 28pt 的一列**，不是文字前缀。egui `widgets::menu_row_draw`：
         // 勾号画在 `r.min.x + 12`（12×12），文字起点是 `pos2(r.min.x + 28.0 + indent, …)`。
@@ -152,7 +155,7 @@ pub fn menu_popup_in(
             .flex_row()
             .items_center()
             .rounded(pt(5.0))
-            .text_color(rgba(t.menu_text))
+            .text_color(crate::menu_metrics::ink())
             .text_size(pt(crate::widgets::TEXT_PT))
             .hover(|s| s.bg(rgba(t.menu_hover)))
             .on_mouse_down(MouseButton::Left, move |_: &MouseDownEvent, window, cx| {
@@ -168,7 +171,7 @@ pub fn menu_popup_in(
         }
         // 标签占满剩余宽度，超长裁掉（egui 把文字裁到 `r.max.x - 8.0`）。
         row = row.child(div().flex_1().min_w(pt(0.0)).overflow_hidden().whitespace_nowrap().child(label)).when_some(trail, |d, tr| {
-            d.child(div().ml(pt(crate::widgets::MENU_TRAIL_GAP)).pr(pt(10.0)).whitespace_nowrap().text_color(rgba(t.menu_dim)).child(tr))
+            d.child(div().ml(pt(crate::widgets::MENU_TRAIL_GAP)).pr(pt(10.0)).whitespace_nowrap().text_color(crate::menu_metrics::trail_ink()).child(tr))
         });
         col = col.child(row);
     }
@@ -178,7 +181,7 @@ pub fn menu_popup_in(
     crate::widgets::menu(anchor)
         .width(crate::widgets::Width::Min(width))
         .viewport(vw, vh)
-        .content(content_w, rows_h, 28.0)
+        .content(content_w, rows_h, crate::menu_metrics::MENU_ROW_H)
         .show(|| col.into_any_element())
         .unwrap_or_else(|| div().into_any_element())
 }
@@ -430,7 +433,7 @@ mod tests {
         let (rows_h, content_w) = menu_metrics(&rows);
         // 3×28 + 一条分隔行 9（my(4)+1+my(4)）。旧的手工估计只有 rows*28+16，
         // 既漏了分隔行、又把卡片 padding 当成了行数，靠近屏幕底部时最后几项会溢出。
-        assert_eq!(rows_h, 3.0 * 28.0 + 9.0);
+        assert_eq!(rows_h, 3.0 * crate::menu_metrics::MENU_ROW_H + crate::menu_metrics::MENU_SEP_H);
         assert!(content_w > 0.0, "最宽行必须有内容宽，否则卡片会被压到 16pt、文字全被裁掉");
     }
 

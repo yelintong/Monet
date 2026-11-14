@@ -13,7 +13,10 @@ impl Session {
             self.pen_enter()?;
             return Ok(true);
         }
-        if self.ds().is_ok_and(|d| d.vector_edit.is_some()) {
+        // While the pen is drawing, the drawing selection (vector_edit with tool = Pen) must not
+        // hijack keys meant for the pen: Enter/Escape are handled above, and a real edit session
+        // (no active pen) is the only one that routes here.
+        if self.ds().is_ok_and(|d| d.vector_edit.is_some()) && self.tool.pen.is_none() {
             return crate::vectoredit::key(self, name, shift, alt, cmd);
         }
         if !alt && !cmd && self.guide_key(name, shift)? {

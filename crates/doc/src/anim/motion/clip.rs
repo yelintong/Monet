@@ -372,6 +372,17 @@ impl Clip {
 
     /// Eased progress through the clip at timeline time `t_ms`.
     pub fn progress_at(&self, t_ms: f64) -> f32 {
+        self.progress_impl(t_ms, true)
+    }
+
+    /// Same as [`Self::progress_at`] but **without the easing curve** (raw time fraction).
+    /// The motion path is drawn from this: easing only decides how fast the object moves along
+    /// the path, never the path's shape (user 2026-11-14).
+    pub fn progress_linear_at(&self, t_ms: f64) -> f32 {
+        self.progress_impl(t_ms, false)
+    }
+
+    fn progress_impl(&self, t_ms: f64, eased: bool) -> f32 {
         let local = t_ms - self.delay_ms as f64;
         if local.is_nan() || local <= 0.0 {
             return 0.0;
@@ -391,13 +402,20 @@ impl Clip {
         let idx = n.floor();
         let frac = (n - idx) as f32;
         let reversed = self.yoyo && (idx as u64) % 2 == 1;
-        self.easing.ease(if reversed { 1.0 - frac } else { frac })
+        let raw = if reversed { 1.0 - frac } else { frac };
+        if eased { self.easing.ease(raw) } else { raw }
     }
 
     /// The clip's value (kind's own space) at timeline time `t_ms`.
     pub fn value_at(&self, t_ms: f64) -> Vec2 {
         let (a, b) = self.endpoints();
         lerp_vec2(a, b, self.progress_at(t_ms) as f64)
+    }
+
+    /// Same as [`Self::value_at`] but **without the easing curve** — the path geometry.
+    pub fn value_linear_at(&self, t_ms: f64) -> Vec2 {
+        let (a, b) = self.endpoints();
+        lerp_vec2(a, b, f64::from(self.progress_linear_at(t_ms)))
     }
 }
 

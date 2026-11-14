@@ -42,6 +42,11 @@ use std::{borrow::Cow, sync::OnceLock};
 
 use gpui::{App, AssetSource, Bounds, Hsla, IntoElement, Pixels, Point, Result, SharedString, TransformationMatrix, Window, prelude::*, px, svg};
 
+/// The one stroke width every vector icon uses, in points. Forcing an SVG into a caller-supplied
+/// box used to scale each glyph's own stroke differently (a 24-unit mark squeezed into 18 pt drew
+/// 0.75 pt, a 16-unit one grew to 1.125 pt). Layer glyphs and shape-tool marks both read this.
+pub const ICON_STROKE: f32 = 1.0;
+
 /// Every icon Monet's UI can show. The names mirror `crates/ui-egui/src/icons.rs` so the two
 /// front-ends share one vocabulary; glyphs are drawn for the common ones and fall back otherwise.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -428,6 +433,81 @@ struct IconAsset {
     svg: Vec<u8>,
 }
 
+/// The six marks created with the shape tools: the design file's own 24x24 SVGs. They live on a
+/// separate `tools/` path so the 94 generated glyphs (also used by Home, the right panel, …) are
+/// untouched, and they are drawn at their natural size rather than forced into an 18 pt box.
+static TOOL_ASSETS: &[(&str, &[u8])] = &[
+    ("rectangle", include_bytes!("../../assets/tools/rectangle.svg")),
+    ("line", include_bytes!("../../assets/tools/line.svg")),
+    ("arrow", include_bytes!("../../assets/tools/arrow.svg")),
+    ("ellipse", include_bytes!("../../assets/tools/ellipse.svg")),
+    ("polygon", include_bytes!("../../assets/tools/polygon.svg")),
+    ("star", include_bytes!("../../assets/tools/star.svg")),
+];
+
+fn tool_stem(icon: Icon) -> Option<&'static str> {
+    Some(match icon {
+        Icon::Rectangle => "rectangle",
+        Icon::Line => "line",
+        Icon::Arrow => "arrow",
+        Icon::Ellipse => "ellipse",
+        Icon::Polygon => "polygon",
+        Icon::Star => "star",
+        _ => return None,
+    })
+}
+
+pub fn is_shape_tool(icon: Icon) -> bool {
+    tool_stem(icon).is_some()
+}
+
+fn tool_bytes(stem: &str) -> Option<&'static [u8]> {
+    TOOL_ASSETS.iter().find(|(name, _)| *name == stem).map(|(_, bytes)| *bytes)
+}
+
+/// Bind every `stroke-width` in an SVG to [`ICON_STROKE`] at load time.
+pub(crate) fn normalise_stroke(bytes: &[u8]) -> Vec<u8> {
+    let src = String::from_utf8_lossy(bytes);
+    let needle = "stroke-width=\"";
+    let width = format!("{}", ICON_STROKE);
+    let mut out = String::with_capacity(src.len());
+    let mut rest: &str = &src;
+    while let Some(i) = rest.find(needle) {
+        out.push_str(&rest[..i + needle.len()]);
+        let after = &rest[i + needle.len()..];
+        let end = after.find('\"').unwrap_or(after.len());
+        out.push_str(&width);
+        rest = &after[end..];
+    }
+    out.push_str(rest);
+    out.into_bytes()
+}
+
+/// An SVG's own viewBox width: the vector occupies exactly the space it has.
+fn view_box_size(bytes: &[u8]) -> f32 {
+    let text = String::from_utf8_lossy(bytes);
+    let Some(i) = text.find("viewBox=\"") else { return 16.0 };
+    let after = &text[i + "viewBox=\"".len()..];
+    after.split_whitespace().nth(2).and_then(|v| v.trim_end_matches('\"').parse().ok()).unwrap_or(16.0)
+}
+
+pub fn natural_size(icon: Icon) -> f32 {
+    tool_stem(icon)
+        .and_then(tool_bytes)
+        .map(view_box_size)
+        .unwrap_or_else(|| view_box_size(&table()[icon as usize].svg))
+}
+
+/// Draw a shape-tool mark at its natural 24 pt size, not a forced glyph size.
+pub fn paint_tool(icon: Icon, color: impl Into<gpui::Rgba>) -> impl IntoElement {
+    let rgba: gpui::Rgba = color.into();
+    let path = tool_stem(icon)
+        .map(|stem| SharedString::from(format!("tools/{stem}.svg")))
+        .unwrap_or_else(|| icon.asset_path());
+    let s = natural_size(icon);
+    svg().path(path).w(px(s)).h(px(s)).flex_none().text_color(Hsla::from(rgba))
+}
+
 /// 只在首次访问时把 79 个图标编译成 SVG；之后 `AssetSource::load()` 零拷贝返回。
 static TABLE: OnceLock<Vec<IconAsset>> = OnceLock::new();
 
@@ -464,6 +544,10 @@ pub struct IconAssets;
 
 impl AssetSource for IconAssets {
     fn load(&self, path: &str) -> Result<Option<Cow<'static, [u8]>>> {
+        // The shape-tool marks keep their own 24x24 viewBox and one shared stroke width.
+        if let Some(stem) = path.strip_prefix("tools/").and_then(|p| p.strip_suffix(".svg")) {
+            return Ok(tool_bytes(stem).map(|bytes| Cow::Owned(normalise_stroke(bytes))));
+        }
         // lizard's layer-tree glyphs are the original 16x16 SVGs, served verbatim.
         if let Some(bytes) = crate::widgets::layer_icons::load(path) {
             return Ok(Some(Cow::Borrowed(bytes)));
@@ -1235,6 +1319,22 @@ mod tests {
             let side = if a.icon == Icon::Logo { 24.0 } else { 16.0 };
             assert_eq!(tree.size().width(), side, "{} viewBox width", a.name);
             assert_eq!(tree.size().height(), side, "{} viewBox height", a.name);
+        }
+    }
+
+    /// The six tool marks keep their own 24 pt size and all use the one stroke constant.
+    #[test]
+    fn shape_tool_marks_share_one_stroke_and_their_own_size() {
+        for icon in [Icon::Rectangle, Icon::Line, Icon::Arrow, Icon::Ellipse, Icon::Polygon, Icon::Star] {
+            let stem = tool_stem(icon).unwrap();
+            let bytes = normalise_stroke(tool_bytes(stem).unwrap());
+            let text = std::str::from_utf8(&bytes).unwrap();
+            assert!(text.contains(&format!("stroke-width=\"{}\"", ICON_STROKE)), "{stem}");
+            assert_eq!(view_box_size(&bytes), 24.0, "{stem}");
+            assert_eq!(natural_size(icon), 24.0, "{stem}");
+            assert!(usvg::Tree::from_data(&bytes, &usvg::Options::default()).is_ok(), "{stem}");
+            let got = IconAssets.load(&format!("tools/{stem}.svg")).unwrap().unwrap();
+            assert_eq!(&*got, bytes.as_slice(), "{stem} resolves");
         }
     }
 

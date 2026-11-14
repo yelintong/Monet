@@ -1,4 +1,4 @@
-use super::handles::{PENCIL_STROKE, selected_end_at};
+use super::handles::selected_end_at;
 use super::{
     Affine, Document, Gesture, Guide, Node, NodeId, NodeKind, PenPath, Point, PointerEvent, Result, Session, StrokeAlign, ToolId, Vec2,
     VectorNetwork, at_45_degrees, frame_at, json, pen_handles,
@@ -165,7 +165,10 @@ impl Session {
         self.tool.overlay.pen = pen.points.iter().map(|(p, _, _)| [p.x, p.y]).collect();
         self.tool.overlay.pen_handles = pen_handles(&pen.points);
         if pen.points.len() < 2 {
+            // No node yet (or just one anchor): drop any drawing selection so the toolbar and the
+            // per-point highlight don't show before there is geometry to select.
             if let Ok(ds) = self.ds_mut() {
+                ds.vector_edit = None;
                 ds.revision += 1;
             }
             return Ok(());
@@ -239,6 +242,19 @@ impl Session {
         if let Some(p) = self.tool.pen.as_mut() {
             p.id = Some(id);
         }
+        // Drawing selection: the last placed point is selected (Figma: each placed point is
+        // selected as you go, and you can keep placing the next). The main tool stays Pen, so
+        // pointer routing still goes through `pen_down` and the path keeps growing.
+        let last = pen.points.len() - 1;
+        if let Ok(ds) = self.ds_mut() {
+            let mut ve = ds.vector_edit.take().unwrap_or_else(|| crate::vectoredit::VectorEdit::new(id));
+            ve.id = id;
+            ve.tool = VTool::Pen;
+            ve.vertices = vec![last];
+            ve.anchor = Some(last);
+            ve.pen_out = None;
+            ds.vector_edit = Some(ve);
+        }
         Ok(())
     }
 
@@ -306,6 +322,13 @@ impl Session {
         if pen.as_ref().is_some_and(|p| p.id.is_some()) {
             self.commit_interaction()?;
         }
+        // A finished pen path leaves the drawing selection behind; `edit_vector_with` (Escape /
+        // Enter) re-establishes a proper edit session, so only clear the Pen-drawing one here.
+        if let Ok(ds) = self.ds_mut() {
+            if ds.vector_edit.as_ref().is_some_and(|ve| ve.tool == VTool::Pen) {
+                ds.vector_edit = None;
+            }
+        }
         Ok(())
     }
 
@@ -333,9 +356,16 @@ impl Session {
         let mut local = fitted.clone();
         local.apply_affine(pw.inverse());
         let _ = d;
-        // Black, or white on a dark page or frame (#1741).
-        let (_, weight) = PENCIL_STROKE;
-        let color = super::handles::pencil_color(self.doc()?, parent);
+        // lizard `pencil_finish`: the next stroke takes colour / weight / line style from the
+        // tool's `DrawStyle` (`tool.drawStyle`). Unset fields keep the old defaults — black (or
+        // white on a dark parent, #1741) and `PENCIL_STROKE`'s 2 pt.
+        let tool = self.tool.tool;
+        let style = self.tool.draw_style(tool).cloned().unwrap_or_default();
+        let weight = style.weight(tool);
+        let color = match style.color {
+            Some(c) => c,
+            None => super::handles::pencil_color(self.doc()?, parent),
+        };
         let mut props = json!({"fills": [], "strokes": [color.to_css_hex()], "strokeWeight": weight, "strokeCap": "round", "strokeJoin": "round", "strokeAlign": "center"});
         // Pen pressure becomes the stroke's width profile (brushes follow it too).
         if let Some(points) = pressure_profile(points, pressure) {
@@ -343,6 +373,8 @@ impl Session {
         }
         if let Some(b) = &self.tool.pencil_brush {
             props["brush"] = serde_json::to_value(b).unwrap_or_default();
+        } else if style.line_style != crate::tools::DrawLineStyle::Solid {
+            props["dashes"] = json!(style.line_style.dashes(weight));
         }
         self.execute(
             "node.create",

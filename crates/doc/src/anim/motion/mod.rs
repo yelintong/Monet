@@ -146,6 +146,53 @@ mod tests {
         (d, page, id)
     }
 
+    /// 运动路径的取值**不含缓动**：同一段换成会过冲的 back / 弹簧，路径点仍是两端关键帧的
+    /// 线性插值（用户 2026-11-14：路径线不该和时间/缓动曲线有关）。
+    #[test]
+    fn path_position_ignores_easing() {
+        use figcraft_geom::Vec2;
+        let mut d = Document::new("path-ease");
+        let page = d.first_page().unwrap();
+        let id = d.create(page, NodeKind::Rectangle, "Dot", 0.0, 0.0, 10.0, 10.0).unwrap();
+        {
+            let tr = d.node_mut(id).unwrap().motion.ensure_track(AnimProperty::Position);
+            tr.set_key(0, AnimValue::Vec2(Vec2::new(0.0, 0.0)), Some(Ease::Linear));
+            tr.set_key(1000, AnimValue::Vec2(Vec2::new(100.0, 50.0)), Some(Ease::Linear));
+        }
+        for ease in [Ease::Linear, Ease::EaseInOutBack, Ease::EaseOutBack, Ease::SpringBouncy] {
+            let tr = d.node_mut(id).unwrap().motion.ensure_track(AnimProperty::Position);
+            tr.keys.iter_mut().find(|k| k.time_ms == 0).unwrap().easing = ease;
+            let mid = path_position_at(d.node(id).unwrap(), 500.0);
+            assert!((mid.x - 50.0).abs() < 1e-6 && (mid.y - 25.0).abs() < 1e-6, "{ease:?} 的路径中点应仍是 (50,25)：{mid:?}");
+            // 过冲缓动会给出 0..1 之外的时间进度；路径值必须留在两端之内。
+            for t in [100.0, 250.0, 750.0, 900.0] {
+                let p = path_position_at(d.node(id).unwrap(), t);
+                assert!((-1e-6..=100.0 + 1e-6).contains(&p.x), "{ease:?} t={t} 的路径 x 冲出关键帧：{p:?}");
+            }
+        }
+    }
+
+    /// clip（预设）的路径同样不含缓动：弹簧只会改变速度，位移仍是未缓动进度的线性插值。
+    #[test]
+    fn clip_path_position_ignores_easing() {
+        let mut d = Document::new("clip-path-ease");
+        let page = d.first_page().unwrap();
+        let id = d.create(page, NodeKind::Rectangle, "Dot", 0.0, 0.0, 10.0, 10.0).unwrap();
+        let clip = Clip::new(ClipKind::Position, ClipMode::In).dir(ClipDirection::Bottom).amount(100.0).dur(1000).ease(Ease::SpringBouncy);
+        d.node_mut(id).unwrap().motion.clips = vec![clip];
+        let base = base_position(d.node(id).unwrap());
+        // 未缓动进度 0.5 → 位移 (0, 50)（从下方 100px 滑入到 0）。
+        let p = path_position_at(d.node(id).unwrap(), 500.0);
+        assert!((p.x - base.x).abs() < 1e-6, "x 不该动：{p:?} vs {base:?}");
+        assert!((p.y - (base.y + 50.0)).abs() < 1e-3, "缓动被去掉后应是半程：{p:?} vs {base:?}");
+        // 弹簧的过冲在时间上真实存在，但不该出现在路径几何里。
+        for t in [100.0, 300.0, 700.0, 900.0] {
+            let q = path_position_at(d.node(id).unwrap(), t);
+            let off = q.y - base.y;
+            assert!((0.0..=100.0 + 1e-3).contains(&off), "t={t} 路径 y 冲出 clip 端点：{off}");
+        }
+    }
+
     #[test]
     fn document_roundtrip_keeps_animation_data() {
         let (d, page, id) = animated();

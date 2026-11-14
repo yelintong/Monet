@@ -581,6 +581,59 @@ pub struct PenPath {
     pub undone: Vec<(Point, Vec2, Vec2)>,
 }
 
+/// How the Pencil dashes a stroke (ported from lizard `crates/engine/src/tools.rs`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum DrawLineStyle {
+    #[default]
+    Solid,
+    Dashed,
+    Dotted,
+}
+
+impl DrawLineStyle {
+    pub fn id(self) -> &'static str {
+        match self {
+            Self::Solid => "solid",
+            Self::Dashed => "dashed",
+            Self::Dotted => "dotted",
+        }
+    }
+    pub fn from_id(id: &str) -> Option<Self> {
+        match id {
+            "solid" => Some(Self::Solid),
+            "dashed" => Some(Self::Dashed),
+            "dotted" => Some(Self::Dotted),
+            _ => None,
+        }
+    }
+    pub fn dashes(self, weight: f64) -> Vec<f64> {
+        match self {
+            Self::Solid => Vec::new(),
+            Self::Dashed => vec![weight * 3.0, weight * 2.0],
+            Self::Dotted => vec![0.1, weight * 1.5],
+        }
+    }
+}
+
+/// Settings for the next Pen / Pencil stroke (ported from lizard's `DrawStyle`; figcraft has no
+/// `ToolId::Brush`, so the brush preset stays in `ToolState::pencil_brush` / `tool.pencilBrush`).
+/// `None` means the design default in `PENCIL_STROKE`.
+#[derive(Clone, Debug, Default)]
+pub struct DrawStyle {
+    pub color: Option<figcraft_color::Color>,
+    pub weight: Option<f64>,
+    pub line_style: DrawLineStyle,
+}
+
+impl DrawStyle {
+    pub fn color(&self) -> figcraft_color::Color {
+        self.color.unwrap_or(PENCIL_STROKE.0)
+    }
+    pub fn weight(&self, _tool: ToolId) -> f64 {
+        self.weight.unwrap_or(PENCIL_STROKE.1)
+    }
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct ToolState {
     pub tool: ToolId,
@@ -615,6 +668,9 @@ pub struct ToolState {
     pub labels: Vec<(NodeId, [Point; 4])>,
     /// The brush the Pencil draws with (`tool.pencilBrush`; `None`: a plain stroke).
     pub pencil_brush: Option<figcraft_doc::Brush>,
+    /// Settings for the next Pen / Pencil stroke (`tool.drawStyle`, lizard `DrawStyle`).
+    pub pen_style: DrawStyle,
+    pub pencil_style: DrawStyle,
     /// The board tools' colours and choices.
     pub board: crate::board::BoardTool,
     /// The eyedropper samples for a colour picker (`edit.pickColor` with `apply: false`): the
@@ -634,6 +690,22 @@ pub struct ToolState {
 }
 
 impl ToolState {
+    /// The per-tool drawing style (`Pen` / `Pencil` only); mirrors lizard `draw_style`.
+    pub fn draw_style(&self, tool: ToolId) -> Option<&DrawStyle> {
+        match tool {
+            ToolId::Pen => Some(&self.pen_style),
+            ToolId::Pencil => Some(&self.pencil_style),
+            _ => None,
+        }
+    }
+    pub fn draw_style_mut(&mut self, tool: ToolId) -> Option<&mut DrawStyle> {
+        match tool {
+            ToolId::Pen => Some(&mut self.pen_style),
+            ToolId::Pencil => Some(&mut self.pencil_style),
+            _ => None,
+        }
+    }
+
     pub fn busy(&self) -> bool {
         !matches!(self.gesture, Gesture::None)
     }
@@ -669,5 +741,30 @@ impl ToolState {
     /// follows in the same frame instead of a render behind.
     pub fn live_reflows(&self) -> bool {
         matches!(self.gesture, Gesture::Resize { moved: true, .. })
+    }
+}
+
+#[cfg(test)]
+mod draw_style_tests {
+    use super::*;
+
+    /// The ported lizard defaults / dash patterns and the per-tool style slots.
+    #[test]
+    fn draw_style_defaults_and_dashes() {
+        assert_eq!(DrawLineStyle::default(), DrawLineStyle::Solid);
+        assert_eq!(DrawLineStyle::Solid.id(), "solid");
+        assert_eq!(DrawLineStyle::from_id("dotted"), Some(DrawLineStyle::Dotted));
+        assert_eq!(DrawLineStyle::Dashed.dashes(2.0), vec![6.0, 4.0]);
+        assert_eq!(DrawLineStyle::Dotted.dashes(2.0), vec![0.1, 3.0]);
+        assert!(DrawLineStyle::Solid.dashes(2.0).is_empty());
+
+        let s = DrawStyle::default();
+        assert_eq!(s.color().to_css_hex(), PENCIL_STROKE.0.to_css_hex());
+        assert_eq!(s.weight(ToolId::Pencil), PENCIL_STROKE.1);
+
+        let t = ToolState::default();
+        assert!(t.draw_style(ToolId::Pen).is_some());
+        assert!(t.draw_style(ToolId::Pencil).is_some());
+        assert!(t.draw_style(ToolId::Move).is_none());
     }
 }

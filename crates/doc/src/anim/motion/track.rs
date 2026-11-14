@@ -128,6 +128,17 @@ impl Track {
     /// Keyframed value at `t_ms`: the first value before the first key, the last value after the
     /// last key, eased interpolation in between. `None` for an empty track.
     pub fn value_at(&self, t_ms: f64) -> Option<AnimValue> {
+        self.value_at_impl(t_ms, true)
+    }
+
+    /// Same as [`Self::value_at`] but **without the easing curve**: the segment progress is the
+    /// raw time fraction. The motion path is drawn from this, because easing only decides *how
+    /// fast* the object travels along the path — never the path's shape (user 2026-11-14).
+    pub fn value_at_linear(&self, t_ms: f64) -> Option<AnimValue> {
+        self.value_at_impl(t_ms, false)
+    }
+
+    fn value_at_impl(&self, t_ms: f64, eased: bool) -> Option<AnimValue> {
         let first = self.keys.first()?;
         let Some(i) = self.segment_start(t_ms) else { return Some(first.value) };
         let a = &self.keys[i];
@@ -139,7 +150,8 @@ impl Track {
         if span <= 0.0 {
             return Some(a.value);
         }
-        let p = a.easing.ease((t_ms - a.time_ms as f64) as f32 / span) as f64;
+        let frac = (t_ms - a.time_ms as f64) as f32 / span;
+        let p = if eased { f64::from(a.easing.ease(frac)) } else { f64::from(frac) };
         // Position 且**至少一端有非零**空间手柄 → 三次贝塞尔；否则保持线性（直线）。
         //
         // ⚠️ 零手柄不能当贝塞尔：`p1=p0、p2=p3` 的三次贝塞尔**不等于线性插值**

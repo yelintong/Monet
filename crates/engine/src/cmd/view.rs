@@ -605,6 +605,51 @@ pub fn specs() -> Vec<CommandSpec> {
             }
         ),
         spec!(
+            "tool.drawStyle",
+            "Drawing tool style",
+            "{tool?: pen|pencil, color?: CSS colour, weight?: 0.1..500, lineStyle?: solid|dashed|dotted, preset?: brush preset} (settings for the next drawn stroke; omit properties to read)",
+            false,
+            |s, p| {
+                let tool = match string(p, "tool") {
+                    Some(id) => ToolId::from_id(&id).ok_or_else(|| bad("tool.drawStyle", format!("unknown tool `{id}`")))?,
+                    None => s.tool.tool,
+                };
+                let mut style = s.tool.draw_style(tool).cloned().ok_or_else(|| bad("tool.drawStyle", "choose pen or pencil"))?;
+                if let Some(value) = p.get("color") {
+                    style.color = Some(crate::params::color_of(value).ok_or_else(|| bad("tool.drawStyle", "invalid colour"))?);
+                }
+                if p.get("weight").is_some() {
+                    let weight = req_num("tool.drawStyle", p, "weight")?;
+                    if !(0.1..=500.0).contains(&weight) {
+                        return Err(bad("tool.drawStyle", "weight must be between 0.1 and 500"));
+                    }
+                    style.weight = Some(weight);
+                }
+                // A brush preset still lives in `pencil_brush`, which `tool.pencilBrush` owns.
+                if let Some(v) = p.get("preset") {
+                    s.tool.pencil_brush = super::props::brush_of(v).ok_or_else(|| bad("tool.drawStyle", super::props::BRUSH_HELP))?;
+                }
+                if let Some(id) = string(p, "lineStyle") {
+                    if tool != ToolId::Pencil {
+                        return Err(bad("tool.drawStyle", "line style belongs to the pencil tool"));
+                    }
+                    style.line_style = crate::tools::DrawLineStyle::from_id(&id)
+                        .ok_or_else(|| bad("tool.drawStyle", "lineStyle: solid, dashed or dotted"))?;
+                }
+                let response = json!({
+                    "tool": tool.id(),
+                    "color": style.color().to_css_hex(),
+                    "weight": style.weight(tool),
+                    "lineStyle": style.line_style.id(),
+                    "brush": s.tool.pencil_brush,
+                });
+                if let Some(slot) = s.tool.draw_style_mut(tool) {
+                    *slot = style;
+                }
+                Ok(response)
+            }
+        ),
+        spec!(
             "tool.scaleAnchor",
             "Scale anchor",
             "{anchor?: tl|t|tr|l|c|r|bl|b|br} (the point of the selection that stays put when the Scale tool scales; omit to read it)",

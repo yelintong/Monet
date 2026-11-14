@@ -50,13 +50,13 @@ pub(crate) const TOP_MENUS: [&'static str; 11] = [
 ];
 
 /// 菜单行高（egui `menus/tree.rs:257` 的 28）。
-const ROW_H: f32 = 28.0;
+const ROW_H: f32 = crate::menu_metrics::MENU_ROW_H;
 /// 分隔线占的高度：`my(4) + h(1) + my(4)`。
-const SEP_H: f32 = 9.0;
+const SEP_H: f32 = crate::menu_metrics::MENU_SEP_H;
 /// 勾选列宽度：egui 的文字起点是 `r.min.x + 28.0`。
 const CHECK_W: f32 = 28.0;
 /// 外框内边距（egui `Margin::same(8)`）。
-const PAD: f32 = 8.0;
+const PAD: f32 = crate::menu_metrics::MENU_PAD;
 /// 菜单项圆角（egui `rect_filled(r, CornerRadius::same(5), …)`）。
 const ITEM_RADIUS: f32 = 5.0;
 /// 子菜单与父卡片之间的间距（egui `submenu(…, gap = 4.0, …)`）。
@@ -380,7 +380,7 @@ pub(crate) fn render(
         let has_check = level.rows.iter().any(|r| r.checked.is_some());
         for (ri, row) in level.rows.iter().enumerate() {
             if row.separator_before {
-                col = col.child(div().my(pt(4.0)).h(pt(1.0)).w_full().bg(rgba(t.border)));
+                col = col.child(crate::menu_metrics::divider(w));
             }
             // 展开行保持高亮，除非指针已经停在别的行等待接管（`MenuAim::keeps_highlight`）。
             let is_open = m.open.get(li) == Some(&Some(ri)) && m.aim.keeps_highlight(li, ri);
@@ -393,7 +393,7 @@ pub(crate) fn render(
                 .flex_row()
                 .items_center()
                 .rounded(pt(ITEM_RADIUS))
-                .text_color(rgba(t.menu_text))
+                .text_color(crate::menu_metrics::ink())
                 .text_size(pt(TEXT_PT))
                 .on_mouse_move(move |_e, window, cx| hover(li, ri, window, cx))
                 .on_mouse_down(MouseButton::Left, move |_e, window, cx| click(li, ri, window, cx));
@@ -409,7 +409,7 @@ pub(crate) fn render(
             }
             r = r.child(div().flex_1().min_w(px(0.0)).overflow_hidden().whitespace_nowrap().child(row.label.clone()));
             if let Some(trail) = row.trail.clone() {
-                r = r.child(div().ml(pt(crate::widgets::MENU_TRAIL_GAP)).pr(pt(10.0)).whitespace_nowrap().text_color(rgba(t.menu_dim)).child(trail));
+                r = r.child(div().ml(pt(crate::widgets::MENU_TRAIL_GAP)).pr(pt(10.0)).whitespace_nowrap().text_color(crate::menu_metrics::trail_ink()).child(trail));
             }
             col = col.child(r);
         }

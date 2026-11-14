@@ -93,7 +93,7 @@ impl Menu {
             vh: 0.0,
             content_w: 0.0,
             rows_h: 0.0,
-            row_h: 28.0,
+            row_h: crate::menu_metrics::MENU_ROW_H,
             tag: "popup".into(),
             measured: false,
             extras: Vec::new(),
@@ -209,8 +209,10 @@ impl Menu {
     }
 }
 
-/// 卡片外框内边距（`menu_surface().p(pt(8))`）。
-const PAD: f32 = 8.0;
+/// 卡片外框内边距（`menu_surface().p(pt(8))`）。水平 8pt 必须留在外框：行是 `w_full()`，
+/// 选中/hover 高亮画在**整个行盒**上，把 8pt 挪到行内只会让色块顶到卡片左右边缘。
+/// 分隔线用负 margin 抵消这 8pt 来通边，不需要动外框。
+const PAD: f32 = crate::menu_metrics::MENU_PAD;
 /// 溢出时底部原本 8pt 的空白变成 24pt 的箭头条。
 const AFFORDANCE: f32 = 24.0;
 
@@ -266,7 +268,7 @@ pub fn at_point(x: f32, y: f32) -> Bounds<Pixels> {
 /// chrome (a row's own 5 pt hover fill is `widgets/menu.rs` / `menu_card`'s business).
 pub fn menu_surface() -> Div {
     let t = tokens();
-    div().flex().flex_col().p(pt(8.0)).bg(rgba(t.menu)).rounded(pt(13.0)).shadow(vec![BoxShadow {
+    div().flex().flex_col().p(pt(PAD)).bg(rgba(t.menu)).rounded(pt(13.0)).shadow(vec![BoxShadow {
         color: rgba(crate::canvas::geom::Color32::from_black_alpha(60)).into(),
         offset: point(px(0.0), px(4.0)),
         blur_radius: px(16.0),

@@ -148,6 +148,14 @@ impl TextField {
     pub fn set_trail(&mut self, s: Slot) {
         self.trail = s;
     }
+    /// Drop both the trailing slot's content and its click handler, so the field's text runs to
+    /// the row's end again (a W/H field that stops offering a sizing menu). No other behaviour
+    /// changes: the shell, the lead and the editor's layout are untouched.
+    pub fn clear_trail(&mut self) {
+        self.trail = Slot::None;
+        self.on_trail = None;
+        self.trail_hover = false;
+    }
     pub fn set_search_clear(&mut self, b: bool) {
         self.search_clear = b;
         self.pending.search_clear = Some(b);
