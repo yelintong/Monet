@@ -22,8 +22,6 @@ use crate::widgets::{
 use figcraft_color::PaintKind;
 use figcraft_doc::NodeId;
 use figcraft_doc::anim::motion::AnimProperty;
-use figcraft_i18n::tr;
-use figcraft_i18n::tr_noop;
 use gpui::{App, Bounds, MouseButton, Pixels, Point, SharedString, Window, div, prelude::*, px, size};
 use serde_json::{Value, json};
 use std::rc::Rc;
@@ -2781,7 +2779,7 @@ fn local_style_row(f: &RightFields, _d: &PanelData, s: &LocalStyleRow, depth: us
 /// 原来还有一节「Local variables」＋「Open variables (N)」下拉（点开变量编辑器）；
 /// 用户 2026-11-13 明确不需要这一节，已整段删除。变量编辑器仍可从 Appearance /
 /// Typography 头部的变量按钮打开，功能没丢。
-pub(crate) fn page(f: &RightFields, d: &PanelData, row_w: f32, n: &mut usize, cx: &mut App) -> Vec<PanelSection> {
+pub(crate) fn page(f: &RightFields, d: &PanelData, row_w: f32, n: &mut usize, window: &mut Window, cx: &mut App) -> Vec<PanelSection> {
     let Some(p) = d.page.as_ref() else { return Vec::new() };
     let mut sec = PanelSection::new(tr("Page"));
     let hex_slot = slot(n);

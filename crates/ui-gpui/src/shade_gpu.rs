@@ -57,7 +57,7 @@ pub fn shade_pending(board: &ShadeBoard, runner: &mut crate::wgsl_runner::WgslRu
         // runner 的 canvas 是 BGRA：进去换一次，出来的也换回来。
         let mut canvas = req.backdrop.as_ref().clone();
         crate::canvas::render_worker::rgba_to_bgra(&mut canvas);
-        let Some(mut out) = runner.composite_steps(&canvas, w, h, &[crate::wgsl_runner::Step::Pass(&pass)]) else {
+        let Some(mut out) = runner.composite_steps(&canvas, w, h, &[crate::wgsl_runner::Step::Pass(&pass)], None) else {
             continue;
         };
         crate::canvas::render_worker::rgba_to_bgra(&mut out);
