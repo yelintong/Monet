@@ -332,13 +332,15 @@ fn run(job: &Job, view: &View, retained: &mut Retained, coarse: bool, reuse: Opt
             }
         }
     }
-    // 逐层材质在带边界处要读到自己那层之外的底图：把它的透镜 reach 交给分带器，否则每条带
-    // 各自画一遍边缘高光，接缝就是一条条亮带（大节点被切 16 条时最刺眼）。
+    // 材质透镜能读多远（设备像素）：与走整页还是逐层无关——两条通道都以视口栅格为底图，透镜向
+    // pane 内部（core 方向）采样时会越过视口边缘，读到栅格外的透明 → 折射消失成亮带。
     #[cfg(feature = "gpu")]
-    let shade_reach =
-        job.shade.as_ref().map_or(0.0, |_| crate::shade_gpu::reach_px(&job.doc, job.page, view.scale));
+    let material_reach = crate::shade_gpu::reach_px(&job.doc, job.page, view.scale);
     #[cfg(not(feature = "gpu"))]
-    let shade_reach = 0.0;
+    let material_reach = 0.0;
+    // 逐层通道还要把 reach 交给分带器，否则每条带各自画一遍边缘高光，接缝就是一条条亮带
+    // （大节点被切 16 条时最刺眼）。
+    let shade_reach = if job.shade.is_some() { material_reach } else { 0.0 };
     let opts = figcraft_render::Options {
         outline_mode: job.outline,
         outline: job.outline_extras,
@@ -353,7 +355,28 @@ fn run(job: &Job, view: &View, retained: &mut Retained, coarse: bool, reuse: Opt
         shade_reach,
         ..Default::default()
     };
-    let (view, pix, work) = retained.render(&job.doc, job.page, view, &opts)?;
+    // 材质透镜的 overscan：lens 从 pane 边往 core 方向最多读 `material_reach` 个设备像素，pane
+    // 的边在屏幕上时，这个读取会伸到视口另一侧之外。视口栅格之外的底层内容在栅格化时就被裁掉了
+    // （`draw_layer` 的剔除也只到 pix 边），lens 采到透明 → 折射消失成亮带。
+    //
+    // 每边多渲一圈，**保留这张大图**（不裁）：整页合成（默认通道）在 `done.image` 上按节点窗口
+    // 取样，逐层合成在 `render_view` 里就把它画进这张图——两条都因此拿到视口外那圈底图。
+    // 显示端是安全的：`presented_image_rect` 按 `done.view` 重投影，画布根节点 `overflow_hidden`
+    // （`lib.rs`）把超出视口的部分裁掉；`shows()` 的 `covers()` 也明确允许「显示视图比请求视图大」。
+    let pad_px = lens_overscan(material_reach, view);
+    let big = if pad_px > 0 {
+        let s = view.scale.max(1e-9);
+        let d = f64::from(pad_px) / s;
+        View {
+            origin: (view.origin.0 - d, view.origin.1 - d),
+            scale: view.scale,
+            width: view.width + pad_px * 2,
+            height: view.height + pad_px * 2,
+        }
+    } else {
+        view.clone()
+    };
+    let (view, pix, work) = retained.render(&job.doc, job.page, &big, &opts)?;
     let (w, h) = (pix.width(), pix.height());
     // 像素没变（`Retained` 增量缓存命中）：直接复用上一张图，不拷贝、不转换、不新建纹理。
     // 必须放在 `pix.data().to_vec()` **之前**——否则每帧白分配一整页（4.4MP ≈ 17.6MB），
@@ -409,6 +432,39 @@ fn run(job: &Job, view: &View, retained: &mut Retained, coarse: bool, reuse: Opt
         );
     }
     Some(Done { doc: job.doc.clone(), image, grab, view, skip: job.skip.clone(), ms, work, uid: job.uid, page: job.page, coarse, at: job.at, seq: 0 })
+}
+
+/// 材质透镜要的那圈 overscan，设备像素：lens 最多从 pane 边往 core 方向读 `reach_px`，
+/// 该方向到视口对边的距离是 `view` 的短边。超出部分必须多栅格，否则读到的就是栅格外的透明。
+///
+/// 只多渲「超出量」（`reach − 短边`），不是整个 reach：pane 边在视口内时，采样最多到
+/// 「pane 边 + reach」，而 pane 边离视口对边至多一个短边，所以溢出不超过这个差值。
+/// 上限按总像素卡住，避免极端缩放下一帧分配上百 MB（画面退化为读不到最远那一截，而不是崩）。
+fn lens_overscan(reach_px: f64, view: &View) -> u32 {
+    if !reach_px.is_finite() || reach_px <= 0.0 {
+        return 0;
+    }
+    let short = f64::from(view.width.min(view.height).max(1));
+    let extra = reach_px - short;
+    if extra <= 0.0 {
+        return 0;
+    }
+    // 与 `canvas::MAX_CANVAS_PIXELS` / `MAX_TEXTURE_SIDE` 对齐：一圈 overscan 之后仍要能作为一张
+    // 纹理上传。超了就退到装得下的那一圈（最远处少一截折射，而不是黑屏 / 分配失败）。
+    const MAX_PIXELS: f64 = 12_000_000.0;
+    const MAX_SIDE: f64 = 8192.0;
+    let side = f64::from(view.width.max(view.height));
+    let side_cap = ((MAX_SIDE - side) / 2.0).max(0.0);
+    let mut pad = extra.ceil().min(4096.0).min(side_cap) as u32;
+    while pad > 0 {
+        let w = f64::from(view.width) + 2.0 * f64::from(pad);
+        let h = f64::from(view.height) + 2.0 * f64::from(pad);
+        if w * h <= MAX_PIXELS && w <= MAX_SIDE && h <= MAX_SIDE {
+            break;
+        }
+        pad = pad.saturating_sub((pad / 8).max(1));
+    }
+    pad
 }
 
 /// `view` 每边少 [`PREVIEW_FACTOR`] 倍像素，至少显示同样大的区域。
@@ -2621,5 +2677,87 @@ mod overlay_admission_tests {
         assert!(!shows(&c, &done, Some((7, page))), "same view: a coarse preview must not cover the refined image");
         c.want_view = Some(View { scale: 2.0, ..view });
         assert!(shows(&c, &done, Some((7, page))), "after a zoom the coarse preview may show");
+    }
+}
+
+#[cfg(test)]
+mod overscan_tests {
+    use super::lens_overscan;
+    use figcraft_render::View;
+
+    fn view(w: u32, h: u32) -> View {
+        View { origin: (0.0, 0.0), scale: 1.0, width: w, height: h }
+    }
+
+    #[test]
+    fn no_overscan_when_the_lens_fits_inside_the_viewport() {
+        // reach 600 on a 1157-short-side viewport: the lens never leaves the raster, so the
+        // backdrop already holds everything it samples. No extra pixels, no cost.
+        assert_eq!(lens_overscan(600.0, &view(1157, 1666)), 0);
+        assert_eq!(lens_overscan(0.0, &view(1157, 1666)), 0);
+    }
+
+    #[test]
+    fn overscan_is_the_reach_past_the_short_side() {
+        // depth×scale = 2080 with a 1157 short side: the lens samples 2080 px in from the pane
+        // edge, so the raster is 923 px short on the far side. That is exactly the ring to add.
+        assert_eq!(lens_overscan(2080.0, &view(1157, 1666)), 2080 - 1157);
+    }
+
+    #[test]
+    fn overscan_is_bounded_by_the_pixel_budget() {
+        // A monstrous reach must not ask for an unbounded raster (the app would OOM or fail to
+        // upload the texture). 12M px matches the canvas budget; 8192 is the texture side limit.
+        let p = lens_overscan(1_000_000.0, &view(1157, 1666));
+        let (w, h) = (1157 + 2 * p, 1666 + 2 * p);
+        assert!(p > 0, "an extreme reach still gets some ring");
+        assert!(w * h <= 12_000_000, "overscan {p} blew the pixel budget: {w}x{h}");
+        assert!(w <= 8192 && h <= 8192, "overscan {p} blew the texture side: {w}x{h}");
+    }
+
+    /// End to end through `render_now` (which is `run` without the worker): a glass pane larger
+    /// than the viewport must come back with a raster **bigger** than the viewport, so the lens can
+    /// read the ring past the view edge instead of transparent pixels.
+    #[test]
+    fn a_glass_pane_past_the_view_edge_overscans_the_raster() {
+        use figcraft_doc::{Document, NodeKind};
+
+        let mut doc = Document::default();
+        let page = doc.pages[0];
+        let pane = doc.create(page, NodeKind::Rectangle, "pane", 0.0, 0.0, 200.0, 200.0).expect("pane");
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/assets/wgsl/glass.wgsl").replace('\\', "\\\\");
+        doc.get_mut(pane)
+            .expect("pane node")
+            .plugin_data
+            .insert("figcraft.wgslMaterial".to_string(), format!("{{\"path\":\"{path}\",\"params\":{{}}}}"));
+
+        // 200 px viewport inside a 200-doc pane at 60×: the lens reads depth 20 → 1200 px inward,
+        // far past the view edge (the exact shape of the reported bug).
+        let view = View { origin: (80.0, 80.0), scale: 60.0, width: 200, height: 200 };
+        let job = super::Job {
+            doc: std::sync::Arc::new(doc),
+            page,
+            view: view.clone(),
+            outline: false,
+            outline_extras: figcraft_render::Outline::default(),
+            outlined: Vec::new(),
+            skip: Vec::new(),
+            solo: None,
+            proof: false,
+            dots: None,
+            grab: None,
+            bands: Vec::new(),
+            shade: None,
+            uid: 1,
+            zoom_preview: false,
+            at: std::time::Instant::now(),
+        };
+        let done = super::render_now(&job).expect("a CPU render");
+        assert!(
+            done.view.width > view.width && done.view.height > view.height,
+            "the raster must grow past the viewport for the lens ring, got {}x{}",
+            done.view.width,
+            done.view.height,
+        );
     }
 }

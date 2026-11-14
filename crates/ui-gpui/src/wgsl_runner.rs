@@ -1807,6 +1807,7 @@ mod tests {
             field_bytes: None,
             field_band: f32::INFINITY,
             uniforms: vec![("u".into(), u_bytes)],
+            dpr: 1.0,
         };
         let out = runner.composite(&scene, w, h, &[pass]).expect("universal composite on a real adapter");
         assert_eq!(out.len(), scene.len());
@@ -2004,6 +2005,7 @@ mod tests {
             field_bytes: None,
             field_band: f32::INFINITY,
             uniforms: vec![("u".into(), u_bytes)],
+            dpr: 1.0,
         };
         let gpu = runner.composite(&scene, w, h, &[pass]).expect("the GPU material composites");
 
@@ -2264,6 +2266,7 @@ mod tests {
             effect: eid, node: NodeId(7), rect_px: [0, 0, 32, 32],
             radii_px: [0.0; 4], node_px: (32.0, 32.0), origin_px: (0.0, 0.0),
             field_bytes: None, field_band: f32::INFINITY, uniforms,
+            dpr: 1.0,
         };
         // Straight RGBA (the overlay's format): opaque red everywhere.
         let red = vec![255u8, 0, 0, 255].repeat((w * h) as usize);
@@ -2309,6 +2312,7 @@ mod tests {
             effect: eid, node: NodeId(9), rect_px: [0, 0, w, h],
             radii_px: [24.0; 4], node_px: (w as f32, h as f32), origin_px: (0.0, 0.0),
             field_bytes: None, field_band: f32::INFINITY, uniforms,
+            dpr: 1.0,
         };
         let steps = [Step::Pass(&pass)];
         // How long the *host* side of one 1080p field costs: this is the part a zoom re-pays every
@@ -2449,6 +2453,7 @@ mod tests {
             radii_px: [10.0; 4], node_px: ((w - 16) as f32, (h - 16) as f32),
             origin_px: (0.0, 0.0), field_bytes: None, field_band: f32::INFINITY,
             uniforms: vec![("u".into(), u_bytes)],
+            dpr: 1.0,
         }
     }
 
