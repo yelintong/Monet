@@ -82,11 +82,29 @@ pub(crate) struct Opt {
     /// 有值时用排版对话框字形（`typ-*.svg`）画格，label 退为 tooltip/无障碍文本。
     /// Type settings  Basics 页的对齐 / 装饰线 / 大小写 / 列表 / 截断全是图标格。
     pub glyph: Option<crate::widgets::typ_icons::TypIcon>,
+    /// 有值时在**点击那一刻**用实时状态算出 `params`，而不是用构造时拍下的快照。
+    /// 效果设置小窗里数值 / 开关 / 枚举共用一份可变 effect：任何一个控件写回后，
+    /// 其余控件的命令都必须从**最新** effect 起改，否则会把彼此的修改覆盖掉
+    /// （先改 X 再改 Y，Y 的 `effect.set` 带着开窗时的旧 X）。`params` 退为占位。
+    pub params_fn: Option<std::rc::Rc<dyn Fn() -> Value>>,
 }
 
 impl Opt {
     pub fn new(label: impl Into<SharedString>, cmd: &'static str, params: Value) -> Self {
-        Self { label: label.into(), cmd, params, glyph: None }
+        Self { label: label.into(), cmd, params, glyph: None, params_fn: None }
+    }
+
+    /// 一个 params 在点击时才算的选项：`params_fn` 读实时共享状态。
+    pub fn dynamic(label: impl Into<SharedString>, cmd: &'static str, params_fn: std::rc::Rc<dyn Fn() -> Value>) -> Self {
+        Self { label: label.into(), cmd, params: Value::Null, glyph: None, params_fn: Some(params_fn) }
+    }
+
+    /// 点击时真正要下发的 params：有懒算函数就用它，否则用构造时的快照。
+    pub fn now(&self) -> Value {
+        match &self.params_fn {
+            Some(f) => f(),
+            None => self.params.clone(),
+        }
     }
     /// 把这一格改成 lizard 的排版字形（U̲ / AG / 项目符号…），label 仍保留作语义标注。
     pub fn with_glyph(mut self, g: crate::widgets::typ_icons::TypIcon) -> Self {
@@ -875,7 +893,10 @@ impl WindowState {
             options,
         });
         // ② 该效果的具体设置项（egui effect_settings 的数值 / 开关 / 枚举）。
-        settings.extend(effect_setting_rows(cx, &cmds, index, &effect, &ty));
+        // 全部控件共用这一份可变 effect：任何一个写回后，其余控件的命令都从最新值起改，
+        // 否则「先改 X 再改 Y」时 Y 的 effect.set 会带着开窗时的旧 X 把 X 冲掉。
+        let shared = Rc::new(RefCell::new(effect.clone()));
+        settings.extend(effect_setting_rows(cx, &cmds, index, &shared, &ty));
         w.settings = Rc::new(RefCell::new(settings));
         w
     }
@@ -1605,7 +1626,7 @@ impl WindowState {
                 let key = label.clone();
                 seg = seg.on_pick(move |i, _, _| {
                     let Some(opt) = opts.get(i) else { return };
-                    cmds.push(Cmd { id: opt.cmd, params: Some(opt.params.clone()) });
+                    cmds.push(Cmd { id: opt.cmd, params: Some(opt.now()) });
                     // 抬起格同步（命令引发的重绘会读到新值）。
                     if let Ok(mut list) = settings.try_borrow_mut() {
                         for s in list.iter_mut() {
@@ -1667,7 +1688,7 @@ impl WindowState {
                     let on_pick = Rc::new(move |picked: &str, w: &mut Window, cx: &mut App| {
                         if let Some(o) = opts.iter().find(|o| o.label == picked) {
                             *cur_state.borrow_mut() = o.label.clone();
-                            cmds.push(Cmd { id: o.cmd, params: Some(o.params.clone()) });
+                            cmds.push(Cmd { id: o.cmd, params: Some(o.now()) });
                         }
                         *at2.borrow_mut() = None;
                         wake2.wake();
@@ -1702,7 +1723,7 @@ impl WindowState {
                         let val = i == 1;
                         *state.borrow_mut() = val;
                         let opt = if val { &oc } else { &fc };
-                        cmds.push(Cmd { id: opt.cmd, params: Some(opt.params.clone()) });
+                        cmds.push(Cmd { id: opt.cmd, params: Some(opt.now()) });
                     });
                 }
                 let row = type_row(label, &t, seg.into_any_element());
@@ -1732,7 +1753,7 @@ impl WindowState {
         let key = key.clone();
         seg.on_pick(move |i, _, _| {
             let Some(opt) = opts.get(i) else { return };
-            cmds.push(Cmd { id: opt.cmd, params: Some(opt.params.clone()) });
+            cmds.push(Cmd { id: opt.cmd, params: Some(opt.now()) });
             if let Ok(mut list) = settings.try_borrow_mut() {
                 for s in list.iter_mut() {
                     if let Setting::Options { label: l, active: a, .. } = s {
@@ -1854,7 +1875,7 @@ fn effect_number(
     cx: &mut App,
     cmds: &Cmds,
     index: usize,
-    effect: &Value,
+    shared: &Rc<RefCell<Value>>,
     key: &'static str,
     at: Option<usize>,
     label: &'static str,
@@ -1864,13 +1885,16 @@ fn effect_number(
     min: f64,
     max: f64,
 ) -> Setting {
-    let raw = match at {
-        Some(i) => effect.get(key).and_then(Value::as_array).and_then(|a| a.get(i)).and_then(Value::as_f64),
-        None => effect.get(key).and_then(Value::as_f64),
-    }
-    .unwrap_or(0.0);
+    let raw = {
+        let effect = shared.borrow();
+        match at {
+            Some(i) => effect.get(key).and_then(Value::as_array).and_then(|a| a.get(i)).and_then(Value::as_f64),
+            None => effect.get(key).and_then(Value::as_f64),
+        }
+        .unwrap_or(0.0)
+    };
     let field = number_field(cx, 72.0, Some(raw * scale), suffix, step, Slot::None);
-    let base = effect.clone();
+    let live = shared.clone();
     let queue = cmds.clone();
     field.update(cx, move |tf, _| {
         tf.set_on_commit(move |text, _, _| {
@@ -1879,7 +1903,8 @@ fn effect_number(
                 return;
             }
             let v = (v / scale).clamp(min, max);
-            let mut e = base.clone();
+            // 从**最新**共享 effect 起改，而不是开窗时的快照，避免冲掉同窗其它控件的编辑。
+            let mut e = live.borrow().clone();
             let Some(o) = e.as_object_mut() else { return };
             match at {
                 Some(i) => {
@@ -1892,6 +1917,7 @@ fn effect_number(
                     o.insert(key.to_string(), json!(v));
                 }
             }
+            *live.borrow_mut() = e.clone();
             queue.push(Cmd { id: "effect.set", params: Some(json!({ "index": index, "effect": e })) });
         });
     });
@@ -1900,35 +1926,39 @@ fn effect_number(
 
 /// 按效果类型生成设置项（与 egui `effects.rs::effect_settings` 的字段对应；颜色需取色器，
 /// 暂不搬入小窗）。所有写回都走 `effect.set`，参数只含当前类型自己的键。
-fn effect_setting_rows(cx: &mut App, cmds: &Cmds, index: usize, effect: &Value, ty: &str) -> Vec<Setting> {
+fn effect_setting_rows(cx: &mut App, cmds: &Cmds, index: usize, shared: &Rc<RefCell<Value>>, ty: &str) -> Vec<Setting> {
     let mut out: Vec<Setting> = Vec::new();
     macro_rules! n {
         ($key:expr, $at:expr, $label:expr, $suffix:expr, $step:expr, $scale:expr, $min:expr, $max:expr) => {
-            out.push(effect_number(cx, cmds, index, effect, $key, $at, $label, $suffix, $step, $scale, $min, $max));
+            out.push(effect_number(cx, cmds, index, shared, $key, $at, $label, $suffix, $step, $scale, $min, $max));
         };
     }
     macro_rules! tgl {
         ($key:expr, $label:expr) => {{
-            let cur = effect.get($key).and_then(Value::as_bool).unwrap_or(false);
-            let on_v = effect_with(effect, $key, json!(true));
-            let off_v = effect_with(effect, $key, json!(false));
+            let cur = shared.borrow().get($key).and_then(Value::as_bool).unwrap_or(false);
+            let s_on = shared.clone();
+            let s_off = shared.clone();
             out.push(Setting::Toggle {
                 tab: 0,
                 label: SharedString::from($label),
                 on: Rc::new(RefCell::new(cur)),
                 supported: true,
-                on_cmd: Opt::new("On", "effect.set", json!({ "index": index, "effect": on_v })),
-                off_cmd: Opt::new("Off", "effect.set", json!({ "index": index, "effect": off_v })),
+                on_cmd: Opt::dynamic("On", "effect.set", Rc::new(move || json!({ "index": index, "effect": effect_with(&s_on.borrow(), $key, json!(true)) }))),
+                off_cmd: Opt::dynamic("Off", "effect.set", Rc::new(move || json!({ "index": index, "effect": effect_with(&s_off.borrow(), $key, json!(false)) }))),
             });
         }};
     }
     macro_rules! choice {
         ($key:expr, $label:expr, $values:expr) => {{
             let vals: &[(&str, &str)] = $values;
-            let cur = effect.get($key).and_then(Value::as_str).unwrap_or("").to_string();
+            let cur = shared.borrow().get($key).and_then(Value::as_str).unwrap_or("").to_string();
             let opts: Vec<Opt> = vals
                 .iter()
-                .map(|(l, v)| Opt::new(*l, "effect.set", json!({ "index": index, "effect": effect_with(effect, $key, json!(*v)) })))
+                .map(|(l, v)| {
+                    let s = shared.clone();
+                    let val = Value::String(v.to_string());
+                    Opt::dynamic(*l, "effect.set", Rc::new(move || json!({ "index": index, "effect": effect_with(&s.borrow(), $key, val.clone()) })))
+                })
                 .collect();
             let active = vals.iter().position(|(_, v)| *v == cur.as_str());
             out.push(Setting::Options { tab: 0, label: SharedString::from($label), active, options: opts });
