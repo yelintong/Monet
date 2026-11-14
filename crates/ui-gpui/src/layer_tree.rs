@@ -73,6 +73,8 @@ pub struct LayerRow {
     pub glyph: Option<crate::widgets::layer_icons::LayerIcon>,
     /// `child_layout.absolute` inside an auto-layout parent: an extra Absolute glyph is layered on.
     pub absolute: bool,
+    /// Shape-tool and vector layers: their own outline, drawn instead of a fixed type glyph.
+    pub shape: Option<shape_glyph::ShapeGlyph>,
     pub has_children: bool,
     pub can_into: bool,
     pub expanded: bool,
@@ -528,9 +530,13 @@ impl CanvasView {
     /// the Absolute glyph layered underneath, exactly as `layers()` does.
     fn layer_glyph_element(r: &LayerRow) -> gpui::AnyElement {
         use crate::widgets::layer_icons::{self, LayerIcon};
-        let main = match r.glyph {
-            Some(g) => layer_icons::paint(g, ink(), ICON_GLYPH).into_any_element(),
-            None => paint_icon(r.icon, ink(), ICON_GLYPH).into_any_element(),
+        let main = if let Some(s) = &r.shape {
+            shape_glyph::paint(s, ink(), ICON_GLYPH)
+        } else {
+            match r.glyph {
+                Some(g) => layer_icons::paint(g, ink()).into_any_element(),
+                None => paint_icon(r.icon, ink(), ICON_GLYPH).into_any_element(),
+            }
         };
         if !r.absolute {
             return main;
@@ -539,7 +545,7 @@ impl CanvasView {
             .relative()
             .w(px(ICON_GLYPH))
             .h(px(ICON_GLYPH))
-            .child(div().absolute().top_0().left_0().size_full().child(layer_icons::paint(LayerIcon::Absolute, ink(), ICON_GLYPH)))
+            .child(div().absolute().top_0().left_0().size_full().child(layer_icons::paint(LayerIcon::Absolute, ink())))
             .child(div().absolute().top_0().left_0().size_full().child(main))
             .into_any_element()
     }
@@ -791,6 +797,8 @@ impl CanvasView {
                 icon,
                 glyph: Self::layer_glyph(doc, id, icon).0,
                 absolute: Self::layer_glyph(doc, id, icon).1,
+                // A mask keeps its dedicated mask glyph; every other shape shows its own outline.
+                shape: if n.is_mask { None } else { shape_glyph::from_node(n) },
                 has_children,
                 can_into,
                 expanded,
@@ -1146,4 +1154,278 @@ impl CanvasView {
 
 fn path_id(seg: Option<&str>) -> Option<NodeId> {
     seg.and_then(|s| s.parse::<u64>().ok()).map(NodeId)
+}
+// ── Shape glyphs: a shape layer's icon is its own outline ────────────────────────────────────
+
+mod shape_glyph {
+    //! Layers created with the shape tools — and vector paths — show **their own geometry** in
+    //! the Layers panel instead of a fixed type glyph. Corner radii, polygon/star point counts,
+    //! star inner ratios, ellipse arcs, line direction, arrow caps and pen paths all come from
+    //! `figcraft_doc::geometry::shape_path`, i.e. the very outline the canvas draws.
+    //!
+    //! The path is rotated with the node, scaled by **one uniform factor** (never stretched to
+    //! fill a box, never clamped to a fake aspect ratio) and centred on the half-point grid so a
+    //! 1 pt stroke lands on a whole pixel. The vector occupies exactly the space its own geometry
+    //! needs. Every stroke uses `layer_icons::ICON_STROKE`.
+
+    use crate::widgets::layer_icons::ICON_STROKE;
+    use figcraft_doc::{Node, NodeKind, VectorNetwork};
+    use figcraft_geom::{Affine, BezPath, Point as GPoint, Shape, Vec2, kurbo::PathEl};
+    use gpui::{AnyElement, PathBuilder, Rgba, canvas, point, prelude::*, px};
+
+    /// The largest extent of the natural shape, centred on the half-point grid: 3.5..13.5.
+    /// Edges and horizontal lines all land on .5, so a 1 pt stroke covers one whole pixel.
+    const SPAN: f64 = 10.0;
+    const CENTRE: f64 = 8.5;
+    /// A dense pen path is decimated: a 16 pt icon is a hint, not a second render of the artwork.
+    const MAX_ELEMENTS: usize = 256;
+
+    /// A layer's own outline, normalised into the 16 pt icon box.
+    #[derive(Clone, Debug)]
+    pub struct ShapeGlyph {
+        path: BezPath,
+    }
+
+    /// Only shapes made with the shape tools and vector paths. Frames, groups, text, booleans,
+    /// components and pages keep their existing type glyphs.
+    fn is_shape(n: &Node) -> bool {
+        matches!(
+            &n.kind,
+            NodeKind::Rectangle
+                | NodeKind::Ellipse { .. }
+                | NodeKind::Polygon { .. }
+                | NodeKind::Star { .. }
+                | NodeKind::Line
+                | NodeKind::Vector { .. }
+        )
+    }
+
+    /// `stroke_path` already chains every segment, open and closed: using it alone avoids
+    /// drawing a closed loop twice (two overlapping strokes look thicker than their neighbours).
+    fn vector_path(network: &VectorNetwork) -> BezPath {
+        let stroke = network.stroke_path();
+        if stroke.elements().is_empty() { network.fill_path() } else { stroke }
+    }
+
+    /// A line's arrow caps: two short arms meeting at the tip, drawn in the line's own space so
+    /// they rotate and scale with it.
+    fn chevron(path: &mut BezPath, tip: GPoint, dir: Vec2, len: f64, half: f64) {
+        let perp = Vec2::new(-dir.y, dir.x);
+        let base = tip - dir * len;
+        // One continuous V: two subpaths meeting at the tip would double-stroke the point.
+        path.move_to(base + perp * half);
+        path.line_to(tip);
+        path.line_to(base - perp * half);
+    }
+
+    fn arrow_caps(path: &mut BezPath, n: &Node) {
+        let w = n.width;
+        if w <= 1e-6 {
+            return;
+        }
+        let (len, half) = (w * 0.22, w * 0.13);
+        if n.stroke.cap_end.is_arrow() {
+            chevron(path, GPoint::new(w, 0.0), Vec2::new(1.0, 0.0), len, half);
+        }
+        if n.stroke.cap_start.is_arrow() {
+            chevron(path, GPoint::new(0.0, 0.0), Vec2::new(-1.0, 0.0), len, half);
+        }
+    }
+
+    /// The rotation carried by the node's transform (a line drawn at an angle, a rotated shape).
+    fn rotation(t: Affine) -> f64 {
+        let [a, b, ..] = t.as_coeffs();
+        if a.abs() + b.abs() < 1e-9 { 0.0 } else { b.atan2(a) }
+    }
+
+    /// Keep at most `MAX_ELEMENTS` path elements, always retaining subpath starts and closes.
+    fn decimate(path: BezPath) -> BezPath {
+        let len = path.elements().len();
+        if len <= MAX_ELEMENTS {
+            return path;
+        }
+        let step = len.div_ceil(MAX_ELEMENTS);
+        let mut out = BezPath::new();
+        for (i, &el) in path.elements().iter().enumerate() {
+            if i % step == 0 || matches!(el, PathEl::MoveTo(_) | PathEl::ClosePath) {
+                out.push(el);
+            }
+        }
+        out
+    }
+
+    /// Normalise a local-space outline into the 16 pt icon box, preserving its aspect ratio.
+    fn fit(path: BezPath) -> Option<BezPath> {
+        let path = decimate(path);
+        let bb = path.bounding_box();
+        let (bw, bh) = (bb.width(), bb.height());
+        if !bw.is_finite() || !bh.is_finite() || path.elements().is_empty() {
+            return None;
+        }
+        let (sx, sy) = if bw < 1e-6 && bh < 1e-6 {
+            (1.0, 1.0)
+        } else if bw < 1e-6 {
+            let s = SPAN / bh;
+            (s, s)
+        } else if bh < 1e-6 {
+            let s = SPAN / bw;
+            (s, s)
+        } else {
+            // One uniform factor: the shape keeps its own proportions, however thin they are.
+            let s = SPAN / bw.max(bh);
+            (s, s)
+        };
+        let (cx, cy) = ((bb.x0 + bb.x1) / 2.0, (bb.y0 + bb.y1) / 2.0);
+        let at = |p: GPoint| GPoint::new(CENTRE + (p.x - cx) * sx, CENTRE + (p.y - cy) * sy);
+        let mut out = BezPath::new();
+        for &el in path.elements() {
+            match el {
+                PathEl::MoveTo(p) => out.move_to(at(p)),
+                PathEl::LineTo(p) => out.line_to(at(p)),
+                PathEl::QuadTo(c, p) => out.quad_to(at(c), at(p)),
+                PathEl::CurveTo(c1, c2, p) => out.curve_to(at(c1), at(c2), at(p)),
+                PathEl::ClosePath => out.close_path(),
+            }
+        }
+        Some(out)
+    }
+
+    /// Build a row's icon from the node itself; `None` for everything that keeps a type glyph.
+    pub fn from_node(n: &Node) -> Option<ShapeGlyph> {
+        if !is_shape(n) {
+            return None;
+        }
+        let mut path = match &n.kind {
+            NodeKind::Vector { network } => vector_path(network),
+            _ => figcraft_doc::geometry::shape_path(n)?,
+        };
+        if matches!(&n.kind, NodeKind::Line) {
+            arrow_caps(&mut path, n);
+        }
+        let angle = rotation(n.transform);
+        if angle.abs() > 1e-6 {
+            path = Affine::rotate(angle) * path;
+        }
+        Some(ShapeGlyph { path: fit(path)? })
+    }
+
+    /// Stroke the normalised outline in a `size` square, in the row's ink colour.
+    pub fn paint(glyph: &ShapeGlyph, color: Rgba, size: f32) -> AnyElement {
+        let path = glyph.path.clone();
+        canvas(
+            move |_, _, _| (),
+            move |bounds, _, window, _| {
+                let s = f32::from(bounds.size.width) / 16.0;
+                let o = bounds.origin;
+                let at = |p: GPoint| point(o.x + px(p.x as f32 * s), o.y + px(p.y as f32 * s));
+                let mut b = PathBuilder::stroke(px(ICON_STROKE));
+                for &el in path.elements() {
+                    match el {
+                        PathEl::MoveTo(p) => b.move_to(at(p)),
+                        PathEl::LineTo(p) => b.line_to(at(p)),
+                        PathEl::QuadTo(c, p) => b.curve_to(at(p), at(c)),
+                        PathEl::CurveTo(c1, c2, p) => b.cubic_bezier_to(at(p), at(c1), at(c2)),
+                        PathEl::ClosePath => b.close(),
+                    }
+                }
+                if let Ok(p) = b.build() {
+                    window.paint_path(p, color);
+                }
+            },
+        )
+        .size(px(size))
+        .flex_none()
+        .into_any_element()
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use figcraft_doc::{NodeId, StrokeCap};
+
+        fn node(kind: NodeKind, w: f64, h: f64) -> Node {
+            Node::new(NodeId(1), kind, "shape", w, h)
+        }
+
+        fn outline(n: &Node) -> BezPath {
+            from_node(n).expect("a shape glyph").path
+        }
+
+        /// A wide rectangle stays wide; a thin one stays thin. Nothing is stretched to fit.
+        #[test]
+        fn aspect_ratio_follows_the_shape_without_stretching() {
+            let wide = outline(&node(NodeKind::Rectangle, 200.0, 40.0)).bounding_box();
+            assert!((wide.width() - 10.0).abs() < 0.01, "span {wide:?}");
+            assert!((wide.height() - 2.0).abs() < 0.01, "5:1 kept {wide:?}");
+            let thin = outline(&node(NodeKind::Rectangle, 1000.0, 2.0)).bounding_box();
+            assert!(thin.height() < 0.05, "no fake thickening {thin:?}");
+            let square = outline(&node(NodeKind::Rectangle, 60.0, 60.0)).bounding_box();
+            assert!((square.width() - square.height()).abs() < 0.01);
+        }
+
+        /// Corner radius, polygon/star point counts and star inner ratio all change the outline.
+        #[test]
+        fn shape_parameters_change_the_icon() {
+            let mut rounded = node(NodeKind::Rectangle, 80.0, 80.0);
+            rounded.corners.radii = [24.0; 4];
+            assert!(outline(&rounded).elements().len() > outline(&node(NodeKind::Rectangle, 80.0, 80.0)).elements().len());
+
+            let tri = outline(&node(NodeKind::Polygon { count: 3 }, 80.0, 80.0));
+            let hex = outline(&node(NodeKind::Polygon { count: 6 }, 80.0, 80.0));
+            assert_ne!(tri.elements().len(), hex.elements().len(), "a hexagon is not a triangle");
+
+            let star5 = outline(&node(NodeKind::Star { count: 5, inner_ratio: 0.38 }, 80.0, 80.0));
+            let star8 = outline(&node(NodeKind::Star { count: 8, inner_ratio: 0.38 }, 80.0, 80.0));
+            assert_ne!(star5.elements().len(), star8.elements().len(), "point count follows the layer");
+            let star_ratio = outline(&node(NodeKind::Star { count: 5, inner_ratio: 0.8 }, 80.0, 80.0));
+            assert_ne!(star5.elements()[1], star_ratio.elements()[1], "inner radius follows the layer");
+
+            let arc = outline(&node(NodeKind::Ellipse { start: 0.0, sweep: 2.0, inner: 0.0 }, 80.0, 80.0));
+            let disc = outline(&node(NodeKind::Ellipse { start: 0.0, sweep: std::f64::consts::TAU, inner: 0.0 }, 80.0, 80.0));
+            assert!((arc.bounding_box().height() - disc.bounding_box().height()).abs() > 0.1, "an arc is not a disc");
+        }
+
+        /// An arrow is a line with a head, and a rotated line keeps its angle.
+        #[test]
+        fn arrows_and_rotated_lines_show_their_direction() {
+            let line = outline(&node(NodeKind::Line, 100.0, 0.0));
+            let mut arrow = node(NodeKind::Line, 100.0, 0.0);
+            arrow.stroke.cap_end = StrokeCap::LineArrow;
+            let headed = outline(&arrow);
+            assert_eq!(line.elements().len(), 2);
+            assert!(headed.elements().len() > line.elements().len(), "the arrowhead is drawn");
+
+            let mut diagonal = node(NodeKind::Line, 100.0, 0.0);
+            diagonal.transform = Affine::rotate(std::f64::consts::FRAC_PI_4);
+            let bb = outline(&diagonal).bounding_box();
+            assert!((bb.width() - bb.height()).abs() < 0.01, "a 45 degree line is diagonal {bb:?}");
+        }
+
+        /// A pen path (vector network) draws its own segments, not the generic vector glyph.
+        #[test]
+        fn vector_paths_draw_their_own_geometry() {
+            let svg = BezPath::from_svg("M 0 0 L 100 0 L 100 50 Z").expect("svg path");
+            let net = VectorNetwork::from_path(&svg);
+            let bb = outline(&node(NodeKind::Vector { network: net }, 100.0, 50.0)).bounding_box();
+            assert!((bb.width() - 10.0).abs() < 0.01, "{bb:?}");
+            assert!((bb.height() - 5.0).abs() < 0.01, "{bb:?}");
+        }
+
+        /// Every drawn icon shares one stroke width, and axis-aligned edges sit on .5 points.
+        #[test]
+        fn strokes_are_one_constant_and_edges_are_pixel_aligned() {
+            assert_eq!(ICON_STROKE, 1.0);
+            let bb = outline(&node(NodeKind::Rectangle, 60.0, 60.0)).bounding_box();
+            assert!((bb.x0 - 3.5).abs() < 0.01 && (bb.x1 - 13.5).abs() < 0.01, "{bb:?}");
+            let line = outline(&node(NodeKind::Line, 100.0, 0.0)).bounding_box();
+            assert!((line.y0 - 8.5).abs() < 0.01, "{line:?}");
+        }
+
+        /// Everything that isn't a shape or a vector keeps its existing type glyph.
+        #[test]
+        fn non_shape_nodes_have_no_geometry_icon() {
+            assert!(from_node(&node(NodeKind::Frame, 80.0, 80.0)).is_none());
+            assert!(from_node(&node(NodeKind::Group, 80.0, 80.0)).is_none());
+        }
+    }
 }

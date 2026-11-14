@@ -3,6 +3,10 @@
 //! alpha，颜色由 `.text_color()` 给，所以 SVG 里的白色描边/填充正好能被统一着色。
 
 use gpui::{Hsla, IntoElement, SharedString, prelude::*, px, svg};
+use std::sync::OnceLock;
+
+/// Layer glyphs and shape-tool marks share the very same stroke constant.
+pub use crate::widgets::icon::ICON_STROKE;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LayerIcon {
@@ -58,15 +62,39 @@ pub static ASSETS: &[(&str, &[u8])] = &[
     ("collapse", include_bytes!("../../assets/layer/collapse.svg")),
 ];
 
-/// Draw one layer glyph in a single ink colour, at its native 16 pt size.
-pub fn paint(icon: LayerIcon, color: gpui::Rgba, size: f32) -> impl IntoElement {
-    svg().path(icon.path()).w(px(size)).h(px(size)).flex_none().text_color(Hsla::from(color))
+/// The SVG's own viewBox width: the vector occupies the space it actually has, rather than
+/// being forced into a caller-supplied box (which would scale its stroke with it).
+pub fn natural_size(icon: LayerIcon) -> f32 {
+    let text = String::from_utf8_lossy(ASSETS[icon as usize].1);
+    let Some(i) = text.find("viewBox=\"") else { return 16.0 };
+    let after = &text[i + "viewBox=\"".len()..];
+    after.split_whitespace().nth(2).and_then(|v| v.trim_end_matches('\"').parse().ok()).unwrap_or(16.0)
 }
 
-/// AssetSource hook: map `layer/<stem>.svg` onto the embedded bytes.
+/// Replace every embedded `stroke-width` with [`ICON_STROKE`], once, at load time.
+fn normalised() -> &'static Vec<&'static [u8]> {
+    static CACHE: OnceLock<Vec<&'static [u8]>> = OnceLock::new();
+    CACHE.get_or_init(|| {
+        ASSETS
+            .iter()
+            .map(|(_, bytes)| {
+                Box::leak(crate::widgets::icon::normalise_stroke(bytes).into_boxed_slice()) as &'static [u8]
+            })
+            .collect()
+    })
+}
+
+/// Draw one layer glyph in a single ink colour, at its **natural** size.
+pub fn paint(icon: LayerIcon, color: gpui::Rgba) -> impl IntoElement {
+    let s = natural_size(icon);
+    svg().path(icon.path()).w(px(s)).h(px(s)).flex_none().text_color(Hsla::from(color))
+}
+
+/// AssetSource hook: map `layer/<stem>.svg` onto the embedded bytes, with one shared stroke.
 pub fn load(path: &str) -> Option<&'static [u8]> {
     let stem = path.strip_prefix("layer/")?.strip_suffix(".svg")?;
-    ASSETS.iter().find(|(name, _)| *name == stem).map(|(_, bytes)| *bytes)
+    let index = ASSETS.iter().position(|(name, _)| *name == stem)?;
+    Some(normalised()[index])
 }
 
 pub fn paths() -> Vec<SharedString> {
@@ -76,6 +104,25 @@ pub fn paths() -> Vec<SharedString> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// No glyph may carry its own stroke width: the painter and the SVGs share one constant.
+    #[test]
+    fn every_stroke_uses_the_shared_constant() {
+        for (stem, _) in ASSETS {
+            let bytes = load(&format!("layer/{stem}.svg")).unwrap();
+            let text = std::str::from_utf8(bytes).unwrap();
+            let needle = "stroke-width=\"";
+            let mut rest = text;
+            while let Some(i) = rest.find(needle) {
+                let after = &rest[i + needle.len()..];
+                let end = after.find('\"').unwrap();
+                assert_eq!(&after[..end], format!("{}", ICON_STROKE), "{stem} has its own stroke width");
+                rest = &after[end..];
+            }
+        }
+        assert!(natural_size(LayerIcon::Vector) > 16.0, "a 24-unit glyph keeps its own size");
+        assert_eq!(natural_size(LayerIcon::Rectangle), 16.0);
+    }
+
     #[test]
     fn every_glyph_has_an_asset() {
         assert_eq!(ASSETS.len(), 20);
